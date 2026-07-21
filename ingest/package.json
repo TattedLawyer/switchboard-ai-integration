@@ -8,7 +8,8 @@
     "test": "vitest run",
     "migrate": "tsx src/migrate.ts",
     "start": "tsx src/main.ts",
-    "backfill": "tsx src/cli/backfill.ts"
+    "backfill": "tsx src/cli/backfill.ts",
+    "replay": "tsx src/cli/replay.ts"
   },
   "dependencies": {
     "express": "^5.2.0",

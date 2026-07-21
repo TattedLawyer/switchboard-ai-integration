@@ -117,3 +117,36 @@ export async function fetchDlq(
       data: job.data,
     }));
 }
+
+export async function replayDlq(
+  boss: PgBoss,
+  pool: pg.Pool
+): Promise<{ replayed: number; failed: number }> {
+  const dlqJobs = await fetchDlq(boss);
+
+  let replayed = 0;
+  let failed = 0;
+
+  for (const job of dlqJobs) {
+    try {
+      // ingestEvent is idempotent (ON CONFLICT DO NOTHING on event_id), so re-running it here is
+      // safe even in the edge case where the original job actually succeeded before dead-lettering.
+      await ingestEvent(pool, job.data);
+
+      // Consume the DLQ job so it isn't replayed again. fetchDlq() peeks jobs via findJobs() —
+      // it does NOT fetch/lease them the way boss.work()/boss.fetch() do, so these jobs are still
+      // sitting in state 'created'/'retry', not 'active'. boss.complete() only transitions jobs
+      // that are currently 'active' (see pg-boss plans.js completeJobsUpdate: `WHERE ... state =
+      // 'active'`), so calling complete() on a peeked job is a silent no-op — it would NOT mark
+      // the job consumed and fetchDlq() would return it again on the next replay. boss.deleteJob()
+      // deletes by name+id with no state precondition, which is what we actually want here: the
+      // job has already been handled (ingested), so remove it from the DLQ outright.
+      await boss.deleteJob(INGEST_DLQ, job.id);
+      replayed++;
+    } catch {
+      failed++;
+    }
+  }
+
+  return { replayed, failed };
+}
