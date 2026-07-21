@@ -9,6 +9,7 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 |---|---|---|
 | `DATABASE_URL` | no code default — export it (scripts set it for you) | ingest, agent, CLIs |
 | `WEBHOOK_SECRET` | `demo-secret` (demo only — set per environment) | mock signing, ingest verification |
+| `LEDGER_HMAC_KEY` | `demo-ledger-key` (demo only — set per environment) | ledger writer (mock), reconcile chain verification |
 | `LEDGER_PATH` | no code default — export it (scripts set it for you) | mock, reconcile |
 | `CRM_BASE_URL` | `http://localhost:4001` | backfill CLI |
 | `INGEST_ROLE` | `all` (`receiver` \| `worker` \| `all`) | ingest main |
@@ -67,4 +68,5 @@ state, which is exactly what the chaos test demonstrates on every run.
 | Ports 4001/4002/5433 busy | `lsof -ti:4001,4002 \| xargs kill`; another Postgres on 5433 → change compose mapping |
 | demo/chaos FAIL with count mismatch | Worker not draining — check ingest logs; the scripts' bounded waits print both counts on timeout |
 | 401 on every webhook | `WEBHOOK_SECRET` mismatch between mock and ingest environments |
+| Reconcile reports ledger hash chain broken but nothing was tampered with | `LEDGER_HMAC_KEY` mismatch between the mock (writer) and reconcile (verifier) environments — both must use the same key (default is fine for demo) |
 | Report generates with template banner | `ANTHROPIC_API_KEY` unset or LLM call failed — check the structured `llm` log line (fallback is by design; the report always generates) |

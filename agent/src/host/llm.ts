@@ -26,7 +26,13 @@ export class AnthropicLlm implements LlmClient {
   async complete(prompt: string): Promise<string> {
     const started = Date.now();
     try {
-      // verify current model id before Phase 3 live runs
+      // Model id "claude-sonnet-5" is the current, valid Sonnet 5 model id as of
+      // 2026-07 (verified against docs at the time this line was written) — this is
+      // NOT a placeholder or a typo for an older "claude-3-5-sonnet"-style id. Model
+      // ids are periodically retired/renamed by the vendor, so re-verify this id
+      // against current API docs before any real (non-fallback) key run, especially
+      // if this code has sat untouched for a while — do not assume staleness without
+      // checking; do not "fix" it back to an older id without checking first either.
       const msg = await this.client.messages.create(
         {
           model: "claude-sonnet-5",

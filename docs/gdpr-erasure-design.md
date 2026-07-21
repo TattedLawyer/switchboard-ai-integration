@@ -25,7 +25,9 @@ history survive, but personal data does not. This is the one place append-only i
 deliberately broken, by a privileged, logged erasure job — not by application code.
 
 **3. Hash-chain compatibility via crypto-shredding or hash-only entries.** A naive
-redaction breaks the ledger's tamper-evident chain. Two standard resolutions:
+redaction breaks the ledger's tamper-evident chain (HMAC-keyed via `LEDGER_HMAC_KEY`,
+so tamper-evidence holds against anyone without that key — not a plain hash chain).
+Two standard resolutions:
 - *Crypto-shredding:* payloads in durable logs are encrypted per-entity; erasure
   destroys the entity's key, rendering its ledger entries permanently unreadable
   while leaving the chain bytes — and therefore chain verification — intact.

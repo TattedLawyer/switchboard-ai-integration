@@ -6,10 +6,26 @@ reconciliation test proving zero lost events — plus a mid-phase amendment (ado
 after a deployment-readiness review): webhook HMAC, out-of-order faults with
 event-time ordering, an LLM operational envelope, and a hash-chained ledger.
 
+**Post-phase independent audit (2026-07-21):** an outside review found the ledger
+chain, though hash-chained, was unkeyed (`sha256(prev+canonical)`) — anyone able to
+write the ledger file could mutate an entry and correctly re-chain everything after
+it, and the verifier would report `ok:true`; the auditor demonstrated exactly this
+forgery. Fixed by keying the chain (`HMAC-SHA256(LEDGER_HMAC_KEY, prev+canonical)`,
+default documented demo-only like `WEBHOOK_SECRET`) so re-chaining requires the
+secret; a new adversarial test (`mocks/crm/test/ledger-chain.test.ts`) proves a
+forger without the key is caught (`ok:false`), while confirming the same forgery
+still would have succeeded against the old unkeyed scheme. The audit also flagged
+that the "out-of-order delivery... proven separately" line above had no test that
+actually asserted a late-*delivered*-but-occurred_at-*stale* update loses; added
+`ingest/test/ordering.test.ts` — a SQL-level test running the model's exact
+`DISTINCT ON ... order by occurred_at desc` query against hand-inserted raw rows —
+to close that gap directly (see that file for why SQL-level, not a full dbt build).
+
 **The result:** `./scripts/chaos.sh` — 200 events under seeded faults (20% dropped
 webhooks, 15% duplicate deliveries, 20% API errors); out-of-order delivery is proven
-separately by the mock's fault tests plus the dbt event-time tiebreak (composed
-chaos-with-shuffle in the same run is a Phase 2 follow-up):
+separately by the mock's fault tests, the dbt event-time tiebreak, and (post-audit)
+a dedicated ordering test at `ingest/test/ordering.test.ts` (composed
+chaos-with-shuffle in the same run is still a Phase 2 follow-up):
 158 arrive via the push path, the cursor backfill recovers exactly the 42 dropped,
 reconciliation verifies the ledger hash chain then proves set equality with zero
 duplicates, quarantine and DLQ both empty, in ~20 seconds, deterministically

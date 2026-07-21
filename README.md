@@ -30,10 +30,15 @@ engineering on data you can inspect freely.
 
 ## What's built and working today (Phases 0–1)
 
-- A simulated company's CRM that streams signed events and keeps a **hash-chained,
-  append-only log** of everything it sends — the tamper-evident measuring stick the
-  reliability tests reconcile against — with on-demand fault injection: dropped,
-  duplicated, out-of-order deliveries and API errors, all deterministic from a seed.
+- A simulated company's CRM that streams signed events and keeps an **HMAC-keyed,
+  hash-chained, append-only log** of everything it sends — the tamper-evident
+  measuring stick the reliability tests reconcile against — with on-demand fault
+  injection: dropped, duplicated, out-of-order deliveries and API errors, all
+  deterministic from a seed. The chain is keyed (`LEDGER_HMAC_KEY`, demo default
+  documented like `WEBHOOK_SECRET`) so tamper-evidence holds against anyone who can
+  write the ledger file but doesn't hold the key — a plain hash chain doesn't, since
+  re-chaining after a mutation needs no secret; a dedicated adversarial test proves a
+  forger without the key is caught.
 - An ingestion service built for failure: signature verification, exactly-once
   storage (duplicate deliveries can't create duplicate records), a retry queue with
   a dead-letter lane and replay tool, a quarantine for malformed data (nothing
@@ -50,7 +55,7 @@ engineering on data you can inspect freely.
 - A worker that generates the Monday revenue-risk report — with a timeout and
   fallback so the report generates even when the AI service is down, and per-call
   cost logging.
-- 52 automated tests, written test-first, all green; the whole pipeline runs from
+- 62 automated tests, written test-first, all green; the whole pipeline runs from
   one command; operational docs included ([runbook](RUNBOOK.md),
   [scaling ceilings](docs/scaling-ceilings.md),
   [real-vendor delta](docs/real-connector-delta.md),

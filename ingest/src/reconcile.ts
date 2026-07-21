@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import type pg from "pg";
 
 interface LedgerEntry {
@@ -25,11 +25,26 @@ function readLedger(path: string): LedgerEntry[] {
 
 export const GENESIS_HASH = "0".repeat(64);
 
-// NOTE: this hashing function is intentionally duplicated from mocks/crm/src/ledger.ts
-// (canonicalHash) because reconcile lives in the ingest workspace and must not import
-// from mocks/crm (a test-only mock service package). Keep both copies in sync if the
-// canonicalization changes.
-function canonicalHash(prevHash: string, entry: LedgerEntry): string {
+// NOTE: DEFAULT_LEDGER_HMAC_KEY is intentionally duplicated in mocks/crm/src/ledger.ts
+// (separate workspace, must not cross-import). Keep both copies in sync if the key or
+// chaining scheme changes.
+// Shared secret keying the ledger's hash chain. Demo-only default, printed in the open —
+// real deployments must set LEDGER_HMAC_KEY to a proper secret held only by the ledger
+// writer and the auditor, kept separate from the log file itself. Without a key, anyone
+// who can write the ledger file can mutate an entry and re-chain everything after it, so
+// the "tamper-evident" claim only holds against parties who don't hold the key. The demo
+// key here is public by design — it proves the mechanism (keyed re-chaining is
+// detectable), not secrecy.
+export const DEFAULT_LEDGER_HMAC_KEY = "demo-ledger-key";
+
+// Canonical hash: HMAC-SHA256(key, prev_hash + canonical JSON of the entry sans hash
+// fields). Keyed (not a plain hash) so a party without the key cannot mutate an entry
+// and re-chain forward: recomputing HMAC values requires the secret, not just the
+// algorithm. NOTE: this hashing function is intentionally duplicated from
+// mocks/crm/src/ledger.ts (canonicalHash) because reconcile lives in the ingest
+// workspace and must not import from mocks/crm (a test-only mock service package). Keep
+// both copies in sync if the canonicalization or key handling changes.
+function canonicalHash(prevHash: string, entry: LedgerEntry, key: string): string {
   const canonical = JSON.stringify({
     event_id: entry.event_id,
     event_type: entry.event_type,
@@ -37,10 +52,13 @@ function canonicalHash(prevHash: string, entry: LedgerEntry): string {
     data: entry.data,
     seq: entry.seq,
   });
-  return createHash("sha256").update(prevHash + canonical).digest("hex");
+  return createHmac("sha256", key).update(prevHash + canonical).digest("hex");
 }
 
-export function verifyLedgerChain(path: string): { ok: boolean; brokenAt?: number } {
+export function verifyLedgerChain(
+  path: string,
+  key: string = process.env.LEDGER_HMAC_KEY ?? DEFAULT_LEDGER_HMAC_KEY,
+): { ok: boolean; brokenAt?: number } {
   const entries = readLedger(path);
   let expectedPrev = GENESIS_HASH;
   for (let i = 0; i < entries.length; i++) {
@@ -49,7 +67,7 @@ export function verifyLedgerChain(path: string): { ok: boolean; brokenAt?: numbe
     if (entry.prev_hash !== expectedPrev) {
       return { ok: false, brokenAt: lineNo };
     }
-    const recomputed = canonicalHash(entry.prev_hash, entry);
+    const recomputed = canonicalHash(entry.prev_hash, entry, key);
     if (recomputed !== entry.hash) {
       return { ok: false, brokenAt: lineNo };
     }
@@ -75,6 +93,9 @@ export async function reconcile(pool: pg.Pool, ledgerPath: string): Promise<Reco
   );
   const rawIds = rawRes.rows.map((r) => r.event_id);
   const rawIdSet = new Set(rawIds);
+  // Structurally always 0: uq_raw_crm_events_event_id (migration 002) makes duplicate
+  // event_id inserts impossible, so this proves identity parity (no duplicate rows can
+  // exist), not payload parity (it says nothing about whether stored payloads match).
   const rawDuplicates = rawIds.length - rawIdSet.size;
 
   const missing: string[] = [];
