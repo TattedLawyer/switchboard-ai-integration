@@ -344,9 +344,42 @@ CLI `ingest/src/cli/backfill.ts`: runs `catchUp` against `CRM_BASE_URL` env (def
 
 ---
 
-### Task 9 (controller): docs
+### Task 9: Deployment hardening (added 2026-07-21 from the deployment-readiness review — Michael approved "fold the cheap four")
 
-README "What's built" section moves the Phase 1 bullets from *coming* to *built* (present tense only for what now exists); journal entry `docs/log/phase1.md` (planned vs actual); progress ledger. Handled by the controller, not an implementer subagent.
+**Files:**
+- Modify: `mocks/crm/src/server.ts`, `mocks/crm/src/ledger.ts`, `mocks/crm/src/faults.ts`, `ingest/src/server.ts`, `agent/src/host/llm.ts`, `warehouse/models/staging/stg_crm__companies.sql`
+- Test: `mocks/crm/test/hmac.test.ts`, `mocks/crm/test/ledger-chain.test.ts`, additions to `faults.test.ts`, `ingest/test/hmac-verify.test.ts`, `agent/test/llm-fallback.test.ts`
+
+**9a — Webhook HMAC signing (finding: webhook spoofing).**
+Mock signs every delivery: header `X-Switchboard-Signature: sha256=<hex hmac of raw body>` using shared secret env `WEBHOOK_SECRET` (default `demo-secret` — documented as demo-only). Ingest verifies before accepting: invalid/missing signature → 401 `{error:"invalid signature"}` (NOT quarantined — unauthenticated data is rejected, not preserved). Node `crypto.createHmac("sha256", secret)`; timing-safe compare via `crypto.timingSafeEqual`. Tests: valid signature → 202; tampered body → 401; missing header → 401. Backfill poll path is unaffected (it pulls; authenticity comes from the source URL — note this asymmetry in the code comment).
+
+**9b — Out-of-order fault + event-time ordering (finding: stale-update-wins bug).**
+`FaultPlan` gains `shuffleRate: number` (0..1, zod-validated). Events selected for shuffle are delivered AFTER the rest of the batch (delayed to end), so delivery order ≠ emission order; ledger keeps emission order (seq unchanged). Test: seeded plan with shuffleRate 0.5 → received event_id order ≠ ledger seq order; ledger complete.
+dbt model ordering fix: latest-state now ordered by event time, not arrival:
+```sql
+order by payload -> 'data' ->> 'id',
+         (payload ->> 'occurred_at') desc,
+         (substring(event_id from 5))::bigint desc
+```
+(the evt-N ordinal is the deterministic tiebreak — also closes the Phase 0 tie-break Minor). dbt tests must still pass; add a dbt test or SQL assertion in the chaos flow proving a late-delivered stale update does NOT win.
+
+**9c — LLM operational envelope (finding: no timeout/fallback/cost visibility).**
+`AnthropicLlm.complete`: 30s timeout (`AbortSignal.timeout`), on ANY failure (timeout, API error) log a structured warning and fall back to `TemplateLlm` output — the Monday report must always generate. Log one structured line per LLM call: `{llm:"anthropic"|"template-fallback", input_tokens, output_tokens, duration_ms}` (usage from the SDK response; zeros for template). Test: stub client that rejects → complete() resolves with template output and logs fallback (inject the anthropic client for testability).
+
+**9d — Ledger hash chain (finding: "tamper-evident" needs earning).**
+`LedgerEntry` gains `prev_hash: string; hash: string` — `hash = sha256(prev_hash + canonical JSON of entry sans hash fields)`, genesis prev_hash = "0".repeat(64). `verifyLedgerChain(path): { ok: boolean; brokenAt?: number }` exported; reconcile CLI (Task 8) calls it and fails on a broken chain. Tests: chain verifies on a fresh ledger; manual tamper of line 2 → brokenAt 2. README may then honestly say "hash-chained, append-only" (docs task).
+
+Each sub-feature is its own TDD cycle + commit (4 commits). Sub-features are independent — implement in order a→d.
+
+---
+
+### Task 10 (controller): docs — expanded with the review's docs pack
+
+README "What's built" moves Phase 1 bullets to built (present tense only for what exists — include HMAC, hash chain, out-of-order); journal `docs/log/phase1.md`; progress ledger. PLUS the deployment-readiness docs pack:
+- `docs/real-connector-delta.md` — what changes per layer against real HubSpot/Stripe/Zendesk (OAuth refresh, signature schemes, modified-since polling instead of the seq feed, rate-limit budgets, opaque cursors); the honest "zero-loss becomes bounded-staleness with detection" framing.
+- `docs/gdpr-erasure-design.md` — tombstone events, crypto-shredding/hash-only ledger option, erasure sweep across raw/marts; explicitly a design note (not implemented; synthetic-only enforced by hygiene tests).
+- `docs/scaling-ceilings.md` — where the architecture breaks (per-account LLM loop → SQL-side top-N; full dbt rebuild → incremental; single Postgres → partition/replica) with the build-vs-buy escalation (Temporal, warehouse-native).
+- `RUNBOOK.md` — env vars, start/stop, backup (pg_dump + ledger), restore-by-replay (the ledger replay story the architecture already supports), DLQ replay, quarantine replay, common failures.
 
 ## Self-Review Notes
 
