@@ -15,9 +15,10 @@ Switchboard is a working demonstration of the fix, built end-to-end by one engin
 1. **Connect** the three systems so information flows automatically instead of by hand.
 2. **Clean and combine** the data so there's one trustworthy record per customer.
 3. **Put an AI assistant on top** that writes the weekly revenue-risk report
-   automatically — and can only take actions a human approves. Every action it takes
-   is logged, and automated tests prove it can't do anything it wasn't given
-   permission to do.
+   automatically — designed so any action beyond reading requires human approval.
+   Its access is limited to a declared list of tools, enforced by automated tests;
+   the approval-gated action itself and richer behavioral safety testing are being
+   built in Phase 3.
 
 Anyone can verify the claims: one command (`./scripts/demo.sh`) runs the entire
 system and produces the report. No accounts, no API keys, nothing to sign up for.
@@ -29,7 +30,7 @@ engineering on data you can inspect freely.
 
 ## What's built and working today (Phase 0)
 
-- A simulated company's CRM that streams events and keeps a tamper-evident log of
+- A simulated company's CRM that streams events and keeps an append-only log of
   everything it sends — the measuring stick later phases test against.
 - An ingestion service that receives those events into a database (deliberately
   simple at this stage; the industrial-strength reliability layer is Phase 1).
@@ -59,8 +60,9 @@ engineering on data you can inspect freely.
 **Architecture (current):** chaos-oracle mock CRM (append-only JSONL ledger, written
 *before* webhook delivery) → Express 5/TypeScript ingest → Postgres raw events →
 dbt staging view (`distinct on` latest-state) → MCP server (official TS SDK,
-`READ_TOOLS` allowlist + rejection-text eval) → host worker (MCP client loop +
-LLM narrative; deterministic template fallback when `ANTHROPIC_API_KEY` is unset).
+`READ_TOOLS` allowlist + rejection-text eval) → report worker (scripted MCP client
+calls + LLM narrative — true agentic tool selection lands in Phase 3; deterministic
+template fallback when `ANTHROPIC_API_KEY` is unset).
 
 **Read the engineering trail** — the process is part of the artifact:
 
