@@ -21,6 +21,14 @@ $ready || { echo "FAIL: postgres not ready after 60s"; exit 1; }
 echo "2/6 migrate"
 npm run migrate -w ingest
 
+echo "2b/6 clean state (raw, ingest.outbox, ingest.quarantine, cursors) so re-runs (and runs after
+scripts/chaos.sh, whose mock-crm process restarts event seq at 1) don't collide with leftover
+rows from a prior run"
+docker compose exec -T postgres psql -U switchboard -c \
+  "truncate table raw.raw_crm_events, ingest.outbox, ingest.quarantine restart identity;" > /dev/null
+docker compose exec -T postgres psql -U switchboard -c \
+  "delete from ingest.cursors;" > /dev/null
+
 echo "3/6 start ingest + mock crm"
 PORT=4002 npm run start -w ingest & pids+=($!)
 PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm npm run start -w mocks/crm & pids+=($!)
