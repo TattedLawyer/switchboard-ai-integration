@@ -89,6 +89,12 @@ docker compose up -d postgres
 DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard npm test
 ```
 
-**Stack:** TypeScript / Node 22 · Express 5 · Postgres 16 · dbt · MCP TypeScript
-SDK · Anthropic SDK · Docker Compose. Planned in later phases: pg-boss (Phase 1),
-GitHub Actions CI (Phase 2), OpenTelemetry + Grafana (Phase 4).
+**Phase 1 progress (in flight):** seeded deterministic fault injection with a
+cursor-paged events feed, idempotent ingest (unique event ids + transactional
+outbox), quarantine-with-replay for malformed payloads, and a pg-boss retry queue
+with dead-letter handling; cursor backfill, the replay CLI, and the chaos
+reconciliation proof are landing next.
+
+**Stack:** TypeScript / Node 22 · Express 5 · Postgres 16 · dbt · pg-boss · MCP
+TypeScript SDK · Anthropic SDK · Docker Compose. Planned in later phases: GitHub
+Actions CI (Phase 2), OpenTelemetry + Grafana (Phase 4).
