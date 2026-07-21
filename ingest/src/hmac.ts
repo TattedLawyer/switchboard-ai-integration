@@ -1,5 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+// NOTE: DEFAULT_WEBHOOK_SECRET and signBody are intentionally duplicated in
+// mocks/crm/src/hmac.ts (separate workspace, must not cross-import). Keep both copies
+// in sync if the secret or signing scheme changes.
 // Demo-only default secret — real deployments must set WEBHOOK_SECRET.
 export const DEFAULT_WEBHOOK_SECRET = "demo-secret";
 

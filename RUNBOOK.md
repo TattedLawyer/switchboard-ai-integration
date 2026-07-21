@@ -7,9 +7,9 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 
 | Variable | Default | Used by |
 |---|---|---|
-| `DATABASE_URL` | `postgres://switchboard:switchboard@localhost:5433/switchboard` | ingest, agent, CLIs |
+| `DATABASE_URL` | no code default — export it (scripts set it for you) | ingest, agent, CLIs |
 | `WEBHOOK_SECRET` | `demo-secret` (demo only — set per environment) | mock signing, ingest verification |
-| `LEDGER_PATH` | `./out/ledger.jsonl` (scripts use absolute repo-root path) | mock, reconcile |
+| `LEDGER_PATH` | no code default — export it (scripts set it for you) | mock, reconcile |
 | `CRM_BASE_URL` | `http://localhost:4001` | backfill CLI |
 | `INGEST_ROLE` | `all` (`receiver` \| `worker` \| `all`) | ingest main |
 | `ANTHROPIC_API_KEY` | unset → deterministic template narrative | agent report |
@@ -18,6 +18,7 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 ## Start / stop
 
 ```bash
+export DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard
 docker compose up -d postgres            # DB (host port 5433)
 npm run migrate -w ingest                # idempotent
 PORT=4002 npm run start -w ingest        # receiver+worker+scheduled backfill
@@ -46,8 +47,9 @@ Both are self-cleaning at start and fail loudly with counts on any mismatch.
 - **Malformed payloads:** rows sit in `ingest.quarantine` with reasons; after a
   schema/mapping fix, replay via `replayQuarantined` (see `ingest/src/quarantine.ts`).
   Note: *unsigned* requests are rejected 401, never quarantined.
-- **Integrity doubt:** `npm run reconcile -w ingest` — verifies the ledger hash
-  chain, then set-compares ledger vs raw and reports missing/extra/duplicates.
+- **Integrity doubt:** `LEDGER_PATH=./out/ledger.jsonl npm run reconcile -w ingest` —
+  verifies the ledger hash chain, then set-compares ledger vs raw and reports
+  missing/extra/duplicates.
 
 ## Backup and restore
 

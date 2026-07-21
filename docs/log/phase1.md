@@ -7,7 +7,9 @@ after a deployment-readiness review): webhook HMAC, out-of-order faults with
 event-time ordering, an LLM operational envelope, and a hash-chained ledger.
 
 **The result:** `./scripts/chaos.sh` — 200 events under seeded faults (20% dropped
-webhooks, 15% duplicate deliveries, 20% API errors, shuffled delivery order):
+webhooks, 15% duplicate deliveries, 20% API errors); out-of-order delivery is proven
+separately by the mock's fault tests plus the dbt event-time tiebreak (composed
+chaos-with-shuffle in the same run is a Phase 2 follow-up):
 165 arrive via the push path, the cursor backfill recovers exactly the 35 dropped,
 reconciliation verifies the ledger hash chain then proves set equality with zero
 duplicates, quarantine and DLQ both empty, in ~20 seconds, deterministically

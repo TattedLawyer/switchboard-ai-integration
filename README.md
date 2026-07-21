@@ -28,7 +28,7 @@ synthetic (enforced by automated checks — no real names, emails, or records
 anywhere). Real client work can't be published, so this project shows the same
 engineering on data you can inspect freely.
 
-## What's built and working today (Phase 0)
+## What's built and working today (Phases 0–1)
 
 - A simulated company's CRM that streams signed events and keeps a **hash-chained,
   append-only log** of everything it sends — the tamper-evident measuring stick the

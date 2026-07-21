@@ -48,6 +48,17 @@ describe("backfill", () => {
     const raw = await pool.query("select count(*)::int as n from raw.raw_crm_events");
     expect(raw.rows[0].n).toBe(30);
 
+    // Poll-path stored payloads must match push-path payloads byte-for-byte: none of the
+    // CRM feed's pagination/chain fields (seq, prev_hash, hash) should leak into the stored
+    // payload, since those are ledger transport metadata, not part of the CRM event itself.
+    const payloads = await pool.query("select payload from raw.raw_crm_events order by event_id");
+    for (const row of payloads.rows) {
+      const payload = row.payload;
+      expect(payload).not.toHaveProperty("seq");
+      expect(payload).not.toHaveProperty("prev_hash");
+      expect(payload).not.toHaveProperty("hash");
+    }
+
     const cursor = await pool.query(
       "select last_seq from ingest.cursors where source = $1",
       [CRM_SOURCE],

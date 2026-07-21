@@ -44,7 +44,13 @@ export async function pollOnce(
   let ingested = 0;
   let duplicates = 0;
   for (const event of page.events) {
-    const { seq, ...crmEvent } = event;
+    // Strip ledger transport metadata (seq, prev_hash, hash) so poll-path stored payloads
+    // match push-path payloads byte-for-byte — those fields describe the ledger's own
+    // pagination/hash-chain, not the CRM event itself.
+    const { seq, prev_hash, hash, ...crmEvent } = event as typeof event & {
+      prev_hash?: string;
+      hash?: string;
+    };
     const result = await ingestEvent(pool, crmEvent as CrmEvent);
     if (result === "inserted") ingested++;
     else duplicates++;

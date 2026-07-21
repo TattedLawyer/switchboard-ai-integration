@@ -35,7 +35,10 @@ docker compose exec -T postgres psql -U switchboard -c \
 rm -f out/ledger.jsonl out/monday-report.md out/chaos-report.txt
 
 echo "4/8 start ingest (receiver+worker) + mock crm"
-PORT=4002 npm run start -w ingest & pids+=($!)
+# BACKFILL_INTERVAL_MS pinned high so the in-process scheduled poller cannot fire mid-run —
+# the RED-mode detector proof (CHAOS_SKIP_BACKFILL=1) depends on dropped events staying
+# unrecovered until the explicit backfill step below.
+PORT=4002 BACKFILL_INTERVAL_MS=600000 npm run start -w ingest & pids+=($!)
 PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm npm run start -w mocks/crm & pids+=($!)
 sleep 2
 
