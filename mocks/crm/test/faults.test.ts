@@ -122,4 +122,60 @@ describe("fault injector", () => {
 
     srv.close();
   });
+
+  it("shuffleRate delivers shuffled events after the rest of the batch (delivery order != ledger seq order, ledger complete)", async () => {
+    const ledgerPath = join(dir, "l.jsonl");
+    const crm = createCrmApp({ webhookUrl: sinkUrl, ledgerPath });
+    const srv = crm.listen(0);
+    const port = (srv.address() as { port: number }).port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/simulate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        count: 40,
+        fault_plan: { seed: 7, dropRate: 0, dupRate: 0, apiErrorRate: 0, shuffleRate: 0.5 },
+      }),
+    });
+    expect(res.ok).toBe(true);
+    const body = await res.json();
+
+    // Ledger keeps emission order and is complete: seq 1..40 in order
+    const ledger = readLedger(ledgerPath);
+    expect(ledger).toHaveLength(40);
+    expect(ledger.map((e) => e.seq)).toEqual(Array.from({ length: 40 }, (_, i) => i + 1));
+
+    // No drops/dups in this plan: every event delivered exactly once
+    expect(body.emitted).toBe(40);
+    expect(received).toHaveLength(40);
+
+    // Delivery order must differ from ledger/emission order (shuffled events arrive late)...
+    const receivedIds = (received as { event_id: string }[]).map((e) => e.event_id);
+    const ledgerIds = ledger.map((e) => e.event_id);
+    expect(receivedIds).not.toEqual(ledgerIds);
+
+    // ...but the same set of events was delivered (nothing lost)
+    expect([...receivedIds].sort()).toEqual([...ledgerIds].sort());
+
+    srv.close();
+  });
+
+  it("rejects shuffleRate outside 0..1", async () => {
+    const ledgerPath = join(dir, "l.jsonl");
+    const crm = createCrmApp({ webhookUrl: sinkUrl, ledgerPath });
+    const srv = crm.listen(0);
+    const port = (srv.address() as { port: number }).port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/simulate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        count: 5,
+        fault_plan: { seed: 1, dropRate: 0, dupRate: 0, apiErrorRate: 0, shuffleRate: 1.5 },
+      }),
+    });
+    expect(res.status).toBe(400);
+
+    srv.close();
+  });
 });

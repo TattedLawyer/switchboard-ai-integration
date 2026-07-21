@@ -48,6 +48,7 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
         dropRate: z.number().min(0).max(1),
         dupRate: z.number().min(0).max(1),
         apiErrorRate: z.number().min(0).max(1),
+        shuffleRate: z.number().min(0).max(1).optional(),
       }).optional(),
     });
     const parseResult = schema.safeParse(req.body);
@@ -65,6 +66,27 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
     let emitted = 0;
     let dropped = 0;
     let duplicated = 0;
+
+    // Events selected for shuffle are held back and delivered AFTER the rest of the batch,
+    // so delivery order differs from emission order. Ledger order (seq) is unaffected.
+    const deferred: { entry: LedgerEntry; deliveryCount: number }[] = [];
+
+    const deliver = async (entry: LedgerEntry, deliveryCount: number): Promise<boolean> => {
+      const body = JSON.stringify(entry);
+      try {
+        for (let d = 0; d < deliveryCount; d++) {
+          const response = await fetch(opts.webhookUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-switchboard-signature": signBody(body) },
+            body,
+          });
+          if (!response.ok) return false;
+        }
+      } catch {
+        return false;
+      }
+      return true;
+    };
 
     for (let i = 0; i < count; i++) {
       const useCompany = i % 2 === 0;
@@ -92,25 +114,30 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
       // Handle deliver and duplicate cases (both involve actual delivery)
       const deliveryCount = fate === "duplicate" ? 2 : 1;
 
-      try {
-        const body = JSON.stringify(entry);
-        for (let d = 0; d < deliveryCount; d++) {
-          const response = await fetch(opts.webhookUrl, {
-            method: "POST",
-            headers: { "content-type": "application/json", "x-switchboard-signature": signBody(body) },
-            body,
-          });
-          if (!response.ok) {
-            return res.status(502).json({ error: "webhook delivery failed", emitted, dropped, duplicated });
-          }
-        }
-      } catch {
+      if (injector.shouldShuffle()) {
+        // Out-of-order fault: hold this event back until the rest of the batch has gone out.
+        deferred.push({ entry, deliveryCount });
+        continue;
+      }
+
+      if (!(await deliver(entry, deliveryCount))) {
         return res.status(502).json({ error: "webhook delivery failed", emitted, dropped, duplicated });
       }
 
       // Count this event as emitted (whether delivered once or twice)
       emitted++;
       if (fate === "duplicate") {
+        duplicated++;
+      }
+    }
+
+    // Late delivery of shuffled events (arrival order != emission order).
+    for (const { entry, deliveryCount } of deferred) {
+      if (!(await deliver(entry, deliveryCount))) {
+        return res.status(502).json({ error: "webhook delivery failed", emitted, dropped, duplicated });
+      }
+      emitted++;
+      if (deliveryCount === 2) {
         duplicated++;
       }
     }
