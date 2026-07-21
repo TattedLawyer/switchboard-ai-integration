@@ -30,11 +30,18 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
         data: useCompany ? companies[seq % companies.length] : deals[seq % deals.length],
       };
       appendToLedger(opts.ledgerPath, entry);      // ledger FIRST — it is the oracle
-      await fetch(opts.webhookUrl, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(entry),
-      });
+      try {
+        const response = await fetch(opts.webhookUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(entry),
+        });
+        if (!response.ok) {
+          return res.status(502).json({ error: "webhook delivery failed", emitted });
+        }
+      } catch {
+        return res.status(502).json({ error: "webhook delivery failed", emitted });
+      }
       emitted++;
     }
     res.json({ emitted });

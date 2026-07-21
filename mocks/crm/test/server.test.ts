@@ -56,4 +56,32 @@ describe("mock CRM", () => {
     );
     srv.close();
   });
+
+  it("simulate returns 502 with partial count when webhook delivery fails", async () => {
+    // Create a dead port: spin up a sink, note its port, then close it
+    const deadApp = express();
+    await new Promise<void>((r) => { sink = deadApp.listen(0, () => r()); });
+    const deadAddr = sink.address() as { port: number };
+    const deadUrl = `http://127.0.0.1:${deadAddr.port}/hook`;
+    sink.close(); // close immediately so the port is unreachable
+
+    const ledgerPath = join(dir, "l.jsonl");
+    const crm = createCrmApp({ webhookUrl: deadUrl, ledgerPath });
+    const srv = crm.listen(0);
+    const port = (srv.address() as { port: number }).port;
+    const res = await fetch(`http://127.0.0.1:${port}/simulate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ count: 5 }),
+    });
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body).toEqual({ error: "webhook delivery failed", emitted: 0 });
+
+    // Ledger should have at least 1 entry (the first one that was appended before delivery failed)
+    const ledger = readLedger(ledgerPath);
+    expect(ledger.length).toBeGreaterThanOrEqual(1);
+
+    srv.close();
+  });
 });
