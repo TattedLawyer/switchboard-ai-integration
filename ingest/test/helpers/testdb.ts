@@ -1,7 +1,12 @@
 import pg from "pg";
 import { runMigrations } from "../../src/migrate.js";
 
-export async function freshTestDb(): Promise<pg.Pool> {
+export interface TestDbResult {
+  pool: pg.Pool;
+  cleanup: () => Promise<void>;
+}
+
+export async function freshTestDb(): Promise<TestDbResult> {
   const originalUrl = process.env.DATABASE_URL;
   if (!originalUrl) throw new Error("DATABASE_URL is required");
 
@@ -25,8 +30,12 @@ export async function freshTestDb(): Promise<pg.Pool> {
 
   await runMigrations(testPool);
 
-  // Cleanup: register to drop the database after tests complete
-  testPool.on("end", async () => {
+  // Cleanup function: end pool, then connect as admin and drop the ephemeral database
+  const cleanup = async (): Promise<void> => {
+    // End the test pool first
+    await testPool.end();
+
+    // Connect as admin and drop the database with force
     const cleanupAdminUrl = originalUrl.replace(/\/[^/?]*(\?|$)/, "/postgres$1");
     const cleanupPool = new pg.Pool({ connectionString: cleanupAdminUrl });
     try {
@@ -34,7 +43,7 @@ export async function freshTestDb(): Promise<pg.Pool> {
     } finally {
       await cleanupPool.end();
     }
-  });
+  };
 
-  return testPool;
+  return { pool: testPool, cleanup };
 }

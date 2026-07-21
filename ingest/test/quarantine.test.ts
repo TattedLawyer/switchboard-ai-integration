@@ -6,11 +6,14 @@ import { quarantineEvent, replayQuarantined } from "../src/quarantine.js";
 import { ingestEvent } from "../src/ingest-event.js";
 
 let pool: pg.Pool;
+let cleanup: () => Promise<void>;
 beforeAll(async () => {
-  pool = await freshTestDb();
+  const result = await freshTestDb();
+  pool = result.pool;
+  cleanup = result.cleanup;
 });
 afterAll(async () => {
-  await pool.end();
+  await cleanup();
 });
 
 const validEvent = {

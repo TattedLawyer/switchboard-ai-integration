@@ -4,11 +4,14 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 
 let pool: pg.Pool;
+let cleanup: () => Promise<void>;
 
 beforeAll(async () => {
-  pool = await freshTestDb();
+  const result = await freshTestDb();
+  pool = result.pool;
+  cleanup = result.cleanup;
 });
-afterAll(async () => { await pool.end(); });
+afterAll(async () => { await cleanup(); });
 
 describe("ingest webhook", () => {
   it("stores a CRM event as raw jsonb", async () => {

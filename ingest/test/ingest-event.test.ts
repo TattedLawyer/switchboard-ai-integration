@@ -4,8 +4,13 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { ingestEvent } from "../src/ingest-event.js";
 
 let pool: pg.Pool;
-beforeAll(async () => { pool = await freshTestDb(); });
-afterAll(async () => { await pool.end(); });
+let cleanup: () => Promise<void>;
+beforeAll(async () => {
+  const result = await freshTestDb();
+  pool = result.pool;
+  cleanup = result.cleanup;
+});
+afterAll(async () => { await cleanup(); });
 
 const ev = (id: string) => ({ event_id: id, event_type: "company.updated",
   occurred_at: new Date().toISOString(), data: { id: "DEMO-C-0001", name: "DEMO X", domain: "x.example.com" } });
