@@ -44,14 +44,16 @@ curl -sf -X POST http://localhost:4001/simulate \
   -H 'content-type: application/json' \
   -d '{"count": 200, "fault_plan": {"seed": 7, "dropRate": 0.2, "dupRate": 0.15, "apiErrorRate": 0.2}}' > /dev/null
 
-echo "5b/8 bounded settle-wait for push-path (raw count stable, NOT ==200 since ~20% are dropped)"
+echo "5b/8 bounded settle-wait for push-path (raw count stable + queue quiescent, NOT ==200 since ~20% are dropped)"
 raw_count() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_crm_events" | tr -d ' '; }
+queue_pending() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from pgboss.job where name='ingest-event' and state in ('created','active','retry')" | tr -d ' '; }
 stable_polls=0
 prev="-1"
 settled=false
 for i in $(seq 1 60); do
   cur="$(raw_count)"
-  if [[ "$cur" == "$prev" ]]; then
+  pending="$(queue_pending)"
+  if [[ "$cur" == "$prev" ]] && [[ "$pending" == "0" ]]; then
     stable_polls=$((stable_polls + 1))
   else
     stable_polls=0
@@ -60,8 +62,8 @@ for i in $(seq 1 60); do
   prev="$cur"
   sleep 1
 done
-$settled || { echo "FAIL: push-path did not settle within 60s (raw=$(raw_count))"; exit 1; }
-echo "    settled: raw=$(raw_count) (ledger has $(wc -l < out/ledger.jsonl | tr -d ' ') events emitted by simulate)"
+$settled || { echo "FAIL: push-path did not settle within 60s (raw=$(raw_count) pending=$(queue_pending))"; exit 1; }
+echo "    settled: raw=$(raw_count) queue_pending=$(queue_pending) (ledger has $(wc -l < out/ledger.jsonl | tr -d ' ') events emitted by simulate)"
 
 if [[ "$SKIP_BACKFILL" == "1" ]]; then
   echo "6/8 SKIPPED (CHAOS_SKIP_BACKFILL=1) — leaving dropped events unrecovered on purpose"
@@ -69,13 +71,19 @@ else
   echo "6/8 backfill (retry up to 3x on exit 1 — 429 streaks can abort a run; cursor is resumable)"
   backfill_ok=false
   for attempt in 1 2 3; do
-    if npm run backfill -w ingest; then
+    code=0
+    npm run backfill -w ingest || code=$?
+    if [[ "$code" == "0" ]]; then
       backfill_ok=true
       break
+    elif [[ "$code" != "1" ]]; then
+      echo "FAIL: backfill exited with non-resumable code $code"; exit 1
     fi
-    echo "    backfill attempt $attempt failed, retrying..."
+    if [[ "$attempt" -lt 3 ]]; then
+      echo "    backfill attempt $attempt failed with exit 1 (resumable), retrying..."
+    fi
   done
-  $backfill_ok || { echo "FAIL: backfill did not succeed after 3 attempts"; exit 1; }
+  $backfill_ok || { echo "FAIL: backfill did not succeed after 3 attempts (last exit code: 1)"; exit 1; }
 fi
 
 echo "7/8 reconcile ledger vs raw"
