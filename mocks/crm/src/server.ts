@@ -1,7 +1,7 @@
 import express from "express";
 import { z } from "zod";
 import { generateSeed } from "./seed.js";
-import { appendToLedger, readLedger, type LedgerEntry } from "./ledger.js";
+import { appendToLedger, readLedger, type LedgerEntry, type LedgerEntryInput } from "./ledger.js";
 import { createFaultInjector, type FaultPlan } from "./faults.js";
 import { signBody } from "./hmac.js";
 
@@ -91,7 +91,7 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
     for (let i = 0; i < count; i++) {
       const useCompany = i % 2 === 0;
       const entityIdx = Math.floor(i / 2);
-      const entry: LedgerEntry = {
+      const entryInput: LedgerEntryInput = {
         event_id: `evt-${++seq}`,
         event_type: useCompany ? "company.updated" : "deal.updated",
         occurred_at: new Date().toISOString(),
@@ -100,7 +100,7 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
       };
 
       // Ledger append ALWAYS happens first, regardless of fate
-      appendToLedger(opts.ledgerPath, entry);
+      const entry: LedgerEntry = appendToLedger(opts.ledgerPath, entryInput);
 
       // Determine delivery fate
       const fate = injector.deliveryFate();

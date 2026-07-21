@@ -1,5 +1,5 @@
 import { getPool } from "../db.js";
-import { reconcile } from "../reconcile.js";
+import { reconcile, verifyLedgerChain } from "../reconcile.js";
 
 async function main(): Promise<void> {
   const ledgerPath = process.env.LEDGER_PATH ?? process.argv[2];
@@ -7,6 +7,13 @@ async function main(): Promise<void> {
     console.error("reconcile: LEDGER_PATH env var or path argument is required");
     process.exit(1);
   }
+
+  const chain = verifyLedgerChain(ledgerPath);
+  if (!chain.ok) {
+    console.log(`FAIL: ledger hash chain broken at line ${chain.brokenAt}`);
+    process.exit(1);
+  }
+  console.log("ledger hash chain: ok");
 
   const pool = getPool();
   try {
