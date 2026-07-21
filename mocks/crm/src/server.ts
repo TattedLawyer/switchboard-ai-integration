@@ -23,11 +23,12 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
     let emitted = 0;
     for (let i = 0; i < count; i++) {
       const useCompany = i % 2 === 0;
+      const entityIdx = Math.floor(i / 2);
       const entry: LedgerEntry = {
         event_id: `evt-${++seq}`,
         event_type: useCompany ? "company.updated" : "deal.updated",
         occurred_at: new Date().toISOString(),
-        data: useCompany ? companies[seq % companies.length] : deals[seq % deals.length],
+        data: useCompany ? companies[entityIdx % companies.length] : deals[entityIdx % deals.length],
       };
       appendToLedger(opts.ledgerPath, entry);      // ledger FIRST — it is the oracle
       try {

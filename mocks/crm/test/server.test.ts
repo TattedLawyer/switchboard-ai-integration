@@ -84,4 +84,24 @@ describe("mock CRM", () => {
 
     srv.close();
   });
+
+  it("simulate covers all company ids (seed coverage)", async () => {
+    const ledgerPath = join(dir, "l.jsonl");
+    const crm = createCrmApp({ webhookUrl: sinkUrl, ledgerPath });
+    const srv = crm.listen(0);
+    const port = (srv.address() as { port: number }).port;
+    const res = await fetch(`http://127.0.0.1:${port}/simulate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ count: 80 }),
+    });
+    expect((await res.json()).emitted).toBe(80);
+
+    const ledger = readLedger(ledgerPath);
+    const companyEvents = ledger.filter((e) => e.event_type === "company.updated");
+    const distinctCompanyIds = new Set(companyEvents.map((e) => (e.data as { id: string }).id));
+
+    expect(distinctCompanyIds.size).toBe(20);
+    srv.close();
+  });
 });

@@ -3,3 +3,6 @@ dist/
 out/
 .env
 .superpowers/
+warehouse/target/
+warehouse/logs/
+warehouse/.user.yml
