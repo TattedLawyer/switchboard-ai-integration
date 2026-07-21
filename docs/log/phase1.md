@@ -10,7 +10,7 @@ event-time ordering, an LLM operational envelope, and a hash-chained ledger.
 webhooks, 15% duplicate deliveries, 20% API errors); out-of-order delivery is proven
 separately by the mock's fault tests plus the dbt event-time tiebreak (composed
 chaos-with-shuffle in the same run is a Phase 2 follow-up):
-165 arrive via the push path, the cursor backfill recovers exactly the 35 dropped,
+158 arrive via the push path, the cursor backfill recovers exactly the 42 dropped,
 reconciliation verifies the ledger hash chain then proves set equality with zero
 duplicates, quarantine and DLQ both empty, in ~20 seconds, deterministically
 (same seed → same counts, run twice). The detector's teeth are proven by a RED mode
