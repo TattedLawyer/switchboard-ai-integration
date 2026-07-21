@@ -67,12 +67,28 @@ export async function enqueueEvent(
   });
 }
 
+interface WorkerOptions {
+  batchSize?: number;
+  pollingIntervalSeconds?: number;
+}
+
 export async function startWorker(
   boss: PgBoss,
-  pool: pg.Pool
+  pool: pg.Pool,
+  workerOpts?: WorkerOptions
 ): Promise<string> {
+  // Demo-appropriate cadence: pg-boss defaults (batchSize 1, pollingIntervalSeconds 2)
+  // process events one at a time roughly every ~1.6-2s, which makes a 50-event demo
+  // take ~100s to drain. Pull a bigger batch on a faster poll so the queue drains in
+  // a handful of seconds instead. Purely a throughput knob — does not touch retry
+  // semantics (retryLimit/retryDelay/retryBackoff stay on the queue, set in createQueue).
+  const options = {
+    batchSize: workerOpts?.batchSize ?? 10,
+    pollingIntervalSeconds: workerOpts?.pollingIntervalSeconds ?? 0.5,
+  };
+
   // Return the worker ID; this function will keep the worker running
-  return boss.work(INGEST_QUEUE, async (jobs) => {
+  return boss.work(INGEST_QUEUE, options, async (jobs) => {
     // Process each job in the batch
     for (const job of jobs) {
       await ingestEvent(pool, job.data as CrmEvent);

@@ -29,7 +29,18 @@ sleep 2
 echo "4/6 simulate 50 events"
 curl -sf -X POST http://localhost:4001/simulate \
   -H 'content-type: application/json' -d '{"count": 50}' > /dev/null
-sleep 1
+
+echo "4b/6 wait for async ingest pipeline to drain"
+ledger_count() { wc -l < out/ledger.jsonl 2>/dev/null | tr -d ' '; }
+raw_count() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_crm_events" | tr -d ' '; }
+drained=false
+for i in $(seq 1 60); do
+  lc="$(ledger_count)"
+  rc="$(raw_count)"
+  if [[ -n "$lc" && "$lc" == "$rc" ]]; then drained=true; break; fi
+  sleep 2
+done
+$drained || { echo "FAIL: ingest pipeline did not drain within 120s (ledger=$(ledger_count) raw=$(raw_count))"; exit 1; }
 
 echo "5/6 dbt build"
 docker compose run --rm dbt build
