@@ -9,6 +9,8 @@ const eventSchema = z.object({
   data: z.record(z.unknown()),
 });
 
+export type CrmEvent = z.infer<typeof eventSchema>;
+
 export function createIngestApp(pool: pg.Pool): express.Express {
   const app = express();
   app.use(express.json());
