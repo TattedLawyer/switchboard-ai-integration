@@ -3,6 +3,7 @@ import { z } from "zod";
 import { generateSeed } from "./seed.js";
 import { appendToLedger, readLedger, type LedgerEntry } from "./ledger.js";
 import { createFaultInjector, type FaultPlan } from "./faults.js";
+import { signBody } from "./hmac.js";
 
 export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; seed?: number }): express.Express {
   const { companies, deals } = generateSeed(opts.seed);
@@ -92,11 +93,12 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
       const deliveryCount = fate === "duplicate" ? 2 : 1;
 
       try {
+        const body = JSON.stringify(entry);
         for (let d = 0; d < deliveryCount; d++) {
           const response = await fetch(opts.webhookUrl, {
             method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(entry),
+            headers: { "content-type": "application/json", "x-switchboard-signature": signBody(body) },
+            body,
           });
           if (!response.ok) {
             return res.status(502).json({ error: "webhook delivery failed", emitted, dropped, duplicated });

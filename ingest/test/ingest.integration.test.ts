@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
+import { signBody } from "../src/hmac.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -24,10 +25,11 @@ describe("ingest webhook", () => {
       occurred_at: new Date().toISOString(),
       data: { id: "DEMO-C-0001", name: "DEMO Retail Group 1", domain: "retail-1.example.com" },
     };
+    const rawBody = JSON.stringify(event);
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(event),
+      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(rawBody) },
+      body: rawBody,
     });
     expect(res.status).toBe(202);
     const body = await res.json();

@@ -4,6 +4,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { quarantineEvent, replayQuarantined } from "../src/quarantine.js";
 import { ingestEvent } from "../src/ingest-event.js";
+import { signBody } from "../src/hmac.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -30,10 +31,11 @@ describe("quarantine", () => {
     const port = (srv.address() as { port: number }).port;
 
     const invalidPayload = { bogus: true };
+    const rawBody = JSON.stringify(invalidPayload);
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(invalidPayload),
+      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(rawBody) },
+      body: rawBody,
     });
 
     expect(res.status).toBe(202);
@@ -116,10 +118,11 @@ describe("quarantine", () => {
       occurred_at: new Date().toISOString(),
       data: { id: "DEMO-C-0002", name: "DEMO Y", domain: "y.example.com" },
     };
+    const rawBody = JSON.stringify(event);
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(event),
+      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(rawBody) },
+      body: rawBody,
     });
 
     expect(res.status).toBe(202);
