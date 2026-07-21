@@ -55,7 +55,7 @@ engineering on data you can inspect freely.
 - A worker that generates the Monday revenue-risk report — with a timeout and
   fallback so the report generates even when the AI service is down, and per-call
   cost logging.
-- 62 automated tests, written test-first, all green; the whole pipeline runs from
+- 68 automated tests, written test-first, all green; the whole pipeline runs from
   one command; operational docs included ([runbook](RUNBOOK.md),
   [scaling ceilings](docs/scaling-ceilings.md),
   [real-vendor delta](docs/real-connector-delta.md),
