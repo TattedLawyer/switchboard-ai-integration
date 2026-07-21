@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type LedgerEntry = { event_id: string; event_type: string; occurred_at: string; data: unknown };
+export type LedgerEntry = { event_id: string; event_type: string; occurred_at: string; data: unknown; seq: number };
 
 export function appendToLedger(path: string, entry: LedgerEntry): void {
   mkdirSync(dirname(path), { recursive: true });

@@ -1,7 +1,7 @@
 import express from "express";
 import { z } from "zod";
 import { generateSeed } from "./seed.js";
-import { appendToLedger, type LedgerEntry } from "./ledger.js";
+import { appendToLedger, readLedger, type LedgerEntry } from "./ledger.js";
 
 export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; seed?: number }): express.Express {
   const { companies, deals } = generateSeed(opts.seed);
@@ -18,6 +18,15 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
   app.get("/companies", (req, res) => res.json(paginate(companies, req)));
   app.get("/deals", (req, res) => res.json(paginate(deals, req)));
 
+  app.get("/events", (req, res) => {
+    const after = Math.max(0, Number(req.query.after ?? 0) || 0);
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit ?? 50) || 50));
+    const all = readLedger(opts.ledgerPath);
+    const events = all.filter((e) => e.seq > after).slice(0, limit);
+    const last_seq = events.length ? events[events.length - 1].seq : after;
+    res.json({ events, last_seq });
+  });
+
   app.post("/simulate", async (req, res) => {
     const { count } = z.object({ count: z.number().int().min(1).max(1000) }).parse(req.body);
     let emitted = 0;
@@ -29,6 +38,7 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
         event_type: useCompany ? "company.updated" : "deal.updated",
         occurred_at: new Date().toISOString(),
         data: useCompany ? companies[entityIdx % companies.length] : deals[entityIdx % deals.length],
+        seq,
       };
       appendToLedger(opts.ledgerPath, entry);      // ledger FIRST — it is the oracle
       try {
