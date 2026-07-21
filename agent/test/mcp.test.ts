@@ -1,3 +1,5 @@
+process.env.DBT_SCHEMA = "mcp_test_analytics";
+
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -23,7 +25,10 @@ beforeAll(async () => {
   client = new Client({ name: "test", version: "0.0.0" });
   await client.connect(clientTx);
 });
-afterAll(async () => { await pool.end(); });
+afterAll(async () => {
+  await pool.query(`drop schema if exists ${SCHEMA} cascade`);
+  await pool.end();
+});
 
 describe("MCP server", () => {
   it("returns account health for a known company", async () => {
