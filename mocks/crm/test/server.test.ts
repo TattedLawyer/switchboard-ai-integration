@@ -76,7 +76,7 @@ describe("mock CRM", () => {
     });
     expect(res.status).toBe(502);
     const body = await res.json();
-    expect(body).toEqual({ error: "webhook delivery failed", emitted: 0 });
+    expect(body).toMatchObject({ error: "webhook delivery failed", emitted: 0 });
 
     // Ledger should have at least 1 entry (the first one that was appended before delivery failed)
     const ledger = readLedger(ledgerPath);

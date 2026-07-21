@@ -2,12 +2,14 @@ import express from "express";
 import { z } from "zod";
 import { generateSeed } from "./seed.js";
 import { appendToLedger, readLedger, type LedgerEntry } from "./ledger.js";
+import { createFaultInjector, type FaultPlan } from "./faults.js";
 
 export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; seed?: number }): express.Express {
   const { companies, deals } = generateSeed(opts.seed);
   const app = express();
   app.use(express.json());
   let seq = 0;
+  let serverLevelInjector = createFaultInjector(); // no plan → never faults
 
   const paginate = <T>(items: T[], req: express.Request) => {
     const page = Math.max(1, Number(req.query.page ?? 1));
@@ -19,6 +21,9 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
   app.get("/deals", (req, res) => res.json(paginate(deals, req)));
 
   app.get("/events", (req, res) => {
+    if (serverLevelInjector.apiShouldFail()) {
+      return res.status(429).json({ error: "rate limited" });
+    }
     const after = Math.max(0, Number(req.query.after ?? 0) || 0);
     const limit = Math.min(200, Math.max(1, Number(req.query.limit ?? 50) || 50));
     const all = readLedger(opts.ledgerPath);
@@ -28,8 +33,29 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
   });
 
   app.post("/simulate", async (req, res) => {
-    const { count } = z.object({ count: z.number().int().min(1).max(1000) }).parse(req.body);
+    const schema = z.object({
+      count: z.number().int().min(1).max(1000),
+      fault_plan: z.object({
+        seed: z.number().int(),
+        dropRate: z.number().min(0).max(1),
+        dupRate: z.number().min(0).max(1),
+        apiErrorRate: z.number().min(0).max(1),
+      }).optional(),
+    });
+    const { count, fault_plan } = schema.parse(req.body);
+
+    // Create a fault injector for this simulate call
+    const injector = createFaultInjector(fault_plan);
+
+    // Update server-level injector for /events if a plan is provided
+    if (fault_plan) {
+      serverLevelInjector = createFaultInjector(fault_plan);
+    }
+
     let emitted = 0;
+    let dropped = 0;
+    let duplicated = 0;
+
     for (let i = 0; i < count; i++) {
       const useCompany = i % 2 === 0;
       const entityIdx = Math.floor(i / 2);
@@ -40,22 +66,45 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
         data: useCompany ? companies[entityIdx % companies.length] : deals[entityIdx % deals.length],
         seq,
       };
-      appendToLedger(opts.ledgerPath, entry);      // ledger FIRST — it is the oracle
+
+      // Ledger append ALWAYS happens first, regardless of fate
+      appendToLedger(opts.ledgerPath, entry);
+
+      // Determine delivery fate
+      const fate = injector.deliveryFate();
+
+      if (fate === "drop") {
+        // Drop: skip delivery entirely, no fetch, not counted in emitted
+        dropped++;
+        continue;
+      }
+
+      // Handle deliver and duplicate cases (both involve actual delivery)
+      const deliveryCount = fate === "duplicate" ? 2 : 1;
+
       try {
-        const response = await fetch(opts.webhookUrl, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(entry),
-        });
-        if (!response.ok) {
-          return res.status(502).json({ error: "webhook delivery failed", emitted });
+        for (let d = 0; d < deliveryCount; d++) {
+          const response = await fetch(opts.webhookUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(entry),
+          });
+          if (!response.ok) {
+            return res.status(502).json({ error: "webhook delivery failed", emitted, dropped, duplicated });
+          }
         }
       } catch {
-        return res.status(502).json({ error: "webhook delivery failed", emitted });
+        return res.status(502).json({ error: "webhook delivery failed", emitted, dropped, duplicated });
       }
+
+      // Count this event as emitted (whether delivered once or twice)
       emitted++;
+      if (fate === "duplicate") {
+        duplicated++;
+      }
     }
-    res.json({ emitted });
+
+    res.json({ emitted, dropped, duplicated });
   });
 
   return app;
