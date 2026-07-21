@@ -47,10 +47,8 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
     // Create a fault injector for this simulate call
     const injector = createFaultInjector(fault_plan);
 
-    // Update server-level injector for /events if a plan is provided
-    if (fault_plan) {
-      serverLevelInjector = createFaultInjector(fault_plan);
-    }
+    // Update server-level injector for /events: set from plan if provided, else reset to no-fault
+    serverLevelInjector = fault_plan ? createFaultInjector(fault_plan) : createFaultInjector();
 
     let emitted = 0;
     let dropped = 0;

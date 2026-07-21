@@ -86,4 +86,40 @@ describe("fault injector", () => {
 
     srv.close();
   });
+
+  it("plan-less simulate resets fault injector (GET /events must 200, not 429)", async () => {
+    const ledgerPath = join(dir, "l.jsonl");
+    const crm = createCrmApp({ webhookUrl: sinkUrl, ledgerPath });
+    const srv = crm.listen(0);
+    const port = (srv.address() as { port: number }).port;
+
+    // First: simulate WITH a fault plan that guarantees 429s
+    const res1 = await fetch(`http://127.0.0.1:${port}/simulate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        count: 5,
+        fault_plan: { seed: 1, dropRate: 0, dupRate: 0, apiErrorRate: 1 },
+      }),
+    });
+    expect(res1.ok).toBe(true);
+
+    // Now try to GET /events — should 429 because server-level injector has the fault plan
+    const getRes1 = await fetch(`http://127.0.0.1:${port}/events`);
+    expect(getRes1.status).toBe(429);
+
+    // Second: simulate WITHOUT fault_plan — should reset the server-level injector
+    const res2 = await fetch(`http://127.0.0.1:${port}/simulate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ count: 5 }),
+    });
+    expect(res2.ok).toBe(true);
+
+    // Now GET /events should return 200 (injector reset, no faults)
+    const getRes2 = await fetch(`http://127.0.0.1:${port}/events`);
+    expect(getRes2.status).toBe(200);
+
+    srv.close();
+  });
 });
