@@ -1,4 +1,5 @@
 import type express from "express";
+import type http from "node:http";
 import type { PgBoss } from "pg-boss";
 import { getPool } from "./db.js";
 import { createIngestApp, type CrmEvent } from "./server.js";
@@ -11,6 +12,7 @@ const ingestRole = (process.env.INGEST_ROLE ?? "all").toLowerCase();
 async function main() {
   let boss: PgBoss | undefined;
   let app: express.Express | undefined;
+  let server: http.Server | undefined;
 
   // Role can be: "receiver", "worker", or "all" (default)
   const isReceiver = ingestRole === "receiver" || ingestRole === "all";
@@ -33,7 +35,7 @@ async function main() {
       : undefined;
 
     app = createIngestApp(pool, { enqueue });
-    app.listen(port, () =>
+    server = app.listen(port, () =>
       console.log(`ingest receiver listening on :${port} (role: ${ingestRole})`)
     );
   }
@@ -45,16 +47,21 @@ async function main() {
   }
 
   // Handle graceful shutdown
-  process.on("SIGTERM", async () => {
-    console.log("SIGTERM received, shutting down...");
+  const shutdown = async (signal: string) => {
+    console.log(`${signal} received, shutting down...`);
+    if (server) {
+      await new Promise<void>((resolve, reject) => {
+        server!.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
     if (boss) {
       await boss.stop();
     }
-    if (app) {
-      // HTTP server close would happen automatically
-    }
     process.exit(0);
-  });
+  };
+
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 }
 
 main().catch((err) => {

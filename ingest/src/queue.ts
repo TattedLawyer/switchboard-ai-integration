@@ -32,20 +32,28 @@ export async function createQueue(
 
   await boss.start();
 
-  // Create the dead-letter queue first
-  await boss.createQueue(INGEST_DLQ, {
+  const dlqOpts = {
     retryLimit: retryOpts?.retryLimit ?? 5,
     retryDelay: retryOpts?.retryDelay ?? 1,
     retryBackoff: retryOpts?.retryBackoff ?? true,
-  });
-
-  // Create the main queue with DLQ relationship
-  await boss.createQueue(INGEST_QUEUE, {
+  };
+  const queueOpts = {
     deadLetter: INGEST_DLQ,
-    retryLimit: retryOpts?.retryLimit ?? 5,
-    retryDelay: retryOpts?.retryDelay ?? 1,
-    retryBackoff: retryOpts?.retryBackoff ?? true,
-  });
+    ...dlqOpts,
+  };
+
+  // pg-boss's createQueue is an idempotent INSERT (ON CONFLICT DO NOTHING under the hood): if the
+  // queue already exists from a prior createQueue() call (e.g. an earlier test in the same shared
+  // DB/schema), passing new retry options here is silently ignored. That bit us: a second test in
+  // this suite called createQueue({retryLimit: 1, ...}) expecting fast retries, but the queue had
+  // already been created by an earlier test with the default retryLimit of 5, so the tiny-retry
+  // options never took effect and the poison-path test's dead-letter never landed inside its poll
+  // window. Always upsert via updateQueue afterward so options passed here are actually applied.
+  await boss.createQueue(INGEST_DLQ, dlqOpts);
+  await boss.updateQueue(INGEST_DLQ, dlqOpts);
+
+  await boss.createQueue(INGEST_QUEUE, queueOpts);
+  await boss.updateQueue(INGEST_QUEUE, queueOpts);
 
   return boss;
 }
@@ -80,9 +88,13 @@ export async function fetchDlq(
   // Note: In pg-boss, the DLQ is just another queue, so we query it directly
   const jobs = await boss.findJobs<CrmEvent>(INGEST_DLQ);
 
-  // Return only failed/dead-lettered jobs (state !== 'created')
+  // Empirically verified (pg-boss v12.26.1): when a job dead-letters out of its source
+  // queue, pg-boss inserts a BRAND NEW job into the DLQ queue with state 'created' (it does
+  // not carry over 'failed'/'retry' state). So the DLQ queue's pending, unconsumed jobs are
+  // exactly those in state 'created' or 'retry' — the opposite of what the old filter assumed.
+  // This is a peek (read-only via findJobs), so jobs remain fetchable for Task 7's replay CLI.
   return jobs
-    .filter((job) => job.state !== "created" && job.state !== "retry")
+    .filter((job) => job.state === "created" || job.state === "retry")
     .slice(0, limit)
     .map((job) => ({
       id: job.id,

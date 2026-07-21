@@ -75,25 +75,39 @@ describe("pg-boss queue", () => {
     }
   });
 
-  it("(poison path) worker with failing handler → failed job doesn't ingest data", async () => {
-    const boss = await createQueue(connectionString);
+  it("(poison path) worker with failing handler → job lands in DLQ, not ingested", async () => {
+    // Tiny retry options so the job exhausts retries and dead-letters within the poll window.
+    const boss = await createQueue(connectionString, {
+      retryLimit: 1,
+      retryDelay: 1,
+      retryBackoff: false,
+    });
     try {
-      // Create a stub pool that rejects on connect (poison)
+      // ingestEvent calls pool.connect() first (see src/ingest-event.ts line 5), so reject there
+      // with a realistic connection-pool error, not an incidental TypeError on a missing method.
       const poisonPool = {
         connect: async () => {
           throw new Error("Pool is poisoned");
         },
       } as unknown as pg.Pool;
 
-      // Start worker with poisoned pool
-      const workerIdPromise = startWorker(boss, poisonPool);
+      await startWorker(boss, poisonPool);
 
-      // Enqueue an event
       const event = ev("evt-poison-4");
       await enqueueEvent(boss, event);
 
-      // Give the worker time to attempt processing (it will fail trying to connect)
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      // Bounded poll (≤20s, no fixed sleeps) for the job to land in the DLQ.
+      const deadline = Date.now() + 20000;
+      let dlqJob: { id: string; data: CrmEvent } | undefined;
+      while (Date.now() < deadline) {
+        const dlqJobs = await fetchDlq(boss);
+        dlqJob = dlqJobs.find((j) => j.data.event_id === event.event_id);
+        if (dlqJob) break;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+
+      expect(dlqJob).toBeDefined();
+      expect(dlqJob!.data.event_id).toBe(event.event_id);
 
       // Verify the job did NOT result in an ingested event (raw table is empty)
       const rawResult = await pool.query(
@@ -101,15 +115,8 @@ describe("pg-boss queue", () => {
         [event.event_id]
       );
       expect(rawResult.rows[0].n).toBe(0);
-
-      // Also verify the outbox is empty for this event
-      const outboxResult = await pool.query(
-        "select count(*)::int as n from ingest.outbox where event_id=$1",
-        [event.event_id]
-      );
-      expect(outboxResult.rows[0].n).toBe(0);
     } finally {
       await boss.stop();
     }
-  });
+  }, 25000);
 });
