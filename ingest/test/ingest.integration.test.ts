@@ -1,15 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import pg from "pg";
-import { getPool } from "../src/db.js";
-import { runMigrations } from "../src/migrate.js";
+import type pg from "pg";
+import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 
 let pool: pg.Pool;
 
 beforeAll(async () => {
-  pool = getPool();
-  await runMigrations(pool);
-  await pool.query("truncate raw.raw_crm_events");
+  pool = await freshTestDb();
 });
 afterAll(async () => { await pool.end(); });
 
@@ -30,6 +27,8 @@ describe("ingest webhook", () => {
       body: JSON.stringify(event),
     });
     expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body).toEqual({ stored: true });
     const rows = await pool.query("select event_id, event_type, payload from raw.raw_crm_events");
     expect(rows.rowCount).toBe(1);
     expect(rows.rows[0].event_id).toBe("evt-1");
