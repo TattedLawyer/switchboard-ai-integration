@@ -1,6 +1,7 @@
 import type express from "express";
 import type http from "node:http";
 import type { PgBoss } from "pg-boss";
+import type pg from "pg";
 import { getPool } from "./db.js";
 import { createIngestApp, type CrmEvent } from "./server.js";
 import { createQueue, startWorker } from "./queue.js";
@@ -17,6 +18,29 @@ const crmBaseUrl = process.env.CRM_BASE_URL ?? "http://localhost:4001";
 // own (catchUp already retries internally). A plain setInterval in the receiver process
 // is simpler, gives the same ~1-minute cadence, and needs no additional pg-boss objects.
 const BACKFILL_INTERVAL_MS = Number(process.env.BACKFILL_INTERVAL_MS ?? 60_000);
+
+// Factory to create a backfill runner with in-flight guard (prevents overlapping runs).
+export function createBackfillRunner(
+  pgPool: pg.Pool,
+  baseUrl: string,
+): () => Promise<void> {
+  let running = false;
+  return async () => {
+    if (running) {
+      console.log("backfill still running, skipping tick");
+      return;
+    }
+
+    running = true;
+    try {
+      await catchUp(pgPool, baseUrl);
+    } catch (err) {
+      console.error("backfill round failed:", err);
+    } finally {
+      running = false;
+    }
+  };
+}
 
 async function main() {
   let boss: PgBoss | undefined;
@@ -60,13 +84,15 @@ async function main() {
   // run in a receiver-only process (that role only accepts pushes; backfill belongs with
   // the worker/all roles that also own event ingestion).
   if (isWorker) {
-    const runBackfill = () => {
-      catchUp(pool, crmBaseUrl).catch((err) => {
-        console.error("backfill round failed:", err);
+    const runBackfill = createBackfillRunner(pool, crmBaseUrl);
+    runBackfill().catch(() => {
+      /* initial run errors already logged */
+    });
+    backfillTimer = setInterval(() => {
+      runBackfill().catch(() => {
+        /* errors already logged */
       });
-    };
-    runBackfill();
-    backfillTimer = setInterval(runBackfill, BACKFILL_INTERVAL_MS);
+    }, BACKFILL_INTERVAL_MS);
     console.log(`backfill scheduled every ${BACKFILL_INTERVAL_MS}ms against ${crmBaseUrl}`);
   }
 

@@ -88,4 +88,54 @@ describe("backfill", () => {
 
     srv.close();
   });
+
+  it("overlap guard prevents concurrent backfill runs", async () => {
+    const { createBackfillRunner } = await import("../src/main.js");
+
+    const crm = createCrmApp({
+      webhookUrl: "http://127.0.0.1:1",
+      ledgerPath: join(dir, "l3.jsonl"),
+    });
+    const srv: Server = crm.listen(0);
+    const port = (srv.address() as { port: number }).port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    await fetch(`${baseUrl}/simulate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        count: 10,
+        fault_plan: { seed: 1, dropRate: 1, dupRate: 0, apiErrorRate: 0 },
+      }),
+    });
+
+    // Capture logs to verify skip message
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (msg: string, ...args: unknown[]) => {
+      logs.push(msg);
+      originalLog(msg, ...args);
+    };
+
+    try {
+      const runBackfill = createBackfillRunner(pool, baseUrl);
+
+      // First call should run (no guard triggered)
+      const p1 = runBackfill();
+
+      // Immediately call again while first is still in-flight
+      const p2 = runBackfill();
+
+      // Wait for both to complete
+      await p1;
+      await p2;
+
+      // Check that second invocation was skipped
+      const skipLog = logs.find((log) => log.includes("backfill still running, skipping tick"));
+      expect(skipLog).toBeTruthy();
+    } finally {
+      console.log = originalLog;
+      srv.close();
+    }
+  });
 });
