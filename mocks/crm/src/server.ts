@@ -8,12 +8,19 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
   const { companies, deals } = generateSeed(opts.seed);
   const app = express();
   app.use(express.json());
+  // JSON error middleware: catch malformed JSON and return clean 400
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err instanceof SyntaxError && "body" in err) {
+      return res.status(400).json({ error: "invalid json" });
+    }
+    next(err);
+  });
   let seq = 0;
   let serverLevelInjector = createFaultInjector(); // no plan → never faults
 
   const paginate = <T>(items: T[], req: express.Request) => {
-    const page = Math.max(1, Number(req.query.page ?? 1));
-    const per = Math.min(100, Math.max(1, Number(req.query.per_page ?? 10)));
+    const page = Math.max(1, Number(req.query.page ?? 1) || 1);
+    const per = Math.min(100, Math.max(1, Number(req.query.per_page ?? 10) || 10));
     return { items: items.slice((page - 1) * per, page * per), page, total: items.length };
   };
 
@@ -42,7 +49,11 @@ export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; see
         apiErrorRate: z.number().min(0).max(1),
       }).optional(),
     });
-    const { count, fault_plan } = schema.parse(req.body);
+    const parseResult = schema.safeParse(req.body);
+    if (!parseResult.success) {
+      return res.status(400).json({ error: "invalid request" });
+    }
+    const { count, fault_plan } = parseResult.data;
 
     // Create a fault injector for this simulate call
     const injector = createFaultInjector(fault_plan);

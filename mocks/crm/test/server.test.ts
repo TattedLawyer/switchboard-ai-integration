@@ -104,4 +104,54 @@ describe("mock CRM", () => {
     expect(distinctCompanyIds.size).toBe(20);
     srv.close();
   });
+
+  // Input validation tests
+  it("simulate with missing count → 400 with clean error, no stack leak", async () => {
+    const ledgerPath = join(dir, "l.jsonl");
+    const crm = createCrmApp({ webhookUrl: sinkUrl, ledgerPath });
+    const srv = crm.listen(0);
+    const port = (srv.address() as { port: number }).port;
+    const res = await fetch(`http://127.0.0.1:${port}/simulate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body).toContain("invalid request");
+    expect(body).not.toContain("/Users/");
+    expect(body).not.toContain("ZodError");
+    expect(body).not.toContain("stack");
+    srv.close();
+  });
+
+  it("pagination with junk page param → defaults to page 1", async () => {
+    const crm = createCrmApp({ webhookUrl: sinkUrl, ledgerPath: join(dir, "l.jsonl") });
+    const srv = crm.listen(0);
+    const port = (srv.address() as { port: number }).port;
+    const res = await fetch(`http://127.0.0.1:${port}/companies?page=abc`);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.page).toBe(1);
+    expect(body.items).toHaveLength(10);
+    srv.close();
+  });
+
+  it("simulate with malformed JSON → 400 with clean error", async () => {
+    const ledgerPath = join(dir, "l.jsonl");
+    const crm = createCrmApp({ webhookUrl: sinkUrl, ledgerPath });
+    const srv = crm.listen(0);
+    const port = (srv.address() as { port: number }).port;
+    const res = await fetch(`http://127.0.0.1:${port}/simulate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "not-json",
+    });
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body).toContain("invalid json");
+    expect(body).not.toContain("<!DOCTYPE");
+    expect(body).not.toContain("html");
+    srv.close();
+  });
 });
