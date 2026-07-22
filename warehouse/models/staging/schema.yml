@@ -1,0 +1,8 @@
+version: 2
+models:
+  - name: stg_crm__companies
+    columns:
+      - name: company_id
+        data_tests: [unique, not_null]
+      - name: name
+        data_tests: [not_null]

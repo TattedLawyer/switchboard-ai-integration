@@ -1,0 +1,9 @@
+name: switchboard
+version: "1.0.0"
+profile: switchboard
+model-paths: ["models"]
+models:
+  switchboard:
+    staging:
+      +materialized: view
+      +schema: analytics
