@@ -1,5 +1,18 @@
 export { prng } from "./prng.js";
 export {
+  generateManifest,
+  type Profile,
+  type Manifest,
+  type Company,
+  type Contact,
+  type Deal,
+  type MergePair,
+  type BillingCustomer,
+  type Invoice,
+  type SupportRequester,
+  type Ticket,
+} from "./manifest.js";
+export {
   appendToLedger,
   readLedger,
   verifyLedgerChain,
