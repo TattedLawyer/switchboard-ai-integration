@@ -21,6 +21,14 @@ $ready || { echo "FAIL: postgres not ready after 60s"; exit 1; }
 echo "2/6 migrate"
 npm run migrate -w ingest
 
+echo "2b/6 clean state (raw, ingest.outbox, ingest.quarantine, cursors) so re-runs (and runs after
+scripts/chaos.sh, whose mock-crm process restarts event seq at 1) don't collide with leftover
+rows from a prior run"
+docker compose exec -T postgres psql -U switchboard -c \
+  "truncate table raw.raw_crm_events, ingest.outbox, ingest.quarantine restart identity;" > /dev/null
+docker compose exec -T postgres psql -U switchboard -c \
+  "delete from ingest.cursors;" > /dev/null
+
 echo "3/6 start ingest + mock crm"
 PORT=4002 npm run start -w ingest & pids+=($!)
 PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm npm run start -w mocks/crm & pids+=($!)
@@ -29,7 +37,18 @@ sleep 2
 echo "4/6 simulate 50 events"
 curl -sf -X POST http://localhost:4001/simulate \
   -H 'content-type: application/json' -d '{"count": 50}' > /dev/null
-sleep 1
+
+echo "4b/6 wait for async ingest pipeline to drain"
+ledger_count() { wc -l < out/ledger.jsonl 2>/dev/null | tr -d ' '; }
+raw_count() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_crm_events" | tr -d ' '; }
+drained=false
+for i in $(seq 1 60); do
+  lc="$(ledger_count)"
+  rc="$(raw_count)"
+  if [[ -n "$lc" && "$lc" == "$rc" ]]; then drained=true; break; fi
+  sleep 2
+done
+$drained || { echo "FAIL: ingest pipeline did not drain within 120s (ledger=$(ledger_count) raw=$(raw_count))"; exit 1; }
 
 echo "5/6 dbt build"
 docker compose run --rm dbt build

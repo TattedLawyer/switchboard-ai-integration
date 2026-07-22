@@ -1,17 +1,18 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import pg from "pg";
-import { getPool } from "../src/db.js";
-import { runMigrations } from "../src/migrate.js";
+import type pg from "pg";
+import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
+import { signBody } from "../src/hmac.js";
 
 let pool: pg.Pool;
+let cleanup: () => Promise<void>;
 
 beforeAll(async () => {
-  pool = getPool();
-  await runMigrations(pool);
-  await pool.query("truncate raw.raw_crm_events");
+  const result = await freshTestDb();
+  pool = result.pool;
+  cleanup = result.cleanup;
 });
-afterAll(async () => { await pool.end(); });
+afterAll(async () => { await cleanup(); });
 
 describe("ingest webhook", () => {
   it("stores a CRM event as raw jsonb", async () => {
@@ -24,12 +25,15 @@ describe("ingest webhook", () => {
       occurred_at: new Date().toISOString(),
       data: { id: "DEMO-C-0001", name: "DEMO Retail Group 1", domain: "retail-1.example.com" },
     };
+    const rawBody = JSON.stringify(event);
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(event),
+      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(rawBody) },
+      body: rawBody,
     });
     expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body).toEqual({ stored: true });
     const rows = await pool.query("select event_id, event_type, payload from raw.raw_crm_events");
     expect(rows.rowCount).toBe(1);
     expect(rows.rows[0].event_id).toBe("evt-1");

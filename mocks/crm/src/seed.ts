@@ -2,7 +2,7 @@ export type Company = { id: string; name: string; domain: string; owner_email: s
 export type Deal = { id: string; company_id: string; name: string; amount_cents: number; status: "open" | "won" | "lost" };
 
 // mulberry32 PRNG — deterministic, dependency-free
-function prng(seed: number): () => number {
+export function prng(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
     a |= 0; a = (a + 0x6d2b79f5) | 0;

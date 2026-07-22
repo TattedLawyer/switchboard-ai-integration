@@ -1,11 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type pg from "pg";
+import { readDbtSchema } from "../host/schema.js";
 
 export const READ_TOOLS = ["get_account_health"] as const;
 
 export function createMcpServer(pool: pg.Pool): McpServer {
-  const schema = process.env.DBT_SCHEMA ?? "public_analytics";
+  const schema = readDbtSchema();
   const server = new McpServer({ name: "switchboard", version: "0.1.0" });
 
   server.registerTool(

@@ -3,12 +3,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../mcp/server.js";
 import type { LlmClient } from "./llm.js";
+import { readDbtSchema } from "./schema.js";
 
 export async function generateMondayReport(
   pool: pg.Pool,
   llm: LlmClient,
 ): Promise<string> {
-  const schema = process.env.DBT_SCHEMA ?? "public_analytics";
+  const schema = readDbtSchema();
   const server = createMcpServer(pool);
   const [clientTx, serverTx] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTx);
