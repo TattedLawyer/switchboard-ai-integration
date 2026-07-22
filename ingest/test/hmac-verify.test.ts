@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
-import { signBody } from "../src/hmac.js";
+import { secretForSource, signBody } from "../src/hmac.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -29,7 +29,7 @@ describe("webhook HMAC verification", () => {
     const body = JSON.stringify(event);
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(body) },
+      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(body, secretForSource("crm")) },
       body,
     });
     expect(res.status).toBe(202);
@@ -41,7 +41,7 @@ describe("webhook HMAC verification", () => {
     const srv = app.listen(0);
     const port = (srv.address() as { port: number }).port;
     const body = JSON.stringify(event);
-    const sig = signBody(body);
+    const sig = signBody(body, secretForSource("crm"));
     const tampered = JSON.stringify({ ...event, event_id: "evt-hmac-tampered" });
     const before = await pool.query("select count(*) from ingest.quarantine");
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {

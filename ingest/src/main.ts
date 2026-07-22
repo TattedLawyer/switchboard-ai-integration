@@ -4,6 +4,7 @@ import type { PgBoss } from "pg-boss";
 import type pg from "pg";
 import { getPool } from "./db.js";
 import { createIngestApp, type SourceEvent } from "./server.js";
+import type { Source } from "./sources.js";
 import { createQueue, enqueueEvent, startWorker } from "./queue.js";
 import { catchUp, CRM_SOURCE } from "./backfill.js";
 
@@ -62,8 +63,10 @@ async function main() {
   if (isReceiver) {
     // Create the HTTP receiver app with queue integration
     const enqueue = boss
-      ? async (event: SourceEvent): Promise<void> => {
-          // Use the queue to enqueue events instead of processing directly
+      ? async (_source: Source, event: SourceEvent): Promise<void> => {
+          // Use the queue to enqueue events instead of processing directly.
+          // Still a single queue until Task 3 — the source flows through the
+          // signature now so Task 3 is queue-only.
           await enqueueEvent(boss!, event);
         }
       : undefined;
