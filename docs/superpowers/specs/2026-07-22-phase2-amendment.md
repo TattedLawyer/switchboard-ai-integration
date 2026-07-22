@@ -22,6 +22,19 @@ enterprises actually run.
 invented. Exact field-level schemas are re-verified against vendor docs at
 implementation time — the spec commits to the *paradigm*, not to a frozen schema.**
 
+### 1a. Positioning (narrative only — NOT an architecture change)
+
+Decision (Michael, 2026-07-22): Switchboard stays an **integration + unification +
+agent layer over existing systems** — it does *not* become a CRM/Salesforce
+replacement (that would be a product build and a weaker FDE signal). The sharpened
+story: the unified customer view + AI workflows Switchboard delivers are the slice
+of a heavyweight CRM that most small/mid businesses actually use and over-pay for,
+so the artifact can honestly carry a "reduces platform dependence / lowers cost"
+message **without building a system of record.** This is a README/framing sharpening
+applied at Phase 4 write-up time; it changes no code and no scope here. The
+event-bus source below is therefore about *integrating an enterprise paradigm*, not
+about imitating Salesforce as a product.
+
 ## 2. Decomposition — two reviewable sub-phases
 
 The expanded scope roughly doubles Phase 2, so it splits into two sub-phases, each
@@ -86,7 +99,7 @@ black box).
 |---|---|---|
 | CRM | **HubSpot-style thin webhooks**: metadata-only payloads (object id + changed property), batched ≤100/req, 10 retries/24h; consumer must **fetch the full record** via REST after the event ([HubSpot v3](https://developers.hubspot.com/docs/api-reference/legacy/webhooks/guide)) | The "thin event → hydrate" pattern; batch delivery; the fetch-after-notify round trip |
 | Billing | **Stripe-style webhooks**: full-object envelope (`data.object`), cursor pagination `starting_after`/`limit` 1..100 ([Stripe events](https://docs.stripe.com/api/events), [pagination](https://docs.stripe.com/api/pagination)) | Opaque-cursor pagination; signed full-payload events; event-type taxonomy |
-| Support / enterprise | **Salesforce-style event bus**: no webhooks — subscribe to a replayable stream with a replay cursor (Pub/Sub/CDC model) ([Salesforce Pub/Sub](https://developer.salesforce.com/docs/platform/pub-sub-api/guide/intro.html)) | Subscribe/replay vs. push; the paradigm most webhook-only integrations can't handle |
+| Support / enterprise | **Enterprise event-bus paradigm** (Salesforce Pub/Sub is the reference example): no webhooks — subscribe to a replayable stream with a replay cursor (Pub/Sub/CDC model) ([Salesforce Pub/Sub](https://developer.salesforce.com/docs/platform/pub-sub-api/guide/intro.html)) | Subscribe/replay vs. push; the paradigm most webhook-only integrations can't handle. Demonstrates *integrating* an event-bus source, not imitating a specific vendor product |
 
 **Design note:** the thin-webhook CRM breaks a hidden Phase 1 assumption — ingest
 currently stores the full pushed payload. The faithful HubSpot mock forces a
