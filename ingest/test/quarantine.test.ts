@@ -4,7 +4,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { quarantineEvent, replayQuarantined } from "../src/quarantine.js";
 import { ingestEvent } from "../src/ingest-event.js";
-import { signBody } from "../src/hmac.js";
+import { secretForSource, signBody } from "../src/hmac.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -34,7 +34,7 @@ describe("quarantine", () => {
     const rawBody = JSON.stringify(invalidPayload);
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(rawBody) },
+      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(rawBody, secretForSource("crm")) },
       body: rawBody,
     });
 
@@ -121,7 +121,7 @@ describe("quarantine", () => {
     const rawBody = JSON.stringify(event);
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(rawBody) },
+      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(rawBody, secretForSource("crm")) },
       body: rawBody,
     });
 
