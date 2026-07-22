@@ -2,8 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DATABASE_URL="${DATABASE_URL:-postgres://switchboard:switchboard@localhost:5433/switchboard}"
-# Absolute path (not spec's relative ./out/) because mock-crm workspace process has a different cwd
-export LEDGER_PATH="$(pwd)/out/ledger.jsonl"
+# This script exercises the crm source only; billing/support arrive with their mocks (Tasks 6/7).
+export INGEST_SOURCES=crm
+# Absolute path (not spec's relative ./out/) because mock-crm workspace process has a different cwd.
+# Per-source env consumed by the reconcile CLI; the mock process itself still takes LEDGER_PATH
+# (its own file-path option, see mocks/crm/src/main.ts) — passed explicitly at its start line below.
+export LEDGER_PATH_CRM="$(pwd)/out/ledger.jsonl"
 
 # CHAOS_SKIP_BACKFILL=1 is a RED-proof escape hatch: skip the backfill recovery step so that
 # reconcile fails and lists the events lost to injected drops, proving the detector detects.
@@ -32,6 +36,10 @@ docker compose exec -T postgres psql -U switchboard -c \
 # the mock CRM's fresh /simulate events (which restart seq at 1) look already-consumed.
 docker compose exec -T postgres psql -U switchboard -c \
   "delete from ingest.cursors;" > /dev/null
+# Clear ALL queued jobs so stale jobs from pre-rename runs (old 'ingest-event' queue names)
+# can never poison the settle-wait. Guarded: pgboss schema does not exist on a fresh DB.
+docker compose exec -T postgres psql -U switchboard -c \
+  "delete from pgboss.job;" > /dev/null 2>&1 || true
 rm -f out/ledger.jsonl out/monday-report.md out/chaos-report.txt
 
 echo "4/8 start ingest (receiver+worker) + mock crm"
@@ -39,7 +47,7 @@ echo "4/8 start ingest (receiver+worker) + mock crm"
 # the RED-mode detector proof (CHAOS_SKIP_BACKFILL=1) depends on dropped events staying
 # unrecovered until the explicit backfill step below.
 PORT=4002 BACKFILL_INTERVAL_MS=600000 npm run start -w ingest & pids+=($!)
-PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm npm run start -w mocks/crm & pids+=($!)
+PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm LEDGER_PATH="$LEDGER_PATH_CRM" npm run start -w mocks/crm & pids+=($!)
 sleep 2
 
 echo "5/8 simulate 200 events with injected faults (seed 7, drop 0.2, dup 0.15, apiError 0.2)"
@@ -49,7 +57,7 @@ curl -sf -X POST http://localhost:4001/simulate \
 
 echo "5b/8 bounded settle-wait for push-path (raw count stable + queue quiescent, NOT ==200 since ~20% are dropped)"
 raw_count() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_events" | tr -d ' '; }
-queue_pending() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from pgboss.job where name='ingest-event' and state in ('created','active','retry')" | tr -d ' '; }
+queue_pending() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from pgboss.job where name like 'ingest-%' and state in ('created','active','retry')" | tr -d ' '; }
 stable_polls=0
 prev="-1"
 settled=false

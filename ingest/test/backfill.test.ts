@@ -6,7 +6,7 @@ import type { Server } from "node:http";
 import type pg from "pg";
 import { createCrmApp } from "../../mocks/crm/src/server.js";
 import { freshTestDb } from "./helpers/testdb.js";
-import { pollOnce, catchUp, CRM_SOURCE } from "../src/backfill.js";
+import { pollOnce, catchUp } from "../src/backfill.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -42,7 +42,7 @@ describe("backfill", () => {
       }),
     });
 
-    const total = await catchUp(pool, CRM_SOURCE, baseUrl);
+    const total = await catchUp(pool, "crm", baseUrl);
     expect(total).toBe(30);
 
     const raw = await pool.query("select count(*)::int as n from raw.raw_events where source = 'crm'");
@@ -61,11 +61,11 @@ describe("backfill", () => {
 
     const cursor = await pool.query(
       "select last_seq from ingest.cursors where source = $1",
-      [CRM_SOURCE],
+      ["crm"],
     );
     expect(cursor.rows[0].last_seq).toBe("30");
 
-    const second = await catchUp(pool, CRM_SOURCE, baseUrl);
+    const second = await catchUp(pool, "crm", baseUrl);
     expect(second).toBe(0);
 
     const rawAfter = await pool.query("select count(*)::int as n from raw.raw_events where source = 'crm'");
@@ -89,11 +89,11 @@ describe("backfill", () => {
       body: JSON.stringify({ count: 5, fault_plan: { seed: 1, dropRate: 0, dupRate: 0, apiErrorRate: 1 } }),
     });
 
-    await expect(pollOnce(pool, CRM_SOURCE, baseUrl)).rejects.toThrow();
+    await expect(pollOnce(pool, "crm", baseUrl)).rejects.toThrow();
 
     const cursor = await pool.query(
       "select last_seq from ingest.cursors where source = $1",
-      [CRM_SOURCE],
+      ["crm"],
     );
     expect(cursor.rowCount).toBe(0);
 
@@ -129,7 +129,7 @@ describe("backfill", () => {
     };
 
     try {
-      const runBackfill = createBackfillRunner(pool, baseUrl);
+      const runBackfill = createBackfillRunner(pool, "crm", baseUrl);
 
       // First call should run (no guard triggered)
       const p1 = runBackfill();

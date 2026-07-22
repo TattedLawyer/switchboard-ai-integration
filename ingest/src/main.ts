@@ -4,14 +4,13 @@ import type { PgBoss } from "pg-boss";
 import type pg from "pg";
 import { getPool } from "./db.js";
 import { createIngestApp, type SourceEvent } from "./server.js";
-import type { Source } from "./sources.js";
+import { baseUrlFor, enabledSources, type Source } from "./sources.js";
 import { createQueue, enqueueEvent, startWorker } from "./queue.js";
-import { catchUp, CRM_SOURCE } from "./backfill.js";
+import { catchUp } from "./backfill.js";
 
 const pool = getPool();
 const port = Number(process.env.PORT ?? 4002);
 const ingestRole = (process.env.INGEST_ROLE ?? "all").toLowerCase();
-const crmBaseUrl = process.env.CRM_BASE_URL ?? "http://localhost:4001";
 // Backfill cadence: pg-boss's boss.schedule() only supports cron-granularity (minimum
 // 1-minute resolution) scheduling of a job insertion, and still needs a boss.work()
 // consumer plus its own queue to actually run the poll — extra queue/DLQ wiring for no
@@ -23,6 +22,7 @@ const BACKFILL_INTERVAL_MS = Number(process.env.BACKFILL_INTERVAL_MS ?? 60_000);
 // Factory to create a backfill runner with in-flight guard (prevents overlapping runs).
 export function createBackfillRunner(
   pgPool: pg.Pool,
+  source: Source,
   baseUrl: string,
 ): () => Promise<void> {
   let running = false;
@@ -34,7 +34,7 @@ export function createBackfillRunner(
 
     running = true;
     try {
-      await catchUp(pgPool, CRM_SOURCE, baseUrl);
+      await catchUp(pgPool, source, baseUrl);
     } catch (err) {
       console.error("backfill round failed:", err);
     } finally {
@@ -47,7 +47,7 @@ async function main() {
   let boss: PgBoss | undefined;
   let app: express.Express | undefined;
   let server: http.Server | undefined;
-  let backfillTimer: NodeJS.Timeout | undefined;
+  const backfillTimers: NodeJS.Timeout[] = [];
 
   // Role can be: "receiver", "worker", or "all" (default)
   const isReceiver = ingestRole === "receiver" || ingestRole === "all";
@@ -63,11 +63,9 @@ async function main() {
   if (isReceiver) {
     // Create the HTTP receiver app with queue integration
     const enqueue = boss
-      ? async (_source: Source, event: SourceEvent): Promise<void> => {
-          // Use the queue to enqueue events instead of processing directly.
-          // Still a single queue until Task 3 — the source flows through the
-          // signature now so Task 3 is queue-only.
-          await enqueueEvent(boss!, event);
+      ? async (source: Source, event: SourceEvent): Promise<void> => {
+          // Route each event onto its own source's queue.
+          await enqueueEvent(boss!, source, event);
         }
       : undefined;
 
@@ -78,32 +76,40 @@ async function main() {
   }
 
   if (isWorker && boss) {
-    // Start the worker
+    // Start the per-source workers
     await startWorker(boss, pool);
     console.log(`ingest worker started (role: ${ingestRole})`);
   }
 
   // Periodic backfill: recovers events whose webhook delivery was dropped/failed. Must not
   // run in a receiver-only process (that role only accepts pushes; backfill belongs with
-  // the worker/all roles that also own event ingestion).
+  // the worker/all roles that also own event ingestion). One runner + interval per enabled
+  // source, each polling that source's own feed and cursor.
   if (isWorker) {
-    const runBackfill = createBackfillRunner(pool, crmBaseUrl);
-    runBackfill().catch(() => {
-      /* initial run errors already logged */
-    });
-    backfillTimer = setInterval(() => {
+    for (const source of enabledSources()) {
+      const baseUrl = baseUrlFor(source);
+      const runBackfill = createBackfillRunner(pool, source, baseUrl);
       runBackfill().catch(() => {
-        /* errors already logged */
+        /* initial run errors already logged */
       });
-    }, BACKFILL_INTERVAL_MS);
-    console.log(`backfill scheduled every ${BACKFILL_INTERVAL_MS}ms against ${crmBaseUrl}`);
+      backfillTimers.push(
+        setInterval(() => {
+          runBackfill().catch(() => {
+            /* errors already logged */
+          });
+        }, BACKFILL_INTERVAL_MS),
+      );
+      console.log(
+        `backfill[${source}] scheduled every ${BACKFILL_INTERVAL_MS}ms against ${baseUrl}`,
+      );
+    }
   }
 
   // Handle graceful shutdown
   const shutdown = async (signal: string) => {
     console.log(`${signal} received, shutting down...`);
-    if (backfillTimer) {
-      clearInterval(backfillTimer);
+    for (const timer of backfillTimers) {
+      clearInterval(timer);
     }
     if (server) {
       await new Promise<void>((resolve, reject) => {

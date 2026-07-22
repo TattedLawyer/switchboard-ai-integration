@@ -2,8 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DATABASE_URL="${DATABASE_URL:-postgres://switchboard:switchboard@localhost:5433/switchboard}"
-# Absolute path (not spec's relative ./out/) because mock-crm workspace process has a different cwd
-export LEDGER_PATH="$(pwd)/out/ledger.jsonl"
+# This script exercises the crm source only; billing/support arrive with their mocks (Tasks 6/7).
+export INGEST_SOURCES=crm
+# Absolute path (not spec's relative ./out/) because mock-crm workspace process has a different cwd.
+# Per-source env; the mock process itself still takes LEDGER_PATH (its own file-path option, see
+# mocks/crm/src/main.ts) — passed explicitly at its start line below.
+export LEDGER_PATH_CRM="$(pwd)/out/ledger.jsonl"
 rm -f out/monday-report.md out/ledger.jsonl
 pids=()
 cleanup() { for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null || true; done; }
@@ -31,7 +35,7 @@ docker compose exec -T postgres psql -U switchboard -c \
 
 echo "3/6 start ingest + mock crm"
 PORT=4002 npm run start -w ingest & pids+=($!)
-PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm npm run start -w mocks/crm & pids+=($!)
+PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm LEDGER_PATH="$LEDGER_PATH_CRM" npm run start -w mocks/crm & pids+=($!)
 sleep 2
 
 echo "4/6 simulate 50 events"

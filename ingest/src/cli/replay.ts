@@ -11,12 +11,14 @@ async function main(): Promise<void> {
 
   try {
     const dlqJobs = await fetchDlq(boss);
+    // NOTE: exact line format is load-bearing — scripts/chaos.sh greps "DLQ depth: <n>".
+    // The count is the TOTAL across all per-source DLQs.
     console.log(`DLQ depth: ${dlqJobs.length}`);
 
     if (listOnly) {
       for (const job of dlqJobs) {
         console.log(
-          `  id=${job.id} event_id=${job.data.event_id} event_type=${job.data.event_type}`,
+          `  id=${job.id} source=${job.source} event_id=${job.data.event_id} event_type=${job.data.event_type}`,
         );
       }
       await boss.stop();

@@ -2,8 +2,6 @@ import type pg from "pg";
 import type { SourceEvent } from "./server.js";
 import { ingestEvent } from "./ingest-event.js";
 
-export const CRM_SOURCE = "crm";
-
 interface EventsPage {
   events: (SourceEvent & { seq: number })[];
   last_seq: number;
