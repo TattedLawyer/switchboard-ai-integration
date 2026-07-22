@@ -1,6 +1,6 @@
 import { PgBoss } from "pg-boss";
 import type pg from "pg";
-import type { CrmEvent } from "./server.js";
+import type { SourceEvent } from "./server.js";
 import { ingestEvent } from "./ingest-event.js";
 
 export const INGEST_QUEUE = "ingest-event";
@@ -60,7 +60,7 @@ export async function createQueue(
 
 export async function enqueueEvent(
   boss: PgBoss,
-  event: CrmEvent
+  event: SourceEvent
 ): Promise<void> {
   await boss.send(INGEST_QUEUE, event, {
     // Use queue-level defaults, but can be overridden per job if needed
@@ -91,7 +91,7 @@ export async function startWorker(
   return boss.work(INGEST_QUEUE, options, async (jobs) => {
     // Process each job in the batch
     for (const job of jobs) {
-      await ingestEvent(pool, job.data as CrmEvent);
+      await ingestEvent(pool, "crm", job.data as SourceEvent);
     }
   });
 }
@@ -99,10 +99,10 @@ export async function startWorker(
 export async function fetchDlq(
   boss: PgBoss,
   limit: number = 10
-): Promise<{ id: string; data: CrmEvent }[]> {
+): Promise<{ id: string; data: SourceEvent }[]> {
   // Fetch all jobs from the DLQ queue
   // Note: In pg-boss, the DLQ is just another queue, so we query it directly
-  const jobs = await boss.findJobs<CrmEvent>(INGEST_DLQ);
+  const jobs = await boss.findJobs<SourceEvent>(INGEST_DLQ);
 
   // Empirically verified (pg-boss v12.26.1): when a job dead-letters out of its source
   // queue, pg-boss inserts a BRAND NEW job into the DLQ queue with state 'created' (it does
@@ -129,9 +129,10 @@ export async function replayDlq(
 
   for (const job of dlqJobs) {
     try {
-      // ingestEvent is idempotent (ON CONFLICT DO NOTHING on event_id), so re-running it here is
-      // safe even in the edge case where the original job actually succeeded before dead-lettering.
-      await ingestEvent(pool, job.data);
+      // ingestEvent is idempotent (ON CONFLICT DO NOTHING on (source, event_id)), so re-running it
+      // here is safe even in the edge case where the original job actually succeeded before
+      // dead-lettering.
+      await ingestEvent(pool, "crm", job.data);
 
       // Consume the DLQ job so it isn't replayed again. fetchDlq() peeks jobs via findJobs() —
       // it does NOT fetch/lease them the way boss.work()/boss.fetch() do, so these jobs are still

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type pg from "pg";
-import type { CrmEvent } from "./server.js";
+import type { SourceEvent } from "./server.js";
 
 const eventSchema = z.object({
   event_id: z.string().min(1),
@@ -11,23 +11,25 @@ const eventSchema = z.object({
 
 export async function quarantineEvent(
   pool: pg.Pool,
+  source: string,
   payload: unknown,
   reason: string
 ): Promise<void> {
   await pool.query(
-    "insert into ingest.quarantine (payload, reason) values ($1, $2)",
-    [JSON.stringify(payload), reason]
+    "insert into ingest.quarantine (source, payload, reason) values ($1, $2, $3)",
+    [source, JSON.stringify(payload), reason]
   );
 }
 
 export async function replayQuarantined(
   pool: pg.Pool,
   id: number,
-  ingest: (pool: pg.Pool, event: CrmEvent) => Promise<"inserted" | "duplicate">
+  ingest: (pool: pg.Pool, source: string, event: SourceEvent) => Promise<"inserted" | "duplicate">
 ): Promise<"replayed" | "still-invalid"> {
-  // Fetch the quarantined payload
+  // Fetch the quarantined payload (and its recorded source, so replay re-ingests
+  // under the same source the event originally arrived on)
   const result = await pool.query(
-    "select payload from ingest.quarantine where id = $1",
+    "select payload, source from ingest.quarantine where id = $1",
     [id]
   );
 
@@ -43,8 +45,8 @@ export async function replayQuarantined(
     return "still-invalid";
   }
 
-  // If valid, ingest the event
-  await ingest(pool, parsed.data);
+  // If valid, ingest the event under its originally-recorded source
+  await ingest(pool, result.rows[0].source, parsed.data);
 
   // Set replayed_at timestamp
   await pool.query(

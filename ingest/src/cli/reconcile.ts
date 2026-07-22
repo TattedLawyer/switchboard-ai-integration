@@ -17,7 +17,7 @@ async function main(): Promise<void> {
 
   const pool = getPool();
   try {
-    const report = await reconcile(pool, ledgerPath);
+    const report = await reconcile(pool, "crm", ledgerPath);
 
     console.log(`ledger: ${report.ledger} distinct event_id(s)`);
     console.log(`raw:    ${report.raw} distinct event_id(s)`);

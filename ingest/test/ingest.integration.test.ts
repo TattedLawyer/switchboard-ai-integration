@@ -34,7 +34,7 @@ describe("ingest webhook", () => {
     expect(res.status).toBe(202);
     const body = await res.json();
     expect(body).toEqual({ stored: true });
-    const rows = await pool.query("select event_id, event_type, payload from raw.raw_crm_events");
+    const rows = await pool.query("select event_id, event_type, payload from raw.raw_events where source = 'crm'");
     expect(rows.rowCount).toBe(1);
     expect(rows.rows[0].event_id).toBe("evt-1");
     expect(rows.rows[0].payload.data.id).toBe("DEMO-C-0001");

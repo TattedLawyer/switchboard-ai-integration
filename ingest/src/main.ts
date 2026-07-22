@@ -3,9 +3,9 @@ import type http from "node:http";
 import type { PgBoss } from "pg-boss";
 import type pg from "pg";
 import { getPool } from "./db.js";
-import { createIngestApp, type CrmEvent } from "./server.js";
-import { createQueue, startWorker } from "./queue.js";
-import { catchUp } from "./backfill.js";
+import { createIngestApp, type SourceEvent } from "./server.js";
+import { createQueue, enqueueEvent, startWorker } from "./queue.js";
+import { catchUp, CRM_SOURCE } from "./backfill.js";
 
 const pool = getPool();
 const port = Number(process.env.PORT ?? 4002);
@@ -33,7 +33,7 @@ export function createBackfillRunner(
 
     running = true;
     try {
-      await catchUp(pgPool, baseUrl);
+      await catchUp(pgPool, CRM_SOURCE, baseUrl);
     } catch (err) {
       console.error("backfill round failed:", err);
     } finally {
@@ -62,9 +62,9 @@ async function main() {
   if (isReceiver) {
     // Create the HTTP receiver app with queue integration
     const enqueue = boss
-      ? async (event: CrmEvent): Promise<void> => {
+      ? async (event: SourceEvent): Promise<void> => {
           // Use the queue to enqueue events instead of processing directly
-          await boss!.send("ingest-event", event);
+          await enqueueEvent(boss!, event);
         }
       : undefined;
 

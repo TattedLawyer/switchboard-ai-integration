@@ -23,8 +23,8 @@ async function insertRaw(
   occurredAt: string,
 ): Promise<void> {
   await pool.query(
-    `insert into raw.raw_crm_events (event_id, event_type, payload)
-     values ($1, 'company.updated', $2::jsonb)`,
+    `insert into raw.raw_events (source, event_id, event_type, payload)
+     values ('crm', $1, 'company.updated', $2::jsonb)`,
     [
       eventId,
       JSON.stringify({
@@ -48,8 +48,8 @@ async function insertRaw(
 const LATEST_STATE_SQL = `
   with company_events as (
     select event_id, payload, received_at
-    from raw.raw_crm_events
-    where event_type like 'company.%'
+    from raw.raw_events
+    where source = 'crm' and event_type like 'company.%'
   ),
   latest as (
     select distinct on (payload -> 'data' ->> 'id')

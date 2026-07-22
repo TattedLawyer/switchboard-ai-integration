@@ -25,7 +25,7 @@ echo "2b/6 clean state (raw, ingest.outbox, ingest.quarantine, cursors) so re-ru
 scripts/chaos.sh, whose mock-crm process restarts event seq at 1) don't collide with leftover
 rows from a prior run"
 docker compose exec -T postgres psql -U switchboard -c \
-  "truncate table raw.raw_crm_events, ingest.outbox, ingest.quarantine restart identity;" > /dev/null
+  "truncate table raw.raw_events, ingest.outbox, ingest.quarantine restart identity;" > /dev/null
 docker compose exec -T postgres psql -U switchboard -c \
   "delete from ingest.cursors;" > /dev/null
 
@@ -40,7 +40,7 @@ curl -sf -X POST http://localhost:4001/simulate \
 
 echo "4b/6 wait for async ingest pipeline to drain"
 ledger_count() { wc -l < out/ledger.jsonl 2>/dev/null | tr -d ' '; }
-raw_count() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_crm_events" | tr -d ' '; }
+raw_count() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_events" | tr -d ' '; }
 drained=false
 for i in $(seq 1 60); do
   lc="$(ledger_count)"

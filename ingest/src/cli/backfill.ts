@@ -12,7 +12,7 @@ async function main(): Promise<void> {
     );
     const startCursor = startRes.rowCount === 0 ? 0 : Number(startRes.rows[0].last_seq);
 
-    const ingested = await catchUp(pool, baseUrl);
+    const ingested = await catchUp(pool, CRM_SOURCE, baseUrl);
     console.log(`backfill: ingested ${ingested} event(s) from ${baseUrl}`);
     await pool.end();
     process.exit(0);

@@ -27,7 +27,7 @@ npm run migrate -w ingest
 
 echo "3/8 clean state (raw, ingest.outbox, ingest.quarantine, ledger, report artifacts)"
 docker compose exec -T postgres psql -U switchboard -c \
-  "truncate table raw.raw_crm_events, ingest.outbox, ingest.quarantine restart identity;" > /dev/null
+  "truncate table raw.raw_events, ingest.outbox, ingest.quarantine restart identity;" > /dev/null
 # Reset the backfill cursor too, otherwise a stale cursor from a prior chaos run would make
 # the mock CRM's fresh /simulate events (which restart seq at 1) look already-consumed.
 docker compose exec -T postgres psql -U switchboard -c \
@@ -48,7 +48,7 @@ curl -sf -X POST http://localhost:4001/simulate \
   -d '{"count": 200, "fault_plan": {"seed": 7, "dropRate": 0.2, "dupRate": 0.15, "apiErrorRate": 0.2}}' > /dev/null
 
 echo "5b/8 bounded settle-wait for push-path (raw count stable + queue quiescent, NOT ==200 since ~20% are dropped)"
-raw_count() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_crm_events" | tr -d ' '; }
+raw_count() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_events" | tr -d ' '; }
 queue_pending() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from pgboss.job where name='ingest-event' and state in ('created','active','retry')" | tr -d ' '; }
 stable_polls=0
 prev="-1"

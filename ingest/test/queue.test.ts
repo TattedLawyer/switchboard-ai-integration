@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createQueue, enqueueEvent, startWorker, fetchDlq } from "../src/queue.js";
-import type { CrmEvent } from "../src/server.js";
+import type { SourceEvent } from "../src/server.js";
 import { PgBoss } from "pg-boss";
 
 let pool: pg.Pool;
@@ -29,7 +29,7 @@ afterAll(async () => {
   await cleanup();
 });
 
-const ev = (id: string): CrmEvent => ({
+const ev = (id: string): SourceEvent => ({
   event_id: id,
   event_type: "company.updated",
   occurred_at: new Date().toISOString(),
@@ -51,7 +51,7 @@ describe("pg-boss queue", () => {
 
       while (Date.now() < deadline) {
         const rawResult = await pool.query(
-          "select count(*)::int as n from raw.raw_crm_events where event_id=$1",
+          "select count(*)::int as n from raw.raw_events where source='crm' and event_id=$1",
           [event.event_id]
         );
         const outboxResult = await pool.query(
@@ -98,7 +98,7 @@ describe("pg-boss queue", () => {
 
       // Bounded poll (≤20s, no fixed sleeps) for the job to land in the DLQ.
       const deadline = Date.now() + 20000;
-      let dlqJob: { id: string; data: CrmEvent } | undefined;
+      let dlqJob: { id: string; data: SourceEvent } | undefined;
       while (Date.now() < deadline) {
         const dlqJobs = await fetchDlq(boss);
         dlqJob = dlqJobs.find((j) => j.data.event_id === event.event_id);
@@ -111,7 +111,7 @@ describe("pg-boss queue", () => {
 
       // Verify the job did NOT result in an ingested event (raw table is empty)
       const rawResult = await pool.query(
-        "select count(*)::int as n from raw.raw_crm_events where event_id=$1",
+        "select count(*)::int as n from raw.raw_events where source='crm' and event_id=$1",
         [event.event_id]
       );
       expect(rawResult.rows[0].n).toBe(0);

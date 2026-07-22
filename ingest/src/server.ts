@@ -12,11 +12,11 @@ const eventSchema = z.object({
   data: z.record(z.unknown()),
 });
 
-export type CrmEvent = z.infer<typeof eventSchema>;
+export type SourceEvent = z.infer<typeof eventSchema>;
 
 export function createIngestApp(
   pool: pg.Pool,
-  opts?: { enqueue?: (event: CrmEvent) => Promise<void> }
+  opts?: { enqueue?: (event: SourceEvent) => Promise<void> }
 ): express.Express {
   const app = express();
   // Capture the raw request body (before JSON parsing mutates it into an object) so we can
@@ -52,13 +52,13 @@ export function createIngestApp(
       }
       const parsed = eventSchema.safeParse(req.body);
       if (!parsed.success) {
-        await quarantineEvent(pool, req.body, "schema validation failed");
+        await quarantineEvent(pool, "crm", req.body, "schema validation failed");
         return res.status(202).json({ quarantined: true });
       }
       if (opts?.enqueue) {
         await opts.enqueue(parsed.data);
       } else {
-        await ingestEvent(pool, parsed.data);
+        await ingestEvent(pool, "crm", parsed.data);
       }
       res.status(202).json({ stored: true });
     } catch (err) {

@@ -1,7 +1,7 @@
 with company_events as (
     select event_id, payload, received_at
-    from raw.raw_crm_events
-    where event_type like 'company.%'
+    from raw.raw_events
+    where source = 'crm' and event_type like 'company.%'
 ),
 latest as (
     -- Latest state per company is decided by EVENT time (occurred_at), not arrival time

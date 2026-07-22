@@ -12,11 +12,11 @@ ledger="out/ledger.jsonl"
 [[ -s "$ledger" ]] || { echo "FAIL: $ledger missing or empty"; exit 1; }
 ledger_count="$(wc -l < "$ledger" | tr -d ' ')"
 
-raw_count="$(docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_crm_events" | tr -d ' ')"
+raw_count="$(docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_events" | tr -d ' ')"
 outbox_count="$(docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from ingest.outbox" | tr -d ' ')"
 
 if [[ "$raw_count" != "$ledger_count" ]]; then
-  echo "FAIL: oracle mismatch — ledger has $ledger_count events but raw.raw_crm_events has $raw_count (async ingest pipeline has not fully drained)"
+  echo "FAIL: oracle mismatch — ledger has $ledger_count events but raw.raw_events has $raw_count (async ingest pipeline has not fully drained)"
   exit 1
 fi
 
