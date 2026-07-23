@@ -47,19 +47,31 @@ gRPC-based Pub/Sub API — rather than HTTP callbacks
 [Hookdeck's overview of Salesforce's non-webhook model](https://hookdeck.com/webhooks/platforms/guide-to-salesforce-webhooks-features-and-best-practices)).
 A connector for that world holds a subscription with a replay cursor instead of
 exposing an endpoint. Layer 1 already models both halves of that idea (push
-receiver + cursored puller); a planned Phase 2+ mock adds an event-bus-shaped
+receiver + cursored puller); a planned Phase 2b mock adds an event-bus-shaped
 source so both integration paradigms are demonstrated.
 
 ## Layers 2–3 — mostly unchanged
 
 The raw `jsonb` event store absorbs vendor schema differences by design; dbt
-remapping is where vendor-specific field names get normalized. Identity resolution
-gains vendor merge events (real CRMs merge duplicate records and emit merge
-notifications that must collapse identities downstream). The MCP/agent layer is
-vendor-agnostic — it reads the unified model and never touches vendor APIs.
+remapping is where vendor-specific field names get normalized. The MCP/agent layer
+is vendor-agnostic — it reads the unified model and never touches vendor APIs.
+
+**Identity at width:** the Phase 2a identity layer already handles merge collapse,
+but its merge signal is a clean `company.merged` webhook event. Against real
+vendors, merges arrive through vendor-specific channels — merge webhooks where
+offered, otherwise audit/activity APIs polled for merge records — with their own
+shapes and delivery guarantees, and each vendor's normalization quirks (domain
+formats, legal-suffix conventions, freemail addresses that break the
+email-implies-company assumption) become per-source rules in the tier definitions.
+The three-tier structure, the provenance columns, and the mart-time-only
+resolution are unchanged; what grows is the per-vendor mapping into
+`merge_edges` and the tier-normalization functions.
 
 ## Operational deltas
 
-Secrets management (per-vendor credentials, rotation), per-source monitoring of
-webhook delivery health and poll-lag, and vendor-status-page awareness in runbooks.
-See RUNBOOK.md for the current single-source version of these procedures.
+Secrets management — now concretely **per-source secret rotation**: each source
+has its own webhook secret (`WEBHOOK_SECRET_<SOURCE>`), so rotation is per-vendor
+and a leaked secret is contained to one source; real engagements add credential
+storage and scheduled rotation on top. Plus per-source monitoring of webhook
+delivery health and poll-lag, and vendor-status-page awareness in runbooks. See
+RUNBOOK.md for the current per-source versions of these procedures.
