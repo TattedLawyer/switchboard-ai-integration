@@ -1,7 +1,7 @@
 {
   "name": "switchboard",
   "private": true,
-  "workspaces": ["mocks/core", "mocks/crm", "mocks/billing", "ingest", "agent"],
+  "workspaces": ["mocks/core", "mocks/crm", "mocks/billing", "mocks/support", "ingest", "agent"],
   "engines": { "node": ">=22" },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
