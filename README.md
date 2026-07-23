@@ -1,5 +1,8 @@
 # Switchboard
 
+![ci](https://github.com/TattedLawyer/switchboard-ai-integration/actions/workflows/ci.yml/badge.svg)
+![chaos](https://github.com/TattedLawyer/switchboard-ai-integration/actions/workflows/chaos.yml/badge.svg)
+
 **Connects business systems that don't talk to each other, cleans up their combined
 data, and puts a supervised AI assistant on top.**
 
@@ -29,6 +32,10 @@ anywhere). Real client work can't be published, so this project shows the same
 engineering on data you can inspect freely.
 
 ## What's built and working today (Phases 0–1)
+
+The `chaos` badge is a nightly run of the seeded-fault reconciliation proof (zero
+lost events across three sources) — red runs are reproducible by re-dispatching the
+workflow with the failing seed.
 
 - A simulated company's CRM that streams signed events and keeps an **HMAC-keyed,
   hash-chained, append-only log** of everything it sends — the tamper-evident

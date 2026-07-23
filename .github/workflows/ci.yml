@@ -1,0 +1,44 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: switchboard
+          POSTGRES_PASSWORD: switchboard
+          POSTGRES_DB: switchboard
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U switchboard"
+          --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      DATABASE_URL: postgres://switchboard:switchboard@localhost:5433/switchboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: typecheck
+        run: npm run typecheck
+      - name: migrate
+        run: npm run migrate -w ingest
+      - name: workspace test suites
+        run: npm test
+      - name: action-safety eval (gating, deterministic)
+        run: npm test -w agent -- action-safety.eval.test.ts
+      - name: seed pipeline fixture for dbt
+        run: npx tsx scripts/ci-fixture.ts
+      - name: dbt build + data tests
+        run: |
+          pip install dbt-postgres==1.11.0
+          cd warehouse && dbt build --profiles-dir .
+        env:
+          DBT_HOST: localhost
+          DBT_PORT: "5433"
+      - name: verify identity resolution against manifest
+        run: npx tsx scripts/verify-identity.ts

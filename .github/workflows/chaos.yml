@@ -1,0 +1,25 @@
+name: chaos
+on:
+  schedule:
+    - cron: "17 9 * * *"   # nightly
+  workflow_dispatch:
+    inputs:
+      fault_seed:
+        description: "mulberry32 fault-plan seed (reproduce a red run by re-entering its seed)"
+        default: "7"
+        required: false
+  pull_request:
+    types: [labeled]
+jobs:
+  chaos-and-demo:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-chaos'
+    runs-on: ubuntu-latest   # docker + compose v2 preinstalled; scripts manage their own postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: chaos reconciliation (seeded fault plan)
+        run: CHAOS_SEED="${{ github.event.inputs.fault_seed || '7' }}" ./scripts/chaos.sh
+      - name: end-to-end demo (template-LLM fallback, no secret needed)
+        run: ./scripts/demo.sh
