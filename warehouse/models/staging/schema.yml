@@ -6,3 +6,45 @@ models:
         data_tests: [unique, not_null]
       - name: name
         data_tests: [not_null]
+  - name: stg_crm__contacts
+    columns:
+      - name: contact_id
+        data_tests: [unique, not_null]
+  - name: stg_crm__deals
+    columns:
+      - name: deal_id
+        data_tests: [unique, not_null]
+  - name: stg_billing__customers
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+  - name: stg_billing__invoices
+    columns:
+      - name: invoice_id
+        data_tests: [unique, not_null]
+      - name: status
+        data_tests:
+          - accepted_values:
+              values: [created, paid, voided]
+  - name: stg_billing__payments
+    columns:
+      - name: payment_id
+        data_tests: [unique, not_null]
+      - name: status
+        data_tests:
+          - accepted_values:
+              values: [succeeded, failed]
+  - name: stg_support__tickets
+    columns:
+      - name: ticket_id
+        data_tests: [unique, not_null]
+      - name: status
+        data_tests:
+          - accepted_values:
+              values: [open, solved]
+  - name: stg_support__csat
+    columns:
+      - name: csat_id
+        data_tests: [unique, not_null]
+      - name: ticket_id
+        data_tests: [unique, not_null]
