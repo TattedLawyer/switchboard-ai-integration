@@ -80,6 +80,9 @@ $drained || { echo "FAIL: ingest pipeline did not drain within 120s (ledger_sum=
 echo "5/6 dbt build"
 docker compose run --rm dbt build
 
+echo "5b/6 verify identity resolution against the seed manifest"
+npx tsx scripts/verify-identity.ts
+
 echo "6/6 generate report"
 npm run report -w agent
 mkdir -p out

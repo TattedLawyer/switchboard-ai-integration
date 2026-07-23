@@ -1,0 +1,12 @@
+version: 2
+models:
+  - name: customer_360
+    description: >
+      One row per resolved canonical entity (D6). CRM canonical companies plus
+      billing/support-only entities (kept, flagged incomplete — never hidden).
+    columns:
+      - name: entity_id
+        description: Resolved/canonical entity id — the mart uniqueness key (D6).
+        data_tests: [unique, not_null]
+      - name: is_complete
+        data_tests: [not_null]

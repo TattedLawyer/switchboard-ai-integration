@@ -10,3 +10,6 @@ models:
     identity:
       +materialized: table
       +schema: analytics
+    marts:
+      +materialized: table
+      +schema: analytics
