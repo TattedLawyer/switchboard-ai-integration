@@ -1,10 +1,17 @@
 import { PgBoss } from "pg-boss";
 import type pg from "pg";
-import type { CrmEvent } from "./server.js";
+import type { SourceEvent } from "./server.js";
 import { ingestEvent } from "./ingest-event.js";
+import { SOURCES, type Source } from "./sources.js";
 
-export const INGEST_QUEUE = "ingest-event";
-export const INGEST_DLQ = "ingest-event-dlq";
+// Per-source queues and DLQs (isolation: a poison billing job can never block CRM
+// ingestion, and DLQ depth is inspectable per source).
+export function queueName(source: Source): string {
+  return `ingest-${source}`;
+}
+export function dlqName(source: Source): string {
+  return `ingest-${source}-dlq`;
+}
 
 interface RetryOptions {
   retryLimit?: number;
@@ -37,10 +44,6 @@ export async function createQueue(
     retryDelay: retryOpts?.retryDelay ?? 1,
     retryBackoff: retryOpts?.retryBackoff ?? true,
   };
-  const queueOpts = {
-    deadLetter: INGEST_DLQ,
-    ...dlqOpts,
-  };
 
   // pg-boss's createQueue is an idempotent INSERT (ON CONFLICT DO NOTHING under the hood): if the
   // queue already exists from a prior createQueue() call (e.g. an earlier test in the same shared
@@ -49,20 +52,28 @@ export async function createQueue(
   // already been created by an earlier test with the default retryLimit of 5, so the tiny-retry
   // options never took effect and the poison-path test's dead-letter never landed inside its poll
   // window. Always upsert via updateQueue afterward so options passed here are actually applied.
-  await boss.createQueue(INGEST_DLQ, dlqOpts);
-  await boss.updateQueue(INGEST_DLQ, dlqOpts);
+  for (const source of SOURCES) {
+    const queueOpts = {
+      deadLetter: dlqName(source),
+      ...dlqOpts,
+    };
 
-  await boss.createQueue(INGEST_QUEUE, queueOpts);
-  await boss.updateQueue(INGEST_QUEUE, queueOpts);
+    await boss.createQueue(dlqName(source), dlqOpts);
+    await boss.updateQueue(dlqName(source), dlqOpts);
+
+    await boss.createQueue(queueName(source), queueOpts);
+    await boss.updateQueue(queueName(source), queueOpts);
+  }
 
   return boss;
 }
 
 export async function enqueueEvent(
   boss: PgBoss,
-  event: CrmEvent
+  source: Source,
+  event: SourceEvent
 ): Promise<void> {
-  await boss.send(INGEST_QUEUE, event, {
+  await boss.send(queueName(source), event, {
     // Use queue-level defaults, but can be overridden per job if needed
   });
 }
@@ -76,7 +87,7 @@ export async function startWorker(
   boss: PgBoss,
   pool: pg.Pool,
   workerOpts?: WorkerOptions
-): Promise<string> {
+): Promise<string[]> {
   // Demo-appropriate cadence: pg-boss defaults (batchSize 1, pollingIntervalSeconds 2)
   // process events one at a time roughly every ~1.6-2s, which makes a 50-event demo
   // take ~100s to drain. Pull a bigger batch on a faster poll so the queue drains in
@@ -87,35 +98,42 @@ export async function startWorker(
     pollingIntervalSeconds: workerOpts?.pollingIntervalSeconds ?? 0.5,
   };
 
-  // Return the worker ID; this function will keep the worker running
-  return boss.work(INGEST_QUEUE, options, async (jobs) => {
-    // Process each job in the batch
-    for (const job of jobs) {
-      await ingestEvent(pool, job.data as CrmEvent);
-    }
-  });
+  // One worker per source queue; each keeps running after this function returns.
+  const workerIds: string[] = [];
+  for (const source of SOURCES) {
+    const id = await boss.work(queueName(source), options, async (jobs) => {
+      // Process each job in the batch
+      for (const job of jobs) {
+        await ingestEvent(pool, source, job.data as SourceEvent);
+      }
+    });
+    workerIds.push(id);
+  }
+  return workerIds;
 }
 
 export async function fetchDlq(
   boss: PgBoss,
   limit: number = 10
-): Promise<{ id: string; data: CrmEvent }[]> {
-  // Fetch all jobs from the DLQ queue
-  // Note: In pg-boss, the DLQ is just another queue, so we query it directly
-  const jobs = await boss.findJobs<CrmEvent>(INGEST_DLQ);
+): Promise<{ source: Source; id: string; data: SourceEvent }[]> {
+  // Aggregate pending jobs across every source's DLQ, tagging each with its source.
+  // Note: In pg-boss, a DLQ is just another queue, so we query each directly.
+  const aggregated: { source: Source; id: string; data: SourceEvent }[] = [];
+  for (const source of SOURCES) {
+    const jobs = await boss.findJobs<SourceEvent>(dlqName(source));
 
-  // Empirically verified (pg-boss v12.26.1): when a job dead-letters out of its source
-  // queue, pg-boss inserts a BRAND NEW job into the DLQ queue with state 'created' (it does
-  // not carry over 'failed'/'retry' state). So the DLQ queue's pending, unconsumed jobs are
-  // exactly those in state 'created' or 'retry' — the opposite of what the old filter assumed.
-  // This is a peek (read-only via findJobs), so jobs remain fetchable for Task 7's replay CLI.
-  return jobs
-    .filter((job) => job.state === "created" || job.state === "retry")
-    .slice(0, limit)
-    .map((job) => ({
-      id: job.id,
-      data: job.data,
-    }));
+    // Empirically verified (pg-boss v12.26.1): when a job dead-letters out of its source
+    // queue, pg-boss inserts a BRAND NEW job into the DLQ queue with state 'created' (it does
+    // not carry over 'failed'/'retry' state). So the DLQ queue's pending, unconsumed jobs are
+    // exactly those in state 'created' or 'retry' — the opposite of what the old filter assumed.
+    // This is a peek (read-only via findJobs), so jobs remain fetchable for the replay CLI.
+    for (const job of jobs) {
+      if (job.state === "created" || job.state === "retry") {
+        aggregated.push({ source, id: job.id, data: job.data });
+      }
+    }
+  }
+  return aggregated.slice(0, limit);
 }
 
 export async function replayDlq(
@@ -129,9 +147,10 @@ export async function replayDlq(
 
   for (const job of dlqJobs) {
     try {
-      // ingestEvent is idempotent (ON CONFLICT DO NOTHING on event_id), so re-running it here is
-      // safe even in the edge case where the original job actually succeeded before dead-lettering.
-      await ingestEvent(pool, job.data);
+      // ingestEvent is idempotent (ON CONFLICT DO NOTHING on (source, event_id)), so re-running it
+      // here is safe even in the edge case where the original job actually succeeded before
+      // dead-lettering.
+      await ingestEvent(pool, job.source, job.data);
 
       // Consume the DLQ job so it isn't replayed again. fetchDlq() peeks jobs via findJobs() —
       // it does NOT fetch/lease them the way boss.work()/boss.fetch() do, so these jobs are still
@@ -141,7 +160,7 @@ export async function replayDlq(
       // the job consumed and fetchDlq() would return it again on the next replay. boss.deleteJob()
       // deletes by name+id with no state precondition, which is what we actually want here: the
       // job has already been handled (ingested), so remove it from the DLQ outright.
-      await boss.deleteJob(INGEST_DLQ, job.id);
+      await boss.deleteJob(dlqName(job.source), job.id);
       replayed++;
     } catch {
       failed++;

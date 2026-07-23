@@ -1,21 +1,26 @@
 import type pg from "pg";
-import type { CrmEvent } from "./server.js";
+import type { SourceEvent } from "./server.js";
 
-export async function ingestEvent(pool: pg.Pool, event: CrmEvent): Promise<"inserted" | "duplicate"> {
+export async function ingestEvent(
+  pool: pg.Pool,
+  source: string,
+  event: SourceEvent,
+): Promise<"inserted" | "duplicate"> {
   const client = await pool.connect();
   try {
     await client.query("begin");
 
     const insertResult = await client.query(
-      "insert into raw.raw_crm_events (event_id, event_type, payload) values ($1, $2, $3) on conflict (event_id) do nothing",
-      [event.event_id, event.event_type, JSON.stringify(event)],
+      `insert into raw.raw_events (source, event_id, event_type, payload)
+       values ($1, $2, $3, $4) on conflict (source, event_id) do nothing`,
+      [source, event.event_id, event.event_type, JSON.stringify(event)],
     );
 
     if (insertResult.rowCount === 1) {
       // Insert was successful, write outbox row
       await client.query(
-        "insert into ingest.outbox (event_id) values ($1)",
-        [event.event_id],
+        "insert into ingest.outbox (source, event_id) values ($1, $2)",
+        [source, event.event_id],
       );
       await client.query("commit");
       return "inserted";

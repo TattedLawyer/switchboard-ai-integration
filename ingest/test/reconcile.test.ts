@@ -36,8 +36,8 @@ function ledgerLine(eventId: string, seq: number): string {
 
 async function insertRaw(pool: pg.Pool, eventId: string): Promise<void> {
   await pool.query(
-    `insert into raw.raw_crm_events (event_id, event_type, payload)
-     values ($1, 'company.updated', '{}'::jsonb)`,
+    `insert into raw.raw_events (source, event_id, event_type, payload)
+     values ('crm', $1, 'company.updated', '{}'::jsonb)`,
     [eventId],
   );
 }
@@ -54,7 +54,7 @@ describe("reconcile", () => {
       await insertRaw(pool, id);
     }
 
-    const report = await reconcile(pool, ledgerPath);
+    const report = await reconcile(pool, "crm", ledgerPath);
 
     expect(report.ledger).toBe(5);
     expect(report.raw).toBe(4);
@@ -74,7 +74,7 @@ describe("reconcile", () => {
       await insertRaw(pool, id);
     }
 
-    const report = await reconcile(pool, ledgerPath);
+    const report = await reconcile(pool, "crm", ledgerPath);
 
     expect(report.ledger).toBe(3);
     expect(report.raw).toBe(3);

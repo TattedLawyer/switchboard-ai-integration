@@ -4,7 +4,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { quarantineEvent, replayQuarantined } from "../src/quarantine.js";
 import { ingestEvent } from "../src/ingest-event.js";
-import { signBody } from "../src/hmac.js";
+import { secretForSource, signBody } from "../src/hmac.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -34,7 +34,7 @@ describe("quarantine", () => {
     const rawBody = JSON.stringify(invalidPayload);
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(rawBody) },
+      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(rawBody, secretForSource("crm")) },
       body: rawBody,
     });
 
@@ -76,7 +76,7 @@ describe("quarantine", () => {
 
   it("quarantineEvent then replayQuarantined with valid payload returns 'replayed', creates raw row, and sets replayed_at", async () => {
     // Insert valid payload directly into quarantine
-    await quarantineEvent(pool, validEvent, "manual quarantine for testing");
+    await quarantineEvent(pool, "crm", validEvent, "manual quarantine for testing");
 
     const quarantineRow = await pool.query(
       "select id, replayed_at from ingest.quarantine where payload->>'event_id' = $1",
@@ -92,7 +92,7 @@ describe("quarantine", () => {
 
     // Verify raw row was created
     const rawRow = await pool.query(
-      "select event_id, event_type from raw.raw_crm_events where event_id = $1",
+      "select event_id, event_type from raw.raw_events where source = 'crm' and event_id = $1",
       [validEvent.event_id]
     );
     expect(rawRow.rowCount).toBe(1);
@@ -121,7 +121,7 @@ describe("quarantine", () => {
     const rawBody = JSON.stringify(event);
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(rawBody) },
+      headers: { "content-type": "application/json", "x-switchboard-signature": signBody(rawBody, secretForSource("crm")) },
       body: rawBody,
     });
 
@@ -131,7 +131,7 @@ describe("quarantine", () => {
 
     // Verify raw row was created
     const rawRows = await pool.query(
-      "select event_id, event_type from raw.raw_crm_events where event_id = $1",
+      "select event_id, event_type from raw.raw_events where source = 'crm' and event_id = $1",
       [event.event_id]
     );
     expect(rawRows.rowCount).toBe(1);

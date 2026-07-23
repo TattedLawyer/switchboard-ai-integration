@@ -6,7 +6,7 @@ import type { Server } from "node:http";
 import type pg from "pg";
 import { createCrmApp } from "../../mocks/crm/src/server.js";
 import { freshTestDb } from "./helpers/testdb.js";
-import { pollOnce, catchUp, CRM_SOURCE } from "../src/backfill.js";
+import { pollOnce, catchUp } from "../src/backfill.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -42,16 +42,16 @@ describe("backfill", () => {
       }),
     });
 
-    const total = await catchUp(pool, baseUrl);
+    const total = await catchUp(pool, "crm", baseUrl);
     expect(total).toBe(30);
 
-    const raw = await pool.query("select count(*)::int as n from raw.raw_crm_events");
+    const raw = await pool.query("select count(*)::int as n from raw.raw_events where source = 'crm'");
     expect(raw.rows[0].n).toBe(30);
 
     // Poll-path stored payloads must match push-path payloads byte-for-byte: none of the
     // CRM feed's pagination/chain fields (seq, prev_hash, hash) should leak into the stored
     // payload, since those are ledger transport metadata, not part of the CRM event itself.
-    const payloads = await pool.query("select payload from raw.raw_crm_events order by event_id");
+    const payloads = await pool.query("select payload from raw.raw_events where source = 'crm' order by event_id");
     for (const row of payloads.rows) {
       const payload = row.payload;
       expect(payload).not.toHaveProperty("seq");
@@ -61,14 +61,14 @@ describe("backfill", () => {
 
     const cursor = await pool.query(
       "select last_seq from ingest.cursors where source = $1",
-      [CRM_SOURCE],
+      ["crm"],
     );
     expect(cursor.rows[0].last_seq).toBe("30");
 
-    const second = await catchUp(pool, baseUrl);
+    const second = await catchUp(pool, "crm", baseUrl);
     expect(second).toBe(0);
 
-    const rawAfter = await pool.query("select count(*)::int as n from raw.raw_crm_events");
+    const rawAfter = await pool.query("select count(*)::int as n from raw.raw_events where source = 'crm'");
     expect(rawAfter.rows[0].n).toBe(30);
 
     srv.close();
@@ -89,11 +89,11 @@ describe("backfill", () => {
       body: JSON.stringify({ count: 5, fault_plan: { seed: 1, dropRate: 0, dupRate: 0, apiErrorRate: 1 } }),
     });
 
-    await expect(pollOnce(pool, baseUrl)).rejects.toThrow();
+    await expect(pollOnce(pool, "crm", baseUrl)).rejects.toThrow();
 
     const cursor = await pool.query(
       "select last_seq from ingest.cursors where source = $1",
-      [CRM_SOURCE],
+      ["crm"],
     );
     expect(cursor.rowCount).toBe(0);
 
@@ -129,7 +129,7 @@ describe("backfill", () => {
     };
 
     try {
-      const runBackfill = createBackfillRunner(pool, baseUrl);
+      const runBackfill = createBackfillRunner(pool, "crm", baseUrl);
 
       // First call should run (no guard triggered)
       const p1 = runBackfill();

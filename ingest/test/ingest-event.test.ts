@@ -17,17 +17,17 @@ const ev = (id: string) => ({ event_id: id, event_type: "company.updated",
 
 describe("ingestEvent", () => {
   it("inserts once and writes exactly one outbox row", async () => {
-    expect(await ingestEvent(pool, ev("evt-1"))).toBe("inserted");
-    expect(await ingestEvent(pool, ev("evt-1"))).toBe("duplicate");
-    const raw = await pool.query("select count(*)::int as n from raw.raw_crm_events where event_id='evt-1'");
+    expect(await ingestEvent(pool, "crm", ev("evt-1"))).toBe("inserted");
+    expect(await ingestEvent(pool, "crm", ev("evt-1"))).toBe("duplicate");
+    const raw = await pool.query("select count(*)::int as n from raw.raw_events where source='crm' and event_id='evt-1'");
     const ob = await pool.query("select count(*)::int as n from ingest.outbox where event_id='evt-1'");
     expect(raw.rows[0].n).toBe(1);
     expect(ob.rows[0].n).toBe(1);
   });
   it("survives concurrent duplicate ingestion", async () => {
-    const results = await Promise.all(Array.from({ length: 8 }, () => ingestEvent(pool, ev("evt-2"))));
+    const results = await Promise.all(Array.from({ length: 8 }, () => ingestEvent(pool, "crm", ev("evt-2"))));
     expect(results.filter((r) => r === "inserted")).toHaveLength(1);
-    const raw = await pool.query("select count(*)::int as n from raw.raw_crm_events where event_id='evt-2'");
+    const raw = await pool.query("select count(*)::int as n from raw.raw_events where source='crm' and event_id='evt-2'");
     expect(raw.rows[0].n).toBe(1);
   });
 });

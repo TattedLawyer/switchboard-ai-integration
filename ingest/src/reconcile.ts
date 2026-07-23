@@ -84,18 +84,19 @@ export interface ReconcileReport {
   rawDuplicates: number;
 }
 
-export async function reconcile(pool: pg.Pool, ledgerPath: string): Promise<ReconcileReport> {
+export async function reconcile(pool: pg.Pool, source: string, ledgerPath: string): Promise<ReconcileReport> {
   const ledgerEntries = readLedger(ledgerPath);
   const ledgerIds = new Set(ledgerEntries.map((e) => e.event_id));
 
   const rawRes = await pool.query<{ event_id: string }>(
-    "select event_id from raw.raw_crm_events",
+    "select event_id from raw.raw_events where source = $1",
+    [source],
   );
   const rawIds = rawRes.rows.map((r) => r.event_id);
   const rawIdSet = new Set(rawIds);
-  // Structurally always 0: uq_raw_crm_events_event_id (migration 002) makes duplicate
-  // event_id inserts impossible, so this proves identity parity (no duplicate rows can
-  // exist), not payload parity (it says nothing about whether stored payloads match).
+  // Structurally always 0: uq_raw_events_source_event_id (migration 003) makes duplicate
+  // (source, event_id) inserts impossible, so this proves identity parity (no duplicate
+  // rows can exist), not payload parity (it says nothing about whether stored payloads match).
   const rawDuplicates = rawIds.length - rawIdSet.size;
 
   const missing: string[] = [];

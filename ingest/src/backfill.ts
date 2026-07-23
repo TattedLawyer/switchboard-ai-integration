@@ -1,11 +1,9 @@
 import type pg from "pg";
-import type { CrmEvent } from "./server.js";
+import type { SourceEvent } from "./server.js";
 import { ingestEvent } from "./ingest-event.js";
 
-export const CRM_SOURCE = "crm";
-
 interface EventsPage {
-  events: (CrmEvent & { seq: number })[];
+  events: (SourceEvent & { seq: number })[];
   last_seq: number;
 }
 
@@ -29,10 +27,11 @@ async function setCursor(pool: pg.Pool, source: string, lastSeq: number): Promis
 
 export async function pollOnce(
   pool: pg.Pool,
+  source: string,
   baseUrl: string,
   opts?: { limit?: number },
 ): Promise<{ ingested: number; duplicates: number; last_seq: number }> {
-  const cursor = await getCursor(pool, CRM_SOURCE);
+  const cursor = await getCursor(pool, source);
   const limit = opts?.limit ?? 50;
   const url = `${baseUrl}/events?after=${cursor}&limit=${limit}`;
   const res = await fetch(url);
@@ -51,14 +50,14 @@ export async function pollOnce(
       prev_hash?: string;
       hash?: string;
     };
-    const result = await ingestEvent(pool, crmEvent as CrmEvent);
+    const result = await ingestEvent(pool, source, crmEvent as SourceEvent);
     if (result === "inserted") ingested++;
     else duplicates++;
   }
 
   // Only advance the cursor once every event in the page has been ingested.
   if (page.events.length > 0) {
-    await setCursor(pool, CRM_SOURCE, page.last_seq);
+    await setCursor(pool, source, page.last_seq);
   }
 
   return { ingested, duplicates, last_seq: page.events.length > 0 ? page.last_seq : cursor };
@@ -66,6 +65,7 @@ export async function pollOnce(
 
 export async function catchUp(
   pool: pg.Pool,
+  source: string,
   baseUrl: string,
   opts?: { maxRounds?: number; limit?: number; maxConsecutiveFailures?: number },
 ): Promise<number> {
@@ -80,7 +80,7 @@ export async function catchUp(
     rounds++;
     let result: { ingested: number; duplicates: number; last_seq: number };
     try {
-      result = await pollOnce(pool, baseUrl, { limit: opts?.limit });
+      result = await pollOnce(pool, source, baseUrl, { limit: opts?.limit });
     } catch (err) {
       consecutiveFailures++;
       if (consecutiveFailures >= maxConsecutiveFailures) {

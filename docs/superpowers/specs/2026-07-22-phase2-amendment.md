@@ -167,3 +167,91 @@ visible proof.
    not per-push. Agree?
 3. **Vertical profiles:** `plumbing | clinic | saas` the right first three, or swap
    one (e.g. `logistics`)?
+
+---
+
+## 8. Rev 2 — corrections & decisions after Fable-5 spec review (2026-07-22)
+
+The Fable-5 review found a load-bearing error and several gaps. Decisions locked
+here (Michael's recommended-default authority; each is reversible design, flagged
+for veto). These supersede anything above they conflict with.
+
+**D1 — Spine is single-source hardcoded; generalizing it is 2a Task 1 (not "unchanged").**
+Correction to §3: Phase 1's spine pins one source (`raw.raw_crm_events`,
+`/webhooks/crm`, `CRM_SOURCE="crm"`, one `ingest-event` queue, single HMAC secret,
+`stg_crm__companies.sql`). Adding sources REQUIRES parametrizing ingest, reconcile,
+the mock ledger machinery, and the queues — and this happens in **2a**, touching the
+hardened path. The **chaos reconciliation test is the regression guard for this
+work** (same guard §6 reserved for 2b — it applies in 2a too). Revised 2a estimate:
+**3–4 weekends**, not 2–3.
+
+**D2 — Raw storage: ONE table `raw.raw_events` with a `source` column** (not
+per-source tables). Uniform reconcile/backfill/DLQ, dbt filters by `source`; unique
+index becomes `(source, event_id)`. Drives all staging models.
+
+**D3 — Per-source HMAC secrets** (`WEBHOOK_SECRET_CRM`, `_BILLING`, `_SUPPORT`),
+not one shared secret — the security posture a reviewer checks once there are 3
+sources.
+
+**D4 — Correlated cross-system seed manifest is a 2a deliverable.** One master seed
+deterministically derives all sources' entities with a PLANNED matrix: cross-system
+overlap (for tier-1 email match), deliberate ~8% duplicates, near-miss domains
+(tier-2), unmatchable rows (tier-3), and merge-candidate pairs. Also: add the
+`contacts` entity the original spec §2 listed but the seed never had. Build the
+generator to accept a `profile` param NOW (stubbed in 2a); vertical profile *content*
+lands in 2b — avoids rebuilding the generator twice.
+
+**D5 — Identity resolution + merge, fully specified.** Three deterministic tiers
+(exact email → normalized domain+name → `manual_review` table, a plain Postgres
+table/incremental model, NOT a dbt `seed` which is static CSV). Merge: immutable
+`merge_edges` table from `company.merged` (fromId→toId); resolution = follow-to-
+terminal with a cycle guard, computed **at mart build only — raw is never rewritten**
+(preserves append-only). dbt tests assert no cycles + all chains terminate.
+Transitive merges (A→B→C) resolve by batch recompute over full history (arrival
+order washes out — state this as the design property). **Unmerge: out of scope**
+(real CRMs barely support it). Every resolution records matched-tier + evidence +
+merge lineage (auditable).
+
+**D6 — customer_360 grain:** an entity present only in billing or support DOES get a
+row, flagged `incomplete` (more useful than hiding it); mart uniqueness tests key on
+the resolved entity id.
+
+**D7 — Hydration (2b), fully specified so it does NOT threaten the spine:** the thin
+HubSpot event is stored in `raw.raw_events` exactly as received (ledger
+reconciliation over event_ids is untouched — the spine's "store what you received"
+contract never changes). Hydrated full records go in a SEPARATE table keyed
+`(event_id, fetched_at)`. Second oracle: every thin event → a hydrated snapshot OR
+the DLQ, nothing in limbo (hydration fetches fail independently — 429/5xx/404).
+Races handled: deleted-before-fetch → 404 → tombstone; fetch returns *fetch-time*
+state while the event carries *notify-time* `occurred_at` → staging occurred_at-wins
+logic governs.
+
+**D8 — 2b support source = Salesforce Service Cloud *cases* via the Pub/Sub
+paradigm** (not Zendesk-on-a-bus, which is a mash-up). Service Cloud is genuinely a
+support product consumed over the event bus → vendor-faithful AND carries the
+event-bus paradigm, no fourth system, no product-imitation drift (you integrate
+*over* Salesforce — exactly the stated positioning). 2a's support connector is
+acknowledged scaffolding that the 2b bus source replaces.
+
+**D9 — Old CRM mock retires at 2b exit**, AFTER the chaos harness (fault plans +
+hash-chained ledger) is ported to the faithful HubSpot mock. No "two CRMs forever."
+
+**D10 — Verticals: `plumbing | saas | logistics`** (drop `clinic` — it collides with
+the original spec §7 health-domain deferral and invites HIPAA-flavored scrutiny for
+zero portfolio gain; logistics matches existing seed sectors and spans trades /
+software / enterprise-ops).
+
+**D11 — CI:** per-push = typecheck + unit/integration suites (Postgres as a GitHub
+Actions service container, free-tier fine) + `dbt build`/tests + action-safety eval;
+chaos + demo = nightly + manual dispatch + on-label, with the chaos fault-plan seed
+as a workflow input (reproducible red runs) and the nightly result surfaced in the
+README (badge/link) so the most impressive check is visible to a reviewer.
+
+**D12 — Event bus over HTTP/JSON** (not gRPC/Avro): model the load-bearing paradigm
+parts — subscribe, per-event `replay_id`, resubscribe-from-replay_id after
+disconnect, at-least-once → idempotent-ingest handoff. Document the delta in an ADR
+alongside the OAuth delta.
+
+**D13 — Positioning ADR line:** `manual_review` and the approval table are
+Switchboard *operational* state, not a system of record; the Phase 4 README line
+stays pinned to "reads from, never masters, customer data."

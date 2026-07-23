@@ -31,7 +31,7 @@ describe("mock CRM", () => {
     const port = (srv.address() as { port: number }).port;
     const res = await fetch(`http://127.0.0.1:${port}/companies?page=2&per_page=8`);
     const body = await res.json();
-    expect(body.total).toBe(20);
+    expect(body.total).toBe(22);
     expect(body.items).toHaveLength(8);
     expect(body.items[0].id).toBe("DEMO-C-0009");
     srv.close();
@@ -85,7 +85,7 @@ describe("mock CRM", () => {
     srv.close();
   });
 
-  it("simulate covers all company ids (seed coverage)", async () => {
+  it("simulate covers all company ids and emits both merge events (seed coverage)", async () => {
     const ledgerPath = join(dir, "l.jsonl");
     const crm = createCrmApp({ webhookUrl: sinkUrl, ledgerPath });
     const srv = crm.listen(0);
@@ -93,15 +93,21 @@ describe("mock CRM", () => {
     const res = await fetch(`http://127.0.0.1:${port}/simulate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ count: 80 }),
+      body: JSON.stringify({ count: 90 }),
     });
-    expect((await res.json()).emitted).toBe(80);
+    expect((await res.json()).emitted).toBe(90);
 
     const ledger = readLedger(ledgerPath);
     const companyEvents = ledger.filter((e) => e.event_type === "company.updated");
     const distinctCompanyIds = new Set(companyEvents.map((e) => (e.data as { id: string }).id));
+    expect(distinctCompanyIds.size).toBe(22);
 
-    expect(distinctCompanyIds.size).toBe(20);
+    const merges = ledger.filter((e) => e.event_type === "company.merged");
+    expect(merges).toHaveLength(2);
+    expect(merges.map((e) => e.data)).toEqual([
+      { from_id: "DEMO-C-0021", to_id: "DEMO-C-0001" },
+      { from_id: "DEMO-C-0022", to_id: "DEMO-C-0002" },
+    ]);
     srv.close();
   });
 
