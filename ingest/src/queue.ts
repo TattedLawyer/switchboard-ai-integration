@@ -1,4 +1,4 @@
-import { PgBoss } from "pg-boss";
+import { PgBoss, type JobResult } from "pg-boss";
 import type pg from "pg";
 import type { SourceEvent } from "./server.js";
 import { ingestEvent } from "./ingest-event.js";
@@ -101,12 +101,36 @@ export async function startWorker(
   // One worker per source queue; each keeps running after this function returns.
   const workerIds: string[] = [];
   for (const source of SOURCES) {
-    const id = await boss.work(queueName(source), options, async (jobs) => {
-      // Process each job in the batch
-      for (const job of jobs) {
-        await ingestEvent(pool, source, job.data as SourceEvent);
+    const id = await boss.work(
+      queueName(source),
+      { ...options, perJobResults: true as const },
+      async (jobs) => {
+        // Per-job error isolation. Without it, one poison job failed the WHOLE batch (a bare
+        // handler throw makes pg-boss fail every job it fetched), so healthy events co-batched
+        // with a poison event were retried and dead-lettered alongside it. With perJobResults
+        // (verified in pg-boss v12.26.1: Manager.#settlePerJob) the handler resolves with a
+        // per-job disposition and pg-boss settles each job individually: 'completed' jobs are
+        // completed with their own output, and 'failed' jobs run the SAME retry/dead-letter CTE
+        // as a handler throw (plans.failJobsBody: retry while retry_count < retry_limit, then
+        // terminal fail + DLQ route) — so the poison job's retry policy is unchanged. Any job
+        // omitted from the result array is failed by pg-boss with a descriptive error, and a
+        // handler throw still fails the whole batch, so the try/catch below must stay per-job.
+        const results: JobResult[] = [];
+        for (const job of jobs) {
+          try {
+            await ingestEvent(pool, source, job.data as SourceEvent);
+            results.push({ id: job.id, status: "completed" });
+          } catch (err) {
+            results.push({
+              id: job.id,
+              status: "failed",
+              output: { message: err instanceof Error ? err.message : String(err) },
+            });
+          }
+        }
+        return results;
       }
-    });
+    );
     workerIds.push(id);
   }
   return workerIds;

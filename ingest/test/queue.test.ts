@@ -204,4 +204,79 @@ describe("pg-boss queue", () => {
       await boss.stop();
     }
   }, 25000);
+
+  it("(poison batch isolation) healthy jobs co-batched with a poison job are ingested once and never dead-letter", async () => {
+    // Clean slate: earlier tests in this shared DB left ingested rows and DLQ jobs behind;
+    // clear both so the exact-membership assertions below hold.
+    await pool.query("truncate table raw.raw_events, ingest.outbox restart identity");
+    await pool.query("delete from pgboss.job");
+
+    // Tiny retry options so the poison job exhausts retries and dead-letters within the poll window.
+    const boss = await createQueue(connectionString, {
+      retryLimit: 1,
+      retryDelay: 1,
+      retryBackoff: false,
+    });
+    try {
+      const poisonId = "evt-batch-poison";
+      const healthyIds = ["evt-batch-h1", "evt-batch-h2"];
+
+      // Ingest attempts per event_id, counted at the raw_events insert (ingestEvent's first
+      // event-specific statement), so "exactly once" is asserted on attempts, not just on the
+      // idempotent end state (ON CONFLICT DO NOTHING would mask a wasteful retry).
+      const attempts = new Map<string, number>();
+
+      // Same mechanism as the poison tests above (make ingestEvent throw via the pool), but
+      // selective: delegate to the real pool and reject only the poison event's insert, so the
+      // healthy events in the SAME batch can succeed. ingestEvent's raw_events insert carries the
+      // event_id as its second parameter (see src/ingest-event.ts).
+      const selectivePool = {
+        connect: async () => {
+          const client = await pool.connect();
+          return {
+            query: async (text: string, params?: unknown[]) => {
+              if (text.includes("raw.raw_events") && Array.isArray(params)) {
+                const eventId = params[1] as string;
+                attempts.set(eventId, (attempts.get(eventId) ?? 0) + 1);
+                if (eventId === poisonId) throw new Error("Pool is poisoned for this event");
+              }
+              return client.query(text, params);
+            },
+            release: () => client.release(),
+          };
+        },
+      } as unknown as pg.Pool;
+
+      // Enqueue all three BEFORE starting the worker so its first fetch picks them up as ONE
+      // batch (startWorker's default batchSize is 10), with the poison sandwiched between the
+      // healthy events.
+      await enqueueEvent(boss, "crm", ev(healthyIds[0]));
+      await enqueueEvent(boss, "crm", ev(poisonId));
+      await enqueueEvent(boss, "crm", ev(healthyIds[1]));
+      await startWorker(boss, selectivePool);
+
+      // Wait for the poison job to exhaust retries and land in the DLQ.
+      await pollUntil(async () => {
+        const dlqJobs = await fetchDlq(boss);
+        return dlqJobs.some((j) => j.data.event_id === poisonId);
+      }, 20_000);
+
+      // Both healthy events were ingested...
+      const raw = await pool.query("select event_id from raw.raw_events order by event_id");
+      expect(raw.rows.map((r) => r.event_id)).toEqual(healthyIds);
+
+      // ...exactly once each — sharing a batch with the poison job must not cause re-processing...
+      expect(attempts.get(healthyIds[0])).toBe(1);
+      expect(attempts.get(healthyIds[1])).toBe(1);
+
+      // ...while the poison job kept its retry policy: initial attempt + 1 retry (retryLimit: 1).
+      expect(attempts.get(poisonId)).toBe(2);
+
+      // The DLQ holds ONLY the poison event — healthy co-batched events never dead-letter.
+      const dlqJobs = await fetchDlq(boss);
+      expect(dlqJobs.map((j) => j.data.event_id)).toEqual([poisonId]);
+    } finally {
+      await boss.stop();
+    }
+  }, 25000);
 });
