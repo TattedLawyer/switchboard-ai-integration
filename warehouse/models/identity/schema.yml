@@ -1,0 +1,30 @@
+version: 2
+models:
+  - name: merge_edges
+    columns:
+      - name: from_id
+        data_tests: [unique, not_null]
+      - name: to_id
+        data_tests: [not_null]
+  - name: int_crm__canonical_companies
+    columns:
+      - name: company_id
+        data_tests: [unique, not_null]
+      - name: canonical_id
+        data_tests: [not_null]
+  - name: identity_resolution
+    columns:
+      - name: resolution_key
+        data_tests: [unique, not_null]
+      - name: resolved_entity_id
+        data_tests: [not_null]
+      - name: matched_tier
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3]
+              quote: false
+  - name: manual_review
+    columns:
+      - name: resolution_key
+        data_tests: [unique, not_null]
