@@ -16,14 +16,21 @@ export async function generateMondayReport(
   const client = new Client({ name: "host", version: "0.1.0" });
   await client.connect(clientTx);
 
+  // Canonical accounts come from the unified customer_360 mart (post identity-resolution),
+  // NOT stg_crm__companies — the staging view still lists merged-away duplicate company ids.
+  // has_crm limits the account list to the canonical CRM companies; billing/support-only
+  // (incomplete) entities are surfaced separately as a manual-review count, not hidden.
   const ids = await pool.query(
-    `select company_id from ${schema}.stg_crm__companies order by company_id`,
+    `select entity_id from ${schema}.customer_360 where has_crm order by entity_id`,
+  );
+  const incomplete = await pool.query(
+    `select count(*)::int as n from ${schema}.customer_360 where not is_complete`,
   );
   const snapshots: string[] = [];
   for (const row of ids.rows) {
     const res = await client.callTool({
       name: "get_account_health",
-      arguments: { company_id: row.company_id },
+      arguments: { entity_id: row.entity_id },
     });
     snapshots.push(((res.content as { text: string }[])[0]).text);
   }
@@ -33,11 +40,13 @@ export async function generateMondayReport(
   );
   return [
     "# Monday Revenue-Risk Report",
-    `_Generated ${new Date().toISOString()} · ${snapshots.length} accounts · simulated data_`,
+    `_Generated ${new Date().toISOString()} · ${snapshots.length} canonical accounts · simulated data_`,
     "",
     narrative,
     "",
     "## Account snapshots",
     ...snapshots.map((s) => `- \`${s}\``),
+    "",
+    `_${incomplete.rows[0].n} billing/support-only entities (no CRM record) are pending manual review and excluded from the account list._`,
   ].join("\n");
 }
