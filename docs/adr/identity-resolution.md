@@ -38,6 +38,19 @@ fail for the right reason.
   rows with noisy free-text; at this dataset's width, deterministic rules cover every
   planned case and the residue is small enough for a human queue.
 
+**The false-positive side, stated plainly.** The honesty argument above covers false
+*negatives*: an unmatched entity lands in `manual_review` instead of being guessed. The
+symmetric risk is a false *positive* — tier 1 over-merging two genuinely distinct
+companies that share an email (the classic case: an outsourced bookkeeper's freemail
+address on both companies' billing records). The guard: when a tier-1 email matches
+**more than one** candidate canonical company, the entity is demoted to `manual_review`
+with the ambiguity recorded as evidence (`ambiguous email=... matched N canonical
+companies`) rather than merged onto either. The residual risk is the single-candidate
+collision — a shared email that happens to match exactly one CRM company while actually
+belonging to a different real-world one. No deterministic rule can detect that from the
+email alone; it is exactly the case the sampled human audit of resolved links (see the
+[real-connector delta](../real-connector-delta.md)) exists to catch.
+
 **The "at scale" comparison, for the record:** probabilistic record linkage is a mature
 literature — the Fellegi–Sunter model (Fellegi & Sunter, *A Theory for Record Linkage*,
 JASA, 1969) underpins modern open-source implementations such as

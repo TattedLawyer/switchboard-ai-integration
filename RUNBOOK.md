@@ -89,12 +89,20 @@ identity layer and `customer_360` against the seed manifest's planned match matr
 
 ## Backup and restore
 
-Backup = `pg_dump` of the database + copies of the three ledger files. The
-architecture's restore story is stronger than the backup: because the ledgers
-(production analog: the source systems) are the source of truth and ingestion is
-idempotent, **restore is replay** — an empty database rebuilt by the backfill
-poller converges to the same state, which is exactly what the chaos test
-demonstrates on every run.
+Backup = `pg_dump` of the database + copies of the three ledger files. Within
+the demo's ledger-as-oracle model, the restore story is stronger than the
+backup: because the ledgers (production analog: the source systems) are the
+source of truth and ingestion is idempotent, **restore is replay** — an empty
+database rebuilt by the backfill poller converges to the same state, which is
+exactly what the chaos test demonstrates on every run.
+
+**Production caveat:** that guarantee leans on a mock affordance — a complete,
+replayable event history. Real vendors don't retain unbounded history (see
+[real-connector delta](docs/real-connector-delta.md)): modified-since endpoints
+have lookback limits, and a multi-year backfill must be scheduled within rate
+budgets, not replayed in one pass. Production DR is therefore **pg backup as the
+primary restore path, plus bounded vendor replay** to close the gap between the
+backup timestamp and now — not unbounded ledger replay from empty.
 
 ## Common failures
 

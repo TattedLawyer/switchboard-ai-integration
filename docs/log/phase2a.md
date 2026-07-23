@@ -35,13 +35,16 @@ rejected: it preserves a name that nothing should be reading anymore.
   still fails per-source with the 42 missing events listed.
 - `./scripts/demo.sh`: 288 events across three sources (crm 108, billing 100,
   support 80), ledger=raw=outbox equality 288/288/288, dbt build green (13 models +
-  41 data tests), the identity oracle PASS, and the Monday report generated.
+  41 data tests at phase close; the post-close hardening pass grew this to 14
+  models + 46 data tests, 60/60 build steps), the identity oracle PASS, and the
+  Monday report generated.
 - Identity: 22 staged companies collapse to 20 canonical entities (merged-away ids
   absent from the mart, their deals re-pointed — conservation asserted); 30
   external entities resolve 19 tier-1 / 5 tier-2 / 6 manual-review, exactly the
   manifest's planned matrix; `customer_360` = 26 rows (20 canonical + 6
   incomplete-flagged); 8 companies verified present in all three systems.
-- 101 tests green, typecheck clean.
+- 101 tests green at phase close (106 after the post-close hardening pass),
+  typecheck clean.
 
 **What actually happened, beyond the plan:**
 

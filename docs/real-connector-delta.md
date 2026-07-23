@@ -67,6 +67,20 @@ The three-tier structure, the provenance columns, and the mart-time-only
 resolution are unchanged; what grows is the per-vendor mapping into
 `merge_edges` and the tier-normalization functions.
 
+**Identity quality loses its oracle.** The demo's identity verification is
+closed-world: `scripts/verify-identity.ts` set-compares the resolved assignment
+against the seed manifest's *planned* match matrix, so correctness is provable
+because the ground truth ships with the data. Real data has no manifest — there
+is no oracle to compare against, and "the identity layer is right" stops being a
+test result and becomes an ongoing measurement problem. The production
+replacements are: **match-rate monitoring** (share of external entities resolving
+at each tier, alert on drift), the **`manual_review` inflow rate** as a leading
+quality signal (a normalization regression shows up as a tier-3 spike before
+anyone reads a wrong report), and **periodic sampled human audit** of resolved
+links — the provenance columns (`matched_tier`, `match_evidence`) exist precisely
+so a sampled link can be verified in one look. Same architecture, different
+epistemics: the demo proves the mechanism; production instruments it.
+
 ## Operational deltas
 
 Secrets management — now concretely **per-source secret rotation**: each source

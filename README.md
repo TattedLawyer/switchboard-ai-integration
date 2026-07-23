@@ -56,7 +56,8 @@ engineering on data you can inspect freely.
 - **A zero-data-loss proof you can run:** `./scripts/chaos.sh` fires 600 events —
   200 per source, all three under injected failures simultaneously — and proves,
   by reconciling each source against its tamper-evident log, that every event
-  landed exactly once (~20 seconds, deterministic).
+  landed exactly once (typically ~20 seconds; the settle wait is backoff-aware
+  and bounded at 240s so retry-backoff spikes finish instead of flaking).
 - **Identity resolution** (dbt): three deterministic tiers — exact email match,
   then normalized domain + company name, then a `manual_review` queue (never a
   silent guess) — with **every resolved link recording which tier matched and the
@@ -78,15 +79,16 @@ engineering on data you can inspect freely.
 - A worker that generates the Monday revenue-risk report — with a timeout and
   fallback so the report generates even when the AI service is down, and per-call
   cost logging.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 101 tests, the
-  dbt build (13 models + 41 data tests), the agent action-safety eval, and the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 106 tests, the
+  dbt build (14 models + 46 data tests), the agent action-safety eval, and the
   identity oracle, against a real Postgres service container
   ([`ci.yml`](.github/workflows/ci.yml)). The heavier chaos + demo proof runs on
   a nightly schedule and manual dispatch, with the fault seed as a workflow input
   so any red run is reproducible by re-entering its seed
   ([`chaos.yml`](.github/workflows/chaos.yml)). The badges above track those
-  workflows.
-- 101 automated tests, written test-first, all green locally; the whole pipeline
+  workflows — they show "no runs" until the first GitHub run, which is pending
+  (pushing the workflow files requires a workflow-scoped credential).
+- 106 automated tests, written test-first, all green locally; the whole pipeline
   runs from one command; operational docs included ([runbook](RUNBOOK.md),
   [identity ADR](docs/adr/identity-resolution.md),
   [scaling ceilings](docs/scaling-ceilings.md),
@@ -103,7 +105,7 @@ engineering on data you can inspect freely.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 101 tests green; 41/41 dbt data tests (54 build steps incl. 13 models) |
+| Suite | `npm test` + dbt | 106 tests green; 46/46 dbt data tests (60 build steps incl. 14 models) |
 
 ## What's coming (built in phases, in public)
 
@@ -121,7 +123,7 @@ engineering on data you can inspect freely.
 `@switchboard/mock-core`: PRNG faults, HMAC signing, keyed hash-chain ledger,
 correlated seed manifest) → Express 5/TypeScript ingest (`/webhooks/:source`,
 per-source HMAC verify, per-source pg-boss queues + DLQs, per-source cursors) →
-single `raw.raw_events` (`(source, event_id)` unique) → dbt: 7 staging views
+single `raw.raw_events` (`(source, event_id)` unique) → dbt: 8 staging views
 (`distinct on` latest-state, event-time ordered) → identity layer (`merge_edges` →
 recursive canonical walk → 3-tier `identity_resolution` with provenance →
 `manual_review` incremental) → `customer_360` mart → MCP server (official TS SDK,
@@ -155,7 +157,7 @@ DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard npm t
 ```bash
 npm install
 ./scripts/demo.sh        # end-to-end: 288 events, 3 sources → oracle-equality + identity checks → report (~20s)
-./scripts/chaos.sh       # 600 events under injected faults → zero-loss proof (~20s)
+./scripts/chaos.sh       # 600 events under injected faults → zero-loss proof (~20s typical, bounded at 240s)
 ```
 
 **Stack:** TypeScript / Node 22 · Express 5 · Postgres 16 · dbt · pg-boss · MCP
