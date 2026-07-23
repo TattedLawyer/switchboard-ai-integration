@@ -28,3 +28,13 @@ models:
     columns:
       - name: resolution_key
         data_tests: [unique, not_null]
+  - name: manual_review_status
+    columns:
+      - name: resolution_key
+        data_tests: [unique, not_null]
+      - name: is_current
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: [true, false]
+              quote: false
