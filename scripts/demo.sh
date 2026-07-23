@@ -44,9 +44,15 @@ PORT=4003 WEBHOOK_URL=http://localhost:4002/webhooks/billing LEDGER_PATH="$LEDGE
 PORT=4004 WEBHOOK_URL=http://localhost:4002/webhooks/support LEDGER_PATH="$LEDGER_PATH_SUPPORT" npm run start -w mocks/support & pids+=($!)
 sleep 2
 
-echo "4/6 simulate: crm 80 (22 companies + both merges), billing 100 (all 16 customers), support 80 (all requesters via first 14 tickets)"
+# crm 108 (was 80): identity resolution's SUPPORT tier-1 expectations (S-0006..S-0009) key on
+# CRM contact emails at contact indices 20/22/24/26 (P-0021/P-0023/P-0025/P-0027). The crm
+# script emits contact index floor(i/4) at slots i%4==1, so index 26 emits at i=105 — a count
+# below 106 never stages those contacts and support tier-1 fails for a data-coverage reason,
+# not a logic bug. 108 rounds up to a whole 4-slot cycle. Companies (all 22 by i=43) and both
+# merges (i=45,46) were already covered at 80.
+echo "4/6 simulate: crm 108 (22 companies + both merges + contacts through P-0027), billing 100 (all 16 customers), support 80 (all requesters via first 14 tickets)"
 curl -sf -X POST http://localhost:4001/simulate \
-  -H 'content-type: application/json' -d '{"count": 80}' > /dev/null
+  -H 'content-type: application/json' -d '{"count": 108}' > /dev/null
 curl -sf -X POST http://localhost:4003/simulate \
   -H 'content-type: application/json' -d '{"count": 100}' > /dev/null
 curl -sf -X POST http://localhost:4004/simulate \
