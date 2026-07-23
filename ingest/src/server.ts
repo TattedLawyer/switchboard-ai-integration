@@ -1,7 +1,7 @@
 import express from "express";
 import { z } from "zod";
 import type pg from "pg";
-import { containsNul, quarantineEvent } from "./quarantine.js";
+import { jsonbUnstorableReason, quarantineEvent } from "./quarantine.js";
 import { ingestEvent } from "./ingest-event.js";
 import { secretForSource, verifySignature } from "./hmac.js";
 import { isSource, type Source } from "./sources.js";
@@ -59,13 +59,15 @@ export function createIngestApp(
       if (!verifySignature(rawBody, signature, secretForSource(source))) {
         return res.status(401).json({ error: "invalid signature" });
       }
-      // NUL divert: a U+0000 in any string is valid JSON (the \u0000 escape) and passes the
-      // signature check, but Postgres jsonb cannot represent it (22P05) — so it is unstorable in
-      // raw.raw_events AND in pg-boss's jsonb job table, and would 500 at insert/enqueue time,
-      // dropping an authenticated payload. Divert it to NUL-safe quarantine (preserved as text)
-      // BEFORE schema validation and enqueue, keeping "nothing delivered is ever dropped" true.
-      if (containsNul(req.body)) {
-        await quarantineEvent(pool, source, req.body, "payload contains \\u0000 (NUL) — not representable in jsonb");
+      // Unstorable divert: a U+0000 (the \u0000 escape) or a lone UTF-16 surrogate (the \ud800
+      // escape) in any string is valid JSON and passes the signature check, but Postgres jsonb
+      // cannot represent either (22P05 / 22P02) — so it is unstorable in raw.raw_events AND in
+      // pg-boss's jsonb job table, and would 500 at insert/enqueue time, dropping an
+      // authenticated payload. Divert it to text-safe quarantine (preserved as raw_body) BEFORE
+      // schema validation and enqueue, keeping "nothing delivered is ever dropped" true.
+      const unstorable = jsonbUnstorableReason(req.body);
+      if (unstorable !== null) {
+        await quarantineEvent(pool, source, req.body, unstorable);
         return res.status(202).json({ quarantined: true });
       }
       const parsed = eventSchema.safeParse(req.body);
