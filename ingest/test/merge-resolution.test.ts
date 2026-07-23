@@ -95,12 +95,27 @@ const TIER_SQL = `
   source_entities as (
       select source, source_entity_id, email, domain, name from tmp_ir_entities
   ),
-  tier1 as (
-      select se.source, se.source_entity_id, k.canonical_id,
-             1 as matched_tier, 'email=' || se.email as match_evidence
+  tier1_candidates as (
+      select se.source, se.source_entity_id, se.email, k.canonical_id
       from source_entities se
       join tmp_ir_crm_emails ce on ce.email = se.email
       join tmp_ir_companies k on k.company_id = ce.company_id
+  ),
+  tier1 as (
+      select source, source_entity_id, min(canonical_id) as canonical_id,
+             1 as matched_tier, 'email=' || email as match_evidence
+      from tier1_candidates
+      group by source, source_entity_id, email
+      having count(distinct canonical_id) = 1
+  ),
+  tier1_ambiguous as (
+      select source, source_entity_id,
+             source || ':' || source_entity_id as canonical_id,
+             3 as matched_tier,
+             'ambiguous email=' || email || ' matched ' || count(distinct canonical_id) || ' canonical companies' as match_evidence
+      from tier1_candidates
+      group by source, source_entity_id, email
+      having count(distinct canonical_id) > 1
   ),
   tier2 as (
       select se.source, se.source_entity_id, nc.canonical_id,
@@ -114,9 +129,13 @@ const TIER_SQL = `
           select 1 from tier1 t1
           where t1.source = se.source and t1.source_entity_id = se.source_entity_id
       )
+      and not exists (
+          select 1 from tier1_ambiguous ta
+          where ta.source = se.source and ta.source_entity_id = se.source_entity_id
+      )
   ),
   matched as (
-      select * from tier1 union all select * from tier2
+      select * from tier1 union all select * from tier2 union all select * from tier1_ambiguous
   ),
   tier3 as (
       select se.source, se.source_entity_id,
@@ -202,6 +221,63 @@ describe("three-tier identity resolution", () => {
       matched_tier: 2,
       match_evidence: "domain+name=acme.example.com|acme group",
     });
+  });
+  it("over-merge guard: an email mapped to TWO distinct canonical companies must NOT tier-1 resolve — it lands in tier 3 (manual review), never a nondeterministic winner", async () => {
+    await seedTiers({
+      companies: [
+        ["C-A", "Acme Group", "acme.example.com", "C-A"],
+        ["C-Z", "Zenith Corp", "zenith.example.com", "C-Z"],
+      ],
+      // Shared/freemail-style address registered as a contact at BOTH companies:
+      crmEmails: [
+        ["ops@sharedagency.example.com", "C-A"],
+        ["ops@sharedagency.example.com", "C-Z"],
+      ],
+      entities: [["billing", "B-4", "ops@sharedagency.example.com", "unrelated.example.com", "Some Other Name"]],
+    });
+    const rows = await resolveTiers();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      source: "billing",
+      source_entity_id: "B-4",
+      resolved_entity_id: "billing:B-4",
+      matched_tier: 3,
+    });
+    expect(rows[0].match_evidence).toContain("ambiguous");
+  });
+  it("over-merge guard does NOT fire when two company records share an email but collapse to ONE canonical (merge lineage)", async () => {
+    await seedTiers({
+      // C-B merged into C-A: same email at both records is still ONE canonical entity.
+      companies: [
+        ["C-A", "Acme Group", "acme.example.com", "C-A"],
+        ["C-B", "Acme Group Inc", "acme.example.com", "C-A"],
+      ],
+      crmEmails: [
+        ["jane@acme.example.com", "C-A"],
+        ["jane@acme.example.com", "C-B"],
+      ],
+      entities: [["billing", "B-5", "jane@acme.example.com", "unrelated.example.com", "Other"]],
+    });
+    const rows = await resolveTiers();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ resolved_entity_id: "C-A", matched_tier: 1 });
+  });
+  it("ambiguous tier-1 email is NOT rescued by tier 2 — conflicting email evidence forces manual review even when domain+name would match", async () => {
+    await seedTiers({
+      companies: [
+        ["C-A", "Acme Group", "acme.example.com", "C-A"],
+        ["C-Z", "Zenith Corp", "zenith.example.com", "C-Z"],
+      ],
+      crmEmails: [
+        ["ops@sharedagency.example.com", "C-A"],
+        ["ops@sharedagency.example.com", "C-Z"],
+      ],
+      // domain+name would tier-2 match C-A, but the ambiguous email makes ANY merge suspect:
+      entities: [["billing", "B-6", "ops@sharedagency.example.com", "acme.example.com", "Acme Group"]],
+    });
+    const rows = await resolveTiers();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ resolved_entity_id: "billing:B-6", matched_tier: 3 });
   });
   it("tier precedence: an entity matching BOTH tier 1 and tier 2 resolves once, as tier 1", async () => {
     await seedTiers({

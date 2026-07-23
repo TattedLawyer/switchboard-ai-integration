@@ -31,12 +31,33 @@ source_entities as (
     select distinct 'support', requester_id, requester_email, domain, company_name
     from {{ ref('stg_support__tickets') }}
 ),
-tier1 as (
-    select se.source, se.source_entity_id, k.canonical_id,
-           1 as matched_tier, 'email=' || se.email as match_evidence
+tier1_candidates as (
+    select se.source, se.source_entity_id, se.email, k.canonical_id
     from source_entities se
     join crm_emails ce on ce.email = se.email
     join canonical k on k.company_id = ce.company_id
+),
+-- Over-merge guard: tier 1 only resolves when the email maps to exactly ONE distinct
+-- canonical company. min(canonical_id) is then that single canonical (deterministic).
+tier1 as (
+    select source, source_entity_id, min(canonical_id) as canonical_id,
+           1 as matched_tier, 'email=' || email as match_evidence
+    from tier1_candidates
+    group by source, source_entity_id, email
+    having count(distinct canonical_id) = 1
+),
+-- A shared/freemail-style email registered at >1 distinct canonical company is AMBIGUOUS:
+-- picking a winner would be a silent false merge. Route to manual review (tier 3) with
+-- auditable evidence; also barred from tier 2 below — conflicting email evidence makes
+-- any automatic merge suspect.
+tier1_ambiguous as (
+    select source, source_entity_id,
+           source || ':' || source_entity_id as canonical_id,
+           3 as matched_tier,
+           'ambiguous email=' || email || ' matched ' || count(distinct canonical_id) || ' canonical companies' as match_evidence
+    from tier1_candidates
+    group by source, source_entity_id, email
+    having count(distinct canonical_id) > 1
 ),
 tier2 as (
     select se.source, se.source_entity_id, nc.canonical_id,
@@ -50,9 +71,13 @@ tier2 as (
         select 1 from tier1 t1
         where t1.source = se.source and t1.source_entity_id = se.source_entity_id
     )
+    and not exists (
+        select 1 from tier1_ambiguous ta
+        where ta.source = se.source and ta.source_entity_id = se.source_entity_id
+    )
 ),
 matched as (
-    select * from tier1 union all select * from tier2
+    select * from tier1 union all select * from tier2 union all select * from tier1_ambiguous
 ),
 tier3 as (
     select se.source, se.source_entity_id,
