@@ -34,8 +34,8 @@ rejected: it preserves a name that nothing should be reading anymore.
   exactly against raw with zero duplicates; quarantine and DLQ empty. The RED mode
   still fails per-source with the 42 missing events listed.
 - `./scripts/demo.sh`: 288 events across three sources (crm 108, billing 100,
-  support 80), ledger=raw=outbox equality 288/288/288, dbt build with all 54 checks
-  passing, the identity oracle PASS, and the Monday report generated.
+  support 80), ledger=raw=outbox equality 288/288/288, dbt build green (13 models +
+  41 data tests), the identity oracle PASS, and the Monday report generated.
 - Identity: 22 staged companies collapse to 20 canonical entities (merged-away ids
   absent from the mart, their deals re-pointed — conservation asserted); 30
   external entities resolve 19 tier-1 / 5 tier-2 / 6 manual-review, exactly the

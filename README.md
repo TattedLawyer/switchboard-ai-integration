@@ -79,7 +79,7 @@ engineering on data you can inspect freely.
   fallback so the report generates even when the AI service is down, and per-call
   cost logging.
 - **CI:** the `ci` workflow runs on every push — typecheck, all 101 tests, the
-  dbt build with its 54 data checks, the agent action-safety eval, and the
+  dbt build (13 models + 41 data tests), the agent action-safety eval, and the
   identity oracle, against a real Postgres service container
   ([`ci.yml`](.github/workflows/ci.yml)). The heavier chaos + demo proof runs on
   a nightly schedule and manual dispatch, with the fault seed as a workflow input
@@ -103,7 +103,7 @@ engineering on data you can inspect freely.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 101 tests green; 54/54 dbt checks |
+| Suite | `npm test` + dbt | 101 tests green; 41/41 dbt data tests (54 build steps incl. 13 models) |
 
 ## What's coming (built in phases, in public)
 
