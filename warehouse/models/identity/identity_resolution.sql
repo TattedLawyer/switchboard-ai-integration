@@ -59,10 +59,8 @@ tier1_ambiguous as (
     group by source, source_entity_id, email
     having count(distinct canonical_id) > 1
 ),
-tier2 as (
-    select se.source, se.source_entity_id, nc.canonical_id,
-           2 as matched_tier,
-           'domain+name=' || nc.norm_domain || '|' || nc.norm_name as match_evidence
+tier2_candidates as (
+    select se.source, se.source_entity_id, nc.canonical_id, nc.norm_domain, nc.norm_name
     from source_entities se
     join norm_companies nc
       on nc.norm_domain = lower(regexp_replace(se.domain, '^www\.', '', 'i'))
@@ -76,8 +74,33 @@ tier2 as (
         where ta.source = se.source and ta.source_entity_id = se.source_entity_id
     )
 ),
+-- Over-merge guard (mirrors tier 1): domain+name only resolves when the candidates
+-- collapse to exactly ONE distinct canonical company — merged duplicates share a
+-- canonical_id and still resolve. min(canonical_id) is then that single canonical
+-- (deterministic).
+tier2 as (
+    select source, source_entity_id, min(canonical_id) as canonical_id,
+           2 as matched_tier,
+           'domain+name=' || norm_domain || '|' || norm_name as match_evidence
+    from tier2_candidates
+    group by source, source_entity_id, norm_domain, norm_name
+    having count(distinct canonical_id) = 1
+),
+-- Normalized domain+name shared by >1 distinct canonical company is AMBIGUOUS: picking
+-- a winner would be a silent false merge (DISTINCT ON previously kept an arbitrary,
+-- plan-dependent row here). Route to manual review (tier 3) with auditable evidence.
+tier2_ambiguous as (
+    select source, source_entity_id,
+           source || ':' || source_entity_id as canonical_id,
+           3 as matched_tier,
+           'ambiguous domain+name=' || norm_domain || '|' || norm_name || ' matched ' || count(distinct canonical_id) || ' canonical companies' as match_evidence
+    from tier2_candidates
+    group by source, source_entity_id, norm_domain, norm_name
+    having count(distinct canonical_id) > 1
+),
 matched as (
-    select * from tier1 union all select * from tier2 union all select * from tier1_ambiguous
+    select * from tier1 union all select * from tier2
+    union all select * from tier1_ambiguous union all select * from tier2_ambiguous
 ),
 tier3 as (
     select se.source, se.source_entity_id,

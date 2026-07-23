@@ -117,10 +117,8 @@ const TIER_SQL = `
       group by source, source_entity_id, email
       having count(distinct canonical_id) > 1
   ),
-  tier2 as (
-      select se.source, se.source_entity_id, nc.canonical_id,
-             2 as matched_tier,
-             'domain+name=' || nc.norm_domain || '|' || nc.norm_name as match_evidence
+  tier2_candidates as (
+      select se.source, se.source_entity_id, nc.canonical_id, nc.norm_domain, nc.norm_name
       from source_entities se
       join norm_companies nc
         on nc.norm_domain = lower(regexp_replace(se.domain, '^www\\.', '', 'i'))
@@ -134,8 +132,26 @@ const TIER_SQL = `
           where ta.source = se.source and ta.source_entity_id = se.source_entity_id
       )
   ),
+  tier2 as (
+      select source, source_entity_id, min(canonical_id) as canonical_id,
+             2 as matched_tier,
+             'domain+name=' || norm_domain || '|' || norm_name as match_evidence
+      from tier2_candidates
+      group by source, source_entity_id, norm_domain, norm_name
+      having count(distinct canonical_id) = 1
+  ),
+  tier2_ambiguous as (
+      select source, source_entity_id,
+             source || ':' || source_entity_id as canonical_id,
+             3 as matched_tier,
+             'ambiguous domain+name=' || norm_domain || '|' || norm_name || ' matched ' || count(distinct canonical_id) || ' canonical companies' as match_evidence
+      from tier2_candidates
+      group by source, source_entity_id, norm_domain, norm_name
+      having count(distinct canonical_id) > 1
+  ),
   matched as (
-      select * from tier1 union all select * from tier2 union all select * from tier1_ambiguous
+      select * from tier1 union all select * from tier2
+      union all select * from tier1_ambiguous union all select * from tier2_ambiguous
   ),
   tier3 as (
       select se.source, se.source_entity_id,
@@ -278,6 +294,46 @@ describe("three-tier identity resolution", () => {
     const rows = await resolveTiers();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ resolved_entity_id: "billing:B-6", matched_tier: 3 });
+  });
+  it("tier-2 over-merge guard: domain+name matching TWO distinct UNMERGED canonicals must NOT tier-2 resolve — it lands in tier 3 (manual review), never an arbitrary winner", async () => {
+    await seedTiers({
+      // Same normalized domain AND same normalized name ("acme group"), but NOT merged:
+      // two distinct canonical companies. Any tier-2 pick would be a silent false merge.
+      companies: [
+        ["C-A", "Acme Group", "acme.example.com", "C-A"],
+        ["C-Z", "Acme Group Inc", "acme.example.com", "C-Z"],
+      ],
+      crmEmails: [],
+      entities: [["billing", "B-1", "billing@nowhere.example.com", "acme.example.com", "ACME GROUP LLC"]],
+    });
+    const rows = await resolveTiers();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      source: "billing",
+      source_entity_id: "B-1",
+      resolved_entity_id: "billing:B-1",
+      matched_tier: 3,
+    });
+    expect(rows[0].match_evidence).toContain("ambiguous");
+  });
+  it("tier-2 over-merge guard does NOT fire when the domain+name candidates collapse to ONE canonical (merge lineage) — a MERGED pair still tier-2 resolves", async () => {
+    await seedTiers({
+      // C-B merged into C-A: both records share domain + normalized name, but they are
+      // ONE canonical entity — the guard must not block this legitimate resolution.
+      companies: [
+        ["C-A", "Acme Group", "acme.example.com", "C-A"],
+        ["C-B", "Acme Group Inc", "acme.example.com", "C-A"],
+      ],
+      crmEmails: [],
+      entities: [["billing", "B-7", "billing@nowhere.example.com", "acme.example.com", "Acme Group"]],
+    });
+    const rows = await resolveTiers();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      resolved_entity_id: "C-A",
+      matched_tier: 2,
+      match_evidence: "domain+name=acme.example.com|acme group",
+    });
   });
   it("tier precedence: an entity matching BOTH tier 1 and tier 2 resolves once, as tier 1", async () => {
     await seedTiers({
