@@ -9,12 +9,35 @@ const eventSchema = z.object({
   data: z.record(z.unknown()),
 });
 
+// Detect an actual U+0000 anywhere in a parsed JSON value — string values AND object keys, since
+// jsonb rejects a NUL in either. Checks the PARSED value, not the serialized text, so the six
+// literal characters "\u0000" (an escaped backslash on the wire, jsonb-safe) are NOT flagged.
+export function containsNul(value: unknown): boolean {
+  if (typeof value === "string") return value.includes("\u0000");
+  if (Array.isArray(value)) return value.some(containsNul);
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value).some(([k, v]) => k.includes("\u0000") || containsNul(v));
+  }
+  return false;
+}
+
 export async function quarantineEvent(
   pool: pg.Pool,
   source: string,
   payload: unknown,
   reason: string
 ): Promise<void> {
+  // A NUL-bearing payload cannot go into the jsonb payload column (Postgres 22P05) — quarantine
+  // must never itself throw on the payloads it exists to preserve. Store the exact JSON text in
+  // raw_body instead (text holds the \u0000 escape fine); payload stays null for such rows, so
+  // replayQuarantined reports them "still-invalid" — correct, since raw.raw_events is jsonb too.
+  if (containsNul(payload)) {
+    await pool.query(
+      "insert into ingest.quarantine (source, raw_body, reason) values ($1, $2, $3)",
+      [source, JSON.stringify(payload), reason]
+    );
+    return;
+  }
   await pool.query(
     "insert into ingest.quarantine (source, payload, reason) values ($1, $2, $3)",
     [source, JSON.stringify(payload), reason]
