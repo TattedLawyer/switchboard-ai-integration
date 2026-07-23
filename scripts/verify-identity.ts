@@ -46,12 +46,25 @@ async function main() {
   const wantMr = [...m.expectations.manualReview.billing, ...m.expectations.manualReview.support].sort();
   if (JSON.stringify(ids(mr.rows)) !== JSON.stringify(wantMr))
     fail(`manual_review: expected ${JSON.stringify(wantMr)}, got ${JSON.stringify(ids(mr.rows))}`);
-  // 5. D6: unmatchable billing entities appear in the mart, flagged incomplete.
-  for (const id of m.expectations.manualReview.billing.slice(1)) { // B-0015, B-0016 (B-0014 is the near-miss with a CRM-name twin — still tier 3, still incomplete)
-    const row = await pool.query(`select is_complete from ${SCHEMA}.customer_360 where entity_id = $1`, [`billing:${id}`]);
-    if (row.rowCount !== 1) { fail(`incomplete entity billing:${id} missing from mart`); continue; }
-    if (row.rows[0].is_complete !== false) fail(`billing:${id} should be flagged incomplete`);
+  // 5. D6: EVERY unmatchable (tier-3) entity — billing AND support — appears in the mart,
+  // flagged incomplete. Full manual_review membership, no sampling: a tier-3 entity that
+  // silently vanishes from the mart must fail here.
+  for (const source of ["billing", "support"] as const) {
+    for (const id of m.expectations.manualReview[source]) {
+      const row = await pool.query(`select is_complete from ${SCHEMA}.customer_360 where entity_id = $1`, [`${source}:${id}`]);
+      if (row.rowCount !== 1) { fail(`incomplete entity ${source}:${id} missing from mart`); continue; }
+      if (row.rows[0].is_complete !== false) fail(`${source}:${id} should be flagged incomplete`);
+    }
   }
+  // 5b. Total-row-count conservation: one mart row per canonical company plus one per tier-3
+  // entity, exactly. Closes the remaining vanish gap — a CRM-only canonical (no merge pair,
+  // no billing/support link, e.g. C-0017..C-0020) dropped from the mart is invisible to
+  // checks 1–5 but shifts this count.
+  const expectedTotal = m.expectations.canonicalCompanyCount
+    + m.expectations.manualReview.billing.length + m.expectations.manualReview.support.length;
+  const total = await pool.query(`select count(*)::int as n from ${SCHEMA}.customer_360`);
+  if (total.rows[0].n !== expectedTotal)
+    fail(`customer_360 total rowcount: expected ${expectedTotal} (${m.expectations.canonicalCompanyCount} canonical + ${expectedTotal - m.expectations.canonicalCompanyCount} manual_review), got ${total.rows[0].n}`);
   // 6. Cross-system entities carry data from all three sources.
   for (const id of m.expectations.crossSystemCompanyIds) {
     const row = await pool.query(`select has_crm, has_billing, has_support from ${SCHEMA}.customer_360 where entity_id = $1`, [id]);
