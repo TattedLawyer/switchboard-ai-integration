@@ -20,26 +20,41 @@ function unstorableReason(s: string): string | null {
 }
 
 // Detect jsonb-unstorable content anywhere in a parsed JSON value — string values AND object
-// keys, since jsonb rejects either. Checks the PARSED value, not the serialized text, so the six
+// keys, since jsonb rejects either — plus containers nested past MAX_JSONB_NESTING_DEPTH (below).
+// Checks the PARSED value, not the serialized text, so the six
 // literal characters "\u0000" (an escaped backslash on the wire, jsonb-safe) are NOT flagged.
 // Returns the human-readable divert reason, or null when the value is jsonb-safe.
 // ITERATIVE on purpose: nesting depth is source-controlled, and a recursive walk here blew the
 // call stack near depth ~3600 (RangeError → 500) on payloads that JSON.parse/stringify and jsonb
 // itself (5000+ deep) all handle fine. Traversal order doesn't matter — any hit diverts.
+// Extreme nesting is the third unstorable shape, bounded by three separate ceilings: V8's
+// JSON.stringify is RECURSIVE and blows the call stack near ~6.6k levels (every insert path
+// stringifies the payload — JSON.parse survives, stringify dies, RangeError → 500), and
+// Postgres rejects jsonb nested ≥ ~13k outright (error 54001). 1000 sits far below both — huge
+// margin even if either ceiling shrinks — and far above any legitimate business payload, whose
+// real nesting is single digits. Deeper payloads divert to raw_body quarantine like NUL/lone
+// surrogates: genuinely unstorable as jsonb, preserved as text.
+const MAX_JSONB_NESTING_DEPTH = 1000;
+
 export function jsonbUnstorableReason(value: unknown): string | null {
-  const stack: unknown[] = [value];
+  // depth = number of enclosing containers above the current value (root sits at 0); a
+  // container popped past the bound means the payload nests deeper than any storable shape.
+  const stack: { v: unknown; depth: number }[] = [{ v: value, depth: 0 }];
+  const depthReason = `payload nesting depth exceeds ${MAX_JSONB_NESTING_DEPTH} — not safely representable in jsonb`;
   while (stack.length > 0) {
-    const v = stack.pop();
+    const { v, depth } = stack.pop()!;
     if (typeof v === "string") {
       const reason = unstorableReason(v);
       if (reason !== null) return reason;
     } else if (Array.isArray(v)) {
-      for (const item of v) stack.push(item);
+      if (depth > MAX_JSONB_NESTING_DEPTH) return depthReason;
+      for (const item of v) stack.push({ v: item, depth: depth + 1 });
     } else if (v !== null && typeof v === "object") {
+      if (depth > MAX_JSONB_NESTING_DEPTH) return depthReason;
       for (const [key, child] of Object.entries(v)) {
         const reason = unstorableReason(key);
         if (reason !== null) return reason;
-        stack.push(child);
+        stack.push({ v: child, depth: depth + 1 });
       }
     }
   }
@@ -50,17 +65,26 @@ export async function quarantineEvent(
   pool: pg.Pool,
   source: string,
   payload: unknown,
-  reason: string
+  reason: string,
+  // The exact request text the payload was parsed from, when the caller has it (server.ts
+  // always does). Required for depth-diverted payloads: re-deriving text via JSON.stringify is
+  // exactly the call that RangeErrors past ~6.6k nesting, so raw_body rows must come from the
+  // original wire text, never a re-stringify.
+  rawBody?: string
 ): Promise<void> {
   // A NUL- or lone-surrogate-bearing payload cannot go into the jsonb payload column (Postgres
-  // 22P05 / 22P02) — quarantine must never itself throw on the payloads it exists to preserve.
+  // 22P05 / 22P02), and one nested past the depth bound would kill JSON.stringify / jsonb
+  // outright — quarantine must never itself throw on the payloads it exists to preserve.
   // Store the exact JSON text in raw_body instead (text holds the \u0000 / \ud800 escapes fine,
   // since JSON.stringify always emits them escaped); payload stays null for such rows, so
   // replayQuarantined reports them "still-invalid" — correct, since raw.raw_events is jsonb too.
   if (jsonbUnstorableReason(payload) !== null) {
+    // Prefer the original wire text when supplied: byte-exact preservation, and the only safe
+    // option for depth-diverted payloads (stringify would RangeError on them). The stringify
+    // fallback is for direct callers without wire text, whose payloads stringify fine.
     await pool.query(
       "insert into ingest.quarantine (source, raw_body, reason) values ($1, $2, $3)",
-      [source, JSON.stringify(payload), reason]
+      [source, rawBody ?? JSON.stringify(payload), reason]
     );
     return;
   }
@@ -78,9 +102,23 @@ export async function quarantineEvent(
     // is a genuinely unhealthy DB and still propagates.
     const code = (err as { code?: string }).code;
     if (code === "22P05" || code === "22P02") {
+      // Safe to re-stringify here: reaching a Postgres error code means the stringify in the
+      // try block already succeeded once.
       await pool.query(
         "insert into ingest.quarantine (source, raw_body, reason) values ($1, $2, $3)",
-        [source, JSON.stringify(payload), reason]
+        [source, rawBody ?? JSON.stringify(payload), reason]
+      );
+      return;
+    }
+    // Second net, same invariant: JSON.stringify itself died (RangeError, no .code — e.g. depth
+    // the walk didn't flag, reachable only via exotic shapes like toJSON hooks). Preservable
+    // only when the caller supplied the wire text — the fallback must not re-stringify, that is
+    // the call that just died. Everything else (connection loss, constraints) still propagates:
+    // that is a genuinely unhealthy DB, not an unstorable payload.
+    if (err instanceof RangeError && rawBody !== undefined) {
+      await pool.query(
+        "insert into ingest.quarantine (source, raw_body, reason) values ($1, $2, $3)",
+        [source, rawBody, reason]
       );
       return;
     }

@@ -63,16 +63,21 @@ export function createIngestApp(
       // escape) in any string is valid JSON and passes the signature check, but Postgres jsonb
       // cannot represent either (22P05 / 22P02) — so it is unstorable in raw.raw_events AND in
       // pg-boss's jsonb job table, and would 500 at insert/enqueue time, dropping an
-      // authenticated payload. Divert it to text-safe quarantine (preserved as raw_body) BEFORE
-      // schema validation and enqueue, keeping "nothing delivered is ever dropped" true.
+      // authenticated payload. Nesting past the depth bound is the same class: JSON.stringify
+      // (recursive in V8) and jsonb's own depth limit both reject it at insert/enqueue time.
+      // Divert all of these to text-safe quarantine (preserved as raw_body) BEFORE schema
+      // validation and enqueue, keeping "nothing delivered is ever dropped" true.
+      // rawBody rides along on every quarantine call: for depth-diverted payloads it is the
+      // ONLY safe source of raw_body text (re-stringifying the parsed object is the very call
+      // that RangeErrors on deep nesting), and for the rest it preserves the wire bytes exactly.
       const unstorable = jsonbUnstorableReason(req.body);
       if (unstorable !== null) {
-        await quarantineEvent(pool, source, req.body, unstorable);
+        await quarantineEvent(pool, source, req.body, unstorable, rawBody);
         return res.status(202).json({ quarantined: true });
       }
       const parsed = eventSchema.safeParse(req.body);
       if (!parsed.success) {
-        await quarantineEvent(pool, source, req.body, "schema validation failed");
+        await quarantineEvent(pool, source, req.body, "schema validation failed", rawBody);
         return res.status(202).json({ quarantined: true });
       }
       if (opts?.enqueue) {

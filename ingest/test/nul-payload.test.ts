@@ -180,15 +180,17 @@ describe("NUL-bearing payloads are quarantined, never 500'd, never dropped", () 
 // Invariant pinned here: for ANY validly-signed payload, the endpoint never 500s while the DB is
 // healthy, and the payload is never silently dropped.
 describe("deep nesting and lone surrogates never 500, never drop a signed payload", () => {
-  it("deeply-nested (4000) NUL-free payload takes the NORMAL path → 202 stored in raw.raw_events, NOT quarantined", async () => {
+  it("deeply-nested (999, at the depth bound) NUL-free payload takes the NORMAL path → 202 stored in raw.raw_events, NOT quarantined", async () => {
     const app = createIngestApp(pool);
     const srv = app.listen(0);
     const port = (srv.address() as { port: number }).port;
 
-    // ~4000 nested arrays: JSON.parse, JSON.stringify, and Postgres jsonb all handle this depth;
-    // only a recursive walk with heavier frames dies (~3600). Storable payload ⇒ must be stored.
+    // 999 nested arrays sits exactly AT the depth bound for this event shape (root object +
+    // data object + 999 arrays = 1000 container levels): the deepest payload that must still
+    // take the normal path. Pins the under-side of the boundary — and that the walk itself is
+    // iterative (a recursive walk with heavier frames died near ~3600 in an earlier revision).
     let deep: unknown = "leaf";
-    for (let i = 0; i < 4000; i++) deep = [deep];
+    for (let i = 0; i < 999; i++) deep = [deep];
     const event = {
       event_id: "evt-deep-1",
       event_type: "company.updated",
@@ -291,5 +293,134 @@ describe("deep nesting and lone surrogates never 500, never drop a signed payloa
     expect(q.rowCount).toBe(1);
     expect(q.rows[0].payload).toBeNull();
     expect(JSON.parse(q.rows[0].raw_body)).toEqual({ event_id: "evt-sneaky-1", note: "hidden \u0000 nul" });
+  });
+});
+
+// Build the raw JSON TEXT of a schema-valid event whose data.nested is `depth` nested arrays.
+// Constructed as text on purpose: JSON.stringify could not produce the deep bodies (V8's
+// stringify is recursive and dies near ~6.6k), and the raw wire text is exactly what the tests
+// must round-trip against.
+const deepEventText = (eventId: string, depth: number): string =>
+  `{"event_id":"${eventId}","event_type":"company.updated",` +
+  `"occurred_at":"${new Date().toISOString()}","data":{"nested":` +
+  "[".repeat(depth) + '"leaf"' + "]".repeat(depth) + "}}";
+
+// Third sibling of the same claim-breaker class: a validly-signed, NUL-free, schema-valid
+// payload nested ~10k deep (~20KB, under the body limit) passed JSON.parse (iterative), the
+// walk, and zod — then died in JSON.stringify at insert time (V8 stringify is RECURSIVE,
+// ceiling ≈6.6k), and quarantine's own stringify died identically: RangeError has no .code, the
+// jsonb-code catch rethrew → 500, zero rows anywhere. Postgres jsonb itself also rejects
+// nesting ≥ ~13k (54001), so extreme depth is genuinely unstorable as jsonb — the depth cap
+// diverts it to the raw_body quarantine, same home as NUL/lone-surrogates.
+describe("depth-capped payloads are quarantined as raw text, never 500'd, never dropped", () => {
+  it("10,000-deep signed payload → 202 quarantined, raw_body is the EXACT original request text, no raw row", async () => {
+    // Direct-ingest mode on purpose: this is the reviewer's reproduction — the stringify at the
+    // raw_events insert is the call that RangeErrors. (Queue mode dies the same way inside
+    // boss.send's jsonb write; the divert point below is upstream of both.)
+    const app = createIngestApp(pool);
+    const srv = app.listen(0);
+    const port = (srv.address() as { port: number }).port;
+
+    const rawBody = deepEventText("evt-depth-10k", 10000);
+    const res = await postSigned(port, rawBody);
+
+    expect(res.status).not.toBe(500);
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ quarantined: true });
+
+    // Preserved byte-for-byte: raw_body must be the original wire text itself — asserted by
+    // string equality, NOT via a parse→stringify round-trip (stringify is exactly what dies at
+    // this depth). payload stays null (jsonb could not hold it past ~13k anyway).
+    const q = await pool.query(
+      "select raw_body, payload, reason, replayed_at from ingest.quarantine where raw_body like '%evt-depth-10k%'",
+    );
+    expect(q.rowCount).toBe(1);
+    expect(q.rows[0].raw_body).toBe(rawBody);
+    expect(q.rows[0].payload).toBeNull();
+    expect(q.rows[0].reason).toMatch(/depth|nesting/i);
+    expect(q.rows[0].replayed_at).toBeNull();
+
+    const raw = await pool.query(
+      "select 1 from raw.raw_events where source = 'crm' and event_id = 'evt-depth-10k'",
+    );
+    expect(raw.rowCount).toBe(0);
+
+    srv.close();
+  });
+
+  it("boundary, over side: 1000 nested arrays (one container past the bound) → 202 quarantined", async () => {
+    const app = createIngestApp(pool);
+    const srv = app.listen(0);
+    const port = (srv.address() as { port: number }).port;
+
+    const rawBody = deepEventText("evt-depth-1000", 1000);
+    const res = await postSigned(port, rawBody);
+
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ quarantined: true });
+
+    const q = await pool.query(
+      "select raw_body from ingest.quarantine where raw_body like '%evt-depth-1000%'",
+    );
+    expect(q.rowCount).toBe(1);
+    expect(q.rows[0].raw_body).toBe(rawBody);
+
+    srv.close();
+  });
+
+  it("safety net: quarantineEvent falls back to the caller's raw text when its own stringify RangeErrors", async () => {
+    // A toJSON hook hides depth from the walker (which sees only {toJSON: fn}) but makes
+    // JSON.stringify recurse 10k deep and throw RangeError. With the raw request text supplied,
+    // quarantine must preserve THAT text rather than rethrow — the net for anything else that
+    // ever makes stringify die. (Connection errors etc. must still propagate; only the
+    // stringify-RangeError path is netted.)
+    let deep: unknown = "leaf";
+    for (let i = 0; i < 10000; i++) deep = [deep];
+    const sneaky = { toJSON: () => ({ event_id: "evt-rangeerr-1", nested: deep }) };
+    const rawText = '{"marker":"evt-rangeerr-1-raw-text"}';
+    await expect(
+      quarantineEvent(pool, "crm", sneaky, "test: stringify RangeError net", rawText),
+    ).resolves.toBeUndefined();
+
+    const q = await pool.query(
+      "select raw_body, payload from ingest.quarantine where raw_body like '%evt-rangeerr-1-raw-text%'",
+    );
+    expect(q.rowCount).toBe(1);
+    expect(q.rows[0].raw_body).toBe(rawText);
+    expect(q.rows[0].payload).toBeNull();
+  });
+
+  it("pin: well-formed astral-plane pairs (emoji) in a KEY and a VALUE are NOT false-positived → 202 stored", async () => {
+    const app = createIngestApp(pool);
+    const srv = app.listen(0);
+    const port = (srv.address() as { port: number }).port;
+
+    // An emoji is a full surrogate PAIR — well-formed, jsonb-safe. The lone-surrogate detector
+    // must ignore it in both positions; this payload takes the normal path into raw.raw_events.
+    const thumbsUp = "\u{1F44D}";
+    const event = {
+      event_id: "evt-emoji-1",
+      event_type: "company.updated",
+      occurred_at: new Date().toISOString(),
+      data: { [`reaction ${thumbsUp} key`]: `value with ${thumbsUp} emoji` },
+    };
+    const rawBody = JSON.stringify(event);
+    const res = await postSigned(port, rawBody);
+
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ stored: true });
+
+    const raw = await pool.query(
+      "select payload from raw.raw_events where source = 'crm' and event_id = 'evt-emoji-1'",
+    );
+    expect(raw.rowCount).toBe(1);
+    expect(raw.rows[0].payload).toEqual(event);
+
+    const q = await pool.query(
+      "select 1 from ingest.quarantine where raw_body like '%evt-emoji-1%' or payload::text like '%evt-emoji-1%'",
+    );
+    expect(q.rowCount).toBe(0);
+
+    srv.close();
   });
 });
