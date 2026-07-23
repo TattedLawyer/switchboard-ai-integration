@@ -65,13 +65,21 @@ curl -sf -X POST http://localhost:4003/simulate -H 'content-type: application/js
 curl -sf -X POST http://localhost:4004/simulate -H 'content-type: application/json' -d "$(fault_body)" > /dev/null
 
 echo "5b/8 bounded settle-wait for push-path (raw count stable + queue quiescent, NOT ==600 since ~20% are dropped)"
+# Backoff-aware quiescence: queue_pending counts created/active AND retry jobs for the
+# ingest queues, so a job parked in pg-boss retry backoff still holds the wait open. The
+# bound must therefore cover worst-case cumulative retry backoff, not just steady-state
+# throughput — the old 60s window flaked ~1-in-3 with ~20 jobs still in backoff (harness
+# gave up early; no data loss). 240s default, overridable via CHAOS_SETTLE_TIMEOUT_S.
+SETTLE_TIMEOUT_S="${CHAOS_SETTLE_TIMEOUT_S:-240}"
 raw_count() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_events" | tr -d ' '; }
 queue_pending() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from pgboss.job where name like 'ingest-%' and state in ('created','active','retry')" | tr -d ' '; }
+queue_breakdown() { docker compose exec -T postgres psql -U switchboard -tAc "select state || '=' || count(*) from pgboss.job where name like 'ingest-%' and state in ('created','active','retry') group by state" | tr '\n' ' '; }
 ledger_line_count() { wc -l < "$1" 2>/dev/null | tr -d ' ' || echo 0; }
 stable_polls=0
 prev="-1"
 settled=false
-for i in $(seq 1 60); do
+settle_start="$(date +%s)"
+while (( $(date +%s) - settle_start < SETTLE_TIMEOUT_S )); do
   cur="$(raw_count)"
   pending="$(queue_pending)"
   if [[ "$cur" == "$prev" ]] && [[ "$pending" == "0" ]]; then
@@ -83,7 +91,7 @@ for i in $(seq 1 60); do
   prev="$cur"
   sleep 1
 done
-$settled || { echo "FAIL: push-path did not settle within 60s (raw=$(raw_count) pending=$(queue_pending))"; exit 1; }
+$settled || { echo "FAIL: push-path did not settle within ${SETTLE_TIMEOUT_S}s (raw=$(raw_count) pending=$(queue_pending): $(queue_breakdown))"; exit 1; }
 echo "    settled: raw=$(raw_count) queue_pending=$(queue_pending) (ledgers: crm=$(ledger_line_count "$LEDGER_PATH_CRM") billing=$(ledger_line_count "$LEDGER_PATH_BILLING") support=$(ledger_line_count "$LEDGER_PATH_SUPPORT") events emitted by simulate)"
 
 if [[ "$SKIP_BACKFILL" == "1" ]]; then
