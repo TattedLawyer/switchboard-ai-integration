@@ -24,7 +24,10 @@ export type Manifest = {
     tier2: { billing: string[]; support: string[] };   // MUST resolve tier 2
     manualReview: { billing: string[]; support: string[] }; // MUST land in manual_review (tier 3)
     mergePairs: MergePair[];
-    crossSystemCompanyIds: string[]; // canonical CRM ids present in all three systems
+    // Canonical CRM ids present in all three systems: a company qualifies iff at least one
+    // billing entity AND at least one support entity resolve to it (any tier). Derived from
+    // the generated data at build time — never hand-maintained.
+    crossSystemCompanyIds: string[];
   };
 };
 
@@ -115,8 +118,9 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
     currency: "USD",
   }));
 
-  // Support: 14 requesters. 1–9 tier-1 (contact emails of companies 6–14 → companies 6–10
-  // overlap billing = cross-system entities); 10–11 tier-2 (normalization variants);
+  // Support: 14 requesters. 1–9 tier-1 (contact emails of companies 6–14; companies 6–13
+  // also carry billing — tier-1 B-0006..B-0010 plus tier-2 B-0011..B-0013 — so C-0006..C-0013
+  // are the cross-system entities); 10–11 tier-2 (normalization variants);
   // 12 near-miss (domain matches C-0017, name doesn't); 13–14 unmatchable.
   const sId = (n: number) => `DEMO-S-${pad(n)}`;
   const requesters: SupportRequester[] = [
@@ -148,6 +152,33 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
     };
   });
 
+  // crossSystemCompanyIds is DERIVED from the data above (drift-proof, correct by
+  // construction): a company is cross-system iff ≥1 billing entity AND ≥1 support entity
+  // resolve to it, any tier. Resolution mirrors the criteria the tiers encode:
+  //   tier 1 — entity email is an exact CRM contact email → that contact's company;
+  //   tier 2 — entity domain matches a company domain after normalization (case, leading
+  //            "www.") AND its name matches after normalization (case, Inc/LLC suffix).
+  // Near-misses fail on purpose: B-0014 (name matches, domain doesn't), S-0012 (domain
+  // matches, name doesn't) — both stay manual-review and never count as cross-system.
+  const normDomain = (d: string) => d.toLowerCase().replace(/^www\./, "");
+  const normName = (n: string) => n.toLowerCase().replace(/\s+(inc|llc)\.?$/, "").trim();
+  const companyByContactEmail = new Map(contacts.map((p) => [p.email, p.company_id]));
+  const companyByDomain = new Map(base.map((c) => [normDomain(c.domain), c]));
+  const resolveCompanyId = (e: { email: string; domain: string; name: string }): string | null => {
+    const tier1 = companyByContactEmail.get(e.email);
+    if (tier1) return tier1;
+    const co = companyByDomain.get(normDomain(e.domain));
+    return co && normName(co.name) === normName(e.name) ? co.id : null;
+  };
+  const billingCompanyIds = new Set(
+    customers.map((c) => resolveCompanyId(c)).filter((id): id is string => id !== null),
+  );
+  const crossSystemCompanyIds = [...new Set(
+    requesters
+      .map((r) => resolveCompanyId({ email: r.email, domain: r.domain, name: r.company_name }))
+      .filter((id): id is string => id !== null && billingCompanyIds.has(id)),
+  )].sort();
+
   return {
     crm: { companies, contacts, deals, mergePairs },
     billing: { customers, invoices },
@@ -161,7 +192,7 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
       tier2: { billing: [bId(11), bId(12), bId(13)], support: [sId(10), sId(11)] },
       manualReview: { billing: [bId(14), bId(15), bId(16)], support: [sId(12), sId(13), sId(14)] },
       mergePairs,
-      crossSystemCompanyIds: base.slice(5, 10).map((c) => c.id), // C-0006..C-0010
+      crossSystemCompanyIds, // derived above: C-0006..C-0013 for the generic profile
     },
   };
 }
