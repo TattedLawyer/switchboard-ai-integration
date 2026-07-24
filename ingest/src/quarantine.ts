@@ -34,7 +34,9 @@ function unstorableReason(s: string): string | null {
 // margin even if either ceiling shrinks — and far above any legitimate business payload, whose
 // real nesting is single digits. Deeper payloads divert to raw_body quarantine like NUL/lone
 // surrogates: genuinely unstorable as jsonb, preserved as text.
-const MAX_JSONB_NESTING_DEPTH = 1000;
+// Exported so tests (e.g. the property suite) can pin behavior AT the bound rather than
+// hardcoding a magic 1000 that could silently drift from this constant.
+export const MAX_JSONB_NESTING_DEPTH = 1000;
 
 export function jsonbUnstorableReason(value: unknown): string | null {
   // depth = number of enclosing containers above the current value (root sits at 0); a
