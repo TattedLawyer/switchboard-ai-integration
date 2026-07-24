@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
@@ -97,5 +97,42 @@ describe("ingest verifyLedgerChain (the copy chaos.sh actually runs)", () => {
   it("rejects the whole chain under the wrong key", () => {
     writeGoldenLedger(ledgerPath, GOLDEN, "the-real-key");
     expect(verifyLedgerChain(ledgerPath, "a-different-key")).toEqual({ ok: false, brokenAt: 1 });
+  });
+});
+
+describe("torn-line crash-safety: file corruption is a verdict, never a throw", () => {
+  // A crash or disk-full mid-append leaves a partially-written final line. The verifier
+  // must report that as a broken chain at that line — a corrupted file that throws is
+  // indistinguishable from a verifier bug, and chaos.sh's reconciliation would die
+  // instead of failing loudly with a location. (Truncation at an EXACT line boundary
+  // yields a valid shorter chain — inherent to append-only logs; reconcile's ledger-vs-raw
+  // count comparison is what catches that case.)
+  const key = DEFAULT_LEDGER_HMAC_KEY;
+
+  it("a final line torn mid-append yields {ok:false, brokenAt:lastLine}", () => {
+    writeGoldenLedger(ledgerPath, GOLDEN, key);
+    const full = readFileSync(ledgerPath, "utf8");
+    // Cut the last entry's JSON off mid-string, no trailing newline — crash mid-write.
+    writeFileSync(ledgerPath, full.trimEnd().slice(0, -25), "utf8");
+    expect(() => verifyLedgerChain(ledgerPath, key)).not.toThrow();
+    expect(verifyLedgerChain(ledgerPath, key)).toEqual({ ok: false, brokenAt: 4 });
+  });
+
+  it("a garbage (unparseable) line mid-file breaks the chain at that line", () => {
+    const entries = writeGoldenLedger(ledgerPath, GOLDEN, key);
+    const lines = entries.map((e) => JSON.stringify(e));
+    lines[1] = '{"event_id":"evt-2","event_ty'; // torn where line 2 was
+    writeFileSync(ledgerPath, lines.join("\n") + "\n", "utf8");
+    expect(() => verifyLedgerChain(ledgerPath, key)).not.toThrow();
+    expect(verifyLedgerChain(ledgerPath, key)).toEqual({ ok: false, brokenAt: 2 });
+  });
+
+  it("a line that parses to a non-object ('null') is a broken chain, not a TypeError", () => {
+    const entries = writeGoldenLedger(ledgerPath, GOLDEN, key);
+    const lines = entries.map((e) => JSON.stringify(e));
+    lines[2] = "null"; // valid JSON, not a ledger entry — .prev_hash access would throw
+    writeFileSync(ledgerPath, lines.join("\n") + "\n", "utf8");
+    expect(() => verifyLedgerChain(ledgerPath, key)).not.toThrow();
+    expect(verifyLedgerChain(ledgerPath, key)).toEqual({ ok: false, brokenAt: 3 });
   });
 });

@@ -58,6 +58,30 @@ describe("ledger hash chain", () => {
   });
 });
 
+describe("torn-line crash-safety: file corruption is a verdict, never a throw", () => {
+  // Same contract as the ingest verifier copy (ingest/test/ledger-verify.test.ts): a
+  // crash/disk-full mid-append leaves a partial final line; the verifier must return
+  // {ok:false, brokenAt:n} at that line, not die in JSON.parse. Exact-line-boundary
+  // truncation yields a valid shorter chain by construction — reconcile's count
+  // comparison covers that case.
+  it("a final line torn mid-append yields {ok:false, brokenAt:lastLine}", () => {
+    appendN(4);
+    const full = readFileSync(ledgerPath, "utf8");
+    writeFileSync(ledgerPath, full.trimEnd().slice(0, -25), "utf8");
+    expect(() => verifyLedgerChain(ledgerPath)).not.toThrow();
+    expect(verifyLedgerChain(ledgerPath)).toEqual({ ok: false, brokenAt: 4 });
+  });
+
+  it("a line that parses to a non-object ('null') is a broken chain, not a TypeError", () => {
+    appendN(3);
+    const lines = readFileSync(ledgerPath, "utf8").split("\n").filter(Boolean);
+    lines[1] = "null";
+    writeFileSync(ledgerPath, lines.join("\n") + "\n", "utf8");
+    expect(() => verifyLedgerChain(ledgerPath)).not.toThrow();
+    expect(verifyLedgerChain(ledgerPath)).toEqual({ ok: false, brokenAt: 2 });
+  });
+});
+
 // Reproduces, in test form, HMAC canonicalHash(prevHash, entry, key) from src/ledger.ts.
 // A real forger has the source (it's not secret) but not LEDGER_HMAC_KEY, so this helper
 // takes an arbitrary key — exactly what an attacker without the real key would run.
