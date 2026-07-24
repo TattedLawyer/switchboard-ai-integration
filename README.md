@@ -29,8 +29,10 @@ Anyone can verify the claims: one command (`./scripts/demo.sh`) runs the entire
 system and produces the report. No accounts, no API keys, nothing to sign up for.
 
 **Note for reviewers:** the "customer" is a fictional company and all data is
-synthetic (the data generators are covered by automated hygiene checks — no real names, emails, or records
-anywhere). Real client work can't be published, so this project shows the same
+synthetic — and that's enforced, not asserted: automated hygiene checks cover
+both the data generators (DEMO-prefixed ids/names, example.com emails only) and
+a scan of every tracked file in the repo for real-looking emails or PII-shaped
+records. Real client work can't be published, so this project shows the same
 engineering on data you can inspect freely.
 
 ## What's built and working today (Phases 0–2a)
@@ -80,8 +82,8 @@ engineering on data you can inspect freely.
 - A worker that generates the Monday revenue-risk report — with a timeout and
   fallback so the report generates even when the AI service is down, and per-call
   cost logging.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 136 tests, the
-  dbt build (14 models + 46 data tests), the agent action-safety eval, and the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 147 tests, the
+  dbt build (14 models + 47 data tests), the agent action-safety eval, and the
   identity oracle, against a real Postgres service container
   ([`ci.yml`](.github/workflows/ci.yml)). The heavier chaos + demo proof runs on
   a nightly schedule and manual dispatch, with the fault seed as a workflow input
@@ -89,7 +91,7 @@ engineering on data you can inspect freely.
   ([`chaos.yml`](.github/workflows/chaos.yml)). The badges above track those
   workflows — they show "no runs" until the first GitHub run, which is pending
   (pushing the workflow files requires a workflow-scoped credential).
-- 136 automated tests, written test-first, all green locally — including a
+- 147 automated tests, written test-first, all green locally — including a
   seeded property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety
   under arbitrary torn writes; the whole pipeline
@@ -111,7 +113,7 @@ engineering on data you can inspect freely.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 136 tests green (incl. 6 seeded fast-check properties); 46/46 dbt data tests (60 build steps incl. 14 models) |
+| Suite | `npm test` + dbt | 147 tests green (incl. 6 seeded fast-check properties); 47/47 dbt data tests (61 build steps incl. 14 models) |
 
 ## What's coming (built in phases, in public)
 

@@ -78,6 +78,30 @@ describe("merge resolution walk", () => {
     // exactly the condition assert_merge_chains_terminate.sql catches in dbt (canonical still
     // has an outgoing edge).
   });
+
+  // SYNC NOTE: mirrors warehouse/tests/assert_canonical_targets_exist.sql (ref()s swapped
+  // for tmp_ tables) — proves the singular test's SQL actually detects the defect, since a
+  // dbt test over clean seeded data can't demonstrate its own trigger condition.
+  const PHANTOM_CHECK_SQL = `
+    select k.company_id, k.canonical_id
+    from (${RESOLUTION_SQL}) k
+    left join tmp_companies c on c.company_id = k.canonical_id
+    where not k.is_cycle and c.company_id is null
+  `;
+
+  it("phantom-canonical detection: a merge event targeting a NONEXISTENT company is caught (L2-G5)", async () => {
+    // 'GHOST' has no company record — a company.merged event pointed at a bad id. The walk
+    // dutifully resolves A → GHOST, and every deal would roll up to an id no CRM record has.
+    await seed(["A"], [["A", "GHOST"]]);
+    const rows = (await pool.query(PHANTOM_CHECK_SQL)).rows;
+    expect(rows).toEqual([{ company_id: "A", canonical_id: "GHOST" }]);
+  });
+
+  it("phantom-canonical detection: a merge to a REAL company raises nothing", async () => {
+    await seed(["A", "B"], [["A", "B"]]);
+    const rows = (await pool.query(PHANTOM_CHECK_SQL)).rows;
+    expect(rows).toEqual([]);
+  });
 });
 
 // SYNC NOTE: this SQL mirrors the tier CTEs of

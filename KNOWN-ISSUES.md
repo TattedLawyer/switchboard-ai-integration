@@ -42,9 +42,9 @@ truncation-totality property now runs in the green suite (property 6).
   The per-key guards (tier 1 and tier 2) don't compose per-entity. *Scheduled:
   Phase 2b identity work (fix sketch: per-entity ambiguity check across groups
   + deterministic same-tier tiebreak).*
-- **A merge event targeting a nonexistent company mints a phantom canonical**
-  (deals roll up to an id no CRM record has). *Fix in progress (hardening
-  wave): dbt test asserting canonical targets exist.*
+- ~~A merge event targeting a nonexistent company mints a phantom canonical~~
+  *Paid (2a.2):* `assert_canonical_targets_exist` dbt test, plus a mirrored
+  unit test proving the detection SQL fires on a seeded phantom merge.
 - **`crm_emails` reads full raw history, not latest state** — a long-replaced
   owner email remains tier-1 match evidence forever, and it's the one identity
   input that bypasses the staging layer. *Fix in progress (hardening wave).*
@@ -91,10 +91,10 @@ truncation-totality property now runs in the green suite (property 6).
   tests embed a copy of the model SQL (temp-table substitutions for dbt refs),
   kept identical by convention and review. *Fix in progress (hardening wave):
   a CI check that mechanically diffs the mirrored region.*
-- **HMAC helpers are duplicated across workspaces** (ingest + mocks) with a
-  cross-compat test guarding the hash copy only. *Interim (hardening wave):
-  equivalent cross-compat tests for the sign/secret helpers; structural fix
-  (shared package) with Phase 2b.*
+- **HMAC helpers are duplicated across workspaces** (ingest + mocks). All
+  three duplicated helpers (ledger hash, signBody, secretForSource) now carry
+  by-construction cross-compat tests (2a.2); the structural fix — a shared
+  package — lands with Phase 2b.
 
 ## Process honesty
 
