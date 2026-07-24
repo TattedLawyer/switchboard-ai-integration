@@ -10,23 +10,23 @@ hide state; MED items degrade operations; LOW items are rough edges.
 
 ## Known-failing invariants (deliberately not in the green suite)
 
-The fast-check property suite pins only invariants that hold. Two that do NOT
-hold yet are excluded on purpose — a green checkmark that hides a known red
-would be worse than the bug:
+The fast-check property suite pins only invariants that hold. One that does
+NOT hold yet is excluded on purpose — a green checkmark that hides a known
+red would be worse than the bug:
 
-1. **Ledger torn-line crash-safety** — a partially-written final ledger line
-   (crash/disk-full mid-append) makes the chain verifier throw a `SyntaxError`
-   instead of returning `{ok:false, brokenAt}`. A corrupted file is currently
-   indistinguishable from a verifier bug. *Fix in progress (hardening wave):
-   catch → structured failure in both verifier copies, then the crash-safety
-   property joins the suite.*
-2. **Name-normalization idempotence** — stacked legal suffixes normalize
+1. **Name-normalization idempotence** — stacked legal suffixes normalize
    differently on repeat application (`"Acme Inc Ltd"` → `"acme inc"` → `"acme"`),
    so `norm(norm(x)) ≠ norm(x)` for some inputs. Latent (the seeded data never
    stacks suffixes); scheduled with the Phase 2b vendor-normalization work,
    which also aligns the TypeScript and SQL normalizers (their legal-suffix
    strip sets currently differ: SQL strips `inc|llc|ltd|corp`, the manifest
    resolver only `inc|llc`).
+
+*Paid:* the **ledger torn-line crash-safety** invariant formerly listed here
+(partial final line made the chain verifier throw instead of returning
+`{ok:false, brokenAt}`) was fixed in the 2a.2 hardening wave — RED tests
+committed first, then a parse-guard in both verifier copies, and the
+truncation-totality property now runs in the green suite (property 6).
 
 ## Identity resolution (HIGH interest)
 

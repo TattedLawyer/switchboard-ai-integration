@@ -7,12 +7,18 @@ import { ingestEvent } from "../src/ingest-event.js";
 import { secretForSource, signBody, verifySignature } from "../src/hmac.js";
 import { jsonbUnstorableReason, MAX_JSONB_NESTING_DEPTH } from "../src/quarantine.js";
 import { createQueue, enqueueEvent, startWorker, fetchDlq, queueName } from "../src/queue.js";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { verifyLedgerChain, DEFAULT_LEDGER_HMAC_KEY } from "../src/reconcile.js";
+import { writeGoldenLedger, type EntryInput } from "./helpers/golden-ledger.js";
 
 // Property-based claim-pinning suite (fast-check). Every property here is expected GREEN at
-// HEAD: these lock the L1-G1/G2/G5/G9 fix classes so they cannot regress — they are not
-// exploratory. Known-failing invariants (e.g. normalization idempotence) are deliberately
-// NOT pinned here — a green suite must not hide known reds. The public list lives in
-// KNOWN-ISSUES.md at the repo root, with the phase where each gets fixed.
+// HEAD: these lock the L1-G1/G2/G5/G9 fix classes (and the ledger torn-write fix) so they
+// cannot regress — they are not exploratory. Known-failing invariants (e.g. normalization
+// idempotence) are deliberately NOT pinned here — a green suite must not hide known reds.
+// The public list lives in KNOWN-ISSUES.md at the repo root, with the phase where each
+// gets fixed.
 //
 // SEED: fixed so CI runs are reproducible — every fc.assert below uses this seed, so a failure
 // report's counterexample can be replayed exactly with `{ seed: SEED, path: "<reported path>" }`.
@@ -532,4 +538,67 @@ describe("property 5: random poison/healthy batch partitions — healthy ingest 
       await boss.stop();
     }
   }, 120_000);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Property 6 — ledger crash-safety (pins the torn-line verifier fix; pure, no DB)
+// ---------------------------------------------------------------------------------------------
+
+describe("property 6: ledger verification is total under arbitrary byte-truncation (torn writes)", () => {
+  // The exact oracle: truncating a valid ledger at ANY byte offset must (a) never make the
+  // verifier throw, and (b) yield ok:true iff the surviving bytes are a clean prefix of whole
+  // lines — a crash at an exact line boundary IS a valid shorter chain (inherent to append-only
+  // logs; reconcile's ledger-vs-raw count comparison covers that case), while a mid-line tear
+  // must report {ok:false, brokenAt:<the torn line>}. This was a known-failing invariant
+  // (KNOWN-ISSUES.md) until the parse-guard fix landed in both verifier copies.
+  let p6run = 0;
+
+  it("any truncation offset → never throws; verdict ≡ clean-line-prefix oracle", () => {
+    const dir = mkdtempSync(join(tmpdir(), "p6-ledger-"));
+    try {
+      fc.assert(
+        fc.property(
+          fc.record({
+            n: fc.integer({ min: 1, max: 6 }),
+            // Vary line lengths so offsets land in different structural positions (inside
+            // strings, hashes, numbers, braces, and exactly on newlines).
+            names: fc.array(fc.string({ minLength: 0, maxLength: 40 }), { minLength: 6, maxLength: 6 }),
+            cut: fc.nat(),
+          }),
+          ({ n, names, cut }) => {
+            const path = join(dir, `ledger-${++p6run}.jsonl`);
+            const inputs: EntryInput[] = Array.from({ length: n }, (_, i) => ({
+              event_id: `evt-${i + 1}`,
+              event_type: "company.updated",
+              occurred_at: new Date(2026, 0, i + 1).toISOString(),
+              data: { id: `c-${i + 1}`, name: names[i] },
+              seq: i + 1,
+            }));
+            const entries = writeGoldenLedger(path, inputs, DEFAULT_LEDGER_HMAC_KEY);
+            const full = readFileSync(path, "utf8");
+            const offset = cut % (full.length + 1); // 0..len inclusive — empty file through untouched
+            const truncated = full.slice(0, offset);
+            writeFileSync(path, truncated, "utf8");
+
+            const goldenLines = entries.map((e) => JSON.stringify(e));
+            const lines = truncated.split("\n").filter(Boolean);
+            const cleanPrefix = lines.every((l, i) => l === goldenLines[i]);
+
+            let result: { ok: boolean; brokenAt?: number } | undefined;
+            expect(() => {
+              result = verifyLedgerChain(path, DEFAULT_LEDGER_HMAC_KEY);
+            }).not.toThrow();
+            if (cleanPrefix) {
+              expect(result).toEqual({ ok: true });
+            } else {
+              expect(result).toEqual({ ok: false, brokenAt: lines.length });
+            }
+          },
+        ),
+        { seed: SEED, numRuns: 150 },
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

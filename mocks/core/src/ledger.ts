@@ -77,11 +77,24 @@ export function verifyLedgerChain(
   path: string,
   key: string = process.env.LEDGER_HMAC_KEY ?? DEFAULT_LEDGER_HMAC_KEY,
 ): { ok: boolean; brokenAt?: number } {
-  const entries = readLedger(path);
+  // Parse per-line with a guard rather than via readLedger: a partially-written final
+  // line (crash/disk-full mid-append) or a non-object line is a BROKEN CHAIN at that
+  // line — a verdict, never a thrown SyntaxError/TypeError. Mirrors the ingest copy
+  // (ingest/src/reconcile.ts) — keep both in sync.
+  if (!existsSync(path)) return { ok: true };
+  const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
   let expectedPrev = GENESIS_HASH;
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
+  for (let i = 0; i < lines.length; i++) {
     const lineNo = i + 1;
+    let entry: LedgerEntry;
+    try {
+      entry = JSON.parse(lines[i]);
+    } catch {
+      return { ok: false, brokenAt: lineNo };
+    }
+    if (entry === null || typeof entry !== "object") {
+      return { ok: false, brokenAt: lineNo };
+    }
     if (entry.prev_hash !== expectedPrev) {
       return { ok: false, brokenAt: lineNo };
     }
