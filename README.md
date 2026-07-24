@@ -145,12 +145,7 @@ deterministic template fallback when `ANTHROPIC_API_KEY` is unset).
   [Phase 0](docs/log/phase0.md) · [Phase 1](docs/log/phase1.md) ·
   [Phase 2a](docs/log/phase2a.md)
 
-Tests require the database up:
-
-```bash
-docker compose up -d postgres
-DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard npm test
-```
+**Prerequisites:** Docker (for Postgres) and Node.js ≥ 22.
 
 **Run it:**
 
@@ -158,6 +153,13 @@ DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard npm t
 npm install
 ./scripts/demo.sh        # end-to-end: 288 events, 3 sources → oracle-equality + identity checks → report (~20s)
 ./scripts/chaos.sh       # 600 events under injected faults → zero-loss proof (~20s typical, bounded at 240s)
+```
+
+Tests require the install above and the database up:
+
+```bash
+docker compose up -d postgres
+DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard npm test
 ```
 
 **Stack:** TypeScript / Node 22 · Express 5 · Postgres 16 · dbt · pg-boss · MCP

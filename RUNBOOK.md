@@ -70,6 +70,13 @@ identity layer and `customer_360` against the seed manifest's planned match matr
   `source`; after a schema/mapping fix, replay via `replayQuarantined` (see
   `ingest/src/quarantine.ts`). Note: *unsigned* requests are rejected 401, never
   quarantined.
+- **jsonb-unstorable payloads** (NUL escapes, lone UTF-16 surrogates, nesting
+  depth > 1000): quarantined with `payload` null and the byte-exact wire text in
+  `raw_body`. These are preserved-for-inspection — `replayQuarantined` reports
+  them `still-invalid` by design (the event store is jsonb too). Check depth
+  periodically: `select reason, count(*) from ingest.quarantine group by 1;` —
+  nothing alerts on this table yet (tracked debt), so a growing count is only
+  visible if someone looks.
 - **Integrity doubt:** `npm run reconcile -w ingest` — for each source in
   `INGEST_SOURCES` with a `LEDGER_PATH_<SOURCE>` set, verifies that ledger's hash
   chain, then set-compares ledger vs `raw.raw_events where source = ...` and

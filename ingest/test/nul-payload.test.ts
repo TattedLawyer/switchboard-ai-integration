@@ -186,8 +186,8 @@ describe("deep nesting and lone surrogates never 500, never drop a signed payloa
     const port = (srv.address() as { port: number }).port;
 
     // 999 nested arrays sits exactly AT the depth bound for this event shape (root object +
-    // data object + 999 arrays = 1000 container levels): the deepest payload that must still
-    // take the normal path. Pins the under-side of the boundary — and that the walk itself is
+    // data object + 999 arrays = 1001 containers, deepest at depth 1000 = the bound): the
+    // deepest payload that must still take the normal path. Pins the under-side of the boundary — and that the walk itself is
     // iterative (a recursive walk with heavier frames died near ~3600 in an earlier revision).
     let deep: unknown = "leaf";
     for (let i = 0; i < 999; i++) deep = [deep];

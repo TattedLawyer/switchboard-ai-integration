@@ -18,6 +18,19 @@ export LEDGER_PATH_SUPPORT="$(pwd)/out/ledger-support.jsonl"
 SKIP_BACKFILL="${CHAOS_SKIP_BACKFILL:-0}"
 CHAOS_SEED="${CHAOS_SEED:-7}"
 
+
+# Wait until a service answers HTTP on its port (any response, incl. 404, means listening).
+# A bare sleep raced service startup on slow/loaded machines: first-run flake, exit 7.
+ready_wait() {
+  local port="$1" name="$2"
+  for i in $(seq 1 60); do
+    if curl -s -o /dev/null "http://localhost:${port}/"; then return 0; fi
+    sleep 0.5
+  done
+  echo "FAIL: ${name} (port ${port}) not ready after 30s — see out/log-${name}.txt" >&2
+  exit 1
+}
+
 pids=()
 cleanup() { for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null || true; done; }
 trap cleanup EXIT
@@ -52,11 +65,11 @@ do NOT pass divergent seeds or cross-system correlation breaks)"
 # BACKFILL_INTERVAL_MS pinned high so the in-process scheduled poller cannot fire mid-run —
 # the RED-mode detector proof (CHAOS_SKIP_BACKFILL=1) depends on dropped events staying
 # unrecovered until the explicit backfill step below.
-PORT=4002 BACKFILL_INTERVAL_MS=600000 npm run start -w ingest & pids+=($!)
-PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm     LEDGER_PATH="$LEDGER_PATH_CRM"     npm run start -w mocks/crm     & pids+=($!)
-PORT=4003 WEBHOOK_URL=http://localhost:4002/webhooks/billing LEDGER_PATH="$LEDGER_PATH_BILLING" npm run start -w mocks/billing & pids+=($!)
-PORT=4004 WEBHOOK_URL=http://localhost:4002/webhooks/support LEDGER_PATH="$LEDGER_PATH_SUPPORT" npm run start -w mocks/support & pids+=($!)
-sleep 2
+PORT=4002 BACKFILL_INTERVAL_MS=600000 npm run start -w ingest > out/log-ingest.txt 2>&1 & pids+=($!)
+PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm     LEDGER_PATH="$LEDGER_PATH_CRM"     npm run start -w mocks/crm     > out/log-crm.txt 2>&1 & pids+=($!)
+PORT=4003 WEBHOOK_URL=http://localhost:4002/webhooks/billing LEDGER_PATH="$LEDGER_PATH_BILLING" npm run start -w mocks/billing > out/log-billing.txt 2>&1 & pids+=($!)
+PORT=4004 WEBHOOK_URL=http://localhost:4002/webhooks/support LEDGER_PATH="$LEDGER_PATH_SUPPORT" npm run start -w mocks/support > out/log-support.txt 2>&1 & pids+=($!)
+ready_wait 4002 ingest; ready_wait 4001 crm; ready_wait 4003 billing; ready_wait 4004 support
 
 echo "5/8 simulate 200 events per source with injected faults (seed $CHAOS_SEED, drop 0.2, dup 0.15, apiError 0.2)"
 fault_body() { printf '{"count": 200, "fault_plan": {"seed": %s, "dropRate": 0.2, "dupRate": 0.15, "apiErrorRate": 0.2}}' "$CHAOS_SEED"; }
