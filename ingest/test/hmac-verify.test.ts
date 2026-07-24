@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createHmac } from "node:crypto";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
-import { secretForSource, signBody } from "../src/hmac.js";
+import { secretForSource, signBody, verifySignature } from "../src/hmac.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -68,5 +69,59 @@ describe("webhook HMAC verification", () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "invalid signature" });
     srv.close();
+  });
+});
+
+// signBody/secretForSource are intentionally duplicated between ingest/src/hmac.ts and
+// mocks/core/src/hmac.ts (separate workspaces, must not cross-import), synced only by
+// keep-in-sync comments — the same landmine the ledger's canonicalHash had. Same interim
+// guard as ledger-verify.test.ts, until the Phase 2b shared package: reproduce the MOCK
+// side's exact algorithm here and assert the ingest side accepts/derives identically. If
+// either copy drifts (prefix, encoding, digest, env naming, default-secret shape), these
+// go red. Cross-compat is by construction: this IS the mock writer's algorithm.
+function mocksSignBody(rawBody: string, secret: string): string {
+  const hex = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+  return `sha256=${hex}`;
+}
+function mocksSecretForSource(source: string): string {
+  return process.env[`WEBHOOK_SECRET_${source.toUpperCase()}`] ?? `demo-secret-${source}`;
+}
+
+describe("cross-compat: mock-side signing is accepted by ingest-side verification", () => {
+  const bodies = [
+    JSON.stringify(event),
+    "", // empty body
+    '{"name":"ünïcode ✓ 日本語","emoji":"👍"}', // multi-byte utf-8 — encoding drift shows here
+    JSON.stringify({ nested: { deep: [1, 2, { x: "y" }] } }),
+  ];
+
+  it("a body signed with the MOCKS algorithm verifies under the ingest verifier, per source", () => {
+    for (const source of ["crm", "billing", "support"] as const) {
+      for (const body of bodies) {
+        const header = mocksSignBody(body, mocksSecretForSource(source));
+        expect(verifySignature(body, header, secretForSource(source))).toBe(true);
+      }
+    }
+  });
+
+  it("both copies derive the same secret: default fallback AND env override", () => {
+    for (const source of ["crm", "billing", "support"] as const) {
+      expect(secretForSource(source)).toBe(mocksSecretForSource(source));
+    }
+    const prev = process.env.WEBHOOK_SECRET_CRM;
+    process.env.WEBHOOK_SECRET_CRM = "env-override-secret";
+    try {
+      expect(secretForSource("crm")).toBe("env-override-secret");
+      expect(secretForSource("crm")).toBe(mocksSecretForSource("crm"));
+    } finally {
+      if (prev === undefined) delete process.env.WEBHOOK_SECRET_CRM;
+      else process.env.WEBHOOK_SECRET_CRM = prev;
+    }
+  });
+
+  it("signatures are per-source: the same body signed for billing fails crm verification", () => {
+    const body = JSON.stringify(event);
+    const billingHeader = mocksSignBody(body, mocksSecretForSource("billing"));
+    expect(verifySignature(body, billingHeader, secretForSource("crm"))).toBe(false);
   });
 });

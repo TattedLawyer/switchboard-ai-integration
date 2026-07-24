@@ -27,10 +27,8 @@ jobs:
         run: npm run typecheck
       - name: migrate
         run: npm run migrate -w ingest
-      - name: workspace test suites
+      - name: workspace test suites (incl. gating action-safety eval)
         run: npm test
-      - name: action-safety eval (gating, deterministic)
-        run: npm test -w agent -- action-safety.eval.test.ts
       - name: seed pipeline fixture for dbt
         run: npx tsx scripts/ci-fixture.ts
       - name: dbt build + data tests
