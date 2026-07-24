@@ -16,7 +16,7 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 | `CRM_BASE_URL` / `BILLING_BASE_URL` / `SUPPORT_BASE_URL` | `http://localhost:4001` / `4003` / `4004` | backfill CLI |
 | `INGEST_ROLE` | `all` (`receiver` \| `worker` \| `all`) | ingest main |
 | `CHAOS_SEED` | `7` | chaos.sh fault-plan seed (CI feeds it as a workflow input; reproduce a red run by re-entering its seed) |
-| `ANTHROPIC_API_KEY` | unset → deterministic template narrative | agent report |
+| `ANTHROPIC_API_KEY` | unset → deterministic report (risk table + watch list; a one-line notice replaces the AI narrative) | agent report |
 | `DBT_SCHEMA` | `public_analytics` | agent, report worker |
 | `DBT_PORT` | `5432` (CI sets `5433`) | dbt profile (host port of Postgres) |
 

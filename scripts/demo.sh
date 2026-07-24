@@ -51,6 +51,7 @@ docker compose exec -T postgres psql -U switchboard -c \
 
 echo "3/6 start ingest + mock crm/billing/support (all mocks share the default manifest seed 42 —
 do NOT pass divergent seeds or cross-system correlation breaks)"
+mkdir -p out  # log redirects + ledgers land here; gitignored, absent on fresh clones
 PORT=4002 npm run start -w ingest > out/log-ingest.txt 2>&1 & pids+=($!)
 PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm     LEDGER_PATH="$LEDGER_PATH_CRM"     npm run start -w mocks/crm     > out/log-crm.txt 2>&1 & pids+=($!)
 PORT=4003 WEBHOOK_URL=http://localhost:4002/webhooks/billing LEDGER_PATH="$LEDGER_PATH_BILLING" npm run start -w mocks/billing > out/log-billing.txt 2>&1 & pids+=($!)

@@ -43,7 +43,9 @@ rejected: it preserves a name that nothing should be reading anymore.
   external entities resolve 19 tier-1 / 5 tier-2 / 6 manual-review, exactly the
   manifest's planned matrix; `customer_360` = 26 rows (20 canonical + 6
   incomplete-flagged); 8 companies verified present in all three systems.
-- 101 tests green at phase close (106 after the post-close hardening pass),
+- 101 tests green at phase close (106 after the post-close hardening pass; a
+  later edge-case hardening wave — three claim-breaker fixes, first-run UX, and
+  a fast-check property suite — grew this to 130),
   typecheck clean.
 
 **What actually happened, beyond the plan:**

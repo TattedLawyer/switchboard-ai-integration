@@ -79,7 +79,7 @@ engineering on data you can inspect freely.
 - A worker that generates the Monday revenue-risk report — with a timeout and
   fallback so the report generates even when the AI service is down, and per-call
   cost logging.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 106 tests, the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 130 tests, the
   dbt build (14 models + 46 data tests), the agent action-safety eval, and the
   identity oracle, against a real Postgres service container
   ([`ci.yml`](.github/workflows/ci.yml)). The heavier chaos + demo proof runs on
@@ -88,7 +88,9 @@ engineering on data you can inspect freely.
   ([`chaos.yml`](.github/workflows/chaos.yml)). The badges above track those
   workflows — they show "no runs" until the first GitHub run, which is pending
   (pushing the workflow files requires a workflow-scoped credential).
-- 106 automated tests, written test-first, all green locally; the whole pipeline
+- 130 automated tests, written test-first, all green locally — including a
+  seeded property-based suite (fast-check) that generatively attacks the ingest
+  boundary, dedup, HMAC, and batch-failure isolation; the whole pipeline
   runs from one command; operational docs included ([runbook](RUNBOOK.md),
   [identity ADR](docs/adr/identity-resolution.md),
   [scaling ceilings](docs/scaling-ceilings.md),
@@ -105,7 +107,7 @@ engineering on data you can inspect freely.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 106 tests green; 46/46 dbt data tests (60 build steps incl. 14 models) |
+| Suite | `npm test` + dbt | 130 tests green (incl. 5 seeded fast-check properties); 46/46 dbt data tests (60 build steps incl. 14 models) |
 
 ## What's coming (built in phases, in public)
 

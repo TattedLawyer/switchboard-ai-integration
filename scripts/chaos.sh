@@ -65,6 +65,7 @@ do NOT pass divergent seeds or cross-system correlation breaks)"
 # BACKFILL_INTERVAL_MS pinned high so the in-process scheduled poller cannot fire mid-run —
 # the RED-mode detector proof (CHAOS_SKIP_BACKFILL=1) depends on dropped events staying
 # unrecovered until the explicit backfill step below.
+mkdir -p out  # log redirects + ledgers land here; gitignored, absent on fresh clones
 PORT=4002 BACKFILL_INTERVAL_MS=600000 npm run start -w ingest > out/log-ingest.txt 2>&1 & pids+=($!)
 PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm     LEDGER_PATH="$LEDGER_PATH_CRM"     npm run start -w mocks/crm     > out/log-crm.txt 2>&1 & pids+=($!)
 PORT=4003 WEBHOOK_URL=http://localhost:4002/webhooks/billing LEDGER_PATH="$LEDGER_PATH_BILLING" npm run start -w mocks/billing > out/log-billing.txt 2>&1 & pids+=($!)
