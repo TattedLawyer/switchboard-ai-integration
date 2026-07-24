@@ -10,8 +10,9 @@ import { createQueue, enqueueEvent, startWorker, fetchDlq, queueName } from "../
 
 // Property-based claim-pinning suite (fast-check). Every property here is expected GREEN at
 // HEAD: these lock the L1-G1/G2/G5/G9 fix classes so they cannot regress — they are not
-// exploratory. Two known-failing invariants (ledger torn-line verify-throws, normalization
-// idempotence) are OPEN register items and deliberately NOT pinned here.
+// exploratory. Known-failing invariants (e.g. normalization idempotence) are deliberately
+// NOT pinned here — a green suite must not hide known reds. The public list lives in
+// KNOWN-ISSUES.md at the repo root, with the phase where each gets fixed.
 //
 // SEED: fixed so CI runs are reproducible — every fc.assert below uses this seed, so a failure
 // report's counterexample can be replayed exactly with `{ seed: SEED, path: "<reported path>" }`.

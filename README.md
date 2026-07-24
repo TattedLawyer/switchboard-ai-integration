@@ -20,7 +20,8 @@ Switchboard is a working demonstration of the fix, built end-to-end by one engin
    even when the same company appears under different names and IDs in each system.
 3. **Put an AI assistant on top** that writes the weekly revenue-risk report
    automatically — designed so any action beyond reading requires human approval.
-   Its access is limited to a declared list of tools, enforced by automated tests;
+   Today that means the assistant's server registers exactly one read-only tool —
+   so anything else is rejected by the protocol layer, and a test pins that;
    the approval-gated action itself and richer behavioral safety testing are being
    built in Phase 3.
 
@@ -28,7 +29,7 @@ Anyone can verify the claims: one command (`./scripts/demo.sh`) runs the entire
 system and produces the report. No accounts, no API keys, nothing to sign up for.
 
 **Note for reviewers:** the "customer" is a fictional company and all data is
-synthetic (enforced by automated checks — no real names, emails, or records
+synthetic (the data generators are covered by automated hygiene checks — no real names, emails, or records
 anywhere). Real client work can't be published, so this project shows the same
 engineering on data you can inspect freely.
 
@@ -95,7 +96,9 @@ engineering on data you can inspect freely.
   [identity ADR](docs/adr/identity-resolution.md),
   [scaling ceilings](docs/scaling-ceilings.md),
   [real-vendor delta](docs/real-connector-delta.md),
-  [deletion/GDPR design](docs/gdpr-erasure-design.md)).
+  [deletion/GDPR design](docs/gdpr-erasure-design.md),
+  and a public [known-issues ledger](KNOWN-ISSUES.md) — the open defects,
+  deferred debt, and known-failing invariants, with where each gets paid).
 
 ### Measured results (every number is a script output, reproducible)
 

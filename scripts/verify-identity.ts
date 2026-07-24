@@ -5,8 +5,12 @@
 // exemption ingest tests use (script/test code, not shipped src).
 import pg from "pg";
 import { generateManifest } from "../mocks/core/src/manifest.js";
+import { readDbtSchema } from "../agent/src/host/schema.js";
 
-const SCHEMA = process.env.DBT_SCHEMA ?? "public_analytics";
+// Same strict identifier validation the agent uses — SCHEMA is interpolated into SQL
+// identifier position below, so it gets the same hygiene (cold-review finding: this
+// script trusted the env var while agent/src validated the identical pattern).
+const SCHEMA = readDbtSchema();
 const m = generateManifest();
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 let failures = 0;

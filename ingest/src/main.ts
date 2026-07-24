@@ -126,7 +126,14 @@ async function main() {
   process.on("SIGINT", () => void shutdown("SIGINT"));
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});
+// Only boot the service when this file IS the entrypoint. Tests import this module for
+// createBackfillRunner; without the guard, the import itself started pg-boss against the
+// real DATABASE_URL, bound the service port, and fired backfill fetches — a test-harness
+// landmine whenever the suite ran against a shared database (cold/edge-review finding).
+import { pathToFileURL } from "node:url";
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  });
+}

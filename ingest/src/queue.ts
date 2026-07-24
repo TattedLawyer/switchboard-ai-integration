@@ -29,12 +29,16 @@ export async function createQueue(
     supervise: true,
   });
 
-  // Suppress pg-boss logging in tests
-  boss.on("error", () => {
-    /* silenced */
+  // pg-boss emits queue-level failures (connection loss, maintenance errors) on this
+  // channel — and this same createQueue runs in the LIVE service (main.ts), not just
+  // tests, so swallowing them hides real outages. Log structured; never throw from a
+  // listener. (Cold-review finding: the old no-op handler said "suppress in tests"
+  // while silencing production.)
+  boss.on("error", (err) => {
+    console.error(JSON.stringify({ pgboss: "error", message: err instanceof Error ? err.message : String(err) }));
   });
-  boss.on("warning", () => {
-    /* silenced */
+  boss.on("warning", (w) => {
+    console.warn(JSON.stringify({ pgboss: "warning", message: w instanceof Error ? w.message : String(w) }));
   });
 
   await boss.start();
