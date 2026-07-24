@@ -35,6 +35,28 @@ export async function generateMondayReport(
     snapshots.push(((res.content as { text: string }[])[0]).text);
   }
 
+  // Deterministic, business-readable core — rendered from the snapshots the report
+  // already fetched, with or without an LLM. The narrative (below) is additive.
+  const accounts = snapshots.map((s) => JSON.parse(s) as Record<string, unknown>);
+  const num = (a: Record<string, unknown>, k: string) => Number(a[k] ?? 0); // counts arrive as strings (pg bigint)
+  const usd = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+  const flagsFor = (a: Record<string, unknown>): string[] => {
+    const f: string[] = [];
+    if (num(a, "failed_payment_count") > 0) f.push(`${num(a, "failed_payment_count")} failed payment(s)`);
+    if (num(a, "open_invoice_count") > 0) f.push(`${num(a, "open_invoice_count")} open invoice(s)`);
+    if (num(a, "sla_breach_count") > 0) f.push(`${num(a, "sla_breach_count")} SLA breach(es)`);
+    if (a["avg_csat"] != null && Number(a["avg_csat"]) <= 2.5) f.push(`low CSAT (${a["avg_csat"]})`);
+    return f;
+  };
+  const tableRows = accounts.map((a) => {
+    const flags = flagsFor(a);
+    return `| ${a["entity_id"]} | ${a["entity_name"]} | ${usd(num(a, "open_deal_amount_cents"))} | ${usd(num(a, "total_invoiced_cents"))} / ${usd(num(a, "total_paid_cents"))} | ${num(a, "open_ticket_count")} | ${a["avg_csat"] ?? "—"} | ${flags.length ? "⚠ " + flags.join("; ") : "ok"} |`;
+  });
+  const watch = accounts
+    .map((a) => ({ a, flags: flagsFor(a) }))
+    .filter(({ flags }) => flags.length > 0)
+    .map(({ a, flags }) => `- **${a["entity_id"]}** (${a["entity_name"]}): ${flags.join("; ")}`);
+
   const narrative = await llm.complete(
     `Summarize account status from these ${snapshots.length} snapshots:\n${snapshots.join("\n")}`,
   );
@@ -44,7 +66,15 @@ export async function generateMondayReport(
     "",
     narrative,
     "",
-    "## Account snapshots",
+    "## Accounts to watch",
+    ...(watch.length ? watch : ["- No accounts flagged this week."]),
+    "",
+    "## All accounts",
+    "| Account | Name | Open deals | Invoiced / paid | Open tickets | CSAT | Flags |",
+    "|---|---|---|---|---|---|---|",
+    ...tableRows,
+    "",
+    "## Appendix: raw account snapshots",
     ...snapshots.map((s) => `- \`${s}\``),
     "",
     `_${incomplete.rows[0].n} billing/support-only entities (no CRM record) are pending manual review and excluded from the account list._`,

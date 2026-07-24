@@ -61,6 +61,21 @@ describe("Monday report (stub)", () => {
     expect(md).toContain("open_ticket_count");
   });
 
+  it("keyless report is business-readable: no prompt echo, has a risk table + watch list", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    // The LLM prompt must never leak into the deliverable (old TemplateLlm echoed it).
+    expect(md).not.toContain("Summarize account status");
+    // A deterministic, human-readable table renders regardless of LLM availability.
+    expect(md).toContain("| Account |");
+    // Fixture DEMO-C-0001 has 1 open invoice → it must be flagged with a reason;
+    // DEMO-C-0002 has no risk signals → it must not be in the watch list.
+    expect(md).toContain("## Accounts to watch");
+    const watch = md.split("## Accounts to watch")[1].split("##")[0];
+    expect(watch).toContain("DEMO-C-0001");
+    expect(watch).toContain("open invoice");
+    expect(watch).not.toContain("DEMO-C-0002");
+  });
+
   it("regression: merged-away duplicates DEMO-C-0021/0022 must NOT appear (canonicals only)", async () => {
     const md = await generateMondayReport(pool, new TemplateLlm());
     expect(md).not.toContain("DEMO-C-0021");
