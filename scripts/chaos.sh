@@ -6,6 +6,9 @@ export DATABASE_URL="${DATABASE_URL:-postgres://switchboard:switchboard@localhos
 # Reconcile (ingest CLI) iterates INGEST_SOURCES and exits nonzero if ANY source has
 # missing/extra/duplicate events, so PASS requires all three to reconcile clean.
 export INGEST_SOURCES=crm,billing,support
+# Demo runs on the published dev secrets by design (proves the mechanism, not secrecy).
+# Production must set WEBHOOK_SECRET_* and LEDGER_HMAC_KEY instead — see A2 fail-closed.
+export ALLOW_DEV_SECRETS=1
 # Absolute paths (mock workspace processes have different cwds). Per-source env consumed by
 # the reconcile CLI; each mock still takes its own LEDGER_PATH at its start line below.
 export LEDGER_PATH_CRM="$(pwd)/out/ledger-crm.jsonl"

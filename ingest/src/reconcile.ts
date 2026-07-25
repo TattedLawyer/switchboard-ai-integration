@@ -37,6 +37,20 @@ export const GENESIS_HASH = "0".repeat(64);
 // detectable), not secrecy.
 export const DEFAULT_LEDGER_HMAC_KEY = "demo-ledger-key";
 
+// FAIL CLOSED (A2): with the published demo key, "anyone who can write the file" holds
+// the key and a reconcile would verify tampered data clean. The default is only
+// reachable behind an explicit ALLOW_DEV_SECRETS=1 opt-in.
+// NOTE: duplicated in mocks/core/src/ledger.ts (writer side); keep in sync.
+export function ledgerHmacKey(): string {
+  const env = process.env.LEDGER_HMAC_KEY;
+  if (env) return env;
+  if (process.env.ALLOW_DEV_SECRETS === "1") return DEFAULT_LEDGER_HMAC_KEY;
+  throw new Error(
+    "LEDGER_HMAC_KEY is not set — refusing to fall back to the published demo key. " +
+      "Set LEDGER_HMAC_KEY, or set ALLOW_DEV_SECRETS=1 for local demo use only.",
+  );
+}
+
 // Canonical hash: HMAC-SHA256(key, prev_hash + canonical JSON of the entry sans hash
 // fields). Keyed (not a plain hash) so a party without the key cannot mutate an entry
 // and re-chain forward: recomputing HMAC values requires the secret, not just the
@@ -57,7 +71,7 @@ function canonicalHash(prevHash: string, entry: LedgerEntry, key: string): strin
 
 export function verifyLedgerChain(
   path: string,
-  key: string = process.env.LEDGER_HMAC_KEY ?? DEFAULT_LEDGER_HMAC_KEY,
+  key: string = ledgerHmacKey(),
 ): { ok: boolean; brokenAt?: number } {
   // Parse per-line with a guard rather than via readLedger: a partially-written final
   // line (crash/disk-full mid-append) or a non-object line is a BROKEN CHAIN at that

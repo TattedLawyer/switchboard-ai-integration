@@ -4,6 +4,7 @@ import type { PgBoss } from "pg-boss";
 import type pg from "pg";
 import { getPool } from "./db.js";
 import { createIngestApp, type SourceEvent } from "./server.js";
+import { assertWebhookSecrets } from "./hmac.js";
 import { baseUrlFor, enabledSources, type Source } from "./sources.js";
 import { createQueue, enqueueEvent, startWorker } from "./queue.js";
 import { catchUp } from "./backfill.js";
@@ -44,6 +45,10 @@ export function createBackfillRunner(
 }
 
 async function main() {
+  // Fail closed at boot, not on first request: one aggregated error naming every
+  // missing secret (A2). Demo/local runs opt in via ALLOW_DEV_SECRETS=1.
+  assertWebhookSecrets(enabledSources());
+
   let boss: PgBoss | undefined;
   let app: express.Express | undefined;
   let server: http.Server | undefined;

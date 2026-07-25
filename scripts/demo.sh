@@ -4,6 +4,9 @@ cd "$(dirname "$0")/.."
 export DATABASE_URL="${DATABASE_URL:-postgres://switchboard:switchboard@localhost:5433/switchboard}"
 # All three sources: the ingest workers, backfill, and reconcile iterate this list.
 export INGEST_SOURCES=crm,billing,support
+# Demo runs on the published dev secrets by design (proves the mechanism, not secrecy).
+# Production must set WEBHOOK_SECRET_* and LEDGER_HMAC_KEY instead — see A2 fail-closed.
+export ALLOW_DEV_SECRETS=1
 # Absolute paths (not spec's relative ./out/) because each mock workspace process has a different
 # cwd. Per-source env consumed by the reconcile CLI; each mock process itself still takes
 # LEDGER_PATH (its own file-path option) — passed explicitly at its start line below.

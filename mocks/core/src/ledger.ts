@@ -14,6 +14,20 @@ export const GENESIS_HASH = "0".repeat(64);
 // so the "tamper-evident" claim only holds against parties who don't hold the key.
 export const DEFAULT_LEDGER_HMAC_KEY = "demo-ledger-key";
 
+// FAIL CLOSED (A2): the demo key above is published in this public repo — with it,
+// "anyone who can write the file" holds the key and tamper-evidence is void. The
+// default is only reachable behind an explicit ALLOW_DEV_SECRETS=1 opt-in.
+// NOTE: duplicated in ingest/src/reconcile.ts (verifier side); keep in sync.
+export function ledgerHmacKey(): string {
+  const env = process.env.LEDGER_HMAC_KEY;
+  if (env) return env;
+  if (process.env.ALLOW_DEV_SECRETS === "1") return DEFAULT_LEDGER_HMAC_KEY;
+  throw new Error(
+    "LEDGER_HMAC_KEY is not set — refusing to fall back to the published demo key. " +
+      "Set LEDGER_HMAC_KEY, or set ALLOW_DEV_SECRETS=1 for local demo use only.",
+  );
+}
+
 export type LedgerEntry = {
   event_id: string;
   event_type: string;
@@ -58,7 +72,7 @@ function lastHash(path: string): string {
 export function appendToLedger(
   path: string,
   entry: LedgerEntryInput,
-  key: string = process.env.LEDGER_HMAC_KEY ?? DEFAULT_LEDGER_HMAC_KEY,
+  key: string = ledgerHmacKey(),
 ): LedgerEntry {
   mkdirSync(dirname(path), { recursive: true });
   const prev_hash = lastHash(path);
@@ -75,7 +89,7 @@ export function readLedger(path: string): LedgerEntry[] {
 
 export function verifyLedgerChain(
   path: string,
-  key: string = process.env.LEDGER_HMAC_KEY ?? DEFAULT_LEDGER_HMAC_KEY,
+  key: string = ledgerHmacKey(),
 ): { ok: boolean; brokenAt?: number } {
   // Parse per-line with a guard rather than via readLedger: a partially-written final
   // line (crash/disk-full mid-append) or a non-object line is a BROKEN CHAIN at that

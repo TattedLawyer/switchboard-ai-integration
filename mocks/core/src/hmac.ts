@@ -1,11 +1,20 @@
 import { createHmac } from "node:crypto";
 
 // Per-source webhook secrets (D3): WEBHOOK_SECRET_CRM / _BILLING / _SUPPORT.
-// Demo-only defaults, printed in the open — real deployments must set proper secrets.
+// FAIL CLOSED (A2): the demo defaults are published in this public repo; a writer that
+// silently signs with them would let a misconfigured deploy authenticate forged traffic
+// (CWE-1188/CWE-798). Local demo use opts in with ALLOW_DEV_SECRETS=1.
 // NOTE: secretForSource is intentionally duplicated in ingest/src/hmac.ts (separate
 // workspaces, must not cross-import). Keep copies in sync.
 export function secretForSource(source: string): string {
-  return process.env[`WEBHOOK_SECRET_${source.toUpperCase()}`] ?? `demo-secret-${source}`;
+  const name = `WEBHOOK_SECRET_${source.toUpperCase()}`;
+  const env = process.env[name];
+  if (env) return env;
+  if (process.env.ALLOW_DEV_SECRETS === "1") return `demo-secret-${source}`;
+  throw new Error(
+    `${name} is not set — refusing to fall back to the published demo secret. ` +
+      `Set ${name}, or set ALLOW_DEV_SECRETS=1 for local demo use only.`,
+  );
 }
 
 // NOTE: signBody is intentionally duplicated in ingest/src/hmac.ts (separate workspace,
