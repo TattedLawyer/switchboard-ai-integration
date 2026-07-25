@@ -66,7 +66,7 @@ rides the OLTP instance comfortably until job volume says otherwise.
 The hand-built reliability spine exists to demonstrate understanding, and the ADR
 line holds at scale: past roughly "one team's integration volume," orchestration
 moves to a durable-execution engine (Temporal-class) and transformation to a
-warehouse-native stack. The portfolio point is knowing precisely where that line
+warehouse-native stack. The point is knowing precisely where that line
 sits and what the tools replace.
 
 ## The caching question (asked directly, answered directly)

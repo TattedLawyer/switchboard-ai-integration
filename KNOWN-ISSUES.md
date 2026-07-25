@@ -237,7 +237,8 @@ truncation-totality property 6 in the green suite).
 
 ## What production would require (scoping, not backlog)
 
-Disclosed deliberately: these are *client-blocking*, not portfolio-blocking,
+Disclosed deliberately: these are *client-blocking*, not blocking for this project's
+current scope,
 and none is started. Effort classes are estimates by the maintainer.
 
 1. **Tenancy (3–4 weeks, after a 1-week isolation-model decision).** The

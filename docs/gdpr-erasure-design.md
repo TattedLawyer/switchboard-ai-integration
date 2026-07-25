@@ -47,7 +47,7 @@ zero-presence. The sweep's output is the auditable evidence a controller needs f
 a DSR response, with a deadline well inside the applicable statutory window
 (verified per jurisdiction at engagement time rather than asserted here).
 
-## Why this section exists in a portfolio project
+## Why this section exists
 
 Because "how does a deletion request propagate?" is a question this architecture
 must answer before any business deploys it, and the honest answer — designed,

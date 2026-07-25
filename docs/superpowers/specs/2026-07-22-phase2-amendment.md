@@ -26,7 +26,7 @@ implementation time — the spec commits to the *paradigm*, not to a frozen sche
 
 Decision (Michael, 2026-07-22): Switchboard stays an **integration + unification +
 agent layer over existing systems** — it does *not* become a CRM/Salesforce
-replacement (that would be a product build and a weaker FDE signal). The sharpened
+replacement (that would be a product build, and a weaker demonstration). The sharpened
 story: the unified customer view + AI workflows Switchboard delivers are the slice
 of a heavyweight CRM that most small/mid businesses actually use and over-pay for,
 so the artifact can honestly carry a "reduces platform dependence / lowers cost"
@@ -82,12 +82,11 @@ the data the Monday report and future agents read.
 the action-safety eval on every push; the chaos + demo scripts on a nightly or
 manual trigger (too heavy/flaky-prone for per-push per the Phase 0 eval-split
 rationale). This finally makes the repo's green checks *visible on GitHub* to
-reviewers — a real portfolio upgrade. Fork-PR secret handling per the existing
+reviewers — a real upgrade. Fork-PR secret handling per the existing
 split (deterministic checks gate; anything needing a key runs on label/nightly).
 
 **Identity-resolution provenance:** every resolved link records which tier matched
-and the evidence, so the resolution is auditable (a real FDE deliverable, not a
-black box).
+and the evidence, so the resolution is auditable, not a black box.
 
 ---
 
@@ -118,8 +117,8 @@ system-specific handling, coordinated by the unified layer above:
 - **Event-bus connector:** subscription lifecycle, replay-cursor management,
   at-least-once → idempotent-ingest handoff.
 Each is a small, testable unit with its own faults and its own reliability wiring
-reused from the spine. This is the "sub-agents for production workflows" deliverable
-named in the Anthropic FDE posting, made concrete.
+reused from the spine. This is the "sub-agents for production workflows" pattern,
+made concrete.
 
 *(Terminology: "connector agent" here = a bounded per-source component, not
 necessarily LLM-driven. The LLM-driven agent work stays Phase 3. If any connector
@@ -131,7 +130,7 @@ The seed generator takes a `profile`: `plumbing | clinic | saas` (extensible),
 swapping vertical-appropriate synthetic names, deal/invoice types, ticket
 categories, and value ranges — so the same one-command demo produces a
 *plumbing-business* Monday report or a *clinic* one. Still fully synthetic, still
-hygiene-test-enforced. Demonstrates the FDE "make the demo speak the customer's
+hygiene-test-enforced. Demonstrates the "make the demo speak the customer's
 language on day one" motion. A README screenshot trio (three verticals) is the
 visible proof.
 
@@ -161,7 +160,7 @@ visible proof.
 
 1. **Event-bus fidelity boundary:** model the Pub/Sub paradigm over plain HTTP/JSON
    (testable, in-keeping with the other mocks) — confirmed default? Literal gRPC/Avro
-   would be high-cost, low-portfolio-marginal-value (my judgment).
+   would be high-cost, low-marginal-value (my judgment).
 2. **CI compute:** GitHub Actions free tier is fine for the deterministic suite;
    the chaos/demo scripts need Docker-in-CI (services) — run those nightly/manual,
    not per-push. Agree?
@@ -238,7 +237,7 @@ hash-chained ledger) is ported to the faithful HubSpot mock. No "two CRMs foreve
 
 **D10 — Verticals: `plumbing | saas | logistics`** (drop `clinic` — it collides with
 the original spec §7 health-domain deferral and invites HIPAA-flavored scrutiny for
-zero portfolio gain; logistics matches existing seed sectors and spans trades /
+zero gain; logistics matches existing seed sectors and spans trades /
 software / enterprise-ops).
 
 **D11 — CI:** per-push = typecheck + unit/integration suites (Postgres as a GitHub
