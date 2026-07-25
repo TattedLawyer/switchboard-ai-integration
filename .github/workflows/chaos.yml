@@ -23,3 +23,13 @@ jobs:
         run: CHAOS_SEED="${{ github.event.inputs.fault_seed || '7' }}" ./scripts/chaos.sh
       - name: end-to-end demo (template-LLM fallback, no secret needed)
         run: ./scripts/demo.sh
+      - name: diagnose identity state on failure
+        if: failure()
+        run: |
+          PSQL="docker compose exec -T postgres psql -U switchboard -c"
+          $PSQL "select source, event_type, count(*) from raw.raw_events group by 1,2 order by 1,2;"
+          $PSQL "select event_id, occurred_at, payload->>'occurred_at' as p_occ, payload->'data' as data from raw.raw_events where event_type = 'company.merged';" || true
+          $PSQL "select * from public_analytics.merge_edges;" || true
+          $PSQL "select company_id, canonical_id, is_cycle from public_analytics.int_crm__canonical_companies where company_id <> canonical_id or is_cycle;" || true
+          $PSQL "select company_id, name, owner_email from public_analytics.stg_crm__companies order by company_id;" || true
+          $PSQL "select source, source_entity_id, resolved_entity_id, matched_tier, match_evidence from public_analytics.identity_resolution where source = 'billing' order by source_entity_id;" || true
