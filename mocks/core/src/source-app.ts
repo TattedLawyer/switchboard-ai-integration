@@ -28,6 +28,14 @@ export function createSourceApp(opts: SourceAppOptions): express.Express {
   let seq = 0;
   let serverLevelInjector = createFaultInjector(); // no plan → never faults
 
+  // Freshness probe. `seq` is process-lifetime state: the script index that decides WHICH
+  // event each slot emits is derived from it, so a caller that drives a mock inheriting a
+  // non-zero cursor silently gets a different event mix than it asked for. An open socket
+  // proves liveness, not readiness — callers must assert `fresh` before /simulate.
+  app.get("/status", (_req, res) => {
+    res.json({ source: opts.source, seq, fresh: seq === 0 });
+  });
+
   app.get("/events", (req, res) => {
     if (serverLevelInjector.apiShouldFail()) {
       return res.status(429).json({ error: "rate limited" });
