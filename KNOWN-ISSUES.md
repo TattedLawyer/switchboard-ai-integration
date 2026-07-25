@@ -30,11 +30,9 @@ truncation-totality property now runs in the green suite (property 6).
 
 ## Identity resolution (HIGH interest)
 
-- **`occurred_at` is ordered as text and unvalidated at ingest.** Staging's
-  latest-state views sort the raw string; mixed timestamp precision or a
-  garbage value can permanently win "latest state." *Fix in progress
-  (hardening wave): ISO-8601 validation at the ingest gate + `timestamptz`
-  cast in staging.*
+- ~~`occurred_at` ordered as text and unvalidated at ingest~~ *Paid (2a.2):*
+  ISO-8601 gate at both raw doors (webhook + backfill; garbage quarantines,
+  never stored), staging + `merge_edges` order event time as `timestamptz`.
 - **Multi-tuple entities can straddle ambiguity guards.** A support requester
   whose tickets carry different (domain, name) or email values produces
   multiple candidate rows; two clean groups matching different canonicals pick
@@ -45,9 +43,9 @@ truncation-totality property now runs in the green suite (property 6).
 - ~~A merge event targeting a nonexistent company mints a phantom canonical~~
   *Paid (2a.2):* `assert_canonical_targets_exist` dbt test, plus a mirrored
   unit test proving the detection SQL fires on a seeded phantom merge.
-- **`crm_emails` reads full raw history, not latest state** — a long-replaced
-  owner email remains tier-1 match evidence forever, and it's the one identity
-  input that bypasses the staging layer. *Fix in progress (hardening wave).*
+- ~~`crm_emails` reads full raw history, not latest state~~ *Paid (2a.2):*
+  `owner_email` is now a latest-state column of `stg_crm__companies`; no
+  identity input bypasses the staging layer.
 - **Unicode confusables under-merge silently.** Zero-width spaces and NFC/NFD
   variants make visually identical names normalize differently → false manual
   review that renders identically in every UI. *Scheduled: Phase 2b
