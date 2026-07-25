@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createHmac } from "node:crypto";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { secretForSource, signBody, verifySignature } from "../src/hmac.js";
+import {
+  secretForSource as mocksSecretForSource,
+  signBody as mocksSignBody,
+} from "../../mocks/core/src/hmac.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -73,19 +76,12 @@ describe("webhook HMAC verification", () => {
 });
 
 // signBody/secretForSource are intentionally duplicated between ingest/src/hmac.ts and
-// mocks/core/src/hmac.ts (separate workspaces, must not cross-import), synced only by
-// keep-in-sync comments — the same landmine the ledger's canonicalHash had. Same interim
-// guard as ledger-verify.test.ts, until the Phase 2b shared package: reproduce the MOCK
-// side's exact algorithm here and assert the ingest side accepts/derives identically. If
-// either copy drifts (prefix, encoding, digest, env naming, default-secret shape), these
-// go red. Cross-compat is by construction: this IS the mock writer's algorithm.
-function mocksSignBody(rawBody: string, secret: string): string {
-  const hex = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
-  return `sha256=${hex}`;
-}
-function mocksSecretForSource(source: string): string {
-  return process.env[`WEBHOOK_SECRET_${source.toUpperCase()}`] ?? `demo-secret-${source}`;
-}
+// mocks/core/src/hmac.ts (separate workspaces; src must not cross-import). B1
+// (truth-in-claims): these used to be a THIRD inline copy claiming to be "the mock's
+// algorithm" — self-certifying, since the real mock could drift with all tests green
+// (external audit 2026-07-25, F1). Now the REAL mock functions are imported, so any
+// drift between the two src copies (prefix, encoding, digest, env naming, secret
+// gating) turns these tests red. Structural fix — a shared package — lands in 2b.
 
 describe("cross-compat: mock-side signing is accepted by ingest-side verification", () => {
   const bodies = [
