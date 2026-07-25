@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 
@@ -100,6 +103,72 @@ describe("merge resolution walk", () => {
   it("phantom-canonical detection: a merge to a REAL company raises nothing", async () => {
     await seed(["A", "B"], [["A", "B"]]);
     const rows = (await pool.query(PHANTOM_CHECK_SQL)).rows;
+    expect(rows).toEqual([]);
+  });
+});
+
+// L2-G7: crm_emails must carry LATEST-STATE owner emails only. This suite runs the REAL
+// crm_emails CTE text extracted from warehouse/models/identity/identity_resolution.sql (refs
+// swapped for the real staging SQL, also read from disk) against a raw fixture — no mirror to
+// drift: if the model regresses to scanning raw history, this fails.
+describe("crm_emails latest-state (L2-G7)", () => {
+  const modelsDir = join(dirname(fileURLToPath(import.meta.url)), "../../warehouse/models");
+  const readModel = (rel: string) => readFileSync(join(modelsDir, rel), "utf8");
+
+  const crmEmailsSql = (): string => {
+    const model = readModel("identity/identity_resolution.sql");
+    const m = model.match(/crm_emails as \(([\s\S]*?)\),\s*norm_companies as \(/);
+    if (!m) throw new Error("could not extract crm_emails CTE from identity_resolution.sql");
+    const body = m[1]
+      .replaceAll("{{ ref('stg_crm__contacts') }}", "stg_crm__contacts")
+      .replaceAll("{{ ref('stg_crm__companies') }}", "stg_crm__companies");
+    // The staging files are complete SELECT statements (with their own WITH clauses) — legal as
+    // CTE bodies in Postgres — reading raw.raw_events, which freshTestDb provides.
+    return `
+      with stg_crm__contacts as (${readModel("staging/stg_crm__contacts.sql")}),
+           stg_crm__companies as (${readModel("staging/stg_crm__companies.sql")}),
+           crm_emails as (${body})
+      select email, company_id from crm_emails order by email
+    `;
+  };
+
+  const insertCrmRaw = async (eventId: string, eventType: string, occurredAt: string, data: Record<string, unknown>) => {
+    await pool.query(
+      `insert into raw.raw_events (source, event_id, event_type, payload)
+       values ('crm', $1, $2, $3::jsonb)`,
+      [eventId, eventType, JSON.stringify({ occurred_at: occurredAt, data })],
+    );
+  };
+
+  it("a REPLACED owner_email stops being identity evidence: only the latest-state owner_email survives, even when the stale update arrives late", async () => {
+    const company = { id: "c-own-1", name: "Owner Test Co", domain: "own.example.com" };
+    // TRUE latest state (newer occurred_at) delivered FIRST...
+    await insertCrmRaw("evt-20", "company.updated", "2026-07-22T10:00:00.000Z", {
+      ...company, owner_email: "owner.new@example.com",
+    });
+    // ...then the STALE state (older occurred_at, the replaced owner) arrives LATE.
+    await insertCrmRaw("evt-21", "company.updated", "2026-07-21T10:00:00.000Z", {
+      ...company, owner_email: "owner.old@example.com",
+    });
+    // Contact emails ride along untouched (the other UNION arm).
+    await insertCrmRaw("evt-22", "contact.updated", "2026-07-22T10:00:00.000Z", {
+      id: "ct-1", company_id: "c-own-1", name: "Jane", email: "jane@own.example.com",
+    });
+
+    const rows = (await pool.query(crmEmailsSql())).rows;
+    // The replaced owner.old@ must be GONE — under the old raw-history scan it stayed tier-1
+    // evidence forever. owner.new@ and the contact email are the complete evidence set.
+    expect(rows).toEqual([
+      { email: "jane@own.example.com", company_id: "c-own-1" },
+      { email: "owner.new@example.com", company_id: "c-own-1" },
+    ]);
+  });
+
+  it("a company whose latest state has NO owner_email contributes no owner row (null is filtered, not matched)", async () => {
+    await insertCrmRaw("evt-23", "company.updated", "2026-07-22T10:00:00.000Z", {
+      id: "c-own-2", name: "No Owner Co", domain: "noown.example.com",
+    });
+    const rows = (await pool.query(crmEmailsSql())).rows;
     expect(rows).toEqual([]);
   });
 });
