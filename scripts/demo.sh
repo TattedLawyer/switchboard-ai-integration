@@ -4,6 +4,12 @@ cd "$(dirname "$0")/.."
 export DATABASE_URL="${DATABASE_URL:-postgres://switchboard:switchboard@localhost:5433/switchboard}"
 # All three sources: the ingest workers, backfill, and reconcile iterate this list.
 export INGEST_SOURCES=crm,billing,support
+
+# Identity for THIS run's ingest process. /status echoes it back, and instance_wait refuses
+# to proceed unless the process answering :4002 returns exactly this value -- proving we are
+# driving the server we just started rather than one stranded by an earlier run.
+export INGEST_INSTANCE_ID="${INGEST_INSTANCE_ID:-run-$$-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
+
 # Demo runs on the published dev secrets by design (proves the mechanism, not secrecy).
 # Production must set WEBHOOK_SECRET_* and LEDGER_HMAC_KEY instead — see A2 fail-closed.
 export ALLOW_DEV_SECRETS=1
@@ -55,7 +61,7 @@ docker compose exec -T postgres psql -U switchboard -c \
 echo "3/6 start ingest + mock crm/billing/support (all mocks share the default manifest seed 42 —
 do NOT pass divergent seeds or cross-system correlation breaks)"
 mkdir -p out  # log redirects + ledgers land here; gitignored, absent on fresh clones
-PORT=4002 npm run start -w ingest > out/log-ingest.txt 2>&1 & pids+=($!)
+INGEST_INSTANCE_ID="$INGEST_INSTANCE_ID" PORT=4002 npm run start -w ingest > out/log-ingest.txt 2>&1 & pids+=($!)
 PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm     LEDGER_PATH="$LEDGER_PATH_CRM"     npm run start -w mocks/crm     > out/log-crm.txt 2>&1 & pids+=($!)
 PORT=4003 WEBHOOK_URL=http://localhost:4002/webhooks/billing LEDGER_PATH="$LEDGER_PATH_BILLING" npm run start -w mocks/billing > out/log-billing.txt 2>&1 & pids+=($!)
 PORT=4004 WEBHOOK_URL=http://localhost:4002/webhooks/support LEDGER_PATH="$LEDGER_PATH_SUPPORT" npm run start -w mocks/support > out/log-support.txt 2>&1 & pids+=($!)
@@ -79,7 +85,23 @@ fresh_wait() {
   fi
 }
 
-ready_wait 4002 ingest
+instance_wait() {
+  local port="$1" name="$2" status="" got=""
+  ready_wait "$port" "$name"
+  status="$(curl -s "http://localhost:${port}/status")"
+  got="$(printf '%s' "$status" | sed -n 's/.*"instance_id":"\([^"]*\)".*/\1/p')"
+  if [[ "$got" != "$INGEST_INSTANCE_ID" ]]; then
+    echo "FAIL: ${name} (port ${port}) answered, but it is NOT the process this run started." >&2
+    echo "  expected instance_id=${INGEST_INSTANCE_ID}, got: ${status}" >&2
+    echo "  A stranded ingest from an earlier run holds this port, so ours never bound. It" >&2
+    echo "  keeps polling its OWN feed on its OWN env -- which would let CHAOS_SKIP_BACKFILL=1" >&2
+    echo "  reconcile clean and report PASS while proving nothing. Free it and re-run:" >&2
+    echo "    lsof -ti :${port} | xargs kill -9" >&2
+    exit 1
+  fi
+}
+
+instance_wait 4002 ingest
 fresh_wait 4001 crm; fresh_wait 4003 billing; fresh_wait 4004 support
 
 # crm 108 (was 80): identity resolution's SUPPORT tier-1 expectations (S-0006..S-0009) key on

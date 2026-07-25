@@ -62,6 +62,20 @@ export function createIngestApp(
     }
     next(err);
   });
+  // Instance identity, NOT a health check. An open socket proves a process is listening;
+  // it does not prove the process is the one the caller just started. That distinction has
+  // already cost this repo one red CI run (a leftover mock inherited across steps — see
+  // KNOWN-ISSUES "Process honesty"), and on THIS port it is worse than cosmetic: a stranded
+  // ingest keeps polling its own feed on its own env, so `CHAOS_SKIP_BACKFILL=1` — whose
+  // only job is to prove reconcile DETECTS loss — could reconcile clean and report PASS
+  // while proving nothing. The scripts mint an id per run and refuse to proceed unless it
+  // comes back. Deliberately answers from process state alone (no query): a probe used to
+  // decide whose process this is must not fail for an unrelated reason. Unauthenticated, so
+  // it carries the id and the service name and nothing else — no version, no config, no
+  // connection details.
+  app.get("/status", (_req, res) => {
+    res.json({ service: "ingest", instance_id: process.env.INGEST_INSTANCE_ID ?? null });
+  });
   app.post("/webhooks/:source", async (req, res, next) => {
     // Push-path authenticity check: this endpoint receives unsolicited data from the mock
     // sources, so we must verify each request was actually sent by a holder of THAT source's

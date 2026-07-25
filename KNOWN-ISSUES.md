@@ -144,6 +144,22 @@ truncation-totality property 6 in the green suite).
   which run as separate jobs on separate runners. The leak itself is unfixed.
   *Scheduled: next CI/ops pass — kill the process group (`setsid` + `kill -- -PGID`,
   or `pkill -P`) rather than the direct child.*
+- **`alter default privileges` in the migrations is not scoped `FOR ROLE`** *(phase-close
+  review)* — so it only governs objects created by the role that ran the migration. A
+  deployment where `DBT_USER` differs from the migrating role gets marts the agent role
+  cannot `SELECT`, presenting as a bare `permission denied for table` (42501) with nothing
+  in the migration to point at. Cannot be reached as shipped — nothing in this repo or CI
+  uses a split role — but it is a supported configuration, so it is a trap rather than a
+  bug today. Confirmed against the PostgreSQL `ALTER DEFAULT PRIVILEGES` documentation,
+  which states the target-role scoping explicitly. *Scheduled: 2b, with the split-role
+  deploy path it belongs to.*
+- **`replayAllQuarantined` records no attempt** *(phase-close review)* — no `attempts` or
+  `last_attempt_at` column, so a permanently-unreplayable row is retried forever and
+  quarantine depth can never drop. Beyond the churn, this is what stops an operator
+  answering the question dead-letter handling exists to answer: *has this been tried, and
+  can it safely be replayed?* Deferred because the fix is a schema migration, not a code
+  change. Compounding it, nothing alerts on quarantine depth (listed under operations
+  below). *Scheduled: 2b, with the migration.*
 - **`/simulate` has no explicit start index**, so which events a mock emits depends
   on a process-lifetime counter rather than on the request. The freshness assertion
   above converts that from a silent wrong-answer into a loud failure, but the
@@ -323,7 +339,9 @@ and none is started. Effort classes are estimates by the maintainer.
 deeper queues", but an operator who doesn't reads a false "done" on an 11+
 DLQ (upgraded wording from "display cap"; fix: loop-until-empty in 2b) ·
 reconcile skips a source whose ledger-path env var is unset (scripts pin all
-three) · some log lines lack the `[source]` prefix · migration
+three) · the repo-wide hygiene test lives inside the CRM mock's workspace, so
+its scope and its home disagree (relocate in 2b) · some log lines lack the
+`[source]` prefix · migration
 001-recreate/003-drop churn at startup · CI installs dbt via bare pip (no
 setup-python pin) and double-runs on PR branches (no concurrency group) ·
 agent test files assign `DBT_SCHEMA` at module top-level and share one DB —
