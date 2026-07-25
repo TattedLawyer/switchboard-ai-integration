@@ -1,6 +1,7 @@
 -- Recursive follow-to-terminal with cycle guard.
--- SYNC NOTE: this SQL is mirrored in ingest/test/merge-resolution.test.ts (RESOLUTION_SQL,
--- with ref()s swapped for tmp_ tables). Keep both in sync — same walk, same guards.
+-- Unit-tested by ingest/test/merge-resolution.test.ts, which loads THIS file from disk
+-- (loadModel, refs → fixtures) — edits here are exercised by those tests automatically;
+-- there is no mirrored copy to keep in sync.
 with recursive walk as (
     select
         c.company_id            as company_id,

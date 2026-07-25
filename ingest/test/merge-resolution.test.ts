@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
+import { loadModel } from "./helpers/load-model.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -22,29 +23,33 @@ beforeEach(async () => {
       email text not null, domain text not null, name text not null
     );
   `);
+  // B2: fixture VIEWS with the staging models' names/columns, so the REAL model text
+  // (loaded from disk) runs against the same simple fixtures the old mirrors used.
+  await pool.query(`
+    create view tmp_canonical as
+      select company_id, canonical_id from tmp_ir_companies;
+    create view tmp_stg_companies as
+      select company_id, name, domain, null::text as owner_email from tmp_ir_companies;
+    create view tmp_stg_contacts as
+      select email, company_id from tmp_ir_crm_emails;
+    create view tmp_stg_billing as
+      select source_entity_id as customer_id, email, domain, name
+      from tmp_ir_entities where source = 'billing';
+    create view tmp_stg_support as
+      select source_entity_id as requester_id, email as requester_email, domain,
+             name as company_name
+      from tmp_ir_entities where source = 'support';
+  `);
 });
 afterEach(async () => {
   await cleanup();
 });
 
-// SYNC NOTE: this SQL mirrors warehouse/models/identity/int_crm__canonical_companies.sql
-// (ref()s swapped for the tmp_ tables). Keep both in sync — same walk, same guards.
-const RESOLUTION_SQL = `
-  with recursive walk as (
-      select c.company_id, c.company_id as current_id, 0 as merge_depth,
-             array[c.company_id] as merge_path, false as is_cycle
-      from tmp_companies c
-      union all
-      select w.company_id, e.to_id, w.merge_depth + 1,
-             w.merge_path || e.to_id, e.to_id = any(w.merge_path)
-      from walk w
-      join tmp_merge_edges e on e.from_id = w.current_id
-      where not w.is_cycle and w.merge_depth < 10
-  )
-  select distinct on (company_id) company_id, current_id as canonical_id, merge_depth, is_cycle
-  from walk
-  order by company_id, merge_depth desc
-`;
+// B2: the REAL walk model, loaded from disk (refs → tmp_ tables) — no mirror to drift.
+const RESOLUTION_SQL = loadModel("models/identity/int_crm__canonical_companies.sql", {
+  stg_crm__companies: "tmp_companies",
+  merge_edges: "tmp_merge_edges",
+});
 
 const seed = async (companies: string[], edges: [string, string][]) => {
   for (const c of companies) await pool.query("insert into tmp_companies values ($1)", [c]);
@@ -82,15 +87,13 @@ describe("merge resolution walk", () => {
     // has an outgoing edge).
   });
 
-  // SYNC NOTE: mirrors warehouse/tests/assert_canonical_targets_exist.sql (ref()s swapped
-  // for tmp_ tables) — proves the singular test's SQL actually detects the defect, since a
-  // dbt test over clean seeded data can't demonstrate its own trigger condition.
-  const PHANTOM_CHECK_SQL = `
-    select k.company_id, k.canonical_id
-    from (${RESOLUTION_SQL}) k
-    left join tmp_companies c on c.company_id = k.canonical_id
-    where not k.is_cycle and c.company_id is null
-  `;
+  // B2: the REAL singular test SQL, loaded from disk — proves the dbt test actually
+  // detects the defect (a dbt test over clean seeded data can't demonstrate its own
+  // trigger condition), with no mirror to drift.
+  const PHANTOM_CHECK_SQL = loadModel("tests/assert_canonical_targets_exist.sql", {
+    int_crm__canonical_companies: `(${RESOLUTION_SQL})`,
+    stg_crm__companies: "tmp_companies",
+  });
 
   it("phantom-canonical detection: a merge event targeting a NONEXISTENT company is caught (L2-G5)", async () => {
     // 'GHOST' has no company record — a company.merged event pointed at a bad id. The walk
@@ -173,97 +176,20 @@ describe("crm_emails latest-state (L2-G7)", () => {
   });
 });
 
-// SYNC NOTE: this SQL mirrors the tier CTEs of
-// warehouse/models/identity/identity_resolution.sql (ref()s swapped for tmp_ir_* tables;
-// the canonical join is pre-flattened into tmp_ir_companies.canonical_id). Keep the
-// normalization expressions and tier predicates in sync with the model.
+// B2: the REAL identity_resolution.sql, loaded from disk (refs -> the fixture views
+// created in beforeEach) -- no mirror to drift, and no pre-flattening: the model's own
+// crm_emails UNION and source_entities arms run as written, so structural bugs the old
+// flattened mirror could not express (e.g. the L2-G3 multi-tuple straddle) are now
+// testable here. The wrapper projects the mirror-era column set so assertions stay put.
 const TIER_SQL = `
-  with norm_companies as (
-      select
-          canonical_id,
-          lower(regexp_replace(domain, '^www\\.', '', 'i')) as norm_domain,
-          regexp_replace(lower(trim(name)), '\\s+(inc|llc|ltd|corp)\\.?$', '') as norm_name
-      from tmp_ir_companies
-  ),
-  source_entities as (
-      select source, source_entity_id, email, domain, name from tmp_ir_entities
-  ),
-  tier1_candidates as (
-      select se.source, se.source_entity_id, se.email, k.canonical_id
-      from source_entities se
-      join tmp_ir_crm_emails ce on ce.email = se.email
-      join tmp_ir_companies k on k.company_id = ce.company_id
-  ),
-  tier1 as (
-      select source, source_entity_id, min(canonical_id) as canonical_id,
-             1 as matched_tier, 'email=' || email as match_evidence
-      from tier1_candidates
-      group by source, source_entity_id, email
-      having count(distinct canonical_id) = 1
-  ),
-  tier1_ambiguous as (
-      select source, source_entity_id,
-             source || ':' || source_entity_id as canonical_id,
-             3 as matched_tier,
-             'ambiguous email=' || email || ' matched ' || count(distinct canonical_id) || ' canonical companies' as match_evidence
-      from tier1_candidates
-      group by source, source_entity_id, email
-      having count(distinct canonical_id) > 1
-  ),
-  tier2_candidates as (
-      select se.source, se.source_entity_id, nc.canonical_id, nc.norm_domain, nc.norm_name
-      from source_entities se
-      join norm_companies nc
-        on nc.norm_domain = lower(regexp_replace(se.domain, '^www\\.', '', 'i'))
-       and nc.norm_name   = regexp_replace(lower(trim(se.name)), '\\s+(inc|llc|ltd|corp)\\.?$', '')
-      where not exists (
-          select 1 from tier1 t1
-          where t1.source = se.source and t1.source_entity_id = se.source_entity_id
-      )
-      and not exists (
-          select 1 from tier1_ambiguous ta
-          where ta.source = se.source and ta.source_entity_id = se.source_entity_id
-      )
-  ),
-  tier2 as (
-      select source, source_entity_id, min(canonical_id) as canonical_id,
-             2 as matched_tier,
-             'domain+name=' || norm_domain || '|' || norm_name as match_evidence
-      from tier2_candidates
-      group by source, source_entity_id, norm_domain, norm_name
-      having count(distinct canonical_id) = 1
-  ),
-  tier2_ambiguous as (
-      select source, source_entity_id,
-             source || ':' || source_entity_id as canonical_id,
-             3 as matched_tier,
-             'ambiguous domain+name=' || norm_domain || '|' || norm_name || ' matched ' || count(distinct canonical_id) || ' canonical companies' as match_evidence
-      from tier2_candidates
-      group by source, source_entity_id, norm_domain, norm_name
-      having count(distinct canonical_id) > 1
-  ),
-  matched as (
-      select * from tier1 union all select * from tier2
-      union all select * from tier1_ambiguous union all select * from tier2_ambiguous
-  ),
-  tier3 as (
-      select se.source, se.source_entity_id,
-             se.source || ':' || se.source_entity_id as canonical_id,
-             3 as matched_tier, 'unmatched' as match_evidence
-      from source_entities se
-      where not exists (
-          select 1 from matched m
-          where m.source = se.source and m.source_entity_id = se.source_entity_id
-      )
-  )
-  select distinct on (source, source_entity_id)
-      source,
-      source_entity_id,
-      canonical_id as resolved_entity_id,
-      matched_tier,
-      match_evidence
-  from (select * from matched union all select * from tier3) u
-  order by source, source_entity_id, matched_tier
+  select source, source_entity_id, resolved_entity_id, matched_tier, match_evidence
+  from (${loadModel("models/identity/identity_resolution.sql", {
+    int_crm__canonical_companies: "tmp_canonical",
+    stg_crm__companies: "tmp_stg_companies",
+    stg_crm__contacts: "tmp_stg_contacts",
+    stg_billing__customers: "tmp_stg_billing",
+    stg_support__tickets: "tmp_stg_support",
+  })}) m
 `;
 
 const seedTiers = async (opts: {

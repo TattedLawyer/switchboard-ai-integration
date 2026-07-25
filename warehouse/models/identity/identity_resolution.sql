@@ -1,8 +1,8 @@
 -- Three-tier identity resolution with auditable provenance for billing and support entities.
 -- Normalization is pinned HERE and only here (evidence strings make each resolution auditable).
--- SYNC NOTE: the tier CTEs are mirrored in ingest/test/merge-resolution.test.ts (TIER_SQL,
--- with ref()s swapped for tmp_ir_* tables and the canonical join pre-flattened). Keep the
--- normalization expressions and tier predicates in sync.
+-- Unit-tested by ingest/test/merge-resolution.test.ts, which loads THIS file from disk
+-- (loadModel, refs → fixture views) — edits here are exercised by those tests
+-- automatically; there is no mirrored copy to keep in sync.
 with canonical as (
     select company_id, canonical_id from {{ ref('int_crm__canonical_companies') }}
 ),
