@@ -134,6 +134,21 @@ truncation-totality property 6 in the green suite).
 
 ## Ingestion & reliability (MED)
 
+- **The demo/chaos scripts leak their mock server processes.** The cleanup traps
+  `kill` the `npm` process they started, but `npm run` spawns through a shell and
+  does not reap its grandchild on SIGTERM ([npm/cli#6684](https://github.com/npm/cli/issues/6684)),
+  so a `node` listener can outlive the script and hold its port. This is what
+  contaminated the first CI chaos run. It is now *detected* — both scripts assert
+  `GET /status` reports `fresh:true` before driving a mock, and refuse loudly with
+  the observed cursor otherwise — and it can no longer couple the two workflows,
+  which run as separate jobs on separate runners. The leak itself is unfixed.
+  *Scheduled: next CI/ops pass — kill the process group (`setsid` + `kill -- -PGID`,
+  or `pkill -P`) rather than the direct child.*
+- **`/simulate` has no explicit start index**, so which events a mock emits depends
+  on a process-lifetime counter rather than on the request. The freshness assertion
+  above converts that from a silent wrong-answer into a loud failure, but the
+  dependency remains. *Scheduled: Phase 2b — take a start index (or expose `/reset`)
+  so emission is a pure function of the request.*
 - **The backfill poll path trusts the feed.** No schema validation, no fetch
   timeout, and — worse than the cursor *regression* previously listed here —
   the cursor advances to a **feed-supplied** `last_seq` rather than the max
