@@ -5,7 +5,10 @@ import type { SourceEvent } from "./server.js";
 // occurred_at gate (L2-G2): staging latest-state views order by
 // (payload ->> 'occurred_at')::timestamptz, and that cast THROWS on garbage — so a non-timestamp
 // occurred_at must never reach raw.raw_events. This predicate is the single definition used by
-// BOTH doors into raw: the webhook schema in server.ts and the replay schema below. It lives
+// ALL THREE doors into raw: the webhook schema in server.ts, the backfill poll path (which
+// applies that same schema in backfill.ts), and the replay schema below. The poll path was
+// once ungated and this comment once said "BOTH" — the count is the invariant, so if a fourth
+// door is ever added it applies here too. It lives
 // here (not server.ts) because server.ts already imports from this module — the reverse import
 // would be a runtime cycle. Accepted shape: full ISO-8601 date+time with seconds and an explicit
 // zone (Z or ±HH:MM), and the string must actually parse as a date (rejects e.g. month 13).

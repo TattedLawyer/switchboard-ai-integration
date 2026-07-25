@@ -6,7 +6,10 @@ import { ingestEvent } from "./ingest-event.js";
 import { secretForSource, verifySignature } from "./hmac.js";
 import { isSource, type Source } from "./sources.js";
 
-const eventSchema = z.object({
+// Exported because raw has THREE doors, not two: this webhook, the quarantine replay, and the
+// backfill poll path in backfill.ts. All three must apply the same predicate — the poll path
+// once did not, and could put a value in raw that throws the staging cast.
+export const eventSchema = z.object({
   event_id: z.string().min(1),
   event_type: z.string().min(1),
   // L2-G2 + A6: staging orders latest-state by (occurred_at)::timestamptz (throws on garbage)
