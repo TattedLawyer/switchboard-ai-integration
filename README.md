@@ -186,3 +186,12 @@ DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard npm t
 **Stack:** TypeScript / Node 22 · Express 5 · Postgres 16 · dbt · pg-boss · MCP
 TypeScript SDK · Anthropic SDK · Docker Compose · GitHub Actions. Planned in later
 phases: OpenTelemetry + Grafana (Phase 4).
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Copyright 2026 Michael Christine.
+
+Apache 2.0 rather than MIT for the express patent grant: MIT is silent on
+patents, which is the ambiguity counsel tends to flag when a business evaluates
+taking a dependency on someone else's code.

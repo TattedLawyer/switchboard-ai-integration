@@ -1,6 +1,7 @@
 {
   "name": "switchboard",
   "private": true,
+  "license": "Apache-2.0",
   "workspaces": ["mocks/core", "mocks/crm", "mocks/billing", "mocks/support", "ingest", "agent"],
   "engines": { "node": ">=22" },
   "scripts": {
