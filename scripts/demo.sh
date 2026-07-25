@@ -85,14 +85,23 @@ ledger_sum() {
   echo "$total"
 }
 raw_count() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_events" | tr -d ' '; }
+# Anchor the gate to the EXPECTED total, not ledger==raw equality: those are two counters
+# that move together (ledger-append precedes each delivery), so on a slow machine the
+# equality holds continuously DURING emission and the old check could declare "drained"
+# mid-simulate — dbt then built on a partial raw missing the crm tail (merges + late
+# contacts). That is exactly how the first chaos-workflow run on GitHub failed its demo
+# step (2026-07-25, run 30158941574) while every fast local run passed.
+EXPECTED_TOTAL=288  # 108 crm + 100 billing + 80 support — keep in sync with step 4/6 above
 drained=false
-for i in $(seq 1 60); do
+lc=0; rc=0
+for i in $(seq 1 120); do
   lc="$(ledger_sum)"
   rc="$(raw_count)"
-  if [[ "$lc" -gt 0 && "$lc" == "$rc" ]]; then drained=true; break; fi
+  if [[ "$lc" -eq "$EXPECTED_TOTAL" && "$rc" -eq "$EXPECTED_TOTAL" ]]; then drained=true; break; fi
   sleep 2
 done
-$drained || { echo "FAIL: ingest pipeline did not drain within 120s (ledger_sum=$(ledger_sum) raw=$(raw_count))"; exit 1; }
+$drained || { echo "FAIL: ingest pipeline did not drain to $EXPECTED_TOTAL within 240s (ledger_sum=$lc raw=$rc)"; exit 1; }
+echo "    drained: ledger_sum=$lc raw=$rc (expected $EXPECTED_TOTAL)"
 
 echo "5/6 dbt build"
 docker compose run --rm dbt build
