@@ -8,7 +8,7 @@ latest as (
         case when event_type = 'ticket.solved' then 'solved' else 'open' end as status
     from events
     order by payload -> 'data' ->> 'id',
-             (payload ->> 'occurred_at') desc,
+             ((payload ->> 'occurred_at')::timestamptz) desc,
              (substring(event_id from 5))::bigint desc
 )
 select

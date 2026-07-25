@@ -6,7 +6,7 @@ latest as (
     select distinct on (payload -> 'data' ->> 'ticket_id') payload -> 'data' as csat
     from events
     order by payload -> 'data' ->> 'ticket_id',
-             (payload ->> 'occurred_at') desc,
+             ((payload ->> 'occurred_at')::timestamptz) desc,
              (substring(event_id from 5))::bigint desc
 )
 select

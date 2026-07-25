@@ -1,7 +1,7 @@
 import express from "express";
 import { z } from "zod";
 import type pg from "pg";
-import { jsonbUnstorableReason, quarantineEvent } from "./quarantine.js";
+import { isIsoOccurredAt, jsonbUnstorableReason, quarantineEvent } from "./quarantine.js";
 import { ingestEvent } from "./ingest-event.js";
 import { secretForSource, verifySignature } from "./hmac.js";
 import { isSource, type Source } from "./sources.js";
@@ -9,7 +9,11 @@ import { isSource, type Source } from "./sources.js";
 const eventSchema = z.object({
   event_id: z.string().min(1),
   event_type: z.string().min(1),
-  occurred_at: z.string(),
+  // L2-G2: staging orders latest-state by (occurred_at)::timestamptz, which throws on garbage —
+  // so garbage must be gated out HERE. Schema-invalid delivered payloads follow the existing
+  // malformed-data path (quarantine, below); nothing delivered is ever dropped. The same
+  // predicate guards the replay door in quarantine.ts.
+  occurred_at: z.string().refine(isIsoOccurredAt, "occurred_at must be an ISO-8601 timestamp"),
   data: z.record(z.unknown()),
 });
 

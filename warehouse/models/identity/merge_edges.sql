@@ -11,6 +11,8 @@ with merge_events as (
     from raw.raw_events
     where source = 'crm' and event_type = 'company.merged'
 )
+-- occurred_at ordered as timestamptz, not text (L2-G2) — see the cast rationale comment in
+-- staging/stg_crm__companies.sql. The ingest gate guarantees castability.
 select distinct on (from_id) from_id, to_id, occurred_at
 from merge_events
-order by from_id, occurred_at desc, (substring(event_id from 5))::bigint desc
+order by from_id, (occurred_at)::timestamptz desc, (substring(event_id from 5))::bigint desc

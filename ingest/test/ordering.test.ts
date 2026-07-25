@@ -57,7 +57,7 @@ const LATEST_STATE_SQL = `
       received_at
     from company_events
     order by payload -> 'data' ->> 'id',
-             (payload ->> 'occurred_at') desc,
+             ((payload ->> 'occurred_at')::timestamptz) desc,
              (substring(event_id from 5))::bigint desc
   )
   select

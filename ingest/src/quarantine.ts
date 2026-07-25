@@ -2,10 +2,22 @@ import { z } from "zod";
 import type pg from "pg";
 import type { SourceEvent } from "./server.js";
 
+// occurred_at gate (L2-G2): staging latest-state views order by
+// (payload ->> 'occurred_at')::timestamptz, and that cast THROWS on garbage — so a non-timestamp
+// occurred_at must never reach raw.raw_events. This predicate is the single definition used by
+// BOTH doors into raw: the webhook schema in server.ts and the replay schema below. It lives
+// here (not server.ts) because server.ts already imports from this module — the reverse import
+// would be a runtime cycle. Accepted shape: full ISO-8601 date+time with seconds and an explicit
+// zone (Z or ±HH:MM), and the string must actually parse as a date (rejects e.g. month 13).
+const ISO_8601_SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+export function isIsoOccurredAt(s: string): boolean {
+  return ISO_8601_SHAPE.test(s) && !Number.isNaN(Date.parse(s));
+}
+
 const eventSchema = z.object({
   event_id: z.string().min(1),
   event_type: z.string().min(1),
-  occurred_at: z.string(),
+  occurred_at: z.string().refine(isIsoOccurredAt, "occurred_at must be an ISO-8601 timestamp"),
   data: z.record(z.unknown()),
 });
 

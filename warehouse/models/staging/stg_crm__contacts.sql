@@ -6,7 +6,7 @@ latest as (
     select distinct on (payload -> 'data' ->> 'id') payload -> 'data' as contact
     from events
     order by payload -> 'data' ->> 'id',
-             (payload ->> 'occurred_at') desc,
+             ((payload ->> 'occurred_at')::timestamptz) desc,
              (substring(event_id from 5))::bigint desc
 )
 select
