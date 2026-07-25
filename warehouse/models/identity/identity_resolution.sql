@@ -12,10 +12,14 @@ companies as (
     join canonical k on k.company_id = c.company_id
 ),
 crm_emails as (
+    -- Both arms are LATEST-STATE staging views (L2-G7): owner_email comes from
+    -- stg_crm__companies, never a raw full-history scan — a replaced owner email must age
+    -- out with the state that carried it, not remain tier-1 evidence forever.
     select email, company_id from {{ ref('stg_crm__contacts') }}
     union
-    select payload -> 'data' ->> 'owner_email' as email, payload -> 'data' ->> 'id' as company_id
-    from raw.raw_events where source = 'crm' and event_type = 'company.updated'
+    select owner_email as email, company_id
+    from {{ ref('stg_crm__companies') }}
+    where owner_email is not null
 ),
 norm_companies as (
     select

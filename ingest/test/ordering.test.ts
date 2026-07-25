@@ -64,6 +64,7 @@ const LATEST_STATE_SQL = `
     company ->> 'id'     as company_id,
     company ->> 'name'   as name,
     company ->> 'domain' as domain,
+    company ->> 'owner_email' as owner_email,
     received_at          as last_event_at
   from latest
   where company ->> 'id' = $1

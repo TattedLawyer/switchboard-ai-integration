@@ -27,5 +27,9 @@ select
     company ->> 'id'     as company_id,
     company ->> 'name'   as name,
     company ->> 'domain' as domain,
+    -- Latest-state owner email (L2-G7): identity_resolution's crm_emails reads owner_email
+    -- from HERE, so a replaced owner email ages out with the state that carried it — never
+    -- from raw full history, where it would remain tier-1 evidence forever.
+    company ->> 'owner_email' as owner_email,
     received_at          as last_event_at
 from latest
