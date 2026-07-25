@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
-import { quarantineEvent, replayQuarantined } from "../src/quarantine.js";
+import { listQuarantine, quarantineEvent, replayAllQuarantined, replayQuarantined } from "../src/quarantine.js";
 import { ingestEvent } from "../src/ingest-event.js";
 import { secretForSource, signBody } from "../src/hmac.js";
 
@@ -295,5 +295,53 @@ describe("quarantine", () => {
     expect(rawRows.rowCount).toBe(1);
 
     srv.close();
+  });
+});
+
+// A7: quarantined rows previously had NO operator path back into the pipeline — no CLI,
+// no caller of replayQuarantined in src/ — while the endpoint returns 202, so the vendor
+// believes delivery succeeded and never re-sends. A growing quarantine was a silent
+// total-loss bucket (external audit 2026-07-25, ops). These are the functions the
+// `npm run quarantine` CLI wraps.
+describe("A7: quarantine operator surface", () => {
+  it("listQuarantine returns pending rows with id/source/reason/event_id and skips replayed ones", async () => {
+    const validEvt = {
+      event_id: "evt-q-a7-valid",
+      event_type: "company.updated",
+      occurred_at: new Date().toISOString(),
+      data: { id: "DEMO-C-0001" },
+    };
+    await quarantineEvent(pool, "crm", validEvt, "schema validation failed");
+    await quarantineEvent(pool, "billing", { nonsense: true }, "schema validation failed");
+    const rows = await listQuarantine(pool);
+    const valid = rows.find((r) => r.event_id === "evt-q-a7-valid");
+    expect(valid).toMatchObject({ source: "crm", reason: "schema validation failed" });
+    expect(typeof valid?.id).toBe("number");
+    const junk = rows.find((r) => r.source === "billing" && r.event_id === null);
+    expect(junk).toBeDefined();
+
+    // Replay the valid one; it must vanish from the pending list.
+    const outcome = await replayQuarantined(pool, valid!.id, ingestEvent);
+    expect(outcome).toBe("replayed");
+    const after = await listQuarantine(pool);
+    expect(after.find((r) => r.id === valid!.id)).toBeUndefined();
+  });
+
+  it("replayAllQuarantined walks every pending row: fixable rows land in raw, unfixable stay and are counted", async () => {
+    const evt = {
+      event_id: "evt-q-a7-batch",
+      event_type: "company.updated",
+      occurred_at: new Date().toISOString(),
+      data: { id: "DEMO-C-0002" },
+    };
+    await quarantineEvent(pool, "crm", evt, "schema validation failed");
+    const result = await replayAllQuarantined(pool, ingestEvent);
+    expect(result.replayed).toBeGreaterThanOrEqual(1);
+    expect(result.stillInvalid).toBeGreaterThanOrEqual(1); // the billing junk row from above
+    const raw = await pool.query("select 1 from raw.raw_events where event_id = 'evt-q-a7-batch'");
+    expect(raw.rowCount).toBe(1);
+    // Idempotent second sweep: nothing pending that can move.
+    const again = await replayAllQuarantined(pool, ingestEvent);
+    expect(again.replayed).toBe(0);
   });
 });
