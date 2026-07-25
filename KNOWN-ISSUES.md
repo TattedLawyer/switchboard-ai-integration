@@ -8,6 +8,14 @@ too — open an issue.
 Severity is about *carrying cost*, not embarrassment: HIGH items can corrupt or
 hide state; MED items degrade operations; LOW items are rough edges.
 
+**Provenance note (2a.3):** this register was originally written from a
+*reliability* frame. In July 2026 an independent audit (a fresh model session,
+read-only, given the code and told to treat this file as claims under audit)
+re-read the codebase from *security* and *multi-tenant* frames and found three
+serious gaps this file missed entirely — they appear below, marked *(audit)*.
+The 2a.3 hardening wave paid the cheap ones and disclosed the rest. A register
+is only useful if it's re-read from frames its authors didn't start with.
+
 ## Known-failing invariants (deliberately not in the green suite)
 
 The fast-check property suite pins only invariants that hold. One that does
@@ -16,105 +24,260 @@ red would be worse than the bug:
 
 1. **Name-normalization idempotence** — stacked legal suffixes normalize
    differently on repeat application (`"Acme Inc Ltd"` → `"acme inc"` → `"acme"`),
-   so `norm(norm(x)) ≠ norm(x)` for some inputs. Latent (the seeded data never
-   stacks suffixes); scheduled with the Phase 2b vendor-normalization work,
-   which also aligns the TypeScript and SQL normalizers (their legal-suffix
-   strip sets currently differ: SQL strips `inc|llc|ltd|corp`, the manifest
-   resolver only `inc|llc`).
+   so `norm(norm(x)) ≠ norm(x)` for some inputs. Latent for the seeded data, but
+   NOT dormant as a project risk: `scripts/verify-identity.ts` makes the TS/SQL
+   normalizer pair CI-load-bearing the moment any fixture uses `Ltd`/`Corp` —
+   it is a tripwire, not background debt. Scheduled with the Phase 2b
+   vendor-normalization work, which also aligns the strip sets (SQL strips
+   `inc|llc|ltd|corp`, the manifest resolver only `inc|llc`).
 
 *Paid:* the **ledger torn-line crash-safety** invariant formerly listed here
-(partial final line made the chain verifier throw instead of returning
-`{ok:false, brokenAt}`) was fixed in the 2a.2 hardening wave — RED tests
-committed first, then a parse-guard in both verifier copies, and the
-truncation-totality property now runs in the green suite (property 6).
+was fixed in 2a.2 (RED tests first, parse-guard in both verifier copies,
+truncation-totality property 6 in the green suite).
+
+## Multi-tenancy: this schema is single-tenant (HIGHEST, undisclosed until the audit)
+
+- **There is no tenant discriminator anywhere** *(audit)* — not in `raw`, the
+  queues, the staging models, the identity layer, or the mart. The only
+  partition is `source` (crm/billing/support), which is a *system* boundary,
+  not a *customer* one. Consequences if two clients' data were loaded today:
+  - Identity tiers join on email / normalized domain+name with no partition, so
+    two different clients' "Acme Group / acme.com" merge into one entity —
+    cleanly, with audit evidence, and **no ambiguity flag**, because the
+    over-merge guard fires on one key mapping to *multiple* canonicals, and
+    each tenant contributes exactly one. It is an over-merge guard, not a
+    boundary guard. `customer_360` would then sum both clients' revenue.
+  - `raw_events` uniqueness is `(source, event_id)`, so two tenants' vendors
+    both emitting `evt-1` silently drop the second (202 "stored") —
+    cross-tenant data *loss*, not just leakage.
+  - One `WEBHOOK_SECRET_<SOURCE>` per source means tenant B's secret is
+    tenant A's secret.
+  This is disclosed as a *scoping decision*, not an oversight: the repo is a
+  single-tenant demonstration, and retrofitting tenancy is schema-wide (every
+  join predicate and group-by key in ~14 models, plus a caller-identity model
+  for the agent). See "What production would require" below for the plan and
+  the isolation-model decision that must come first.
 
 ## Identity resolution (HIGH interest)
 
 - ~~`occurred_at` ordered as text and unvalidated at ingest~~ *Paid (2a.2):*
-  ISO-8601 gate at both raw doors (webhook + backfill; garbage quarantines,
-  never stored), staging + `merge_edges` order event time as `timestamptz`.
+  ISO-8601 gate at both raw doors, `timestamptz` ordering. *Extended (2a.3):*
+  the gate now also bounds occurred_at to **[now-30d, now+5m]** — a
+  well-formed-but-absurd timestamp (`9999-12-31`, vendor clock bugs) previously
+  pinned an entity's latest-state forever, undislodgeable by any later correct
+  event *(audit)*. Out-of-window events quarantine, never drop.
 - **Multi-tuple entities can straddle ambiguity guards.** A support requester
   whose tickets carry different (domain, name) or email values produces
   multiple candidate rows; two clean groups matching different canonicals pick
   a plan-dependent winner, and a clean group can outrank an ambiguity flag.
-  The per-key guards (tier 1 and tier 2) don't compose per-entity. *Scheduled:
-  Phase 2b identity work (fix sketch: per-entity ambiguity check across groups
-  + deterministic same-tier tiebreak).*
+  The per-key guards don't compose per-entity. *Scheduled: Phase 2b identity
+  work.* Since 2a.3 the unit tests run the REAL model SQL (loaded from disk,
+  unions intact), so this failure mode is now *expressible* in a test — the
+  fix will land with a RED test first.
+- **Tier 2 is unsafe on free-email domains** *(audit)* — there is no
+  free-domain blocklist, so for gmail-heavy SMB data the domain half of
+  domain+name carries no signal and every duplicate common name merges into
+  the first company sharing it, unflagged (count = 1 → guard silent). The
+  normalizer also fails on ordinary legal-name variants (verified empirically):
+  `"Acme Plumbing, Inc."` → `acme plumbing,` (trailing comma — never matches),
+  `Co`/`PLLC` not stripped, `&` vs `and` never match, double spaces preserved.
+  *Scheduled: Phase 2b normalization + blocking work, before tier 2 ever runs
+  on real data. Do not run tier 2 unsupervised on real SMB data until then.*
 - ~~A merge event targeting a nonexistent company mints a phantom canonical~~
-  *Paid (2a.2):* `assert_canonical_targets_exist` dbt test, plus a mirrored
-  unit test proving the detection SQL fires on a seeded phantom merge.
-- ~~`crm_emails` reads full raw history, not latest state~~ *Paid (2a.2):*
-  `owner_email` is now a latest-state column of `stg_crm__companies`; no
-  identity input bypasses the staging layer.
-- **Unicode confusables under-merge silently.** Zero-width spaces and NFC/NFD
-  variants make visually identical names normalize differently → false manual
-  review that renders identically in every UI. *Scheduled: Phase 2b
-  normalization hardening (ZWSP/NBSP strip + NFC).*
+  *Paid (2a.2):* `assert_canonical_targets_exist` dbt test + unit test proving
+  the detection fires.
+- ~~`crm_emails` reads full raw history~~ *Paid (2a.2):* latest-state only.
+- **Unicode confusables under-merge silently.** ZWSP/NFC variants make
+  visually identical names normalize differently → false manual review.
+  *Scheduled: Phase 2b normalization hardening.*
+
+## Security posture (updated 2a.3)
+
+- ~~Every secret fell back silently to a constant published in this repo~~
+  *Paid (2a.3)* *(audit — critical):* `secretForSource` and the ledger HMAC
+  key now **fail closed** with an actionable error; the demo defaults exist
+  only behind an explicit `ALLOW_DEV_SECRETS=1`, and the ingest service
+  asserts all required secrets at boot (one aggregated error). Git history
+  was checked clean of real secrets.
+- ~~No replay protection~~ *Paid (2a.3):* signatures are now
+  `t=<seconds>,sha256=<hmac over t.body>` with a ±300s window (the
+  Stripe/Slack/HubSpot consensus). The timestamp is signed material —
+  re-stamping a captured header fails. Within-window replays are absorbed by
+  `(source, event_id)` idempotent dedup.
+- ~~"Read-only agent" was a naming convention~~ *Paid (2a.3):* the report/MCP
+  pool connects as `switchboard_agent`, a role Postgres limits to SELECT on
+  the analytics schema — no raw/ingest access at all. Pinned by tests that
+  assert the *database* refuses writes (42501). Previously the pool was the
+  app superuser and the `READ_TOOLS` allowlist was the only barrier *(audit)*.
+- **JSON parsing precedes HMAC verification** *(audit)* — `express.json()`
+  runs before the route's signature check, so unauthenticated bytes reach the
+  parser (malformed JSON + no signature → 400, not 401). Verification itself
+  is byte-correct (the parser's verify hook captures exact bytes). A test
+  comment used to claim the opposite ordering; it was corrected and the actual
+  order is now pinned by its own test. Moving verification into middleware
+  ahead of the parser is the stricter design; deferred as low-priority — the
+  parser surface is `express.json` with an explicit 100kb limit.
+- **The allowlist gates tool NAMES, not behavior** — rewriting the body of the
+  one read-only tool would pass every current test. The database role (above)
+  is the backstop that makes this bounded. Full behavioral evaluation and the
+  approval-gated write action are Phase 3 scope (OWASP LLM06 "complete
+  mediation" is the design reference: authorization enforced downstream, never
+  by the model's own choices).
+- **Prompt-injection surface is unmitigated** *(audit)* — entity names/domains
+  flow verbatim into the report prompt. Blast radius today is a wrong
+  paragraph in a Markdown file (the risk table is computed deterministically
+  and sits beside the narrative); this MUST be closed before Phase 3 grants
+  any write action.
+- **Secrets live in environment variables** — right-sized for this phase, but
+  env vars are readable by all of a process's children and can leak into
+  dumps; a real deployment should use a secret manager.
 
 ## Ingestion & reliability (MED)
 
-- **The backfill poll path trusts the feed.** No schema validation (one
-  malformed entry wedges the cursor's page forever) and no fetch timeout (a
-  hung socket silently stops backfill, with the overlap guard reporting
-  "still running" indefinitely). *Scheduled: Phase 2b connector work, where
-  the poll path is the subject.*
+- **The backfill poll path trusts the feed.** No schema validation, no fetch
+  timeout, and — worse than the cursor *regression* previously listed here —
+  the cursor advances to a **feed-supplied** `last_seq` rather than the max
+  actually ingested, so a feed that overstates it permanently skips the gap:
+  silent, unbounded data loss on the poll path *(audit)*. *Scheduled: Phase 2b
+  connector work, where the poll path is the subject.*
 - **The ledger hash chain doesn't enforce `seq` monotonicity or event-id
-  uniqueness** — a mock restarted against an existing ledger file forks the
-  logical stream and still verifies. *Scheduled: Phase 2b.*
-- **Backfill cursor can regress across processes** (unconditional upsert, no
-  `greatest()`); dedup absorbs it — cost is redundant fetches, not data loss.
-- **Unstorable quarantined rows have no replay path** — rows preserved in
-  `raw_body` (NUL / lone surrogate / extreme depth) report `still-invalid`
-  forever, since the event store is jsonb too. *Planned: `replay --sanitize`,
-  an explicit, logged, operator-approved transform at replay time — never
-  automatic at the trust boundary.*
-- **Nothing alerts on quarantine depth** — a growing quarantine is visible
-  only if someone looks. *Scheduled: Phase 4 monitoring.*
-- **Oversized bodies (>100 KB) return 500, not 413** — the JSON error
-  middleware only maps `SyntaxError`; `PayloadTooLargeError` falls through.
+  uniqueness** — a restarted mock forks the logical stream and still verifies.
+  *Scheduled: Phase 2b.*
+- **`ingest.outbox` has no consumer** *(audit)* — written in the hot ingest
+  transaction, `processed_at` never set, grows one row per event forever. It
+  serves only as the demo's equality counter; it is *named* for a
+  transactional-outbox pattern the system doesn't implement (durability
+  actually comes from pg-boss). *Scheduled: 2b raw-layer work — either
+  implement the pattern or rename and cap it.*
+- **`reconcile()` is unbounded in memory** *(audit)* — full event-id set and
+  full parsed ledger in memory; the headline reliability proof OOMs before
+  the documented ledger ceiling bites. Fine at demo scale; listed in
+  scaling-ceilings now.
+- ~~Unstorable quarantined rows have no replay path~~ *Partially paid (2a.3):*
+  `npm run quarantine` now lists and replays quarantined rows through the
+  ingest gate. jsonb-unstorable rows (NUL / lone surrogates / extreme depth)
+  still report `still-invalid` by design — the event store is jsonb too;
+  `replay --sanitize` (explicit, logged, operator-approved transform) remains
+  *Planned: Phase 2b/4.*
+- ~~Oversized bodies return 500, not 413~~ *Paid (2a.3):* 413 with an explicit
+  100kb limit; non-JSON content types now 415 instead of a downstream 500.
+  (Upgraded from "cosmetic": to a real vendor, 500 means *retry me* — Stripe
+  retries up to 3 days, HubSpot 10 times over 24h — so the wrong status turns
+  one bad payload into a sustained retry storm.)
+- **Nothing alerts on quarantine depth** — the CLI makes it *visible*
+  (`--list`), but nothing pages. *Scheduled: Phase 4 monitoring.*
 - **No migration tracking table** — every start re-runs all migration files;
   correctness depends on each being hand-proven idempotent (they are, with
-  tests, including the documented 001-recreates/003-drops legacy dance — but
-  it's a standing foot-gun as migrations accumulate). *Scheduled: Phase 2b.*
+  tests). Migration 003 executes `drop table ... cascade` on every run —
+  concurrent boots of two replicas are a real hazard, not cosmetic churn.
+  *Scheduled: Phase 2b (tracking table + advisory lock, with the documented
+  PgBouncer caveat on advisory locks).*
+- **Env parsing foot-guns** *(audit)* — `PORT`/`BACKFILL_INTERVAL_MS` go
+  through bare `Number()` (a typo yields `NaN`, and `setInterval(fn, NaN)`
+  fires every ~1ms), and an unrecognized `INGEST_ROLE` silently means "do
+  nothing". *Scheduled: 2b config module.*
 
 ## Architecture (decided, scheduled)
 
 - **The raw store is stricter than the wire.** `raw_events.payload` is jsonb,
-  which rejects content valid JSON can carry (NUL escapes, lone surrogates,
-  extreme nesting); today's quarantine divert is the mitigation. The decided
-  end-state (Phase 2b): **text-first raw** — exact wire bytes stored for every
-  event, jsonb as a nullable derived parse — plus **claim-check enqueue**
-  (queue carries ids, not payloads), which dissolves this class entirely.
-- **Mirrored SQL in tests is synced by discipline.** The identity-resolution
-  tests embed a copy of the model SQL (temp-table substitutions for dbt refs),
-  kept identical by convention and review. *Fix in progress (hardening wave):
-  a CI check that mechanically diffs the mirrored region.*
-- **HMAC helpers are duplicated across workspaces** (ingest + mocks). All
-  three duplicated helpers (ledger hash, signBody, secretForSource) now carry
-  by-construction cross-compat tests (2a.2); the structural fix — a shared
-  package — lands with Phase 2b.
+  which rejects content valid JSON can carry; today's quarantine divert is the
+  mitigation. Decided end-state (Phase 2b): **text-first raw** + **claim-check
+  enqueue**, which dissolves this class entirely.
+- ~~Mirrored SQL in tests is synced by discipline~~ *Paid (2a.3), with a
+  correction:* this file previously said a mechanical CI diff was "in
+  progress". That check **did not exist**, and could never have worked — the
+  mirrors were deliberately non-identical (ref→fixture substitutions). Worse,
+  the audit found one mirror had **already drifted** (`like 'company.%'` vs
+  the model's `= 'company.updated'`, under a comment claiming to be "the
+  exact" query), so three ordering invariants were being proven against a
+  query not in production. The fix is stronger than detection: all four
+  mirrored SQL strings were deleted and the tests now **load the real model
+  text from disk** (`loadModel`, refs → fixtures) — drift is structurally
+  impossible, and re-introducing the audit's exact drift turns the suite red
+  (demonstrated in the 2a.3 commit).
+- ~~HMAC/ledger helpers duplicated across workspaces, cross-compat "by
+  construction"~~ *Corrected and paid (2a.3):* the previous wording here
+  overstated what the tests proved — the "cross-compat" tests wrote with a
+  *third, test-local copy* of the algorithm and never imported the mock, so
+  the mock-side copies could drift with every test green (only the nightly
+  chaos workflow — which has never run in CI — would have caught it). The
+  tests now import the REAL mock functions; mutating the mock's hashing turns
+  7 tests red (demonstrated). The `src` copies remain intentionally duplicated
+  until the Phase 2b shared package.
+- **Version-fragile dependencies are now pinned** *(audit)* — `pg-boss` exact
+  at 12.26.1 (four documented behaviors depend on its *internals*, which
+  semver does not cover) and the MCP SDK exact (the registration guard casts
+  through an untyped seam). `@types/express` was the wrong major (v4 against
+  Express 5 — the gating typecheck was validating the Express 4 API); now
+  `@types/express@^5`. One correction to the audit: Express 5 does *not* ship
+  its own types — deleting the package entirely fails typecheck — so the fix
+  is the v5 types line, not removal.
 
 ## Process honesty
 
 - **CI has never run on GitHub.** The workflows are committed and locally
   verified, but pushing them requires a workflow-scoped credential; the badges
   show "no runs" until then. No green is claimed anywhere it hasn't been
-  watched happening.
-- **"Written test-first" is narrated, not provable.** Journals record the
-  RED→GREEN cycles, but bundled test+implementation commits can't prove
-  ordering retroactively. Going forward, hardening work commits the failing
-  test before the fix so git history carries the proof.
+  watched happening. (2a.3 pre-empted the likeliest first-run flake: the
+  DB-provisioning test suites now carry explicit 30s timeouts, because the
+  vitest 5s default timed out under audit-machine contention — if the first
+  CI run is red, check for *that* before assuming a regression.)
+- **"Written test-first" is narrated, not provable** for early phases.
+  Hardening work since 2a.2 commits the failing test before the fix so git
+  history carries the proof (RED→GREEN pairs).
 - **The agent's action-safety surface is thin by design at this phase** — one
-  read-only tool registered, protocol-level rejection of everything else,
-  pinned by tests. The approval-gated write action and behavioral safety
-  evaluation are Phase 3 scope; until they land, don't read more into the
-  word "safety" than this file states.
+  read-only tool, protocol-level rejection of everything else, and (2a.3) a
+  database role that cannot write. The approval-gated write action and
+  behavioral safety evaluation are Phase 3 scope.
+- **What the demo does NOT prove:** reconcile proves id-set parity, not
+  payload parity (a source that mutated an event's `data` and re-delivered
+  under the same id reconciles clean); and in production the vendor is the
+  oracle — no vendor hands you a signed, complete enumeration of history
+  (see `docs/real-connector-delta.md`).
+
+## What production would require (scoping, not backlog)
+
+Disclosed deliberately: these are *client-blocking*, not portfolio-blocking,
+and none is started. Effort classes are estimates by the maintainer.
+
+1. **Tenancy (3–4 weeks, after a 1-week isolation-model decision).** The
+   decision comes first — shared-schema-with-RLS (AWS's prescription for
+   pooled models; requires `FORCE ROW LEVEL SECURITY` and knowing RLS's
+   documented gotchas) vs database-per-tenant (isolation as a deployment fact;
+   compliance pressure pushes this way for PII-heavy clients, though no
+   authority mandates it). Note the 2a.3 least-privilege work is a
+   *prerequisite* either way: RLS is silently inert for table owners and
+   superusers, which is exactly what the app role was.
+2. **One real vendor connector (6–9 weeks; 2–3 per vendor after).** OAuth2
+   token lifecycle, opaque cursors (the bigint watermark doesn't survive
+   contact with HubSpot/Stripe/Zendesk pagination), thin-event hydration
+   inside the queue worker, per-vendor signature schemes (every real one signs
+   a timestamp — the 2a.3 scheme gives that somewhere to land), backoff that
+   honors `Retry-After`, and fetch timeouts.
+3. **Operations (5–7 weeks).** Postgres volume + rehearsed restore (today
+   `docker compose down` destroys the database; the runbook's pg_dump path is
+   design, not implementation), service containers + health endpoints,
+   structured logging with correlation ids, metrics + alerts on queue/DLQ/
+   quarantine depth and backfill last-success age (the backfill can die
+   permanently while logging a reassuring line every 60s), migration tracking.
+4. **The automation surface (3–5 weeks + agent loop).** Action/intent objects,
+   an approval queue, outbound idempotency keys, an agent-action audit log,
+   and injection defense — the OWASP LLM06 architecture. Nothing here exists;
+   it is Phase 3 by design, and the current 276-line report worker is a
+   summarizer, not an agent (the README says so).
+5. **End-user surface (4–8 weeks).** Scheduler, delivery channel, auth,
+   approval UI. Today's user surface is a Markdown file on the operator's
+   disk.
 
 ## Cosmetic / low
 
-DLQ depth display caps at 10 · reconcile skips a source whose ledger-path env
-var is unset (scripts pin all three) · some log lines lack the `[source]`
-prefix · `occurred_at` text-sort note above also applies to `merge_edges`
-ordering · migration 001-recreate/003-drop churn at startup · CI installs dbt
-via bare pip (no setup-python pin) and double-runs on PR branches (no
-concurrency group) · assorted items tracked in review ledgers.
+`fetchDlq`/`replayDlq` cap at 10 per invocation — the CLI prints "repeat for
+deeper queues", but an operator who doesn't reads a false "done" on an 11+
+DLQ (upgraded wording from "display cap"; fix: loop-until-empty in 2b) ·
+reconcile skips a source whose ledger-path env var is unset (scripts pin all
+three) · some log lines lack the `[source]` prefix · migration
+001-recreate/003-drop churn at startup · CI installs dbt via bare pip (no
+setup-python pin) and double-runs on PR branches (no concurrency group) ·
+agent test files assign `DBT_SCHEMA` at module top-level and share one DB —
+order-dependent by construction, benign today *(audit)* · assorted items
+tracked in review ledgers.

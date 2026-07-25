@@ -20,10 +20,12 @@ Switchboard is a working demonstration of the fix, built end-to-end by one engin
    even when the same company appears under different names and IDs in each system.
 3. **Put an AI assistant on top** that writes the weekly revenue-risk report
    automatically — designed so any action beyond reading requires human approval.
-   Today that means the assistant's server registers exactly one read-only tool —
-   so anything else is rejected by the protocol layer, and a test pins that;
-   the approval-gated action itself and richer behavioral safety testing are being
-   built in Phase 3.
+   Today that means two independent layers: the assistant's server registers
+   exactly one read-only tool (anything else is rejected by the protocol layer,
+   and a test pins that), and the assistant's database connection runs as a
+   **read-only Postgres role** — a write is refused by the database itself, also
+   pinned by tests. The approval-gated action and richer behavioral safety
+   testing are being built in Phase 3.
 
 Anyone can verify the claims: one command (`./scripts/demo.sh`) runs the entire
 system and produces the report. No accounts, no API keys, nothing to sign up for.
@@ -45,17 +47,25 @@ engineering on data you can inspect freely.
   a seed), and all three are generated from **one correlated seed manifest**, so
   the same fictional companies deliberately appear across systems under mismatched
   names, domains, and IDs — including seeded duplicates and planned near-misses
-  the identity layer must get right. The log chain is keyed (`LEDGER_HMAC_KEY`,
-  demo default documented like the webhook secrets) so tamper-evidence holds
-  against anyone who can write the file but doesn't hold the key; a dedicated
-  adversarial test proves a forger without the key is caught.
+  the identity layer must get right. The log chain is keyed (`LEDGER_HMAC_KEY`)
+  so tamper-evidence holds against anyone who can write the file but doesn't
+  hold the key; a dedicated adversarial test proves a forger without the key is
+  caught. Secrets **fail closed**: there are demo defaults, but they only
+  activate behind an explicit `ALLOW_DEV_SECRETS=1` — a production deploy that
+  forgets an env var refuses to run instead of silently authenticating against
+  a value published in this repo.
 - **An ingestion service built for failure, now source-agnostic:** one
   `/webhooks/:source` endpoint with a **per-source HMAC secret**
   (`WEBHOOK_SECRET_CRM|_BILLING|_SUPPORT` — a billing event signed with the CRM
-  secret is rejected, by test), a single raw event store with `(source, event_id)`
-  exactly-once storage, **per-source retry queues with per-source dead-letter
-  lanes** and a replay tool, a quarantine for malformed data (nothing delivered is
-  ever dropped), and per-source cursor backfill that catches anything webhooks lose.
+  secret is rejected, by test) and **timestamped signatures with a ±5-minute
+  replay window** (the timestamp is signed material, so a captured request can't
+  be re-stamped — the same scheme Stripe, Slack, and HubSpot converge on), a
+  single raw event store with `(source, event_id)` exactly-once storage,
+  **per-source retry queues with per-source dead-letter lanes** and replay tools
+  for both the DLQ and the quarantine, a quarantine for malformed data (nothing
+  delivered is ever dropped, and event timestamps are bounded to a sanity window
+  so a vendor clock bug can't permanently pin an entity's state), and per-source
+  cursor backfill that catches anything webhooks lose.
 - **A zero-data-loss proof you can run:** `./scripts/chaos.sh` fires 600 events —
   200 per source, all three under injected failures simultaneously — and proves,
   by reconciling each source against its tamper-evident log, that every event
@@ -82,7 +92,7 @@ engineering on data you can inspect freely.
 - A worker that generates the Monday revenue-risk report — with a timeout and
   fallback so the report generates even when the AI service is down, and per-call
   cost logging.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 154 tests, the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 186 tests, the
   dbt build (14 models + 47 data tests), the agent action-safety eval, and the
   identity oracle, against a real Postgres service container
   ([`ci.yml`](.github/workflows/ci.yml)). The heavier chaos + demo proof runs on
@@ -91,7 +101,7 @@ engineering on data you can inspect freely.
   ([`chaos.yml`](.github/workflows/chaos.yml)). The badges above track those
   workflows — they show "no runs" until the first GitHub run, which is pending
   (pushing the workflow files requires a workflow-scoped credential).
-- 154 automated tests, written test-first, all green locally — including a
+- 186 automated tests, written test-first, all green locally — including a
   seeded property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety
   under arbitrary torn writes; the whole pipeline
@@ -113,7 +123,7 @@ engineering on data you can inspect freely.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 154 tests green (incl. 6 seeded fast-check properties); 47/47 dbt data tests (61 build steps incl. 14 models) |
+| Suite | `npm test` + dbt | 186 tests green (incl. 6 seeded fast-check properties); 47/47 dbt data tests (61 build steps incl. 14 models) |
 
 ## What's coming (built in phases, in public)
 

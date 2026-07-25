@@ -8,8 +8,10 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 | Variable | Default | Used by |
 |---|---|---|
 | `DATABASE_URL` | no code default — export it (scripts set it for you) | ingest, agent, CLIs |
-| `WEBHOOK_SECRET_CRM` / `_BILLING` / `_SUPPORT` | `demo-secret-<source>` (demo only — set per environment; one secret **per source**, so a leaked secret compromises one source, not all) | mock signing, ingest verification |
-| `LEDGER_HMAC_KEY` | `demo-ledger-key` (demo only — set per environment) | ledger writers (mocks), reconcile chain verification |
+| `WEBHOOK_SECRET_CRM` / `_BILLING` / `_SUPPORT` | **required — fails closed.** No env var means the process throws at boot/first use; there is no silent fallback (the demo values are published in this repo). One secret **per source**, so a leaked secret compromises one source, not all | mock signing, ingest verification |
+| `LEDGER_HMAC_KEY` | **required — fails closed** (same rule as webhook secrets) | ledger writers (mocks), reconcile chain verification |
+| `ALLOW_DEV_SECRETS` | unset. `1` opts in to the published demo secrets (`demo-secret-<source>`, `demo-ledger-key`) — local demo/test use ONLY; demo.sh/chaos.sh and the vitest configs set it. Never set it in a real deployment | everything above |
+| `AGENT_DATABASE_URL` | derived: `DATABASE_URL` with user/password swapped to `switchboard_agent` (dev password `switchboard_agent`; override with `AGENT_DB_PASSWORD`). The agent/report pool runs as this **database-enforced read-only role** — set explicitly in production | agent report/MCP pool |
 | `LEDGER_PATH` | no code default — export it (scripts set it for you) | each mock process (its own ledger file) |
 | `LEDGER_PATH_CRM` / `_BILLING` / `_SUPPORT` | unset → that source is skipped by reconcile | reconcile CLI (per-source ledger lookup) |
 | `INGEST_SOURCES` | `crm,billing,support` | which sources ingest polls/reconciles (scripts pin it explicitly) |
@@ -67,9 +69,11 @@ identity layer and `customer_360` against the seed manifest's planned match matr
   to 10 jobs per invocation (aggregated across all source DLQs) — repeat for
   deeper queues.
 - **Malformed payloads:** rows sit in `ingest.quarantine` with reasons and their
-  `source`; after a schema/mapping fix, replay via `replayQuarantined` (see
-  `ingest/src/quarantine.ts`). Note: *unsigned* requests are rejected 401, never
-  quarantined.
+  `source`. Operator CLI (2a.3): `npm run quarantine -w ingest -- --list` shows
+  pending rows; `npm run quarantine -w ingest -- --replay <id>` replays one;
+  `npm run quarantine -w ingest` sweeps everything pending (each row re-validates
+  through the same ingest gate — unfixable rows stay put and are counted). Note:
+  *unsigned* requests are rejected 401, never quarantined.
 - **jsonb-unstorable payloads** (NUL escapes, lone UTF-16 surrogates, nesting
   depth > 1000): quarantined with `payload` null and the byte-exact wire text in
   `raw_body`. These are preserved-for-inspection — `replayQuarantined` reports
@@ -119,6 +123,8 @@ backup timestamp and now — not unbounded ledger replay from empty.
 | Ports 4001/4002/4003/4004/5433 busy | `lsof -ti:4001,4002,4003,4004 \| xargs kill`; another Postgres on 5433 → change compose mapping |
 | demo/chaos FAIL with count mismatch | Worker not draining — check ingest logs; the scripts' bounded waits print both counts on timeout |
 | 401 on every webhook for one source | `WEBHOOK_SECRET_<SOURCE>` mismatch between that mock and ingest environments (each source verifies with its own secret — check the right one) |
+| 401s that appear only under load or across machines | Signature replay window (±300s, 2a.3): the timestamp is signed, so sender/receiver clocks more than 5 minutes apart reject valid traffic — check NTP/clock sync |
+| Process throws `... is not set — refusing to fall back` at boot | Fail-closed secrets (2a.3): set the named env var, or `ALLOW_DEV_SECRETS=1` for local demo use only |
 | Reconcile reports ledger hash chain broken but nothing was tampered with | `LEDGER_HMAC_KEY` mismatch between the mock (writer) and reconcile (verifier) environments — both must use the same key (default is fine for demo) |
 | Reconcile prints `[<source>] skipped (no LEDGER_PATH_...)` | Export `LEDGER_PATH_<SOURCE>` pointing at that mock's ledger file (see demo.sh for the pattern) |
 | Identity oracle FAILs after chaos.sh | Expected: marts are frozen tables over live staging views, and chaos truncates raw — re-run `demo.sh` (which rebuilds) before trusting mart state |
