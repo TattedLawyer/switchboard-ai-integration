@@ -14,10 +14,28 @@ export function isIsoOccurredAt(s: string): boolean {
   return ISO_8601_SHAPE.test(s) && !Number.isNaN(Date.parse(s));
 }
 
+// A6: occurred_at is the latest-state SORT KEY, so an absurd-but-well-formed timestamp
+// is data corruption, not a formatting nit: "9999-12-31T00:00:00Z" would pin an entity's
+// state forever, undislodgeable by any later correct event, triggered by nothing more
+// exotic than a vendor timezone bug. Bound it to [now-30d, now+5m] — 30d absorbs
+// legitimate replays/backfills of recent history, +5m absorbs ordinary clock skew
+// (mirrors the A3 signature window). Out-of-window events QUARANTINE (preserved, never
+// dropped); note a quarantined event replayed after its window ages out stays
+// still-invalid — staleness is a property of the data, not of when we look at it.
+export const OCCURRED_AT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export const OCCURRED_AT_MAX_FUTURE_MS = 5 * 60 * 1000;
+export function isAcceptableOccurredAt(s: string, nowMs: number = Date.now()): boolean {
+  if (!isIsoOccurredAt(s)) return false;
+  const t = Date.parse(s);
+  return t >= nowMs - OCCURRED_AT_MAX_AGE_MS && t <= nowMs + OCCURRED_AT_MAX_FUTURE_MS;
+}
+
 const eventSchema = z.object({
   event_id: z.string().min(1),
   event_type: z.string().min(1),
-  occurred_at: z.string().refine(isIsoOccurredAt, "occurred_at must be an ISO-8601 timestamp"),
+  occurred_at: z
+    .string()
+    .refine((s) => isAcceptableOccurredAt(s), "occurred_at must be ISO-8601 within [now-30d, now+5m]"),
   data: z.record(z.unknown()),
 });
 
