@@ -24,20 +24,35 @@ export function createIngestApp(
   opts?: { enqueue?: (source: Source, event: SourceEvent) => Promise<void> }
 ): express.Express {
   const app = express();
+  // A5: reject non-JSON media types explicitly (415) BEFORE the parser — otherwise
+  // express.json() skips the body, req.body is undefined, and the handler dies with a
+  // 500 a vendor reads as "server fault, retry me".
+  app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.method === "POST" && !req.is("application/json")) {
+      return res.status(415).json({ error: "unsupported media type: send application/json" });
+    }
+    next();
+  });
   // Capture the raw request body (before JSON parsing mutates it into an object) so we can
-  // verify the HMAC signature against the exact bytes the source signed.
+  // verify the HMAC signature against the exact bytes the source signed. The 100kb limit is
+  // express's default made explicit — the error mapping below depends on it firing.
   app.use(
     express.json({
+      limit: "100kb",
       verify: (req, _res, buf) => {
         (req as express.Request & { rawBody?: string }).rawBody = buf.toString("utf8");
       },
     }),
   );
-  // JSON error middleware: catch malformed JSON and return a clean 400 (mirrors
-  // mocks/crm/src/server.ts's pattern) instead of express's default HTML error page.
+  // Parser error middleware: malformed JSON → 400; oversized body → 413 (A5: RFC 9110
+  // attributes both to the CLIENT — a 500 here would tell a well-behaved vendor to
+  // retry a request that can never succeed, burning its retry budget).
   app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (err instanceof SyntaxError && "body" in err) {
       return res.status(400).json({ error: "invalid json" });
+    }
+    if ((err as { status?: number }).status === 413) {
+      return res.status(413).json({ error: "payload too large" });
     }
     next(err);
   });
@@ -96,7 +111,10 @@ export function createIngestApp(
   });
   // Terminal error handler: catch anything unhandled (e.g. a DB failure) and return a generic
   // 500 with no message/stack echo, so internal paths and error details never leak to clients.
-  app.use((_err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  // Logged server-side (audit ops finding: a silent catch-all makes a 500 storm invisible
+  // on BOTH sides of the wire).
+  app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error(`[ingest] unhandled error on ${req.method} ${req.path}:`, err);
     res.status(500).json({ error: "internal error" });
   });
   return app;
