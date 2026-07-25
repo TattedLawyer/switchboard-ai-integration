@@ -92,6 +92,23 @@ describe("stg_crm__companies latest-state ordering", () => {
     expect(res.rows[0].name).toBe("Newer State");
   });
 
+  it("occurred_at is compared as a TIMESTAMP, not text: an offset timestamp that is EARLIER in real time must not win latest-state by sorting later as a string (L2-G2)", async () => {
+    const companyId = "c-tz-test";
+
+    // Verified mis-ordering pair (both are valid ISO-8601, so both pass the ingest gate):
+    //   evt-4  "2026-07-22T09:00:00Z"      = 09:00 UTC  — the TRUE latest state
+    //   evt-5  "2026-07-22T10:00:00+05:00" = 05:00 UTC  — 4 hours EARLIER in real time,
+    // but as text "…T10:…" sorts AFTER "…T09:…", so a raw-string order-by crowns the
+    // stale offset row "latest" forever.
+    await insertRaw(pool, "evt-4", companyId, "True latest (09:00 UTC)", "2026-07-22T09:00:00Z");
+    await insertRaw(pool, "evt-5", companyId, "Stale (05:00 UTC, +05:00 offset)", "2026-07-22T10:00:00+05:00");
+
+    const res = await pool.query(LATEST_STATE_SQL, [companyId]);
+
+    expect(res.rowCount).toBe(1);
+    expect(res.rows[0].name).toBe("True latest (09:00 UTC)");
+  });
+
   it("evt-N ordinal breaks ties when occurred_at is identical", async () => {
     const companyId = "c-tie-test";
     const sameTimestamp = "2026-01-05T00:00:00.000Z";

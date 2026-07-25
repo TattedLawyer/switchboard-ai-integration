@@ -107,6 +107,106 @@ describe("quarantine", () => {
     expect(updatedQuarantineRow.rows[0].replayed_at).not.toBeNull();
   });
 
+  // L2-G2 ingest gate: staging orders latest-state by (payload->>'occurred_at')::timestamptz,
+  // which THROWS on garbage — so garbage must never reach raw. Both doors into raw (webhook
+  // schema gate here, replay gate below) must reject non-ISO-8601 occurred_at values into/back
+  // into quarantine, never store them.
+  describe("occurred_at ISO-8601 gate (L2-G2)", () => {
+    const postSigned = async (port: number, payload: unknown) => {
+      const rawBody = JSON.stringify(payload);
+      return fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-switchboard-signature": signBody(rawBody, secretForSource("crm")),
+        },
+        body: rawBody,
+      });
+    };
+    const gateEvent = (id: string, occurredAt: string) => ({
+      event_id: id,
+      event_type: "company.updated",
+      occurred_at: occurredAt,
+      data: { id: "DEMO-C-0009", name: "DEMO Gate", domain: "gate.example.com" },
+    });
+
+    it("an otherwise-valid signed event with occurred_at 'not-a-date' is quarantined, not stored", async () => {
+      const app = createIngestApp(pool);
+      const srv = app.listen(0);
+      const port = (srv.address() as { port: number }).port;
+      try {
+        const res = await postSigned(port, gateEvent("evt-gate-garbage", "not-a-date"));
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ quarantined: true });
+
+        const q = await pool.query(
+          "select reason from ingest.quarantine where payload->>'event_id' = 'evt-gate-garbage'",
+        );
+        expect(q.rowCount).toBe(1);
+        expect(q.rows[0].reason).toBe("schema validation failed");
+        const raw = await pool.query(
+          "select 1 from raw.raw_events where event_id = 'evt-gate-garbage'",
+        );
+        expect(raw.rowCount).toBe(0);
+      } finally {
+        srv.close();
+      }
+    });
+
+    it("a non-ISO-shaped date ('20260722') is quarantined, not stored", async () => {
+      const app = createIngestApp(pool);
+      const srv = app.listen(0);
+      const port = (srv.address() as { port: number }).port;
+      try {
+        const res = await postSigned(port, gateEvent("evt-gate-basic-format", "20260722"));
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ quarantined: true });
+        const raw = await pool.query(
+          "select 1 from raw.raw_events where event_id = 'evt-gate-basic-format'",
+        );
+        expect(raw.rowCount).toBe(0);
+      } finally {
+        srv.close();
+      }
+    });
+
+    it("a valid ISO-8601 occurred_at ('2026-07-22T10:00:00.000Z') still stores", async () => {
+      const app = createIngestApp(pool);
+      const srv = app.listen(0);
+      const port = (srv.address() as { port: number }).port;
+      try {
+        const res = await postSigned(port, gateEvent("evt-gate-valid", "2026-07-22T10:00:00.000Z"));
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ stored: true });
+        const raw = await pool.query(
+          "select 1 from raw.raw_events where event_id = 'evt-gate-valid'",
+        );
+        expect(raw.rowCount).toBe(1);
+      } finally {
+        srv.close();
+      }
+    });
+
+    it("replay is the same gate: a quarantined garbage-occurred_at event stays 'still-invalid' — it must never re-enter raw", async () => {
+      // The replay path (quarantine.ts's own schema copy) is the SECOND door into raw. If it
+      // stayed loose while the webhook gate tightened, an operator replay would put garbage
+      // into raw and the staging timestamptz cast would take the whole build down.
+      const garbage = gateEvent("evt-gate-replay", "not-a-date");
+      await quarantineEvent(pool, "crm", garbage, "schema validation failed");
+      const row = await pool.query(
+        "select id from ingest.quarantine where payload->>'event_id' = 'evt-gate-replay'",
+      );
+      expect(row.rowCount).toBe(1);
+
+      const result = await replayQuarantined(pool, row.rows[0].id, ingestEvent);
+      expect(result).toBe("still-invalid");
+      const raw = await pool.query(
+        "select 1 from raw.raw_events where event_id = 'evt-gate-replay'",
+      );
+      expect(raw.rowCount).toBe(0);
+    });
+  });
+
   it("valid POST to /webhooks/crm returns 202 {stored: true} and creates raw row (direct ingest path)", async () => {
     const app = createIngestApp(pool);
     const srv = app.listen(0);
