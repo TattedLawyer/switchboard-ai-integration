@@ -10,6 +10,7 @@
     "start": "tsx src/main.ts",
     "backfill": "tsx src/cli/backfill.ts",
     "replay": "tsx src/cli/replay.ts",
+    "quarantine": "tsx src/cli/quarantine.ts",
     "reconcile": "tsx src/cli/reconcile.ts"
   },
   "dependencies": {

@@ -158,6 +158,42 @@ export async function quarantineEvent(
   }
 }
 
+// A7: the operator surface the `npm run quarantine` CLI wraps. Pending = never replayed.
+// event_id is null for rows whose payload isn't an object with one (junk payloads and
+// raw_body-only unstorable rows) — those are listable but can never auto-replay.
+export interface QuarantineRow {
+  id: number;
+  source: string;
+  reason: string;
+  event_id: string | null;
+  received_at: Date;
+}
+
+export async function listQuarantine(pool: pg.Pool): Promise<QuarantineRow[]> {
+  const res = await pool.query(
+    `select id, source, reason, payload->>'event_id' as event_id, received_at
+       from ingest.quarantine
+      where replayed_at is null
+      order by id`,
+  );
+  return res.rows.map((r) => ({ ...r, id: Number(r.id) }));
+}
+
+export async function replayAllQuarantined(
+  pool: pg.Pool,
+  ingest: (pool: pg.Pool, source: string, event: SourceEvent) => Promise<"inserted" | "duplicate">,
+): Promise<{ replayed: number; stillInvalid: number }> {
+  const pending = await listQuarantine(pool);
+  let replayed = 0;
+  let stillInvalid = 0;
+  for (const row of pending) {
+    const outcome = await replayQuarantined(pool, row.id, ingest);
+    if (outcome === "replayed") replayed++;
+    else stillInvalid++;
+  }
+  return { replayed, stillInvalid };
+}
+
 export async function replayQuarantined(
   pool: pg.Pool,
   id: number,
