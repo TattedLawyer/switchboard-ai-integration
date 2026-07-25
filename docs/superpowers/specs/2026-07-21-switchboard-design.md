@@ -1,4 +1,4 @@
-# Switchboard — FDE Portfolio Flagship: Design Spec
+# Switchboard — Design Spec
 
 **Date:** 2026-07-21 (rev 2, after adversarial subagent review)
 **Status:** Draft — awaiting Michael's approval
@@ -6,10 +6,10 @@
 
 ## 1. Purpose
 
-A single, comprehensive, public portfolio artifact that demonstrates the full Forward
-Deployed Engineer loop — discovery, architecture, deployment, evaluation, operations —
-on the problem stack that 2026 demand research shows both mid-market and enterprise
-buyers are stuck on:
+A single, comprehensive, public reference implementation covering the full delivery
+loop — discovery, architecture, deployment, evaluation, operations — on the problem
+stack that 2026 demand research shows both mid-market and enterprise buyers are stuck
+on:
 
 1. Systems that don't talk (78% of enterprises struggle to connect AI tools to
    existing systems — Zapier survey, Oct 2025; ~60% of AI leaders cite legacy
@@ -19,8 +19,8 @@ buyers are stuck on:
 3. No trusted way to put an agent on top (manual reporting/analytics is the single
    most-validated mid-market pain point — BigIdeasDB 148K-complaint study).
 
-Anthropic's FDE posting lists MCP servers, sub-agents, and evaluation frameworks as
-deliverables. Switchboard produces exactly those artifacts.
+MCP servers, sub-agents, and evaluation frameworks are the integration primitives
+this project targets. Switchboard produces exactly those artifacts.
 
 > **Pre-publish gate:** re-verify every citation above (and the job-posting claim)
 > immediately before the repo goes public; stats go in the README only with links.
@@ -38,7 +38,7 @@ The README states prominently that the customer is simulated and why (real clien
 work can't be published). Credibility comes from **measured engineering results on
 this system**, never from the fictional narrative.
 
-**Discovery artifact (FDE signal):** a written discovery memo — framed openly as a
+**Discovery artifact:** a written discovery memo — framed openly as a
 simulated engagement — covering stakeholders, constraints, why this scope, and what
 was deliberately not built; plus a short "customer conversation" segment in the demo
 video explaining how discovery led to the single bounded write action.
@@ -85,7 +85,7 @@ test greps fixtures for violations.
 
 ### Layer 1 — Ingestion / integration
 - TypeScript + Node, Postgres for raw event/entity tables.
-- **Build-vs-buy line (stated in code and ADR — this judgment is the FDE signal):**
+- **Build-vs-buy line (stated in code and ADR — the judgment is the point):**
   - **pg-boss provides:** job scheduling, retry with exponential backoff, DLQ
     mechanics, queue storage (Postgres-backed: one datastore).
   - **Hand-built:** idempotency keys on every write, transactional outbox,
@@ -134,7 +134,7 @@ test greps fixtures for violations.
   tier if deployed). Dashboard: sync lag, DLQ depth, dedupe rate, webhook
   failure/retry rates, eval scores, approval rate. One alert rule (DLQ depth).
 - **Live URL = read-only demo page:** latest Monday report + system-status panel +
-  a rate-limited "trigger a chaos run" button. Sized so a hiring manager sees value
+  a rate-limited "trigger a chaos run" button. Sized so a first-time visitor sees value
   in 60 seconds unattended. The **demo video carries the burden of proof** (chaos
   run, approval flow, Grafana); the URL is a taste, and what stays up long-term is
   decided by hosting cost at Phase 4.
@@ -210,7 +210,7 @@ nightly LLM evals (keep action-safety CI) → live deployment (video-only proof)
 - No multi-tenant auth product; bearer-token auth on exposed endpoints only.
 - No front-end app beyond the approval view + read-only demo page.
 - No Temporal/Airbyte/Nango dependency — comparison points in ADRs, not the
-  deliverable (the portfolio must show the reliability layer built, not bought).
+  deliverable (this project must show the reliability layer built, not bought).
 - No fuzzy/ML identity matching (three deterministic tiers only).
 - No second (health-domain) case study yet — possible follow-on, separate project.
 
