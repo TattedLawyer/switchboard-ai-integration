@@ -170,18 +170,76 @@ describe("quarantine", () => {
       }
     });
 
-    it("a valid ISO-8601 occurred_at ('2026-07-22T10:00:00.000Z') still stores", async () => {
+    it("a valid, current ISO-8601 occurred_at still stores", async () => {
+      // Relative date on purpose: a hardcoded literal would age out of the A6 window
+      // and turn this into a time-bomb test.
       const app = createIngestApp(pool);
       const srv = app.listen(0);
       const port = (srv.address() as { port: number }).port;
       try {
-        const res = await postSigned(port, gateEvent("evt-gate-valid", "2026-07-22T10:00:00.000Z"));
+        const res = await postSigned(port, gateEvent("evt-gate-valid", new Date().toISOString()));
         expect(res.status).toBe(202);
         expect(await res.json()).toEqual({ stored: true });
         const raw = await pool.query(
           "select 1 from raw.raw_events where event_id = 'evt-gate-valid'",
         );
         expect(raw.rowCount).toBe(1);
+      } finally {
+        srv.close();
+      }
+    });
+
+    it("A6: occurred_at older than 30 days is quarantined — stale history must not pin latest-state", async () => {
+      const app = createIngestApp(pool);
+      const srv = app.listen(0);
+      const port = (srv.address() as { port: number }).port;
+      try {
+        const stale = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+        const res = await postSigned(port, gateEvent("evt-gate-stale", stale));
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ quarantined: true });
+        const raw = await pool.query("select 1 from raw.raw_events where event_id = 'evt-gate-stale'");
+        expect(raw.rowCount).toBe(0);
+      } finally {
+        srv.close();
+      }
+    });
+
+    it("A6: occurred_at in the future beyond 5 minutes is quarantined — '9999-12-31' would otherwise pin an entity's state forever, undislodgeable by any later correct event", async () => {
+      const app = createIngestApp(pool);
+      const srv = app.listen(0);
+      const port = (srv.address() as { port: number }).port;
+      try {
+        for (const [id, ts] of [
+          ["evt-gate-future", new Date(Date.now() + 6 * 60 * 1000).toISOString()],
+          ["evt-gate-doomsday", "9999-12-31T00:00:00.000Z"],
+        ] as const) {
+          const res = await postSigned(port, gateEvent(id, ts));
+          expect(res.status).toBe(202);
+          expect(await res.json()).toEqual({ quarantined: true });
+          const raw = await pool.query("select 1 from raw.raw_events where event_id = $1", [id]);
+          expect(raw.rowCount).toBe(0);
+        }
+      } finally {
+        srv.close();
+      }
+    });
+
+    it("A6: the window edges store — 29 days old and 4 minutes ahead (ordinary clock skew is tolerated)", async () => {
+      const app = createIngestApp(pool);
+      const srv = app.listen(0);
+      const port = (srv.address() as { port: number }).port;
+      try {
+        for (const [id, ts] of [
+          ["evt-gate-oldish", new Date(Date.now() - 29 * 24 * 60 * 60 * 1000).toISOString()],
+          ["evt-gate-skewed", new Date(Date.now() + 4 * 60 * 1000).toISOString()],
+        ] as const) {
+          const res = await postSigned(port, gateEvent(id, ts));
+          expect(res.status).toBe(202);
+          expect(await res.json()).toEqual({ stored: true });
+          const raw = await pool.query("select 1 from raw.raw_events where event_id = $1", [id]);
+          expect(raw.rowCount).toBe(1);
+        }
       } finally {
         srv.close();
       }

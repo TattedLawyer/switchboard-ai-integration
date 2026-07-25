@@ -133,10 +133,15 @@ describe("property 1: ingest-boundary totality — validly-signed requests never
 
   // Schema-valid events with jsonb-SAFE contents: guarantees the stored-path branch actually
   // fires often (nasty-laden validEventArb payloads almost always divert to quarantine).
+  // occurred_at here must be a VALID in-window timestamp (audit F6: when the ISO gate
+  // landed, this field stayed a random string, so the stored:true branch this arbitrary
+  // exists to exercise went silently near-unreachable — a fix caused a coverage regression).
   const cleanEventArb = fc.record({
     event_id: fc.string({ minLength: 1, unit: "grapheme-ascii" }),
     event_type: fc.string({ minLength: 1, unit: "grapheme-ascii" }),
-    occurred_at: fc.string({ unit: "grapheme-ascii" }),
+    occurred_at: fc
+      .integer({ min: -29 * 24 * 60, max: 4 })
+      .map((minutes) => new Date(Date.now() + minutes * 60_000).toISOString()),
     data: fc.dictionary(fc.string({ unit: "grapheme-ascii" }), fc.string({ unit: "grapheme-ascii" }), {
       maxKeys: 4,
     }),
@@ -242,7 +247,7 @@ describe("property 2: dedup is multiset-delivery invariant", () => {
               evt: {
                 event_id: `${prefix}e${i}`,
                 event_type: "company.updated",
-                occurred_at: "2026-07-21T00:00:00.000Z",
+                occurred_at: new Date().toISOString(), // relative: fixed literals age out of the A6 window
                 data: { name: names[i], copy: k },
               },
             });

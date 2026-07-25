@@ -25,7 +25,7 @@ const post = async (app: ReturnType<typeof createIngestApp>, path: string, body:
 
 const ev = JSON.stringify({
   event_id: "evt-1", event_type: "invoice.created",
-  occurred_at: "2026-07-01T00:00:00.000Z", data: { id: "DEMO-I-0001" },
+  occurred_at: new Date().toISOString(), data: { id: "DEMO-I-0001" }, // relative: literals age out of the A6 window
 });
 
 describe("multi-source webhook surface", () => {
