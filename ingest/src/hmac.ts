@@ -41,18 +41,45 @@ export function assertWebhookSecrets(sources: readonly Source[]): void {
   }
 }
 
+// A3: the signature covers `${t}.${rawBody}` and the header is `t=<seconds>,sha256=<hex>`
+// (Stripe-style). The timestamp inside the signed material bounds replay of captured
+// requests to ±SIGNATURE_TOLERANCE_SECONDS; within-window replays are absorbed by
+// (source, event_id) idempotent dedup. 300s is the documented vendor consensus
+// (Stripe, Slack, HubSpot v3).
 // NOTE: signBody is intentionally duplicated in mocks/core/src/hmac.ts (separate
-// workspace, must not cross-import). Keep both copies in sync if the signing scheme
-// changes. The secret is REQUIRED on the ingest side — callers must say which
-// source's secret they are signing with.
-export function signBody(rawBody: string, secret: string): string {
-  const hex = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
-  return `sha256=${hex}`;
+// workspace, must not cross-import; cross-compat pinned by real-import tests). Keep
+// both copies in sync if the signing scheme changes. The secret is REQUIRED on the
+// ingest side — callers must say which source's secret they are signing with.
+export const SIGNATURE_TOLERANCE_SECONDS = 300;
+
+export function signBody(
+  rawBody: string,
+  secret: string,
+  timestampSeconds: number = Math.floor(Date.now() / 1000),
+): string {
+  const hex = createHmac("sha256", secret)
+    .update(`${timestampSeconds}.${rawBody}`, "utf8")
+    .digest("hex");
+  return `t=${timestampSeconds},sha256=${hex}`;
 }
 
-export function verifySignature(rawBody: string, header: string | undefined, secret: string): boolean {
+export function verifySignature(
+  rawBody: string,
+  header: string | undefined,
+  secret: string,
+  opts: { toleranceSeconds?: number; nowSeconds?: number } = {},
+): boolean {
   if (!header) return false;
-  const expected = signBody(rawBody, secret);
+  const tolerance = opts.toleranceSeconds ?? SIGNATURE_TOLERANCE_SECONDS;
+  const now = opts.nowSeconds ?? Math.floor(Date.now() / 1000);
+  const tPart = /^t=(\d{1,12})(?:,|$)/.exec(header);
+  if (!tPart) return false; // no (or malformed) timestamp: reject — never legacy-accept
+  const t = Number(tPart[1]);
+  if (!Number.isSafeInteger(t)) return false;
+  if (Math.abs(now - t) > tolerance) return false;
+  // Recompute the FULL header for the claimed t and compare constant-time: the
+  // timestamp is authenticated, so re-stamping a captured signature fails here.
+  const expected = signBody(rawBody, secret, t);
   const expectedBuf = Buffer.from(expected, "utf8");
   const actualBuf = Buffer.from(header, "utf8");
   if (expectedBuf.length !== actualBuf.length) return false;

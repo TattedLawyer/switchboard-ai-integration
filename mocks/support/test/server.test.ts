@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHmac } from "node:crypto";
+import { signBody } from "@switchboard/mock-core";
 import express from "express";
 import type { Server } from "node:http";
 import { readLedger } from "@switchboard/mock-core";
@@ -60,9 +60,10 @@ describe("mock support", () => {
     for (const r of received) {
       const entry = ledger.find((e) => e.event_id === r.body.event_id);
       expect(entry).toBeDefined();
-      const expected = `sha256=${createHmac("sha256", "demo-secret-support")
-        .update(JSON.stringify(entry), "utf8").digest("hex")}`;
-      expect(r.sig).toBe(expected);
+      // A3: the header carries its own signed timestamp — recompute for the delivered t.
+      const t = Number(/^t=(\d+)/.exec(r.sig ?? "")?.[1]);
+      expect(Number.isInteger(t)).toBe(true);
+      expect(r.sig).toBe(signBody(JSON.stringify(entry), "demo-secret-support", t));
     }
     srv.close();
   });

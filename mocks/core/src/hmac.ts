@@ -17,11 +17,19 @@ export function secretForSource(source: string): string {
   );
 }
 
+// A3: the signature covers `${t}.${rawBody}` and the header is `t=<seconds>,sha256=<hex>`
+// — see ingest/src/hmac.ts for the verifier and the replay-window rationale.
 // NOTE: signBody is intentionally duplicated in ingest/src/hmac.ts (separate workspace,
-// must not cross-import). Keep both copies in sync if the signing scheme changes.
-// The secret is required here: the generic source app signs with the secret for
-// whichever source it is configured as (see source-app.ts).
-export function signBody(rawBody: string, secret: string): string {
-  const hex = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
-  return `sha256=${hex}`;
+// must not cross-import; cross-compat pinned by real-import tests). Keep both copies in
+// sync if the signing scheme changes. The secret is required here: the generic source
+// app signs with the secret for whichever source it is configured as (see source-app.ts).
+export function signBody(
+  rawBody: string,
+  secret: string,
+  timestampSeconds: number = Math.floor(Date.now() / 1000),
+): string {
+  const hex = createHmac("sha256", secret)
+    .update(`${timestampSeconds}.${rawBody}`, "utf8")
+    .digest("hex");
+  return `t=${timestampSeconds},sha256=${hex}`;
 }

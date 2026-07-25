@@ -297,7 +297,11 @@ describe("property 2: dedup is multiset-delivery invariant", () => {
 // Property 3 — HMAC exactness + never-throws (pure, high numRuns)
 // ---------------------------------------------------------------------------------------------
 
-describe("property 3: verifySignature(body, header, secret) ⇔ header === signBody(body, secret), and never throws", () => {
+describe("property 3: verifySignature ⇔ header === signBody at a fixed in-window timestamp, and never throws", () => {
+  // A3: signatures are timestamped. A fixed t (with nowSeconds pinned to it) keeps the
+  // property deterministic — clock ticks between sign and verify can't flake it, and the
+  // window logic itself is pinned by replay-window.test.ts.
+  const T = 1_753_400_000;
   const anyString = fc.oneof(
     fc.string(),
     fc.string({ unit: "binary" }),
@@ -320,7 +324,7 @@ describe("property 3: verifySignature(body, header, secret) ⇔ header === signB
   it("iff-exactness holds and no (body, header, secret) triple throws", () => {
     fc.assert(
       fc.property(anyString, anyString, headerStrategyArb, (body, secret, strat) => {
-        const correct = signBody(body, secret); // never throws, incl. empty/unicode secrets
+        const correct = signBody(body, secret, T); // never throws, incl. empty/unicode secrets
         let header: string;
         switch (strat.mode) {
           case "correct":
@@ -342,13 +346,14 @@ describe("property 3: verifySignature(body, header, secret) ⇔ header === signB
             header = correct.toUpperCase(); // same length, hex case mismatch
             break;
           case "noPrefix":
-            header = correct.slice("sha256=".length);
+            // Strip the timestamp part — the pre-A3 legacy shape must never verify.
+            header = correct.slice(correct.indexOf(",") + 1);
             break;
         }
-        const expected = header === signBody(body, secret);
-        expect(verifySignature(body, header, secret)).toBe(expected);
+        const expected = header === signBody(body, secret, T);
+        expect(verifySignature(body, header, secret, { nowSeconds: T })).toBe(expected);
         // Missing header is always a clean false, never a throw.
-        expect(verifySignature(body, undefined, secret)).toBe(false);
+        expect(verifySignature(body, undefined, secret, { nowSeconds: T })).toBe(false);
       }),
       { seed: SEED, numRuns: 200 },
     );

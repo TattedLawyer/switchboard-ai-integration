@@ -1,16 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createHmac } from "node:crypto";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
+import { signBody } from "../src/hmac.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
 beforeEach(async () => { ({ pool, cleanup } = await freshTestDb()); });
 afterEach(async () => { await cleanup(); });
 
-const sign = (body: string, secret: string) =>
-  `sha256=${createHmac("sha256", secret).update(body, "utf8").digest("hex")}`;
+const sign = (body: string, secret: string) => signBody(body, secret);
 
 const post = async (app: ReturnType<typeof createIngestApp>, path: string, body: string, secret: string) => {
   const srv = app.listen(0);

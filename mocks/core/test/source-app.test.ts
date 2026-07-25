@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHmac } from "node:crypto";
 import express from "express";
 import type { Server } from "node:http";
 import { createSourceApp } from "../src/source-app.js";
+import { signBody } from "../src/hmac.js";
 import { readLedger } from "../src/ledger.js";
 
 let dir: string; let sink: Server; let sinkUrl: string;
@@ -42,8 +42,10 @@ describe("createSourceApp", () => {
     expect(ledger.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
     expect(received).toHaveLength(4);
     const body0 = JSON.stringify(ledger[0]);
-    const expected = `sha256=${createHmac("sha256", "demo-secret-billing").update(body0, "utf8").digest("hex")}`;
-    expect(received[0].sig).toBe(expected);
+    // A3: the header carries its own signed timestamp — recompute for the delivered t.
+    const t0 = Number(/^t=(\d+)/.exec(received[0].sig ?? "")?.[1]);
+    expect(Number.isInteger(t0)).toBe(true);
+    expect(received[0].sig).toBe(signBody(body0, "demo-secret-billing", t0));
     srv.close();
   });
 });
