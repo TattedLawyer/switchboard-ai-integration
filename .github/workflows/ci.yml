@@ -18,6 +18,11 @@ jobs:
           --health-interval 2s --health-timeout 2s --health-retries 15
     env:
       DATABASE_URL: postgres://switchboard:switchboard@localhost:5433/switchboard
+      # CI runs the synthetic demo fixture on the published dev secrets BY DESIGN —
+      # the same explicit opt-in demo.sh/chaos.sh declare. Without this, the A2
+      # fail-closed gate (correctly) refuses to boot the pipeline. Proven live: the
+      # first-ever CI run failed exactly here (2026-07-25, run 30157944913).
+      ALLOW_DEV_SECRETS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
