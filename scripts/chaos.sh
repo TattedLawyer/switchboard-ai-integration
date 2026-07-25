@@ -73,7 +73,24 @@ PORT=4002 BACKFILL_INTERVAL_MS=600000 npm run start -w ingest > out/log-ingest.t
 PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm     LEDGER_PATH="$LEDGER_PATH_CRM"     npm run start -w mocks/crm     > out/log-crm.txt 2>&1 & pids+=($!)
 PORT=4003 WEBHOOK_URL=http://localhost:4002/webhooks/billing LEDGER_PATH="$LEDGER_PATH_BILLING" npm run start -w mocks/billing > out/log-billing.txt 2>&1 & pids+=($!)
 PORT=4004 WEBHOOK_URL=http://localhost:4002/webhooks/support LEDGER_PATH="$LEDGER_PATH_SUPPORT" npm run start -w mocks/support > out/log-support.txt 2>&1 & pids+=($!)
-ready_wait 4002 ingest; ready_wait 4001 crm; ready_wait 4003 billing; ready_wait 4004 support
+# Liveness is not readiness — see the same guard in demo.sh. This script's own assumption
+# (line ~57: "fresh /simulate events, which restart seq at 1") is only true if the mocks we
+# talk to are ours. Assert it rather than comment it.
+fresh_wait() {
+  local port="$1" name="$2" status=""
+  ready_wait "$port" "$name"
+  status="$(curl -s "http://localhost:${port}/status")"
+  if ! printf '%s' "$status" | grep -q '"fresh":true'; then
+    echo "FAIL: ${name} (port ${port}) answered but is NOT fresh: ${status}" >&2
+    echo "  A leftover mock from a previous run holds this port ('npm run' does not reap its" >&2
+    echo "  grandchild on SIGTERM — npm/cli#6684), so our server never bound. Free it and re-run:" >&2
+    echo "    lsof -ti :${port} | xargs kill -9" >&2
+    exit 1
+  fi
+}
+
+ready_wait 4002 ingest
+fresh_wait 4001 crm; fresh_wait 4003 billing; fresh_wait 4004 support
 
 echo "5/8 simulate 200 events per source with injected faults (seed $CHAOS_SEED, drop 0.2, dup 0.15, apiError 0.2)"
 fault_body() { printf '{"count": 200, "fault_plan": {"seed": %s, "dropRate": 0.2, "dupRate": 0.15, "apiErrorRate": 0.2}}' "$CHAOS_SEED"; }

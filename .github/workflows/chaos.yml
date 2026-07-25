@@ -10,8 +10,19 @@ on:
         required: false
   pull_request:
     types: [labeled]
+
+# chaos and demo run as SEPARATE JOBS, not steps of one job, and that is load-bearing.
+# Each job gets a fresh runner, so the two scripts cannot share a process table or contend
+# for ports 4001-4004 (https://docs.github.com/en/actions/learn-github-actions/understanding-github-actions).
+# As steps they did share one: run 30159422468 failed because the demo was served by a mock
+# left behind by the chaos step — 'npm run' does not reap its grandchild on SIGTERM
+# (https://github.com/npm/cli/issues/6684) — whose script cursor had already passed the crm
+# merge slots at index 45/46, so merge events were never emitted and eight identity
+# assertions failed downstream. Separate jobs make that class impossible rather than
+# defending against it; the fresh_wait guard in both scripts is the second line.
+# They are also independent, so running them in parallel is free.
 jobs:
-  chaos-and-demo:
+  chaos:
     if: github.event_name != 'pull_request' || github.event.label.name == 'run-chaos'
     runs-on: ubuntu-latest   # docker + compose v2 preinstalled; scripts manage their own postgres
     steps:
@@ -21,14 +32,32 @@ jobs:
       - run: npm ci
       - name: chaos reconciliation (seeded fault plan)
         run: CHAOS_SEED="${{ github.event.inputs.fault_seed || '7' }}" ./scripts/chaos.sh
+      - name: diagnose on failure
+        if: failure()
+        run: |
+          PSQL="docker compose exec -T postgres psql -U switchboard -c"
+          $PSQL "select source, event_type, count(*) from raw.raw_events group by 1,2 order by 1,2;" || true
+          $PSQL "select name, state, count(*) from pgboss.job group by 1,2 order by 1,2;" || true
+
+  demo:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-chaos'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
       - name: end-to-end demo (template-LLM fallback, no secret needed)
         run: ./scripts/demo.sh
       - name: diagnose identity state on failure
         if: failure()
         run: |
           PSQL="docker compose exec -T postgres psql -U switchboard -c"
+          # Mock freshness first: a non-zero seq means this job drove a mock it did not start,
+          # which changes WHICH events were emitted and invalidates every assertion below.
+          for p in 4001 4003 4004; do curl -s "http://localhost:$p/status" || true; echo; done
           $PSQL "select source, event_type, count(*) from raw.raw_events group by 1,2 order by 1,2;"
-          $PSQL "select event_id, occurred_at, payload->>'occurred_at' as p_occ, payload->'data' as data from raw.raw_events where event_type = 'company.merged';" || true
+          $PSQL "select event_id, payload->>'occurred_at' as p_occ, payload->'data' as data from raw.raw_events where event_type = 'company.merged';" || true
           $PSQL "select * from public_analytics.merge_edges;" || true
           $PSQL "select company_id, canonical_id, is_cycle from public_analytics.int_crm__canonical_companies where company_id <> canonical_id or is_cycle;" || true
           $PSQL "select company_id, name, owner_email from public_analytics.stg_crm__companies order by company_id;" || true

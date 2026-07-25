@@ -59,7 +59,28 @@ PORT=4002 npm run start -w ingest > out/log-ingest.txt 2>&1 & pids+=($!)
 PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm     LEDGER_PATH="$LEDGER_PATH_CRM"     npm run start -w mocks/crm     > out/log-crm.txt 2>&1 & pids+=($!)
 PORT=4003 WEBHOOK_URL=http://localhost:4002/webhooks/billing LEDGER_PATH="$LEDGER_PATH_BILLING" npm run start -w mocks/billing > out/log-billing.txt 2>&1 & pids+=($!)
 PORT=4004 WEBHOOK_URL=http://localhost:4002/webhooks/support LEDGER_PATH="$LEDGER_PATH_SUPPORT" npm run start -w mocks/support > out/log-support.txt 2>&1 & pids+=($!)
-ready_wait 4002 ingest; ready_wait 4001 crm; ready_wait 4003 billing; ready_wait 4004 support
+
+# Liveness is not readiness. ready_wait proves only that SOMETHING answers on the port; it
+# cannot tell our server from a previous script's leftover. Mocks derive their event script
+# index from a process-lifetime counter, so an inherited server silently emits the wrong
+# events. fresh_wait asserts that state instead.
+fresh_wait() {
+  local port="$1" name="$2" status=""
+  ready_wait "$port" "$name"
+  status="$(curl -s "http://localhost:${port}/status")"
+  if ! printf '%s' "$status" | grep -q '"fresh":true'; then
+    echo "FAIL: ${name} (port ${port}) answered but is NOT fresh: ${status}" >&2
+    echo "  A previous run's mock still holds this port — 'npm run' does not reap its grandchild" >&2
+    echo "  on SIGTERM (npm/cli#6684), so our own server never bound. Driving a mock whose script" >&2
+    echo "  cursor has advanced emits a DIFFERENT event mix than requested (the crm merge events" >&2
+    echo "  live at script indices 45/46 and would be skipped entirely). Free the port and re-run:" >&2
+    echo "    lsof -ti :${port} | xargs kill -9" >&2
+    exit 1
+  fi
+}
+
+ready_wait 4002 ingest
+fresh_wait 4001 crm; fresh_wait 4003 billing; fresh_wait 4004 support
 
 # crm 108 (was 80): identity resolution's SUPPORT tier-1 expectations (S-0006..S-0009) key on
 # CRM contact emails at contact indices 20/22/24/26 (P-0021/P-0023/P-0025/P-0027). The crm
