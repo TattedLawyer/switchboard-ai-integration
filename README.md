@@ -92,16 +92,19 @@ engineering on data you can inspect freely.
 - A worker that generates the Monday revenue-risk report — with a timeout and
   fallback so the report generates even when the AI service is down, and per-call
   cost logging.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 186 tests, the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 187 tests, the
   dbt build (14 models + 47 data tests), the agent action-safety eval, and the
   identity oracle, against a real Postgres service container
   ([`ci.yml`](.github/workflows/ci.yml)). The heavier chaos + demo proof runs on
   a nightly schedule and manual dispatch, with the fault seed as a workflow input
   so any red run is reproducible by re-entering its seed
   ([`chaos.yml`](.github/workflows/chaos.yml)). The badges above track those
-  workflows — they show "no runs" until the first GitHub run, which is pending
-  (pushing the workflow files requires a workflow-scoped credential).
-- 186 automated tests, written test-first, all green locally — including a
+  workflows and reflect real runs: both are green. The chaos workflow earned its
+  keep on its first run — it caught a defect the deterministic suite could not
+  see, where the demo inherited a mock server left behind by the chaos run and
+  silently emitted the wrong events (fixed by isolating the two into separate
+  jobs and asserting mock freshness before driving them).
+- 187 automated tests, written test-first, green in CI and locally — including a
   seeded property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety
   under arbitrary torn writes; the whole pipeline
@@ -123,7 +126,7 @@ engineering on data you can inspect freely.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 186 tests green (incl. 6 seeded fast-check properties); 47/47 dbt data tests (61 build steps incl. 14 models) |
+| Suite | `npm test` + dbt | 187 tests green (incl. 6 seeded fast-check properties); 47/47 dbt data tests (61 build steps incl. 14 models) |
 
 ## What's coming (built in phases, in public)
 

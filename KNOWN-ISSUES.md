@@ -200,7 +200,7 @@ truncation-totality property 6 in the green suite).
   overstated what the tests proved — the "cross-compat" tests wrote with a
   *third, test-local copy* of the algorithm and never imported the mock, so
   the mock-side copies could drift with every test green (only the nightly
-  chaos workflow — which has never run in CI — would have caught it). The
+  chaos workflow would have caught it). The
   tests now import the REAL mock functions; mutating the mock's hashing turns
   7 tests red (demonstrated). The `src` copies remain intentionally duplicated
   until the Phase 2b shared package.
@@ -215,13 +215,27 @@ truncation-totality property 6 in the green suite).
 
 ## Process honesty
 
-- **CI has never run on GitHub.** The workflows are committed and locally
-  verified, but pushing them requires a workflow-scoped credential; the badges
-  show "no runs" until then. No green is claimed anywhere it hasn't been
-  watched happening. (2a.3 pre-empted the likeliest first-run flake: the
-  DB-provisioning test suites now carry explicit 30s timeouts, because the
-  vitest 5s default timed out under audit-machine contention — if the first
-  CI run is red, check for *that* before assuming a regression.)
+- **CI now runs on GitHub, and the first runs were not clean.** For most of
+  this project's life the workflows were committed and locally verified but had
+  never executed on GitHub, because pushing them required a workflow-scoped
+  credential. That is now resolved and both workflows are green. The first real
+  runs are worth recording honestly:
+  - The `ci` workflow went green immediately. The 2a.3 timeout work paid off —
+    DB-provisioning suites carry explicit 30s timeouts because the vitest 5s
+    default had timed out under machine contention, which would otherwise have
+    read as a regression.
+  - The `chaos` workflow went **red**, and correctly so. The demo step failed
+    eight identity assertions because it was served by a mock process left
+    behind by the chaos step in the same job — `npm run` does not reap its
+    grandchild on SIGTERM, so the leftover server's event-script cursor had
+    already passed the CRM merge events, which were therefore never emitted.
+    No pipeline logic was wrong; the environment was contaminated. Fixed by
+    splitting chaos and demo into separate jobs (a fresh runner each) and by
+    replacing the port-liveness readiness probe with an actual freshness
+    assertion, since an open socket never proved the server was ours.
+  - The lesson recorded rather than smoothed over: the local suite could not
+    have caught this, and the first CI run is exactly where such coupling
+    surfaces. No green is claimed anywhere it hasn't been watched happening.
 - **"Written test-first" is narrated, not provable** for early phases.
   Hardening work since 2a.2 commits the failing test before the fix so git
   history carries the proof (RED→GREEN pairs).
