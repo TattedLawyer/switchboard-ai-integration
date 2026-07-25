@@ -149,11 +149,14 @@ truncation-totality property 6 in the green suite).
   above converts that from a silent wrong-answer into a loud failure, but the
   dependency remains. *Scheduled: Phase 2b — take a start index (or expose `/reset`)
   so emission is a pure function of the request.*
-- **The backfill poll path trusts the feed.** No schema validation, no fetch
-  timeout, and — worse than the cursor *regression* previously listed here —
-  the cursor advances to a **feed-supplied** `last_seq` rather than the max
-  actually ingested, so a feed that overstates it permanently skips the gap:
-  silent, unbounded data loss on the poll path *(audit)*. *Scheduled: Phase 2b
+- **The backfill poll path still trusts the feed's cursor.** Schema validation
+  is now in place — the poll path runs the same `eventSchema` gate as the
+  webhook door and quarantines what fails, closing the third unguarded entry
+  into `raw` that an audit found here. What remains: no fetch timeout, and —
+  worse than the cursor *regression* previously listed here — the cursor
+  advances to a **feed-supplied** `last_seq` rather than the max actually
+  ingested, so a feed that overstates it permanently skips the gap: silent,
+  unbounded data loss on the poll path *(audit)*. *Scheduled: Phase 2b
   connector work, where the poll path is the subject.*
 - **The ledger hash chain doesn't enforce `seq` monotonicity or event-id
   uniqueness** — a restarted mock forks the logical stream and still verifies.
@@ -230,27 +233,42 @@ truncation-totality property 6 in the green suite).
 
 ## Process honesty
 
-- **CI now runs on GitHub, and the first runs were not clean.** For most of
-  this project's life the workflows were committed and locally verified but had
-  never executed on GitHub, because pushing them required a workflow-scoped
-  credential. That is now resolved and both workflows are green. The first real
-  runs are worth recording honestly:
-  - The `ci` workflow went green immediately. The 2a.3 timeout work paid off —
-    DB-provisioning suites carry explicit 30s timeouts because the vitest 5s
-    default had timed out under machine contention, which would otherwise have
-    read as a regression.
-  - The `chaos` workflow went **red**, and correctly so. The demo step failed
-    eight identity assertions because it was served by a mock process left
-    behind by the chaos step in the same job — `npm run` does not reap its
-    grandchild on SIGTERM, so the leftover server's event-script cursor had
-    already passed the CRM merge events, which were therefore never emitted.
-    No pipeline logic was wrong; the environment was contaminated. Fixed by
-    splitting chaos and demo into separate jobs (a fresh runner each) and by
-    replacing the port-liveness readiness probe with an actual freshness
-    assertion, since an open socket never proved the server was ours.
-  - The lesson recorded rather than smoothed over: the local suite could not
-    have caught this, and the first CI run is exactly where such coupling
-    surfaces. No green is claimed anywhere it hasn't been watched happening.
+- **Moving to real runners found three defects a green local suite could not.**
+  For most of this project's life the workflows were committed and locally
+  verified but had never executed on GitHub, because pushing them required a
+  workflow-scoped credential. Once they did run, there were three red runs
+  before the first green one, each for a different reason — and each of the
+  three was a class of failure that only exists on infrastructure the local
+  suite doesn't have:
+  - **Run 30157944913 — first `ci` run, red.** The 2a.3 fail-closed secrets work
+    blocked its own CI: with no `WEBHOOK_SECRET_*` or `LEDGER_HMAC_KEY` in the
+    environment, the pipeline refused to boot, which is exactly what it is
+    supposed to do. Fixed by making CI declare the same explicit
+    `ALLOW_DEV_SECRETS=1` opt-in the scripts declare, rather than by weakening
+    the gate ([`ci.yml`](.github/workflows/ci.yml)).
+  - **Run 30158941574 — first `chaos` run, red.** The demo's drain gate waited
+    for ledger count == raw count, but those two counters move together (the
+    ledger append precedes each delivery), so on a slow runner the equality held
+    continuously *during* emission and the gate declared "drained" early. dbt then
+    built on a partial raw missing the CRM tail. Fixed by anchoring the gate to
+    the expected total instead of to an equality between two moving counters
+    ([`demo.sh`](scripts/demo.sh)).
+  - **Run 30159422468 — a later `chaos` run, red.** The demo step failed eight
+    identity assertions because it was served by a mock process left behind by
+    the chaos step in the same job: `npm run` does not reap its grandchild on
+    SIGTERM, so the leftover server's event-script cursor had already passed the
+    CRM merge slots and those events were never emitted. No pipeline logic was
+    wrong; the environment was contaminated. Fixed by splitting chaos and demo
+    into separate jobs (a fresh runner each) and by replacing the port-liveness
+    readiness probe with an actual freshness assertion, since an open socket
+    never proved the server was ours.
+  - The through-line: a fail-closed gate can only fail where no secrets exist, a
+    race only opens when the machine is slow, and a process-table coupling only
+    exists when two scripts share one. A green local suite is not evidence about
+    any of them, which is the argument for running the heavy proofs on real
+    infrastructure rather than trusting the developer's laptop.
+  - An earlier version of this list got two of these wrong. It was corrected
+    against the run IDs above, which is what publishing them is for.
 - **"Written test-first" is narrated, not provable** for early phases.
   Hardening work since 2a.2 commits the failing test before the fix so git
   history carries the proof (RED→GREEN pairs).
@@ -293,8 +311,8 @@ and none is started. Effort classes are estimates by the maintainer.
 4. **The automation surface (3–5 weeks + agent loop).** Action/intent objects,
    an approval queue, outbound idempotency keys, an agent-action audit log,
    and injection defense — the OWASP LLM06 architecture. Nothing here exists;
-   it is Phase 3 by design, and the current 276-line report worker is a
-   summarizer, not an agent (the README says so).
+   it is Phase 3 by design, and the current report worker is a summarizer, not
+   an agent (the README says so).
 5. **End-user surface (4–8 weeks).** Scheduler, delivery channel, auth,
    approval UI. Today's user surface is a Markdown file on the operator's
    disk.

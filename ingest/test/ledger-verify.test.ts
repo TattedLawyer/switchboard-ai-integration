@@ -6,13 +6,14 @@ import { verifyLedgerChain, DEFAULT_LEDGER_HMAC_KEY } from "../src/reconcile.js"
 import { writeGoldenLedger, type EntryInput } from "./helpers/golden-ledger.js";
 
 // The ingest verifier (reconcile.ts) carries its OWN copy of canonicalHash, pinned to
-// the mocks/crm writer only by keep-in-sync comments. reconcile.test.ts exercises set
+// the mocks/core writer only by keep-in-sync comments. reconcile.test.ts exercises set
 // equality but never the hash chain, so a silent drift between the two canonicalHash
 // copies would pass every unit test and only surface in chaos.sh. This file is the
-// direct coverage: helpers/golden-ledger.ts reproduces the mocks/crm WRITER's exact
-// algorithm, and these tests assert the INGEST verifier accepts what that algorithm
-// produces. If either copy drifts (canonicalization, HMAC input order, key handling),
-// these tests go red.
+// direct coverage: helpers/golden-ledger.ts writes its fixture with the REAL
+// `appendToLedger` from mocks/core, and these tests assert the INGEST verifier accepts
+// what the actual writer produces. (It once reproduced the algorithm as a third local
+// copy, which made these tests self-certifying — see the helper's own note.) If either
+// copy drifts (canonicalization, HMAC input order, key handling), these tests go red.
 
 const GOLDEN: EntryInput[] = [1, 2, 3, 4].map((i) => ({
   event_id: `evt-${i}`,

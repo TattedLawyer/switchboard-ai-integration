@@ -99,12 +99,16 @@ engineering on data you can inspect freely.
   a nightly schedule and manual dispatch, with the fault seed as a workflow input
   so any red run is reproducible by re-entering its seed
   ([`chaos.yml`](.github/workflows/chaos.yml)). The badges above track those
-  workflows and reflect real runs: both are green. The chaos workflow earned its
-  keep on its first run — it caught a defect the deterministic suite could not
-  see, where the demo inherited a mock server left behind by the chaos run and
-  silently emitted the wrong events (fixed by isolating the two into separate
-  jobs and asserting mock freshness before driving them).
-- 187 automated tests, written test-first, green in CI and locally — including a
+  workflows and report the live state of each. Moving to real runners was worth
+  it: there were three red runs before the first green one, each for a different
+  reason and none of them findable by a local suite — a fail-closed secrets gate
+  that could only fail where no secrets exist, a drain-gate race that only opens
+  on a slow machine, and a leftover mock server inherited across steps sharing a
+  process table. Each is narrated with its run ID in the
+  [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
+- 187 automated tests, green in CI and locally. Test-first is provable from git
+  history for hardening work since 2a.2 (each fix lands as a RED→GREEN commit
+  pair); for earlier phases it is narrated, not provable — including a
   seeded property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety
   under arbitrary torn writes; the whole pipeline
@@ -120,8 +124,8 @@ engineering on data you can inspect freely.
 
 | Claim | Evidence | Result |
 |---|---|---|
-| Zero lost events under faults | `./scripts/chaos.sh` (600 events, 20% drops / 15% dups / 20% API errors) | per source: 158 arrive by push, backfill recovers exactly the 42 dropped; 3× exact ledger reconciliation, 0 duplicates, quarantine 0, DLQ 0 |
-| Loss *detection* has teeth | `CHAOS_SKIP_BACKFILL=1 ./scripts/chaos.sh` | correctly FAILS, listing the 42 missing events per source |
+| Zero lost events under faults | `./scripts/chaos.sh` (600 events, 20% drops / 15% dups / 20% API errors) | at the default seed, 158 of 200 per source arrive by push and backfill recovers exactly the 42 dropped. That split moves with `CHAOS_SEED`; the pass condition does not — the script asserts every source's ledger reconciles exactly against its raw rows (3×), with 0 duplicates, quarantine 0, DLQ 0 |
+| Loss *detection* has teeth | `CHAOS_SKIP_BACKFILL=1 ./scripts/chaos.sh` | correctly FAILS, listing every unrecovered event per source (42 each at the default seed) |
 | End-to-end pipeline equality | `./scripts/demo.sh` (288 events across 3 sources) | ledger = raw = outbox at 288/288/288, report generated |
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
@@ -172,9 +176,14 @@ deterministic template fallback when `ANTHROPIC_API_KEY` is unset).
 
 ```bash
 npm install
-./scripts/demo.sh        # end-to-end: 288 events, 3 sources → oracle-equality + identity checks → report (~20s)
-./scripts/chaos.sh       # 600 events under injected faults → zero-loss proof (~20s typical, bounded at 240s)
+./scripts/demo.sh        # end-to-end: 288 events, 3 sources → oracle-equality + identity checks → report
+./scripts/chaos.sh       # 600 events under injected faults → zero-loss proof
 ```
+
+The first run also pulls the Postgres image and builds the dbt container, so budget
+a few minutes for it. Once those are cached, `demo.sh` takes roughly 20 seconds and
+`chaos.sh` roughly 20 seconds typical — the latter bounded at 240s, since it waits
+on retry backoff it deliberately induced.
 
 Tests require the install above and the database up:
 

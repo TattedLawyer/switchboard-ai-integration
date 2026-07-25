@@ -25,9 +25,10 @@ function readLedger(path: string): LedgerEntry[] {
 
 export const GENESIS_HASH = "0".repeat(64);
 
-// NOTE: DEFAULT_LEDGER_HMAC_KEY is intentionally duplicated in mocks/crm/src/ledger.ts
-// (separate workspace, must not cross-import). Keep both copies in sync if the key or
-// chaining scheme changes.
+// NOTE: DEFAULT_LEDGER_HMAC_KEY is intentionally duplicated in mocks/core/src/ledger.ts
+// — the real implementation; mocks/crm/src/ledger.ts is only a re-export shim, so a
+// sync pointer aimed there would point at nothing. Separate workspace, must not
+// cross-import. Keep both copies in sync if the key or chaining scheme changes.
 // Shared secret keying the ledger's hash chain. Demo-only default, printed in the open —
 // real deployments must set LEDGER_HMAC_KEY to a proper secret held only by the ledger
 // writer and the auditor, kept separate from the log file itself. Without a key, anyone
@@ -55,9 +56,10 @@ export function ledgerHmacKey(): string {
 // fields). Keyed (not a plain hash) so a party without the key cannot mutate an entry
 // and re-chain forward: recomputing HMAC values requires the secret, not just the
 // algorithm. NOTE: this hashing function is intentionally duplicated from
-// mocks/crm/src/ledger.ts (canonicalHash) because reconcile lives in the ingest
-// workspace and must not import from mocks/crm (a test-only mock service package). Keep
-// both copies in sync if the canonicalization or key handling changes.
+// mocks/core/src/ledger.ts (canonicalHash) because reconcile lives in the ingest
+// workspace and must not import from the mocks (test-only service packages). Keep both
+// copies in sync if the canonicalization or key handling changes; ingest/test/
+// ledger-verify.test.ts goes red if they drift.
 function canonicalHash(prevHash: string, entry: LedgerEntry, key: string): string {
   const canonical = JSON.stringify({
     event_id: entry.event_id,

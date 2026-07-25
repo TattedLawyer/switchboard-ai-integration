@@ -125,7 +125,7 @@ backup timestamp and now — not unbounded ledger replay from empty.
 | 401 on every webhook for one source | `WEBHOOK_SECRET_<SOURCE>` mismatch between that mock and ingest environments (each source verifies with its own secret — check the right one) |
 | 401s that appear only under load or across machines | Signature replay window (±300s, 2a.3): the timestamp is signed, so sender/receiver clocks more than 5 minutes apart reject valid traffic — check NTP/clock sync |
 | Process throws `... is not set — refusing to fall back` at boot | Fail-closed secrets (2a.3): set the named env var, or `ALLOW_DEV_SECRETS=1` for local demo use only |
-| Reconcile reports ledger hash chain broken but nothing was tampered with | `LEDGER_HMAC_KEY` mismatch between the mock (writer) and reconcile (verifier) environments — both must use the same key (default is fine for demo) |
+| Reconcile reports ledger hash chain broken but nothing was tampered with | `LEDGER_HMAC_KEY` mismatch between the mock (writer) and reconcile (verifier) environments — both must use the same key. There is no default: set `LEDGER_HMAC_KEY` in both environments, or `ALLOW_DEV_SECRETS=1` in both to opt into the published demo key |
 | Reconcile prints `[<source>] skipped (no LEDGER_PATH_...)` | Export `LEDGER_PATH_<SOURCE>` pointing at that mock's ledger file (see demo.sh for the pattern) |
 | Identity oracle FAILs after chaos.sh | Expected: marts are frozen tables over live staging views, and chaos truncates raw — re-run `demo.sh` (which rebuilds) before trusting mart state |
 | Relation `stg_crm__companies` does not exist right after migrating | The viewless deploy window (see Start/stop) — run `dbt build` |
