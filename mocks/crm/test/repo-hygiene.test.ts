@@ -55,7 +55,7 @@ describe("repo-wide hygiene (every tracked text file, not just generator output)
     expect(SYNTHETIC.test(realEmail)).toBe(false);
     expect(("contact " + realEmail).match(EMAIL)).toEqual([realEmail]);
     expect(SYNTHETIC.test("billing@nowhere.example.com")).toBe(true);
-    expect(SYNTHETIC.test("x@notexample.com.evil.com")).toBe(false);
+    expect(SYNTHETIC.test("x@" + "notexample.com.evil.com")).toBe(false);
     expect(SSN_SHAPE.test("078" + "-05-" + "1120")).toBe(true);
     expect(US_PHONE_SHAPE.test("(415) 555" + " 0100")).toBe(true);
     expect(US_PHONE_SHAPE.test("415-555-" + "0142")).toBe(true);
