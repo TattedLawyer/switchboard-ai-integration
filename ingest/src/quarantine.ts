@@ -105,7 +105,10 @@ export async function quarantineEvent(
   // always does). Required for depth-diverted payloads: re-deriving text via JSON.stringify is
   // exactly the call that RangeErrors past ~6.6k nesting, so raw_body rows must come from the
   // original wire text, never a re-stringify.
-  rawBody?: string
+  rawBody?: string,
+  // A quarantined payload is still that tenant's data. Untagged, an operator replaying it
+  // would inject it into whichever tenant's lane the default points at.
+  tenantId: string = "00000000-0000-0000-0000-000000000000"
 ): Promise<void> {
   // A NUL- or lone-surrogate-bearing payload cannot go into the jsonb payload column (Postgres
   // 22P05 / 22P02), and one nested past the depth bound would kill JSON.stringify / jsonb
@@ -118,15 +121,15 @@ export async function quarantineEvent(
     // option for depth-diverted payloads (stringify would RangeError on them). The stringify
     // fallback is for direct callers without wire text, whose payloads stringify fine.
     await pool.query(
-      "insert into ingest.quarantine (source, raw_body, reason) values ($1, $2, $3)",
-      [source, rawBody ?? JSON.stringify(payload), reason]
+      "insert into ingest.quarantine (tenant_id, source, raw_body, reason) values ($1, $2, $3, $4)",
+      [tenantId, source, rawBody ?? JSON.stringify(payload), reason]
     );
     return;
   }
   try {
     await pool.query(
-      "insert into ingest.quarantine (source, payload, reason) values ($1, $2, $3)",
-      [source, JSON.stringify(payload), reason]
+      "insert into ingest.quarantine (tenant_id, source, payload, reason) values ($1, $2, $3, $4)",
+      [tenantId, source, JSON.stringify(payload), reason]
     );
   } catch (err) {
     // Safety net: if Postgres still rejects the jsonb cast (22P05 unsupported-unicode-escape,
@@ -140,8 +143,8 @@ export async function quarantineEvent(
       // Safe to re-stringify here: reaching a Postgres error code means the stringify in the
       // try block already succeeded once.
       await pool.query(
-        "insert into ingest.quarantine (source, raw_body, reason) values ($1, $2, $3)",
-        [source, rawBody ?? JSON.stringify(payload), reason]
+        "insert into ingest.quarantine (tenant_id, source, raw_body, reason) values ($1, $2, $3, $4)",
+        [tenantId, source, rawBody ?? JSON.stringify(payload), reason]
       );
       return;
     }
@@ -152,8 +155,8 @@ export async function quarantineEvent(
     // that is a genuinely unhealthy DB, not an unstorable payload.
     if (err instanceof RangeError && rawBody !== undefined) {
       await pool.query(
-        "insert into ingest.quarantine (source, raw_body, reason) values ($1, $2, $3)",
-        [source, rawBody, reason]
+        "insert into ingest.quarantine (tenant_id, source, raw_body, reason) values ($1, $2, $3, $4)",
+        [tenantId, source, rawBody, reason]
       );
       return;
     }

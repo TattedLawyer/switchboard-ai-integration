@@ -102,7 +102,7 @@ describe("tenant isolation is enforced by the DATABASE, not by application conve
     expect(res.rows[0].relforcerowsecurity).toBe(true);
   });
 
-  it("hides other tenants' rows once a tenant context is set, even from the role that owns the table", async () => {
+  it("hides other tenants' rows from the APPLICATION role once a tenant context is set — proven through switchboard_app, because PostgreSQL documents that superusers ALWAYS bypass RLS and this project's default role is one", async () => {
     await ingestEvent(pool, "crm", evt("evt-1", "Acme Corp"), { tenantId: TENANT_A });
     await ingestEvent(pool, "crm", evt("evt-1", "Beta Industries"), { tenantId: TENANT_B });
 
@@ -112,14 +112,24 @@ describe("tenant isolation is enforced by the DATABASE, not by application conve
     const all = await pool.query("select count(*)::int as n from raw.raw_events");
     expect(all.rows[0].n).toBe(2);
 
-    const client = await pool.connect();
+    // Connect as the non-superuser application role. Using the default superuser role here
+    // would make this test pass-by-bypass — it would report isolation while RLS was inert.
+    const appPool = new (await import("pg")).default.Pool({
+      connectionString: (pool as unknown as { options: { connectionString?: string } }).options
+        ?.connectionString?.replace("switchboard:switchboard@", "switchboard_app:switchboard_app@"),
+    });
     try {
-      await client.query("select set_config('switchboard.tenant_id', $1, false)", [TENANT_A]);
-      const visible = await client.query("select event_id, payload from raw.raw_events");
-      expect(visible.rowCount).toBe(1);
-      expect(visible.rows[0].payload.data.name).toBe("Acme Corp");
+      const client = await appPool.connect();
+      try {
+        await client.query("select set_config('switchboard.tenant_id', $1, false)", [TENANT_A]);
+        const visible = await client.query("select event_id, payload from raw.raw_events");
+        expect(visible.rowCount).toBe(1);
+        expect(visible.rows[0].payload.data.name).toBe("Acme Corp");
+      } finally {
+        client.release();
+      }
     } finally {
-      client.release();
+      await appPool.end();
     }
   });
 
