@@ -6,6 +6,11 @@ services:
       POSTGRES_PASSWORD: switchboard
       POSTGRES_DB: switchboard
     ports: ["5433:5432"]
+    # Without this the database lives in the container's writable layer and `docker compose
+    # down` destroys it — total, silent data loss from a routine command. A NAMED volume
+    # rather than a bind mount: Docker manages permissions, which is the usual source of
+    # postgres-in-docker permission failures on macOS. Proven by scripts/verify-durability.sh.
+    volumes: ["pgdata:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U switchboard"]
       interval: 2s
@@ -22,3 +27,8 @@ services:
     volumes: ["./warehouse:/usr/app"]
     depends_on:
       postgres: { condition: service_healthy }
+
+# Named volume for the database. Declared here so `docker compose down` detaches it
+# instead of deleting it; removing it is then an explicit `docker compose down -v`.
+volumes:
+  pgdata:

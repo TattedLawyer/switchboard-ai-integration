@@ -101,6 +101,33 @@ identity layer and `customer_360` against the seed manifest's planned match matr
 
 ## Backup and restore
 
+```bash
+./scripts/backup.sh                  # → out/backups/switchboard-<utc-stamp>.dump
+./scripts/restore.sh [dump]          # defaults to the most recent dump. DESTRUCTIVE.
+./scripts/verify-durability.sh       # proves both, end to end. DESTRUCTIVE.
+```
+
+`verify-durability.sh` is the reason this section can be trusted: it seeds a known state,
+destroys and recreates the container, asserts the data survived, takes a backup, **drops the
+schemas outright**, restores, and asserts the row counts match what it started with. Backup
+and restore are exercised, not described.
+
+Notes worth knowing before you need them:
+
+- The database lives in a **named Docker volume** (`pgdata`). `docker compose down` no longer
+  destroys it; removing it takes an explicit `docker compose down -v`.
+- The dump **excludes the `pgboss` schema**. pg-boss partitions by date and a partition's
+  primary key is inherited, which `pg_restore --clean` cannot drop — a full-cluster dump will
+  not restore at all. Consequence: **dead-lettered jobs are not in the backup.** They are
+  recoverable (every delivered event is in the source ledger, so backfill + reconcile rebuild
+  what the DLQ held), but DLQ depth itself does not survive a restore.
+- Roles are cluster-level and not in a logical dump; `restore.sh` creates
+  `switchboard_agent` / `switchboard_app` first so a restore into a fresh cluster works.
+- `pg_restore` needs a **seekable** file, so both scripts copy the dump into the container
+  rather than piping it. Piping fails with "did not find magic string in file header" even
+  when the archive is perfectly valid.
+- Backups land in `out/`, which is git-ignored — dumps must never reach this public repo.
+
 Backup = `pg_dump` of the database + copies of the three ledger files. Within
 the demo's ledger-as-oracle model, the restore story is stronger than the
 backup: because the ledgers (production analog: the source systems) are the

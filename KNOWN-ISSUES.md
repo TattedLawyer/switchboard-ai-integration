@@ -342,12 +342,19 @@ and none is started. Effort classes are estimates by the maintainer.
    inside the queue worker, per-vendor signature schemes (every real one signs
    a timestamp — the 2a.3 scheme gives that somewhere to land), backoff that
    honors `Retry-After`, and fetch timeouts.
-3. **Operations (5–7 weeks).** Postgres volume + rehearsed restore (today
-   `docker compose down` destroys the database; the runbook's pg_dump path is
-   design, not implementation), service containers + health endpoints,
-   structured logging with correlation ids, metrics + alerts on queue/DLQ/
-   quarantine depth and backfill last-success age (the backfill can die
-   permanently while logging a reassuring line every 60s), migration tracking.
+3. **Operations.** ~~Postgres volume + rehearsed restore~~ and ~~migration
+   tracking~~ are **paid**: the database now lives in a named volume, and
+   `scripts/verify-durability.sh` proves — by executing it — that data survives
+   container destruction and that a backup restores to an identical state after
+   the schemas are dropped outright. Migrations are recorded with a checksum and
+   startup **refuses** to proceed if an applied migration's contents changed.
+   One trade-off stated openly: the dump excludes `pgboss` (its partitioned
+   tables' inherited primary keys make a full dump un-restorable), so DLQ depth
+   does not survive a restore — the events themselves do, via ledger replay.
+   **Still open:** service containers + health endpoints, structured logging with
+   correlation ids, and metrics + alerts on queue/DLQ/quarantine depth and
+   backfill last-success age (the backfill can die permanently while logging a
+   reassuring line every 60s).
 4. **The automation surface (3–5 weeks + agent loop).** Action/intent objects,
    an approval queue, outbound idempotency keys, an agent-action audit log,
    and injection defense — the OWASP LLM06 architecture. Nothing here exists;
