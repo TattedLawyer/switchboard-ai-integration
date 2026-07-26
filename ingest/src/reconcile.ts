@@ -25,9 +25,10 @@ function readLedger(path: string): LedgerEntry[] {
 
 export const GENESIS_HASH = "0".repeat(64);
 
-// NOTE: DEFAULT_LEDGER_HMAC_KEY is intentionally duplicated in mocks/crm/src/ledger.ts
-// (separate workspace, must not cross-import). Keep both copies in sync if the key or
-// chaining scheme changes.
+// NOTE: DEFAULT_LEDGER_HMAC_KEY is intentionally duplicated in mocks/core/src/ledger.ts
+// — the real implementation; mocks/crm/src/ledger.ts is only a re-export shim, so a
+// sync pointer aimed there would point at nothing. Separate workspace, must not
+// cross-import. Keep both copies in sync if the key or chaining scheme changes.
 // Shared secret keying the ledger's hash chain. Demo-only default, printed in the open —
 // real deployments must set LEDGER_HMAC_KEY to a proper secret held only by the ledger
 // writer and the auditor, kept separate from the log file itself. Without a key, anyone
@@ -37,13 +38,28 @@ export const GENESIS_HASH = "0".repeat(64);
 // detectable), not secrecy.
 export const DEFAULT_LEDGER_HMAC_KEY = "demo-ledger-key";
 
+// FAIL CLOSED (A2): with the published demo key, "anyone who can write the file" holds
+// the key and a reconcile would verify tampered data clean. The default is only
+// reachable behind an explicit ALLOW_DEV_SECRETS=1 opt-in.
+// NOTE: duplicated in mocks/core/src/ledger.ts (writer side); keep in sync.
+export function ledgerHmacKey(): string {
+  const env = process.env.LEDGER_HMAC_KEY;
+  if (env) return env;
+  if (process.env.ALLOW_DEV_SECRETS === "1") return DEFAULT_LEDGER_HMAC_KEY;
+  throw new Error(
+    "LEDGER_HMAC_KEY is not set — refusing to fall back to the published demo key. " +
+      "Set LEDGER_HMAC_KEY, or set ALLOW_DEV_SECRETS=1 for local demo use only.",
+  );
+}
+
 // Canonical hash: HMAC-SHA256(key, prev_hash + canonical JSON of the entry sans hash
 // fields). Keyed (not a plain hash) so a party without the key cannot mutate an entry
 // and re-chain forward: recomputing HMAC values requires the secret, not just the
 // algorithm. NOTE: this hashing function is intentionally duplicated from
-// mocks/crm/src/ledger.ts (canonicalHash) because reconcile lives in the ingest
-// workspace and must not import from mocks/crm (a test-only mock service package). Keep
-// both copies in sync if the canonicalization or key handling changes.
+// mocks/core/src/ledger.ts (canonicalHash) because reconcile lives in the ingest
+// workspace and must not import from the mocks (test-only service packages). Keep both
+// copies in sync if the canonicalization or key handling changes; ingest/test/
+// ledger-verify.test.ts goes red if they drift.
 function canonicalHash(prevHash: string, entry: LedgerEntry, key: string): string {
   const canonical = JSON.stringify({
     event_id: entry.event_id,
@@ -57,13 +73,29 @@ function canonicalHash(prevHash: string, entry: LedgerEntry, key: string): strin
 
 export function verifyLedgerChain(
   path: string,
-  key: string = process.env.LEDGER_HMAC_KEY ?? DEFAULT_LEDGER_HMAC_KEY,
+  key: string = ledgerHmacKey(),
 ): { ok: boolean; brokenAt?: number } {
-  const entries = readLedger(path);
+  // Parse per-line with a guard rather than via readLedger: a partially-written final
+  // line (crash/disk-full mid-append) or a non-object line is a BROKEN CHAIN at that
+  // line — a verdict the caller can act on — never a thrown SyntaxError/TypeError,
+  // which would make a corrupted file indistinguishable from a verifier bug. (readLedger
+  // stays strict on purpose: the reconcile CLI verifies the chain before reading it, so
+  // this is the gate. Truncation at an exact line boundary verifies as a valid shorter
+  // chain — inherent to append-only logs; reconcile's count comparison catches it.)
+  if (!existsSync(path)) return { ok: true };
+  const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
   let expectedPrev = GENESIS_HASH;
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
+  for (let i = 0; i < lines.length; i++) {
     const lineNo = i + 1;
+    let entry: LedgerEntry;
+    try {
+      entry = JSON.parse(lines[i]);
+    } catch {
+      return { ok: false, brokenAt: lineNo };
+    }
+    if (entry === null || typeof entry !== "object") {
+      return { ok: false, brokenAt: lineNo };
+    }
     if (entry.prev_hash !== expectedPrev) {
       return { ok: false, brokenAt: lineNo };
     }
@@ -84,18 +116,19 @@ export interface ReconcileReport {
   rawDuplicates: number;
 }
 
-export async function reconcile(pool: pg.Pool, ledgerPath: string): Promise<ReconcileReport> {
+export async function reconcile(pool: pg.Pool, source: string, ledgerPath: string): Promise<ReconcileReport> {
   const ledgerEntries = readLedger(ledgerPath);
   const ledgerIds = new Set(ledgerEntries.map((e) => e.event_id));
 
   const rawRes = await pool.query<{ event_id: string }>(
-    "select event_id from raw.raw_crm_events",
+    "select event_id from raw.raw_events where source = $1",
+    [source],
   );
   const rawIds = rawRes.rows.map((r) => r.event_id);
   const rawIdSet = new Set(rawIds);
-  // Structurally always 0: uq_raw_crm_events_event_id (migration 002) makes duplicate
-  // event_id inserts impossible, so this proves identity parity (no duplicate rows can
-  // exist), not payload parity (it says nothing about whether stored payloads match).
+  // Structurally always 0: uq_raw_events_source_event_id (migration 003) makes duplicate
+  // (source, event_id) inserts impossible, so this proves identity parity (no duplicate
+  // rows can exist), not payload parity (it says nothing about whether stored payloads match).
   const rawDuplicates = rawIds.length - rawIdSet.size;
 
   const missing: string[] = [];

@@ -13,12 +13,22 @@ latency somewhere in the hundreds. **Fix:** risk scoring moves into SQL (a ranke
 mart), the LLM narrates only the top-N with the full table linked beneath — which
 also caps cost per report regardless of account count.
 
-## 2. Full dbt rebuilds
+## 2. Full dbt rebuilds — and mart freshness
 
 `dbt build` rebuilds every model from all raw events (seconds now; grows linearly
 with event history). **Fix:** incremental models keyed on `received_at`/event id —
 the standard dbt pattern — plus event-table partitioning by month when raw grows
 past what a full scan tolerates.
+
+The same ceiling has a **freshness** face: `customer_360` is a frozen dbt *table*
+built over live staging *views*, so it reflects raw events only as of its last
+build. In the demo and CI that is invisible — every run rebuilds the marts before
+reading them — but under continuous ingestion the mart goes stale the moment new
+events land, and nothing in the current system schedules a rebuild (there is no
+orchestrator, and the mart carries no build-timestamp column to even measure the
+lag). Production needs incremental mart models plus scheduled orchestration
+(cron-triggered `dbt build` at minimum; a scheduler/orchestrator as volume grows)
+and a freshness check so staleness is monitored rather than discovered.
 
 ## 3. Ledger mechanics (mock-only ceiling)
 
@@ -33,6 +43,23 @@ One instance carries queue, raw store, and marts. Order of relief: read replica 
 the analytics/MCP read path → raw-table partitioning → dedicated warehouse for
 Layer 2 (dbt targets swap cleanly) with Postgres retained for queue + OLTP. pg-boss
 rides the OLTP instance comfortably until job volume says otherwise.
+
+## 4b. Two ceilings this doc previously omitted (added after the 2026-07 external audit)
+
+- **`reconcile()` is unbounded in memory:** it loads the full event-id set for a
+  source (no LIMIT) and parses the entire ledger into memory. The headline
+  reliability proof OOMs before the ledger-file ceiling in §3 bites. Fix shape:
+  stream the ledger and compare in sorted batches — Phase 2b/4, alongside the
+  connector rework that replaces the ledger oracle anyway.
+- **`ingest.outbox` grows forever and has no consumer:** one row per event,
+  written inside the hot ingest transaction, `processed_at` never set. It exists
+  as the demo's equality counter and is *named* for a transactional-outbox
+  pattern the system doesn't implement (pg-boss provides the durability). Either
+  implement the pattern or rename and cap it — decided with the 2b raw-layer
+  work. Every staging model is also a full scan over `raw_events` with only the
+  `(source, event_id)` unique index behind it; at real volume the fix is
+  incremental materializations plus a `(source, event_type)` index, not more
+  views.
 
 ## 5. Build-vs-buy escalation points
 

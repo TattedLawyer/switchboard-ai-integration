@@ -5,8 +5,12 @@ export interface LlmClient {
 }
 
 export class TemplateLlm implements LlmClient {
-  async complete(prompt: string): Promise<string> {
-    return `_(deterministic template — set ANTHROPIC_API_KEY for narrative)_\n\n${prompt}`;
+  // Deliberately does NOT echo the prompt: the keyless report is the demo's public face,
+  // and the deterministic risk table in report.ts already carries the substance. Leaking
+  // the raw prompt (with full record JSON inlined) into the deliverable was both
+  // unreadable and the exact spray-records-into-output pattern we avoid.
+  async complete(_prompt: string): Promise<string> {
+    return "_(deterministic report — set ANTHROPIC_API_KEY for an AI-written narrative)_";
   }
 }
 

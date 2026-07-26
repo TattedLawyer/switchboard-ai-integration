@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
+import { loadModel } from "./helpers/load-model.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -23,8 +24,8 @@ async function insertRaw(
   occurredAt: string,
 ): Promise<void> {
   await pool.query(
-    `insert into raw.raw_crm_events (event_id, event_type, payload)
-     values ($1, 'company.updated', $2::jsonb)`,
+    `insert into raw.raw_events (source, event_id, event_type, payload)
+     values ('crm', $1, 'company.updated', $2::jsonb)`,
     [
       eventId,
       JSON.stringify({
@@ -35,38 +36,17 @@ async function insertRaw(
   );
 }
 
-// This is the exact latest-state-per-company query from
-// warehouse/models/staging/stg_crm__companies.sql (DISTINCT ON, event-time order,
-// evt-N ordinal tiebreak). Run directly against hand-inserted raw rows: proving the
-// SQL-level order-by resolution is faster and more focused than a full dbt build for
-// the property under test (late DELIVERY order must never beat event-time order), and
-// keeps this test isolated to the ingest workspace's existing Postgres test harness
-// rather than adding a dbt/warehouse dependency to CI here. See docs/log/phase1.md for
-// the note this test closes ("out-of-order... composed chaos-with-shuffle... is a
-// Phase 2 follow-up" — this proves the underlying order-by directly, independent of
-// the full chaos pipeline).
+// B2: the REAL warehouse/models/staging/stg_crm__companies.sql, loaded from disk — a
+// hand-mirrored copy of this query drifted undetected (`like 'company.%'` vs the model's
+// `= 'company.updated'`, under a comment claiming to be "the exact" query; external
+// audit 2026-07-25, F2), which meant all three ordering invariants were proven against
+// a query that was not in production. The model reads raw.raw_events directly (no refs),
+// so it runs as-is against the ingest test DB — faster and more focused than a full dbt
+// build for the property under test (late DELIVERY order must never beat event-time
+// order). See docs/log/phase1.md for the note this test closes.
 const LATEST_STATE_SQL = `
-  with company_events as (
-    select event_id, payload, received_at
-    from raw.raw_crm_events
-    where event_type like 'company.%'
-  ),
-  latest as (
-    select distinct on (payload -> 'data' ->> 'id')
-      payload -> 'data' as company,
-      received_at
-    from company_events
-    order by payload -> 'data' ->> 'id',
-             (payload ->> 'occurred_at') desc,
-             (substring(event_id from 5))::bigint desc
-  )
-  select
-    company ->> 'id'     as company_id,
-    company ->> 'name'   as name,
-    company ->> 'domain' as domain,
-    received_at          as last_event_at
-  from latest
-  where company ->> 'id' = $1
+  select * from (${loadModel("models/staging/stg_crm__companies.sql")}) model
+  where company_id = $1
 `;
 
 describe("stg_crm__companies latest-state ordering", () => {
@@ -92,6 +72,23 @@ describe("stg_crm__companies latest-state ordering", () => {
     expect(res.rows[0].name).toBe("Newer State");
   });
 
+  it("occurred_at is compared as a TIMESTAMP, not text: an offset timestamp that is EARLIER in real time must not win latest-state by sorting later as a string (L2-G2)", async () => {
+    const companyId = "c-tz-test";
+
+    // Verified mis-ordering pair (both are valid ISO-8601, so both pass the ingest gate):
+    //   evt-4  "2026-07-22T09:00:00Z"      = 09:00 UTC  — the TRUE latest state
+    //   evt-5  "2026-07-22T10:00:00+05:00" = 05:00 UTC  — 4 hours EARLIER in real time,
+    // but as text "…T10:…" sorts AFTER "…T09:…", so a raw-string order-by crowns the
+    // stale offset row "latest" forever.
+    await insertRaw(pool, "evt-4", companyId, "True latest (09:00 UTC)", "2026-07-22T09:00:00Z");
+    await insertRaw(pool, "evt-5", companyId, "Stale (05:00 UTC, +05:00 offset)", "2026-07-22T10:00:00+05:00");
+
+    const res = await pool.query(LATEST_STATE_SQL, [companyId]);
+
+    expect(res.rowCount).toBe(1);
+    expect(res.rows[0].name).toBe("True latest (09:00 UTC)");
+  });
+
   it("evt-N ordinal breaks ties when occurred_at is identical", async () => {
     const companyId = "c-tie-test";
     const sameTimestamp = "2026-01-05T00:00:00.000Z";
@@ -103,5 +100,28 @@ describe("stg_crm__companies latest-state ordering", () => {
 
     expect(res.rowCount).toBe(1);
     expect(res.rows[0].name).toBe("Higher ordinal");
+  });
+
+  it("company.merged events are excluded: no NULL-company_id row, and merge events never perturb latest-state", async () => {
+    // The hazard the model's own comment warns about: merged events carry {from_id, to_id}
+    // (no data.id/name), so including them would mint a NULL company_id row. The drifted
+    // mirror (`like 'company.%'`) INCLUDED them — this case was untestable until the test
+    // ran the real model text.
+    const companyId = "c-merge-excl";
+    await insertRaw(pool, "evt-20", companyId, "Real State", "2026-01-05T00:00:00.000Z");
+    await pool.query(
+      `insert into raw.raw_events (source, event_id, event_type, payload)
+       values ('crm', 'evt-21', 'company.merged', $1::jsonb)`,
+      [JSON.stringify({ occurred_at: "2026-01-06T00:00:00.000Z", data: { from_id: companyId, to_id: "c-other" } })],
+    );
+
+    const res = await pool.query(LATEST_STATE_SQL, [companyId]);
+    expect(res.rowCount).toBe(1);
+    expect(res.rows[0].name).toBe("Real State"); // the (later) merge event didn't win latest-state
+
+    const nullRows = await pool.query(
+      `select * from (${loadModel("models/staging/stg_crm__companies.sql")}) m where company_id is null`,
+    );
+    expect(nullRows.rowCount).toBe(0);
   });
 });

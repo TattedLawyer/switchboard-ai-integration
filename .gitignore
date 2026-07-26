@@ -6,3 +6,6 @@ out/
 warehouse/target/
 warehouse/logs/
 warehouse/.user.yml
+
+# Internal audit brief — must never be committed (see progress ledger).
+HANDOFF-*.md

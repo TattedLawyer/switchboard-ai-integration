@@ -7,3 +7,9 @@ models:
     staging:
       +materialized: view
       +schema: analytics
+    identity:
+      +materialized: table
+      +schema: analytics
+    marts:
+      +materialized: table
+      +schema: analytics

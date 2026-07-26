@@ -1,0 +1,129 @@
+-- Three-tier identity resolution with auditable provenance for billing and support entities.
+-- Normalization is pinned HERE and only here (evidence strings make each resolution auditable).
+-- Unit-tested by ingest/test/merge-resolution.test.ts, which loads THIS file from disk
+-- (loadModel, refs → fixture views) — edits here are exercised by those tests
+-- automatically; there is no mirrored copy to keep in sync.
+with canonical as (
+    select company_id, canonical_id from {{ ref('int_crm__canonical_companies') }}
+),
+companies as (
+    select c.company_id, c.name, c.domain, k.canonical_id
+    from {{ ref('stg_crm__companies') }} c
+    join canonical k on k.company_id = c.company_id
+),
+crm_emails as (
+    -- Both arms are LATEST-STATE staging views (L2-G7): owner_email comes from
+    -- stg_crm__companies, never a raw full-history scan — a replaced owner email must age
+    -- out with the state that carried it, not remain tier-1 evidence forever.
+    select email, company_id from {{ ref('stg_crm__contacts') }}
+    union
+    select owner_email as email, company_id
+    from {{ ref('stg_crm__companies') }}
+    where owner_email is not null
+),
+norm_companies as (
+    select
+        canonical_id,
+        lower(regexp_replace(domain, '^www\.', '', 'i')) as norm_domain,
+        regexp_replace(lower(trim(name)), '\s+(inc|llc|ltd|corp)\.?$', '') as norm_name
+    from companies
+),
+source_entities as (
+    select 'billing' as source, customer_id as source_entity_id, email, domain, name
+    from {{ ref('stg_billing__customers') }}
+    union all
+    select distinct 'support', requester_id, requester_email, domain, company_name
+    from {{ ref('stg_support__tickets') }}
+),
+tier1_candidates as (
+    select se.source, se.source_entity_id, se.email, k.canonical_id
+    from source_entities se
+    join crm_emails ce on ce.email = se.email
+    join canonical k on k.company_id = ce.company_id
+),
+-- Over-merge guard: tier 1 only resolves when the email maps to exactly ONE distinct
+-- canonical company. min(canonical_id) is then that single canonical (deterministic).
+tier1 as (
+    select source, source_entity_id, min(canonical_id) as canonical_id,
+           1 as matched_tier, 'email=' || email as match_evidence
+    from tier1_candidates
+    group by source, source_entity_id, email
+    having count(distinct canonical_id) = 1
+),
+-- A shared/freemail-style email registered at >1 distinct canonical company is AMBIGUOUS:
+-- picking a winner would be a silent false merge. Route to manual review (tier 3) with
+-- auditable evidence; also barred from tier 2 below — conflicting email evidence makes
+-- any automatic merge suspect.
+tier1_ambiguous as (
+    select source, source_entity_id,
+           source || ':' || source_entity_id as canonical_id,
+           3 as matched_tier,
+           'ambiguous email=' || email || ' matched ' || count(distinct canonical_id) || ' canonical companies' as match_evidence
+    from tier1_candidates
+    group by source, source_entity_id, email
+    having count(distinct canonical_id) > 1
+),
+tier2_candidates as (
+    select se.source, se.source_entity_id, nc.canonical_id, nc.norm_domain, nc.norm_name
+    from source_entities se
+    join norm_companies nc
+      on nc.norm_domain = lower(regexp_replace(se.domain, '^www\.', '', 'i'))
+     and nc.norm_name   = regexp_replace(lower(trim(se.name)), '\s+(inc|llc|ltd|corp)\.?$', '')
+    where not exists (
+        select 1 from tier1 t1
+        where t1.source = se.source and t1.source_entity_id = se.source_entity_id
+    )
+    and not exists (
+        select 1 from tier1_ambiguous ta
+        where ta.source = se.source and ta.source_entity_id = se.source_entity_id
+    )
+),
+-- Over-merge guard (mirrors tier 1): domain+name only resolves when the candidates
+-- collapse to exactly ONE distinct canonical company — merged duplicates share a
+-- canonical_id and still resolve. min(canonical_id) is then that single canonical
+-- (deterministic).
+tier2 as (
+    select source, source_entity_id, min(canonical_id) as canonical_id,
+           2 as matched_tier,
+           'domain+name=' || norm_domain || '|' || norm_name as match_evidence
+    from tier2_candidates
+    group by source, source_entity_id, norm_domain, norm_name
+    having count(distinct canonical_id) = 1
+),
+-- Normalized domain+name shared by >1 distinct canonical company is AMBIGUOUS: picking
+-- a winner would be a silent false merge (DISTINCT ON previously kept an arbitrary,
+-- plan-dependent row here). Route to manual review (tier 3) with auditable evidence.
+tier2_ambiguous as (
+    select source, source_entity_id,
+           source || ':' || source_entity_id as canonical_id,
+           3 as matched_tier,
+           'ambiguous domain+name=' || norm_domain || '|' || norm_name || ' matched ' || count(distinct canonical_id) || ' canonical companies' as match_evidence
+    from tier2_candidates
+    group by source, source_entity_id, norm_domain, norm_name
+    having count(distinct canonical_id) > 1
+),
+matched as (
+    select * from tier1 union all select * from tier2
+    union all select * from tier1_ambiguous union all select * from tier2_ambiguous
+),
+tier3 as (
+    select se.source, se.source_entity_id,
+           se.source || ':' || se.source_entity_id as canonical_id,
+           3 as matched_tier, 'unmatched' as match_evidence
+    from source_entities se
+    where not exists (
+        select 1 from matched m
+        where m.source = se.source and m.source_entity_id = se.source_entity_id
+    )
+)
+-- The final DISTINCT ON + order by matched_tier makes tier precedence explicit even if an
+-- entity somehow matches multiple tiers — lowest tier wins, deterministically.
+select distinct on (source, source_entity_id)
+    source,
+    source_entity_id,
+    source || ':' || source_entity_id as resolution_key,
+    canonical_id as resolved_entity_id,
+    matched_tier,
+    match_evidence
+from (select * from matched union all select * from tier3) u
+order by source, source_entity_id, matched_tier

@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
-import { createQueue, enqueueEvent, startWorker, fetchDlq } from "../src/queue.js";
-import type { CrmEvent } from "../src/server.js";
+import { createQueue, enqueueEvent, startWorker, fetchDlq, queueName, dlqName } from "../src/queue.js";
+import type { SourceEvent } from "../src/server.js";
 import { PgBoss } from "pg-boss";
 
 let pool: pg.Pool;
@@ -29,19 +29,29 @@ afterAll(async () => {
   await cleanup();
 });
 
-const ev = (id: string): CrmEvent => ({
+const ev = (id: string): SourceEvent => ({
   event_id: id,
   event_type: "company.updated",
   occurred_at: new Date().toISOString(),
   data: { id: "DEMO-C-0001", name: "DEMO X", domain: "x.example.com" },
 });
 
+// Bounded poll helper: re-checks `cond` every 100ms until it holds or `timeoutMs` elapses.
+async function pollUntil(cond: () => Promise<boolean>, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await cond()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`);
+}
+
 describe("pg-boss queue", () => {
   it("(happy path) enqueue → worker → raw row + outbox row exist", async () => {
     const boss = await createQueue(connectionString);
     try {
       const event = ev("evt-queue-1");
-      await enqueueEvent(boss, event);
+      await enqueueEvent(boss, "crm", event);
       await startWorker(boss, pool);
 
       // Poll for raw row (bounded 10s)
@@ -51,7 +61,7 @@ describe("pg-boss queue", () => {
 
       while (Date.now() < deadline) {
         const rawResult = await pool.query(
-          "select count(*)::int as n from raw.raw_crm_events where event_id=$1",
+          "select count(*)::int as n from raw.raw_events where source='crm' and event_id=$1",
           [event.event_id]
         );
         const outboxResult = await pool.query(
@@ -94,11 +104,11 @@ describe("pg-boss queue", () => {
       await startWorker(boss, poisonPool);
 
       const event = ev("evt-poison-4");
-      await enqueueEvent(boss, event);
+      await enqueueEvent(boss, "crm", event);
 
       // Bounded poll (≤20s, no fixed sleeps) for the job to land in the DLQ.
       const deadline = Date.now() + 20000;
-      let dlqJob: { id: string; data: CrmEvent } | undefined;
+      let dlqJob: { id: string; data: SourceEvent } | undefined;
       while (Date.now() < deadline) {
         const dlqJobs = await fetchDlq(boss);
         dlqJob = dlqJobs.find((j) => j.data.event_id === event.event_id);
@@ -111,10 +121,160 @@ describe("pg-boss queue", () => {
 
       // Verify the job did NOT result in an ingested event (raw table is empty)
       const rawResult = await pool.query(
-        "select count(*)::int as n from raw.raw_crm_events where event_id=$1",
+        "select count(*)::int as n from raw.raw_events where source='crm' and event_id=$1",
         [event.event_id]
       );
       expect(rawResult.rows[0].n).toBe(0);
+    } finally {
+      await boss.stop();
+    }
+  }, 25000);
+
+  it("routes events to per-source queues and DLQs stay isolated", async () => {
+    // Tests in this file share one DB (freshTestDb runs once in beforeAll), so start this
+    // exact-count assertion from a clean slate: earlier tests already ingested rows.
+    await pool.query("truncate table raw.raw_events, ingest.outbox restart identity");
+    const boss = await createQueue(connectionString);
+    try {
+      // healthy pool; enqueue one billing + one crm event
+      await enqueueEvent(boss, "billing", ev("evt-b1"));
+      await enqueueEvent(boss, "crm", ev("evt-c1"));
+      await startWorker(boss, pool);
+      await pollUntil(async () => {
+        const n = await pool.query("select count(*)::int as n from raw.raw_events");
+        return n.rows[0].n === 2;
+      }, 10_000);
+      const rows = await pool.query("select source, event_id from raw.raw_events order by source");
+      expect(rows.rows).toEqual([
+        { source: "billing", event_id: "evt-b1" },
+        { source: "crm", event_id: "evt-c1" },
+      ]);
+    } finally {
+      await boss.stop();
+    }
+  });
+
+  it("fetchDlq reports the source of dead-lettered jobs", async () => {
+    // Clean slate: earlier tests in this shared DB left rows in raw and a dead-lettered
+    // crm job in the DLQ; clear both so the isolation assertions below are exact.
+    await pool.query("truncate table raw.raw_events, ingest.outbox restart identity");
+    await pool.query("delete from pgboss.job");
+
+    // poisoned pool (connect rejects) + tiny retry opts, billing event only
+    // → fetchDlq returns [{ source: "billing", … }] and raw stays empty
+    const boss = await createQueue(connectionString, {
+      retryLimit: 1,
+      retryDelay: 1,
+      retryBackoff: false,
+    });
+    try {
+      const poisonPool = {
+        connect: async () => {
+          throw new Error("Pool is poisoned");
+        },
+      } as unknown as pg.Pool;
+
+      await startWorker(boss, poisonPool);
+
+      const event = ev("evt-poison-billing-1");
+      await enqueueEvent(boss, "billing", event);
+
+      let dlqJobs: Awaited<ReturnType<typeof fetchDlq>> = [];
+      await pollUntil(async () => {
+        dlqJobs = await fetchDlq(boss);
+        return dlqJobs.some((j) => j.data.event_id === event.event_id);
+      }, 20_000);
+
+      // The dead-lettered job is reported under its own source...
+      expect(dlqJobs).toHaveLength(1);
+      expect(dlqJobs[0].source).toBe("billing");
+      expect(dlqJobs[0].data.event_id).toBe(event.event_id);
+
+      // ...and ISOLATION holds: nothing leaked into any other source's queue or DLQ.
+      const otherQueues = await pool.query(
+        "select count(*)::int as n from pgboss.job where name = any($1)",
+        [[queueName("crm"), dlqName("crm"), queueName("support"), dlqName("support")]],
+      );
+      expect(otherQueues.rows[0].n).toBe(0);
+
+      // raw stays empty — the poison job was never ingested.
+      const rawResult = await pool.query("select count(*)::int as n from raw.raw_events");
+      expect(rawResult.rows[0].n).toBe(0);
+    } finally {
+      await boss.stop();
+    }
+  }, 25000);
+
+  it("(poison batch isolation) healthy jobs co-batched with a poison job are ingested once and never dead-letter", async () => {
+    // Clean slate: earlier tests in this shared DB left ingested rows and DLQ jobs behind;
+    // clear both so the exact-membership assertions below hold.
+    await pool.query("truncate table raw.raw_events, ingest.outbox restart identity");
+    await pool.query("delete from pgboss.job");
+
+    // Tiny retry options so the poison job exhausts retries and dead-letters within the poll window.
+    const boss = await createQueue(connectionString, {
+      retryLimit: 1,
+      retryDelay: 1,
+      retryBackoff: false,
+    });
+    try {
+      const poisonId = "evt-batch-poison";
+      const healthyIds = ["evt-batch-h1", "evt-batch-h2"];
+
+      // Ingest attempts per event_id, counted at the raw_events insert (ingestEvent's first
+      // event-specific statement), so "exactly once" is asserted on attempts, not just on the
+      // idempotent end state (ON CONFLICT DO NOTHING would mask a wasteful retry).
+      const attempts = new Map<string, number>();
+
+      // Same mechanism as the poison tests above (make ingestEvent throw via the pool), but
+      // selective: delegate to the real pool and reject only the poison event's insert, so the
+      // healthy events in the SAME batch can succeed. ingestEvent's raw_events insert carries the
+      // event_id as its second parameter (see src/ingest-event.ts).
+      const selectivePool = {
+        connect: async () => {
+          const client = await pool.connect();
+          return {
+            query: async (text: string, params?: unknown[]) => {
+              if (text.includes("raw.raw_events") && Array.isArray(params)) {
+                const eventId = params[1] as string;
+                attempts.set(eventId, (attempts.get(eventId) ?? 0) + 1);
+                if (eventId === poisonId) throw new Error("Pool is poisoned for this event");
+              }
+              return client.query(text, params);
+            },
+            release: () => client.release(),
+          };
+        },
+      } as unknown as pg.Pool;
+
+      // Enqueue all three BEFORE starting the worker so its first fetch picks them up as ONE
+      // batch (startWorker's default batchSize is 10), with the poison sandwiched between the
+      // healthy events.
+      await enqueueEvent(boss, "crm", ev(healthyIds[0]));
+      await enqueueEvent(boss, "crm", ev(poisonId));
+      await enqueueEvent(boss, "crm", ev(healthyIds[1]));
+      await startWorker(boss, selectivePool);
+
+      // Wait for the poison job to exhaust retries and land in the DLQ.
+      await pollUntil(async () => {
+        const dlqJobs = await fetchDlq(boss);
+        return dlqJobs.some((j) => j.data.event_id === poisonId);
+      }, 20_000);
+
+      // Both healthy events were ingested...
+      const raw = await pool.query("select event_id from raw.raw_events order by event_id");
+      expect(raw.rows.map((r) => r.event_id)).toEqual(healthyIds);
+
+      // ...exactly once each — sharing a batch with the poison job must not cause re-processing...
+      expect(attempts.get(healthyIds[0])).toBe(1);
+      expect(attempts.get(healthyIds[1])).toBe(1);
+
+      // ...while the poison job kept its retry policy: initial attempt + 1 retry (retryLimit: 1).
+      expect(attempts.get(poisonId)).toBe(2);
+
+      // The DLQ holds ONLY the poison event — healthy co-batched events never dead-letter.
+      const dlqJobs = await fetchDlq(boss);
+      expect(dlqJobs.map((j) => j.data.event_id)).toEqual([poisonId]);
     } finally {
       await boss.stop();
     }
