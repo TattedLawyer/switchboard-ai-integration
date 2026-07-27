@@ -15,6 +15,12 @@ select
     payment ->> 'id'          as payment_id,
     payment ->> 'invoice_id'  as invoice_id,
     payment ->> 'customer_id' as customer_id,
-    (payment ->> 'amount_cents')::bigint as amount_cents,
+    -- L2 safe cast: raw rows that never passed the ingest door (legacy, direct inserts,
+    -- historical backfill) must degrade to NULL, not kill the whole build. The ingest
+    -- contract (ingest/src/numeric-contract.ts) is the enforcement; this is blast-radius
+    -- containment. NULLs are surfaced by the mart's unusable-amount counters (L3) and the
+    -- not_null dbt tests (L4).
+    case when pg_input_is_valid(payment ->> 'amount_cents', 'bigint')
+         then (payment ->> 'amount_cents')::bigint end as amount_cents,
     status
 from latest
