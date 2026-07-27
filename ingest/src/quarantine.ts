@@ -7,9 +7,9 @@ import type pg from "pg";
 // that cycle impossible by construction.
 import { eventSchema, type SourceEvent, isIsoOccurredAt, isAcceptableOccurredAt,
   OCCURRED_AT_MAX_AGE_MS, OCCURRED_AT_MAX_FUTURE_MS } from "./event-schema.js";
-// Re-export the occurred_at predicates: they historically lived here and server.ts
-// documents them as "the single definition used by ALL doors" — that sentence now points
-// at event-schema.ts, but existing importers keep working.
+// Compatibility re-export of the occurred_at predicates, which historically lived here.
+// Nothing in-repo imports them from this path today; the re-export exists so external or
+// future callers that reach for the historical location still get the ONE definition.
 export { isIsoOccurredAt, isAcceptableOccurredAt, OCCURRED_AT_MAX_AGE_MS, OCCURRED_AT_MAX_FUTURE_MS };
 
 // Exactly two string contents survive JSON.parse yet are unrepresentable in Postgres jsonb: an
