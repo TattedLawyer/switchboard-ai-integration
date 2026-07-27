@@ -1,29 +1,14 @@
 import express from "express";
-import { z } from "zod";
 import type pg from "pg";
-import { isAcceptableOccurredAt, jsonbUnstorableReason, quarantineEvent } from "./quarantine.js";
+import { jsonbUnstorableReason, quarantineEvent } from "./quarantine.js";
 import { ingestEvent } from "./ingest-event.js";
 import { secretForSource, verifySignature } from "./hmac.js";
 import { isSource, type Source } from "./sources.js";
-
-// Exported because raw has THREE doors, not two: this webhook, the quarantine replay, and the
-// backfill poll path in backfill.ts. All three must apply the same predicate — the poll path
-// once did not, and could put a value in raw that throws the staging cast.
-export const eventSchema = z.object({
-  event_id: z.string().min(1),
-  event_type: z.string().min(1),
-  // L2-G2 + A6: staging orders latest-state by (occurred_at)::timestamptz (throws on garbage)
-  // and the window bound keeps absurd-but-well-formed timestamps from pinning state —
-  // so garbage must be gated out HERE. Schema-invalid delivered payloads follow the existing
-  // malformed-data path (quarantine, below); nothing delivered is ever dropped. The same
-  // predicate guards the replay door in quarantine.ts.
-  occurred_at: z
-    .string()
-    .refine((s) => isAcceptableOccurredAt(s), "occurred_at must be ISO-8601 within [now-30d, now+5m]"),
-  data: z.record(z.unknown()),
-});
-
-export type SourceEvent = z.infer<typeof eventSchema>;
+import { eventSchema, type SourceEvent } from "./event-schema.js";
+// Compatibility re-export: backfill.ts, ingest-event.ts, the connectors and several tests
+// import the schema and its type from this module. The definition lives in event-schema.ts.
+export { eventSchema };
+export type { SourceEvent };
 
 export function createIngestApp(
   pool: pg.Pool,
