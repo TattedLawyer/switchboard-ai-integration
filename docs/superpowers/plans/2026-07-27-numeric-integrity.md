@@ -20,7 +20,7 @@
 - **Numeric bounds live in `NUMERIC_CONTRACT` (TS).** Any SQL test repeating a bound carries a comment naming `ingest/src/numeric-contract.ts` as the source of the number.
 - **Do not modify identity-resolution logic** (`identity_resolution.sql`, `int_crm__canonical_companies.sql`, `merge_edges.sql`). L5 touches the mart, not identity.
 - **Tenancy is live** (migration 006): `raw.raw_events` has `tenant_id` with a default — direct-insert fixtures need not supply it, and must not remove it.
-- Commits end with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
+- Commits end with the repo's standard `Co-Authored-By` trailer (copy it from any recent commit: `git log -1 --format=%B`). Not spelled out here because the repo-wide hygiene test rejects email-shaped strings in tracked files.
 - Do the work yourself — do NOT spawn or delegate to other agents; do not use the Agent tool.
 
 ---
