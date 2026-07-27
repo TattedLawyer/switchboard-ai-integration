@@ -101,7 +101,14 @@ export function createIngestApp(
       }
       const parsed = eventSchema.safeParse(req.body);
       if (!parsed.success) {
-        await quarantineEvent(pool, source, req.body, "schema validation failed", rawBody);
+        // Quarantine reason names the failing field: an operator triaging the queue must not
+        // have to re-parse the payload by hand to learn WHICH field kept it out. The prefix
+        // stays stable ("schema validation failed") — tooling and tests match on it.
+        const detail = parsed.error.issues[0];
+        const reason = detail
+          ? `schema validation failed: ${detail.path.join(".")} — ${detail.message}`
+          : "schema validation failed";
+        await quarantineEvent(pool, source, req.body, reason, rawBody);
         return res.status(202).json({ quarantined: true });
       }
       if (opts?.enqueue) {

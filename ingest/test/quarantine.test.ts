@@ -48,7 +48,8 @@ describe("quarantine", () => {
     );
     expect(quarantineRows.rowCount).toBe(1);
     expect(quarantineRows.rows[0].payload).toEqual(invalidPayload);
-    expect(quarantineRows.rows[0].reason).toBe("schema validation failed");
+    // Prefix match: the reason now appends ": <path> — <message>" naming the failing field.
+    expect(quarantineRows.rows[0].reason).toContain("schema validation failed");
     expect(quarantineRows.rows[0].replayed_at).toBeNull();
 
     srv.close();
@@ -143,7 +144,8 @@ describe("quarantine", () => {
           "select reason from ingest.quarantine where payload->>'event_id' = 'evt-gate-garbage'",
         );
         expect(q.rowCount).toBe(1);
-        expect(q.rows[0].reason).toBe("schema validation failed");
+        // Prefix match: the reason now appends ": <path> — <message>" naming the failing field.
+        expect(q.rows[0].reason).toContain("schema validation failed");
         const raw = await pool.query(
           "select 1 from raw.raw_events where event_id = 'evt-gate-garbage'",
         );

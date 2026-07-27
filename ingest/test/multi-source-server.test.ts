@@ -25,7 +25,9 @@ const post = async (app: ReturnType<typeof createIngestApp>, path: string, body:
 
 const ev = JSON.stringify({
   event_id: "evt-1", event_type: "invoice.created",
-  occurred_at: new Date().toISOString(), data: { id: "DEMO-I-0001" }, // relative: literals age out of the A6 window
+  // amount_cents present: the L1 numeric contract declares it required for invoice.created,
+  // and this suite pins source/secret ROUTING — the event must be storable to exercise it.
+  occurred_at: new Date().toISOString(), data: { id: "DEMO-I-0001", amount_cents: 12500 }, // relative: literals age out of the A6 window
 });
 
 describe("multi-source webhook surface", () => {
