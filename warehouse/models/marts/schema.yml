@@ -10,3 +10,12 @@ models:
         data_tests: [unique, not_null]
       - name: is_complete
         data_tests: [not_null]
+      - name: null_amount_deal_count
+        description: Deals whose amount_cents is NULL (unusable post-L2 safe cast) — excluded from sums, counted here (L3).
+        data_tests: [not_null]
+      - name: null_amount_invoice_count
+        description: Invoices whose amount_cents is NULL (unusable post-L2 safe cast) — excluded from sums, counted here (L3).
+        data_tests: [not_null]
+      - name: has_unusable_amounts
+        description: True when any deal/invoice amount was unusable — this entity's money totals are incomplete, not confidently zero (L3).
+        data_tests: [not_null]

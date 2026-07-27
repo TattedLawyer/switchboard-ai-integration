@@ -35,7 +35,8 @@ entities as (
 deals as (
     select k.canonical_id as entity_id,
            count(*) filter (where d.status = 'open')                    as open_deal_count,
-           coalesce(sum(d.amount_cents) filter (where d.status = 'open'), 0) as open_deal_amount_cents
+           coalesce(sum(d.amount_cents) filter (where d.status = 'open'), 0) as open_deal_amount_cents,
+           count(*) filter (where d.amount_cents is null)               as null_amount_deal_count
     from {{ ref('stg_crm__deals') }} d
     join canonical k on k.company_id = d.company_id
     group by k.canonical_id
@@ -48,7 +49,8 @@ billing as (
     select bl.entity_id,
            coalesce(sum(i.amount_cents), 0)                                    as total_invoiced_cents,
            coalesce(sum(i.amount_cents) filter (where i.status = 'paid'), 0)   as total_paid_cents,
-           count(distinct i.invoice_id) filter (where i.status = 'created')    as open_invoice_count
+           count(distinct i.invoice_id) filter (where i.status = 'created')    as open_invoice_count,
+           count(*) filter (where i.invoice_id is not null and i.amount_cents is null) as null_amount_invoice_count
     from billing_link bl
     left join {{ ref('stg_billing__invoices') }} i on i.customer_id = bl.customer_id
     group by bl.entity_id
@@ -92,6 +94,12 @@ select
     coalesce(b.total_invoiced_cents, 0)    as total_invoiced_cents,
     coalesce(b.total_paid_cents, 0)        as total_paid_cents,
     coalesce(b.open_invoice_count, 0)      as open_invoice_count,
+    coalesce(d.null_amount_deal_count, 0)    as null_amount_deal_count,
+    coalesce(b.null_amount_invoice_count, 0) as null_amount_invoice_count,
+    -- L3: coalesce(sum(...), 0) renders "no amount" and "zero" identically; these counters
+    -- make an entity with unusable amounts visibly incomplete instead of confidently zero.
+    (coalesce(d.null_amount_deal_count, 0) + coalesce(b.null_amount_invoice_count, 0)) > 0
+                                             as has_unusable_amounts,
     coalesce(p.failed_payment_count, 0)    as failed_payment_count,
     coalesce(s.open_ticket_count, 0)       as open_ticket_count,
     coalesce(s.solved_ticket_count, 0)     as solved_ticket_count,
