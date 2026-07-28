@@ -168,4 +168,95 @@ describe("customer_360 — cross-currency sums are refused, currency is carried 
     expect(row.deal_currency).toBeNull();
     expect(row.has_mixed_currency).toBe(false);
   });
+
+  // Review C1/I3: mixing is PER SOURCE. A mixed source NULLs its own sums; the neighbor
+  // source's sums are untouched (0 = no rows / genuine zero). This is exactly the shape
+  // the original entity-level singular test would have false-positived on.
+  it("PARTIALLY mixed (mixed invoices, NO deals): invoice sums NULL, but open_deal_amount_cents stays 0 (not NULL) — mixing never poisons the neighbor source", async () => {
+    await seedEntity("C-6", "cust-6");
+    await pool.query(`
+      insert into tmp_invoices values
+        ('inv-8', 'cust-6', 4000, 'paid',    'USD'),
+        ('inv-9', 'cust-6', 6000, 'created', 'EUR')
+    `);
+
+    const row = await martRow("C-6");
+    expect(row.total_invoiced_cents).toBeNull();
+    expect(row.total_paid_cents).toBeNull();
+    expect(row.open_deal_amount_cents).toBe("0"); // no deals = genuine 0, NOT NULL
+    expect(row.has_mixed_currency).toBe(true);
+  });
+
+  it("BOTH sources mixed: all three sums NULL, flag true", async () => {
+    await seedEntity("C-7", "cust-7");
+    await pool.query(`
+      insert into tmp_invoices values
+        ('inv-10', 'cust-7', 4000, 'paid', 'USD'),
+        ('inv-11', 'cust-7', 6000, 'paid', 'EUR');
+      insert into tmp_deals values
+        ('d-6', 'C-7', 'open', 30000, 'USD'),
+        ('d-7', 'C-7', 'open', 20000, 'EUR');
+    `);
+
+    const row = await martRow("C-7");
+    expect(row.total_invoiced_cents).toBeNull();
+    expect(row.total_paid_cents).toBeNull();
+    expect(row.open_deal_amount_cents).toBeNull();
+    expect(row.has_mixed_currency).toBe(true);
+  });
+});
+
+// Review I3: the dbt singular test's own predicate, exercised in vitest (no local dbt
+// binary — this is its only CI-speed execution). The REAL test SQL is loaded from disk;
+// loadModel strips the config() block, so severity does not interfere. The mart is
+// materialized into tmp_mart so the corrupted-mart case can UPDATE it.
+const SINGULAR_SQL = loadModel("tests/assert_no_mixed_currency_totals.sql", {
+  customer_360: "tmp_mart",
+  identity_resolution: "tmp_resolution",
+  stg_billing__invoices: "tmp_invoices",
+  stg_crm__deals: "tmp_deals",
+  int_crm__canonical_companies: "tmp_canonical",
+});
+
+describe("assert_no_mixed_currency_totals — the singular test's predicate itself", () => {
+  it("returns ZERO rows against a correct mart — including the partially-mixed shape that false-positived the original entity-level predicate (C1)", async () => {
+    // C1's exact false-positive shape: mixed invoices, no deals → open_deal_amount_cents = 0.
+    await seedEntity("C-8", "cust-8");
+    await pool.query(`
+      insert into tmp_invoices values
+        ('inv-12', 'cust-8', 4000, 'paid', 'USD'),
+        ('inv-13', 'cust-8', 6000, 'paid', 'EUR')
+    `);
+    // And the mirror shape: mixed deals, billing link with no invoices → invoice sums = 0.
+    await seedEntity("C-9", "cust-9");
+    await pool.query(`
+      insert into tmp_deals values
+        ('d-8', 'C-9', 'open', 30000, 'USD'),
+        ('d-9', 'C-9', 'open', 20000, 'EUR')
+    `);
+
+    await pool.query(`create table tmp_mart as ${MART_SQL}`);
+    const res = await pool.query(SINGULAR_SQL);
+    expect(res.rows).toEqual([]); // correct mart → nothing to report
+  });
+
+  it("planted counter-example: a corrupted mart where a mixed-billing entity carries a non-NULL total_invoiced_cents IS returned — the test can fail", async () => {
+    await seedEntity("C-10", "cust-10");
+    await pool.query(`
+      insert into tmp_invoices values
+        ('inv-14', 'cust-10', 4000, 'paid', 'USD'),
+        ('inv-15', 'cust-10', 6000, 'paid', 'EUR')
+    `);
+
+    await pool.query(`create table tmp_mart as ${MART_SQL}`);
+    // Corrupt the mart: pretend the guard was removed and a cross-currency sum leaked out.
+    await pool.query(
+      `update tmp_mart set total_invoiced_cents = 999999 where entity_id = 'C-10'`,
+    );
+
+    const res = await pool.query(SINGULAR_SQL);
+    expect(res.rowCount).toBe(1);
+    expect(res.rows[0].entity_id).toBe("C-10");
+    expect(res.rows[0].mixed_source).toBe("billing"); // mixing re-derived from staging, not the mart's flag
+  });
 });
