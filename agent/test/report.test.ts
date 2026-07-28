@@ -68,6 +68,14 @@ beforeAll(async () => {
            true, true, false, true,
            1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 2, 1, 0, true
     union all
+    -- Cold review I-2 catch-all pin: has_data_warnings true while EVERY specific component
+    -- the report knows about is clean. Synthetic ON PURPOSE at this mirror-view layer —
+    -- it simulates a FUTURE mart OR-term the report has never heard of; the catch-all
+    -- must still route this entity to the flags and the watch list.
+    select 'DEMO-C-0008', 'DEMO Horizon Group 8', 'horizon-8.example.com',
+           true, false, false, true,
+           0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 0, 0, null, 0, 0, 0, 0, true
+    union all
     select 'billing:B-0015', 'DEMO Orphan Billing', 'orphan.example.com',
            false, true, false, false,
            0, 0, 90000, 90000, 0, 0, 0, false, 'USD', null, false, 1, 0, 0, 0, null, 0, 0, 0, 0, false
@@ -170,6 +178,31 @@ describe("Monday report (stub)", () => {
     const without = md.split("\n").find((l) => l.startsWith("| DEMO-C-0002"));
     expect(without).toBeDefined();
     expect(without!).toContain("| — |"); // no csat → no fabricated base
+  });
+
+  // ── Cold review I-2: the mart's loudest honesty flag never reached the deterministic
+  // surface. A purely-mixed entity (has_mixed_currency true, every OTHER warning component
+  // clean — exactly DEMO-C-0003's shape) rendered "⚠ mixed currency" money cells beside a
+  // Flags cell that literally said "ok", and was absent from "Accounts to watch".
+  it("I-2: a purely-mixed entity (DEMO-C-0003) flags 'mixed currencies — totals refused' in its row AND appears in Accounts to watch — never a self-contradictory 'ok'", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0003"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("mixed currencies — totals refused");
+    expect(row!).not.toContain("| ok |"); // the money cells say ⚠; the Flags cell must not say ok
+    const watch = md.split("## Accounts to watch")[1].split("##")[0];
+    expect(watch).toContain("DEMO-C-0003");
+    expect(watch).toContain("mixed currencies — totals refused");
+  });
+
+  it("I-2 catch-all pin: has_data_warnings true with every specific component clean (DEMO-C-0008 — a future mart signal the report does not yet enumerate) still reaches the flags and the watch list", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0008"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("data quality warning — see mart counters");
+    const watch = md.split("## Accounts to watch")[1].split("##")[0];
+    expect(watch).toContain("DEMO-C-0008");
+    expect(watch).toContain("data quality warning — see mart counters");
   });
 
   it("regression: merged-away duplicates DEMO-C-0021/0022 must NOT appear (canonicals only)", async () => {

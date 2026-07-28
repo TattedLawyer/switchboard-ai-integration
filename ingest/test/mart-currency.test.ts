@@ -398,6 +398,19 @@ describe("customer_360 — unknown-currency rows and the CSAT base are visibly c
       expect(row.has_data_warnings).toBe(true);
     });
 
+    it("trigger: mixed DEAL currencies (two knowns — no NULL-currency rows, NULL amounts, or csat anywhere) raise the warning — isolates the deal-side mixed term of the OR (cold review I-1: every prior deal-mixed fixture also carried a NULL-currency row, so that counter term masked the deletion)", async () => {
+      await seedEntity("C-31", "cust-31");
+      await pool.query(`
+        insert into tmp_deals values
+          ('d-17', 'C-31', 'open', 30000, 'USD'),
+          ('d-18', 'C-31', 'open', 20000, 'EUR')
+      `);
+
+      const row = await martRow("C-31");
+      expect(row.has_mixed_currency).toBe(true);
+      expect(row.has_data_warnings).toBe(true);
+    });
+
     it("trigger: uniformly-unknown currency (refused but NOT mixed) raises the warning — the coarse flag covers what has_mixed_currency deliberately does not", async () => {
       await seedEntity("C-28", "cust-28");
       await pool.query(`insert into tmp_deals values ('d-16', 'C-28', 'open', 30000, null)`);
