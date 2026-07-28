@@ -258,12 +258,18 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   Over-refusal only: no cross-currency number can ever be emitted, and all-USD data is
   unaffected. The precise fix (`count(distinct currency) filter (where status = 'open')`)
   is known and deferred until a real multi-currency source exists to test against.
-- **Uniformly-unknown currency still sums, with a NULL label.** A known currency alongside
-  NULL-currency rows now REFUSES like any other mix (sums NULL, `has_mixed_currency` true)
-  — the unknown amount could be any currency (external review F2). The remaining leniency
-  is deliberate and narrower: rows whose currency is uniformly unknown (pre-currency
-  history; malformed codes nulled at staging) still sum, labeled `billing_currency` /
-  `deal_currency` NULL rather than a claimed code (L5.1).
+- **Legacy rows with NO currency field no longer sum at all.** Any NULL-currency row
+  (never carried, or malformed and nulled at staging) refuses its source's money sums:
+  known + unknown is mixed (`has_mixed_currency` true — external review F2), and
+  uniformly-unknown also refuses since the L5.1 retraction — an unknown-unit total is not
+  money (JD Edwards treats cross-currency grand totals as meaningless "hash totals"; D365
+  converts to a known unit or filters to one currency; Stripe balances are strictly
+  per-currency) — though it is NOT flagged mixed, since nothing known is contradicted.
+  The sums go NULL with the unknown rows visibly counted
+  (`null_currency_invoice_count` / `null_currency_deal_count`) and the report renders
+  "unknown", never a figure. A future source that legitimately sends no currency should
+  get a per-source declared default currency at the connector/config layer, not a lenient
+  mart. *Registered follow-up: connector-level `default_currency` config.*
 - **An error-severity numeric test failure halts the mart refresh.** dbt skips downstream
   models when a staging test fails at severity error, so one NULL amount that reaches
   staging stops `customer_360` rebuilding until someone looks. Loud by design — with the

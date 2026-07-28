@@ -42,9 +42,11 @@ export async function generateMondayReport(
   const usd = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
   // L5: a NULL sum means "no single figure is true" — render the condition, never a
   // fabricated $0. Keyed off the NULL itself: with has_mixed_currency it names the cause
-  // ("mixed currency"); any other NULL renders "⚠ unknown" — unreachable from today's
-  // mart (mixing is the only NULL-sum reason), kept as the durable default so a future
-  // NULL reason degrades honestly instead of falling through num() to $0 (F1 minor).
+  // ("mixed currency"); any other NULL renders "⚠ unknown". Reachable since the L5.1
+  // retraction: a source whose rows are UNIFORMLY unknown-currency refuses its sums
+  // without being mixed — this branch is that rendering (the unknown-currency flag below
+  // carries the row count) — and it remains the durable default for any future NULL
+  // reason, so nothing ever falls through num() to $0 (F1 minor).
   const money = (a: Record<string, unknown>, k: string): string => {
     if (a[k] == null) {
       return a["has_mixed_currency"] === true ? "⚠ mixed currency" : "⚠ unknown";
@@ -63,8 +65,8 @@ export async function generateMondayReport(
     if (a["has_unusable_amounts"] === true)
       f.push(`unusable amount(s): ${num(a, "null_amount_deal_count")} deal / ${num(a, "null_amount_invoice_count")} invoice`);
     if (num(a, "null_score_count") > 0) f.push(`${num(a, "null_score_count")} unusable CSAT score(s)`);
-    // Addendum: unknown-currency rows get a visible count, whether they forced a refusal
-    // (known + unknown = mixed) or rode the L5.1 uniformly-unknown leniency.
+    // Addendum: unknown-currency rows get a visible count. Since the L5.1 retraction any
+    // such row refuses its source's sums (known + unknown = mixed; all-unknown = unknown).
     const unknownCurrencyRows = num(a, "null_currency_invoice_count") + num(a, "null_currency_deal_count");
     if (unknownCurrencyRows > 0) f.push(`${unknownCurrencyRows} row(s) with unknown currency`);
     return f;

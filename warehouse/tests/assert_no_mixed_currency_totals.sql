@@ -11,12 +11,11 @@ with billing_mixed as (
     join {{ ref('stg_billing__invoices') }} i on i.customer_id = r.source_entity_id
     where r.source = 'billing'
     group by r.resolved_entity_id
-    -- Mixed = more than one known currency, OR a known currency with NULL-currency rows
-    -- beside it (count(distinct) alone ignores NULLs — F2). Uniformly-unknown (0 distinct)
-    -- is NOT mixed: the L5.1 leniency keeps pre-currency history summable.
+    -- Not summable = more than one known currency, OR any NULL-currency row at all
+    -- (count(distinct) alone ignores NULLs — F2). L5.1 retracted: this now includes
+    -- uniformly-unknown entities — an unknown-unit total carried as money is an offender.
     having count(distinct i.currency) > 1
-        or (count(distinct i.currency) = 1
-            and count(*) filter (where i.currency is null) > 0)
+        or count(*) filter (where i.currency is null) > 0
 ),
 deal_mixed as (
     select k.canonical_id as entity_id
@@ -24,8 +23,7 @@ deal_mixed as (
     join {{ ref('int_crm__canonical_companies') }} k on k.company_id = d.company_id
     group by k.canonical_id
     having count(distinct d.currency) > 1
-        or (count(distinct d.currency) = 1
-            and count(*) filter (where d.currency is null) > 0)
+        or count(*) filter (where d.currency is null) > 0
 )
 select c.entity_id, 'billing' as mixed_source, c.total_invoiced_cents, c.total_paid_cents, null::bigint as open_deal_amount_cents
 from {{ ref('customer_360') }} c

@@ -20,17 +20,17 @@ models:
         description: True when any deal/invoice amount was unusable — this entity's money totals are incomplete, not confidently zero (L3).
         data_tests: [not_null]
       - name: billing_currency
-        description: The single currency of this entity's invoices; NULL when currencies are mixed (including a known currency alongside NULL-currency rows, F2) or no invoice carries one (L5/L5.1).
+        description: The single known currency of this entity's invoices; NULL when not summable — currencies mixed, any NULL-currency row (F2, L5.1 retracted), or no invoices.
       - name: deal_currency
-        description: The single currency of this entity's deals; NULL when currencies are mixed (including known + unknown, F2) or no deal carries one (L5/L5.1).
+        description: The single known currency of this entity's deals; NULL when not summable — currencies mixed, any NULL-currency row (F2, L5.1 retracted), or no deals.
       - name: has_mixed_currency
-        description: True when invoices or deals span more than one currency, or mix a known currency with NULL-currency rows (F2) — the money sums are NULL because a cross-currency total would be a lie (L5).
+        description: True when a KNOWN currency is contradicted — invoices/deals span more than one known currency, or mix a known currency with NULL-currency rows (F2). Deliberately narrower than "sums refused" — a uniformly-unknown source refuses its sums but is NOT mixed; the null_currency counters carry that case (L5).
         data_tests: [not_null]
       - name: null_currency_invoice_count
-        description: Invoice rows whose currency is unknown (NULLed at staging or never carried) — the visible bucket behind a refused or uniformly-unknown billing sum (F2 addendum).
+        description: Invoice rows whose currency is unknown (NULLed at staging or never carried) — the visible bucket behind a refused billing sum; any such row refuses the total (F2 addendum, L5.1 retracted).
         data_tests: [not_null]
       - name: null_currency_deal_count
-        description: Deal rows whose currency is unknown — the visible bucket behind a refused or uniformly-unknown deal sum (F2 addendum).
+        description: Deal rows whose currency is unknown — the visible bucket behind a refused deal sum; any such row refuses the total (F2 addendum, L5.1 retracted).
         data_tests: [not_null]
       - name: null_score_count
         description: CSAT rows whose score was unusable (NULLed by the safe-cast) — avg_csat averages only the usable scores; this counter discloses how many it skipped (F3).

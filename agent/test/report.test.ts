@@ -54,11 +54,12 @@ beforeAll(async () => {
            true, false, true, true,
            0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 2, 0, 4.00, 2, 0, 0, 3
     union all
-    -- Minor: a NULL sum WITHOUT has_mixed_currency — unreachable from today's mart, but
-    -- the renderer must degrade to "unknown", never a fabricated $0.
+    -- A NULL sum WITHOUT has_mixed_currency: since the L5.1 retraction this is the real
+    -- shape of a uniformly-unknown-currency source (here: one NULL-currency deal) — the
+    -- renderer must degrade to "unknown", never a fabricated $0.
     select 'DEMO-C-0006', 'DEMO Media Group 6', 'media-6.example.com',
            true, true, false, true,
-           1, null, 40000, 40000, 0, 0, 0, false, 'USD', null, false, 0, 0, 0, 0, null, 0, 0, 0, 0
+           1, null, 40000, 40000, 0, 0, 0, false, 'USD', null, false, 0, 0, 0, 0, null, 0, 0, 1, 0
     union all
     -- Addendum: USD+NULL invoices and one NULL-currency deal — refused (mixed) AND the
     -- unknown rows are counted (2 invoice + 1 deal = 3 rows with unknown currency).
@@ -141,7 +142,7 @@ describe("Monday report (stub)", () => {
     expect(watch).toContain("DEMO-C-0005");
   });
 
-  it("minor: a NULL sum WITHOUT the mixed-currency flag renders '⚠ unknown' — any NULL amount must never degrade to a confident $0", async () => {
+  it("a NULL sum WITHOUT the mixed-currency flag (uniformly-unknown currency, post L5.1 retraction) renders '⚠ unknown' — never a confident $0", async () => {
     const md = await generateMondayReport(pool, new TemplateLlm());
     const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0006"));
     expect(row).toBeDefined();

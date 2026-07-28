@@ -9,6 +9,9 @@ import { loadModel } from "./helpers/load-model.js";
 // L3 counters: null_amount_invoice_count / null_amount_deal_count / has_unusable_amounts
 // make an entity with unusable amounts visibly incomplete instead of confidently zero.
 // B2: the REAL mart text is loaded from disk via loadModel — no hand-mirrored SQL.
+// Fixtures carry an explicit 'USD' currency: since the L5.1 retraction, any NULL-currency
+// row refuses its source's sums (mart-currency.test.ts owns that), and these tests pin
+// AMOUNT semantics — currency must not be the reason a sum goes NULL here.
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -78,8 +81,8 @@ describe("customer_360 — missing amount is not zero (L3)", () => {
     await seedEntity("C-1", "cust-1");
     await pool.query(`
       insert into tmp_invoices values
-        ('inv-1', 'cust-1', 4000, 'created'),
-        ('inv-2', 'cust-1', null, 'created')
+        ('inv-1', 'cust-1', 4000, 'created', 'USD'),
+        ('inv-2', 'cust-1', null, 'created', 'USD')
     `);
 
     const row = await martRow("C-1");
@@ -91,8 +94,8 @@ describe("customer_360 — missing amount is not zero (L3)", () => {
   it("a clean entity reports zero NULL-amount counts and flag false — the flag has no false positives", async () => {
     await seedEntity("C-2", "cust-2");
     await pool.query(`
-      insert into tmp_invoices values ('inv-3', 'cust-2', 7000, 'paid');
-      insert into tmp_deals values ('d-1', 'C-2', 'open', 25000);
+      insert into tmp_invoices values ('inv-3', 'cust-2', 7000, 'paid', 'USD');
+      insert into tmp_deals values ('d-1', 'C-2', 'open', 25000, 'USD');
     `);
 
     const row = await martRow("C-2");
@@ -106,8 +109,8 @@ describe("customer_360 — missing amount is not zero (L3)", () => {
     await seedEntity("C-3", "cust-3");
     await pool.query(`
       insert into tmp_deals values
-        ('d-2', 'C-3', 'open', 30000),
-        ('d-3', 'C-3', 'open', null)
+        ('d-2', 'C-3', 'open', 30000, 'USD'),
+        ('d-3', 'C-3', 'open', null, 'USD')
     `);
 
     const row = await martRow("C-3");
@@ -146,7 +149,7 @@ describe("customer_360 — missing amount is not zero (L3)", () => {
           eventType,
           JSON.stringify({
             occurred_at: occurredAt,
-            data: { id: "inv-9", customer_id: "cust-5", amount_cents: amount },
+            data: { id: "inv-9", customer_id: "cust-5", amount_cents: amount, currency: "USD" },
           }),
         ],
       );
