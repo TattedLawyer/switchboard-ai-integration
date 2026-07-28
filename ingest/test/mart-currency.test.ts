@@ -207,9 +207,9 @@ describe("customer_360 — cross-currency sums are refused, currency is carried 
 
   // ── External review F2: count(distinct) ignores NULLs, so {USD, NULL} used to count
   // as ONE currency and the NULL-currency amount summed into a confident 'USD' total.
-  // New semantics: a source is single-currency iff its currency is uniformly unknown
-  // (0 distinct — the L5.1 leniency, see below) OR exactly one known currency with ZERO
-  // NULL-currency rows beside it. Known + unknown = MIXED.
+  // Semantics (post L5.1 retraction): a source is summable iff at most one distinct
+  // known currency AND zero NULL-currency rows (no-rows stays a true 0). Known + unknown
+  // = MIXED; uniformly-unknown = refused but NOT mixed (see the retraction test below).
   it("F2: a known currency plus an unknown one (USD + NULL invoices) is MIXED — sums NULL, billing_currency NULL, flag true", async () => {
     await seedEntity("C-12", "cust-12");
     await pool.query(`
@@ -225,11 +225,14 @@ describe("customer_360 — cross-currency sums are refused, currency is carried 
     expect(row.has_mixed_currency).toBe(true);
   });
 
-  // THE L5.1 PIN — deliberate leniency, not an oversight: rows whose currency is
-  // UNIFORMLY unknown (pre-currency history; malformed codes nulled at staging) stay
-  // summable — there is no known currency to contradict — but the total is labeled
-  // billing_currency NULL, never a claimed code, and the row is NOT flagged as mixed.
-  it("L5.1 pin: uniformly-unknown currency (all invoices NULL) still sums, labeled NULL, flag false", async () => {
+  // L5.1 RETRACTED (primary-source research; Michael's call): an unknown-unit total is a
+  // guess wearing a number's clothes — enterprise practice (JD Edwards "hash totals",
+  // D365's convert-or-filter rule, Stripe's per-currency balances) has NO path where an
+  // unknown-unit sum is presented as a money total, and two unknown rows are not provably
+  // the same currency. Uniformly-unknown now REFUSES: sums NULL, label NULL. It is still
+  // NOT "mixed" (nothing known contradicts anything) — the null_currency_*_count columns
+  // and the report's unknown-currency flag carry the story.
+  it("L5.1 retraction: uniformly-unknown currency (all invoices NULL) refuses — sums NULL, label NULL, flag false, unknown rows counted", async () => {
     await seedEntity("C-13", "cust-13");
     await pool.query(`
       insert into tmp_invoices values
@@ -238,10 +241,11 @@ describe("customer_360 — cross-currency sums are refused, currency is carried 
     `);
 
     const row = await martRow("C-13");
-    expect(row.total_invoiced_cents).toBe("10000"); // pre-currency history stays summable
-    expect(row.total_paid_cents).toBe("4000");
-    expect(row.billing_currency).toBeNull(); // unknown is labeled unknown, not 'USD'
-    expect(row.has_mixed_currency).toBe(false);
+    expect(row.total_invoiced_cents).toBeNull(); // 4000 + 6000 of unknown units is not a number
+    expect(row.total_paid_cents).toBeNull();
+    expect(row.billing_currency).toBeNull();
+    expect(row.has_mixed_currency).toBe(false); // all-unknown is NOT mixed — just unknown
+    expect(Number(row.null_currency_invoice_count)).toBe(2); // the visible bucket tells the story
   });
 
   it("F2 deal-side analog: an open USD deal plus an open NULL-currency deal is MIXED — open_deal_amount_cents NULL, deal_currency NULL, flag true", async () => {
@@ -321,7 +325,7 @@ describe("customer_360 — unknown-currency rows and the CSAT base are visibly c
     expect(Number(row.null_currency_invoice_count)).toBe(0);
   });
 
-  it("uniformly-unknown invoices (L5.1): the total still sums AND the count says how much of it is unknown-currency (2)", async () => {
+  it("uniformly-unknown invoices (L5.1 retracted): the total refuses AND the count says how many rows are unknown-currency (2)", async () => {
     await seedEntity("C-19", "cust-19");
     await pool.query(`
       insert into tmp_invoices values
@@ -330,8 +334,8 @@ describe("customer_360 — unknown-currency rows and the CSAT base are visibly c
     `);
 
     const row = await martRow("C-19");
-    expect(row.total_invoiced_cents).toBe("10000"); // L5.1 leniency unchanged
-    expect(Number(row.null_currency_invoice_count)).toBe(2); // ...but no longer invisible
+    expect(row.total_invoiced_cents).toBeNull(); // unknown units are counted, never totaled
+    expect(Number(row.null_currency_invoice_count)).toBe(2);
   });
 
   it("a clean all-USD entity and a no-billing entity both report 0 counters — the LEFT-JOIN null-extended row is NOT an unknown currency", async () => {
@@ -428,6 +432,26 @@ describe("assert_no_mixed_currency_totals — the singular test's predicate itse
     const res = await pool.query(SINGULAR_SQL);
     expect(res.rowCount).toBe(1);
     expect(res.rows[0].entity_id).toBe("C-11");
+    expect(res.rows[0].mixed_source).toBe("billing");
+  });
+
+  it("planted counter-example (L5.1 retraction): a corrupted mart where a UNIFORMLY-unknown-currency entity carries a non-NULL total IS returned — unknown-unit sums are offenders too", async () => {
+    await seedEntity("C-24", "cust-24");
+    await pool.query(`
+      insert into tmp_invoices values
+        ('inv-27', 'cust-24', 4000, 'paid', null),
+        ('inv-28', 'cust-24', 6000, 'paid', null)
+    `);
+
+    await pool.query(`create table tmp_mart as ${MART_SQL}`);
+    // Corrupt the mart: an unknown-unit total leaked out as if it were money.
+    await pool.query(
+      `update tmp_mart set total_invoiced_cents = 999999 where entity_id = 'C-24'`,
+    );
+
+    const res = await pool.query(SINGULAR_SQL);
+    expect(res.rowCount).toBe(1);
+    expect(res.rows[0].entity_id).toBe("C-24");
     expect(res.rows[0].mixed_source).toBe("billing");
   });
 
