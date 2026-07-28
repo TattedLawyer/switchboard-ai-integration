@@ -69,6 +69,15 @@ export async function generateMondayReport(
     // such row refuses its source's sums (known + unknown = mixed; all-unknown = unknown).
     const unknownCurrencyRows = num(a, "null_currency_invoice_count") + num(a, "null_currency_deal_count");
     if (unknownCurrencyRows > 0) f.push(`${unknownCurrencyRows} row(s) with unknown currency`);
+    // Cold review I-2: the loudest honesty condition, finally in the deterministic surface.
+    // money() already refuses the figure; the Flags cell must name the refusal instead of
+    // contradicting it with "ok" — and the watch list must carry the entity.
+    if (a["has_mixed_currency"] === true) f.push("mixed currencies — totals refused");
+    // CATCH-ALL (the structural fix — three rounds of this defect class prove the report's
+    // component enumeration will always lag the mart): after all specific checks, any
+    // FUTURE OR-term added to the mart's has_data_warnings reaches the watch list here
+    // with zero report changes.
+    if (a["has_data_warnings"] === true && f.length === 0) f.push("data quality warning — see mart counters");
     return f;
   };
   // Addendum: an average must carry its base size — "4.50 (n=2)" — so a one-review 5.00

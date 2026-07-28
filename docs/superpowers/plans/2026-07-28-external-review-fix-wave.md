@@ -37,15 +37,19 @@ Per Kimball's visible-unknowns practice and survey base-size practice: mart expo
 
 Commits: `5da3106`/`94ed385`. Evidence: ingest 191, agent 29, typecheck clean; phantom-unknown-row LEFT-JOIN case pinned (C-21).
 
-### Wave 3 — uniformly-unknown currency refuses 🔄 IN FLIGHT
+### Wave 3 — uniformly-unknown currency refuses ✅ EXECUTED
 
 Retract the L5.1 all-NULL-sums leniency (research verdict above; Michael approved the strict reading).
 
-- [ ] RED: flip the L5.1 pin test — an all-NULL-currency entity asserts sums NULL, currency label NULL, `has_mixed_currency` **false** (all-unknown is not mixed; the counts + NULL sums carry the story), `null_currency_*_count = N`. Report fixture asserts the "⚠ unknown" rendering end-to-end.
-- [ ] GREEN: tighten `is_single` to `(count(distinct currency) = 1 AND null-currency rows = 0)` — drop the `distinct = 0` branch; update `money()`'s "unreachable today" comment (the branch is now the all-NULL rendering); mirror both having-clauses in the singular test (offender = any non-NULL sum where `distinct > 1 OR null rows > 0`).
-- [ ] KNOWN-ISSUES: rewrite the leniency bullet — unknown currency is counted, never totaled; a future source that legitimately sends no currency gets a **per-source declared default currency** at the connector/config layer (the resolve-the-unit-first pattern), not a lenient mart.
-- [ ] Verify untouched: all-USD invariance, no-billing-entity zeros, known+unknown refusal, both-mixed case.
-- [ ] Commit pair: `test(warehouse): RED — an unknown-unit total is a guess wearing a number's clothes` / `fix(warehouse): GREEN — uniformly-unknown currency refuses like mixed; unknowns are counted, never totaled`.
+- [x] RED: flip the L5.1 pin test — an all-NULL-currency entity asserts sums NULL, currency label NULL, `has_mixed_currency` **false** (all-unknown is not mixed; the counts + NULL sums carry the story), `null_currency_*_count = N`. Report fixture asserts the "⚠ unknown" rendering end-to-end.
+- [x] GREEN: tighten `is_single` to `(count(distinct currency) = 1 AND null-currency rows = 0)` — drop the `distinct = 0` branch; update `money()`'s "unreachable today" comment (the branch is now the all-NULL rendering); mirror both having-clauses in the singular test (offender = any non-NULL sum where `distinct > 1 OR null rows > 0`).
+- [x] KNOWN-ISSUES: rewrite the leniency bullet — unknown currency is counted, never totaled; a future source that legitimately sends no currency gets a **per-source declared default currency** at the connector/config layer (the resolve-the-unit-first pattern), not a lenient mart.
+- [x] Verify untouched: all-USD invariance, no-billing-entity zeros, known+unknown refusal, both-mixed case.
+- [x] Commit pair: `test(warehouse): RED — an unknown-unit total is a guess wearing a number's clothes` / `fix(warehouse): GREEN — uniformly-unknown currency refuses like mixed; unknowns are counted, never totaled`.
+
+Commits: `2ec8eca`/`3fb1eee`.
+
+**Post-wave (recorded at HEAD, same sequencing honesty as the header note — these landed after Wave 3, before Wave 4):** item-1 `has_data_warnings` (Kimball #164 coarse warning) as `bc070dd`/`bf75b52`; closing-review must-fix `aff5420` (staging comment truth); incremental-review must-fix `0239b8e` (invoice-side unknown-currency pin); cold-review I-1/I-2 pair `abcc20c` (RED: deal-mixed OR term unpinned + purely-mixed entity reads "ok") + its GREEN fix — the commit carrying this doc update (report consumes `has_mixed_currency` plus a `has_data_warnings` catch-all; deal-side mixed trigger isolated; billing-side plant confirmed already pinned by C-27). Counts at HEAD: ingest 199 (30 files), agent 31 (6 files), mocks/support 52, typecheck clean.
 
 ### Wave 4 — close and ship ⬜ NOT STARTED
 
