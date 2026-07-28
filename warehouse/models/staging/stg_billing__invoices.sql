@@ -21,5 +21,8 @@ select
     -- surfacing (numeric-integrity plan, L3/L4 tasks) rather than erased or guessed at.
     case when pg_input_is_valid(invoice ->> 'amount_cents', 'bigint')
          then (invoice ->> 'amount_cents')::bigint end as amount_cents,
+    -- L5: currency is carried, not discarded — the mart refuses to sum across currencies.
+    -- Plain text (no cast guard needed); NULL for legacy payloads that never sent it.
+    invoice ->> 'currency' as currency,
     status
 from latest

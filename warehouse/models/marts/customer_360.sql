@@ -35,7 +35,13 @@ entities as (
 deals as (
     select k.canonical_id as entity_id,
            count(*) filter (where d.status = 'open')                    as open_deal_count,
-           coalesce(sum(d.amount_cents) filter (where d.status = 'open'), 0) as open_deal_amount_cents,
+           count(distinct d.currency)                                   as deal_currency_count,
+           min(d.currency)                                              as deal_currency_raw,
+           -- L5: a total across two currencies is not a number, it is a mistake. When
+           -- currencies mix, the sums become NULL and has_mixed_currency flags the row;
+           -- the report renders the condition instead of a figure.
+           case when count(distinct d.currency) <= 1
+                then coalesce(sum(d.amount_cents) filter (where d.status = 'open'), 0) end as open_deal_amount_cents,
            count(*) filter (where d.amount_cents is null)               as null_amount_deal_count
     from {{ ref('stg_crm__deals') }} d
     join canonical k on k.company_id = d.company_id
@@ -47,8 +53,15 @@ billing_link as (
 ),
 billing as (
     select bl.entity_id,
-           coalesce(sum(i.amount_cents), 0)                                    as total_invoiced_cents,
-           coalesce(sum(i.amount_cents) filter (where i.status = 'paid'), 0)   as total_paid_cents,
+           count(distinct i.currency)              as invoice_currency_count,
+           min(i.currency)                         as billing_currency_raw,
+           -- L5: a total across two currencies is not a number, it is a mistake. When
+           -- currencies mix, the sums become NULL and has_mixed_currency flags the row;
+           -- the report renders the condition instead of a figure.
+           case when count(distinct i.currency) <= 1
+                then coalesce(sum(i.amount_cents), 0) end                                  as total_invoiced_cents,
+           case when count(distinct i.currency) <= 1
+                then coalesce(sum(i.amount_cents) filter (where i.status = 'paid'), 0) end as total_paid_cents,
            count(distinct i.invoice_id) filter (where i.status = 'created')    as open_invoice_count,
            count(*) filter (where i.invoice_id is not null and i.amount_cents is null) as null_amount_invoice_count
     from billing_link bl
@@ -90,9 +103,12 @@ select
     (s.entity_id is not null)                            as has_support,
     e.has_crm                                            as is_complete,
     coalesce(d.open_deal_count, 0)         as open_deal_count,
-    coalesce(d.open_deal_amount_cents, 0)  as open_deal_amount_cents,
-    coalesce(b.total_invoiced_cents, 0)    as total_invoiced_cents,
-    coalesce(b.total_paid_cents, 0)        as total_paid_cents,
+    -- L5 sum semantics: 0 = genuinely zero or no rows; NULL = currencies mixed, a single
+    -- total would be a lie. The no-rows case is handled here explicitly (CTE row absent
+    -- → 0); a blanket coalesce would erase the NULL-when-mixed signal.
+    case when d.entity_id is null then 0 else d.open_deal_amount_cents end as open_deal_amount_cents,
+    case when b.entity_id is null then 0 else b.total_invoiced_cents end   as total_invoiced_cents,
+    case when b.entity_id is null then 0 else b.total_paid_cents end       as total_paid_cents,
     coalesce(b.open_invoice_count, 0)      as open_invoice_count,
     coalesce(d.null_amount_deal_count, 0)    as null_amount_deal_count,
     coalesce(b.null_amount_invoice_count, 0) as null_amount_invoice_count,
@@ -100,6 +116,12 @@ select
     -- make an entity with unusable amounts visibly incomplete instead of confidently zero.
     (coalesce(d.null_amount_deal_count, 0) + coalesce(b.null_amount_invoice_count, 0)) > 0
                                              as has_unusable_amounts,
+    -- L5: currency surfaced per source; NULL when mixed (no single currency is true) or
+    -- when the entity has no invoices/deals carrying one.
+    case when b.invoice_currency_count <= 1 then b.billing_currency_raw end as billing_currency,
+    case when d.deal_currency_count   <= 1 then d.deal_currency_raw   end as deal_currency,
+    (coalesce(b.invoice_currency_count, 0) > 1 or coalesce(d.deal_currency_count, 0) > 1)
+                                                                          as has_mixed_currency,
     coalesce(p.failed_payment_count, 0)    as failed_payment_count,
     coalesce(s.open_ticket_count, 0)       as open_ticket_count,
     coalesce(s.solved_ticket_count, 0)     as solved_ticket_count,

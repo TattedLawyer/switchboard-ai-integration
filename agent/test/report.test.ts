@@ -25,17 +25,23 @@ beforeAll(async () => {
            1::bigint as open_invoice_count,
            0::bigint as null_amount_deal_count, 0::bigint as null_amount_invoice_count,
            false as has_unusable_amounts,
+           'USD'::text as billing_currency, 'USD'::text as deal_currency,
+           false as has_mixed_currency,
            0::bigint as failed_payment_count,
            3::bigint as open_ticket_count, 1::bigint as solved_ticket_count,
            0::bigint as sla_breach_count, 4.50::numeric(3,2) as avg_csat
     union all
     select 'DEMO-C-0002', 'DEMO Manufacturing Group 2', 'manufacturing-2.example.com',
            true, false, false, true,
-           1, 250000, 0, 0, 0, 0, 0, false, 0, 0, 0, 0, null
+           1, 250000, 0, 0, 0, 0, 0, false, null, 'USD', false, 0, 0, 0, 0, null
+    union all
+    select 'DEMO-C-0003', 'DEMO Retail Group 3', 'retail-3.example.com',
+           true, true, false, true,
+           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null
     union all
     select 'billing:B-0015', 'DEMO Orphan Billing', 'orphan.example.com',
            false, true, false, false,
-           0, 0, 90000, 90000, 0, 0, 0, false, 1, 0, 0, 0, null
+           0, 0, 90000, 90000, 0, 0, 0, false, 'USD', null, false, 1, 0, 0, 0, null
   `);
   await pool.query(`
     create or replace view ${SCHEMA}.stg_crm__companies as
@@ -77,6 +83,14 @@ describe("Monday report (stub)", () => {
     expect(watch).toContain("DEMO-C-0001");
     expect(watch).toContain("open invoice");
     expect(watch).not.toContain("DEMO-C-0002");
+  });
+
+  it("a mixed-currency account (L5: sums NULL + has_mixed_currency) renders '⚠ mixed currency' in place of money figures — never a fabricated $0", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0003"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("⚠ mixed currency");
+    expect(row!).not.toContain("$0 / $0"); // NULL sums must not degrade to a confident zero
   });
 
   it("regression: merged-away duplicates DEMO-C-0021/0022 must NOT appear (canonicals only)", async () => {

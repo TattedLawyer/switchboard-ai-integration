@@ -29,8 +29,8 @@ beforeEach(async () => {
       ticket_id text, requester_id text, company_name text, domain text,
       status text, solved_at timestamptz, sla_due_at timestamptz
     );
-    create table tmp_deals (deal_id text, company_id text, status text, amount_cents bigint);
-    create table tmp_invoices (invoice_id text, customer_id text, amount_cents bigint, status text);
+    create table tmp_deals (deal_id text, company_id text, status text, amount_cents bigint, currency text);
+    create table tmp_invoices (invoice_id text, customer_id text, amount_cents bigint, status text, currency text);
     create table tmp_payments (customer_id text, status text);
     create table tmp_csat (ticket_id text, score int);
   `);
@@ -157,8 +157,8 @@ describe("customer_360 — missing amount is not zero (L3)", () => {
 
     // Chain the REAL staging model (raw → latest-state, L2 safe cast) into the mart fixture.
     await pool.query(`
-      insert into tmp_invoices
-      select invoice_id, customer_id, amount_cents, status
+      insert into tmp_invoices (invoice_id, customer_id, amount_cents, status, currency)
+      select invoice_id, customer_id, amount_cents, status, currency
       from (${loadModel("models/staging/stg_billing__invoices.sql")}) s
     `);
     // Sanity: staging really did pick the newer row and NULL its amount.

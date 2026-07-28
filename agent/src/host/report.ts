@@ -40,6 +40,10 @@ export async function generateMondayReport(
   const accounts = snapshots.map((s) => JSON.parse(s) as Record<string, unknown>);
   const num = (a: Record<string, unknown>, k: string) => Number(a[k] ?? 0); // counts arrive as strings (pg bigint)
   const usd = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+  // L5: a NULL sum on a has_mixed_currency row means "currencies mixed — a single total
+  // would be a lie". Render the condition, never a fabricated $0.
+  const money = (a: Record<string, unknown>, k: string): string =>
+    a[k] == null && a["has_mixed_currency"] === true ? "⚠ mixed currency" : usd(num(a, k));
   const flagsFor = (a: Record<string, unknown>): string[] => {
     const f: string[] = [];
     if (num(a, "failed_payment_count") > 0) f.push(`${num(a, "failed_payment_count")} failed payment(s)`);
@@ -50,7 +54,7 @@ export async function generateMondayReport(
   };
   const tableRows = accounts.map((a) => {
     const flags = flagsFor(a);
-    return `| ${a["entity_id"]} | ${a["entity_name"]} | ${usd(num(a, "open_deal_amount_cents"))} | ${usd(num(a, "total_invoiced_cents"))} / ${usd(num(a, "total_paid_cents"))} | ${num(a, "open_ticket_count")} | ${a["avg_csat"] ?? "—"} | ${flags.length ? "⚠ " + flags.join("; ") : "ok"} |`;
+    return `| ${a["entity_id"]} | ${a["entity_name"]} | ${money(a, "open_deal_amount_cents")} | ${money(a, "total_invoiced_cents")} / ${money(a, "total_paid_cents")} | ${num(a, "open_ticket_count")} | ${a["avg_csat"] ?? "—"} | ${flags.length ? "⚠ " + flags.join("; ") : "ok"} |`;
   });
   const watch = accounts
     .map((a) => ({ a, flags: flagsFor(a) }))

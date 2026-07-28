@@ -28,6 +28,8 @@ beforeAll(async () => {
            1::bigint as open_invoice_count,
            0::bigint as null_amount_deal_count, 0::bigint as null_amount_invoice_count,
            false as has_unusable_amounts,
+           'USD'::text as billing_currency, 'USD'::text as deal_currency,
+           false as has_mixed_currency,
            0::bigint as failed_payment_count,
            3::bigint as open_ticket_count, 1::bigint as solved_ticket_count,
            0::bigint as sla_breach_count, 4.50::numeric(3,2) as avg_csat
