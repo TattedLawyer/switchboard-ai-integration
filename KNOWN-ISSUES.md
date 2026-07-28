@@ -235,6 +235,43 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   fires every ~1ms), and an unrecognized `INGEST_ROLE` silently means "do
   nothing". *Scheduled: 2b config module.*
 
+## Numeric & monetary integrity (added with the numeric-integrity wave)
+
+- **The ingest contract cannot help rows that never pass a door.** The numeric contract
+  (`ingest/src/numeric-contract.ts`) gates the webhook, replay, and backfill paths via the
+  shared event schema — but rows already in `raw` from before the contract, direct inserts,
+  and any future historical import are covered only by the staging safe-casts, which degrade
+  a bad value to one NULL instead of a dead build. If those casts were ever removed as
+  "redundant with the contract", this is what breaks. By design; disclosed so it stays a
+  decision rather than becoming an assumption.
+- **`plausibleMax` for payments is borrowed from Stripe's 8-digit charge bound.** It is
+  derived for a Stripe-shaped processor and arbitrary for anything else, which is why
+  exceeding it only ever WARNs (dbt `assert_amounts_plausible`) and never rejects — a
+  genuine large payment must never fail a build or quarantine.
+- **Numeric bounds exist twice: TypeScript contract and dbt test SQL.** The contract file is
+  the declared source of truth and every SQL test repeating a bound carries a pointer
+  comment, but nothing mechanically diffs them. A changed bound updated in one place only
+  is detectable by reading, not by CI. *Scheduled: hardening batch.*
+- **Cross-currency refusal is deliberately conservative at the deal grain.** Whether an
+  entity's deals "mix currencies" is judged across ALL its deals, while the guarded sum is
+  open-deals-only — so a closed EUR deal NULLs an otherwise pure-USD open-pipeline sum.
+  Over-refusal only: no cross-currency number can ever be emitted, and all-USD data is
+  unaffected. The precise fix (`count(distinct currency) filter (where status = 'open')`)
+  is known and deferred until a real multi-currency source exists to test against.
+- **Legacy rows with NO currency field fold into the labeled total.** `count(distinct)`
+  ignores NULLs, so `{USD, NULL}` counts as a single currency and a NULL-currency amount
+  sums into a `billing_currency = 'USD'` total. Chosen so pre-currency history stays
+  summable (NULL is "unknown", not "different"); the softest spot in the currency layer.
+  *Scheduled: NULL-currency counter alongside the unusable-amount counters.*
+- **An error-severity numeric test failure halts the mart refresh.** dbt skips downstream
+  models when a staging test fails at severity error, so one NULL amount that reaches
+  staging stops `customer_360` rebuilding until someone looks. Loud by design — with the
+  ingest contract active, a NULL there means enforcement decayed or a doorless row appeared
+  — but operationally it is a stop-the-line switch, not a warning light.
+- **`pg_input_is_valid` requires PostgreSQL 16+.** Compose, CI, and the docs all pin
+  Postgres 16; a deployment on 15 or older fails at `dbt build` with an undefined-function
+  error in every staging model that guards a cast.
+
 ## Architecture (decided, scheduled)
 
 - **The raw store is stricter than the wire.** `raw_events.payload` is jsonb,

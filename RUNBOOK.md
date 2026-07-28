@@ -74,7 +74,12 @@ identity layer and `customer_360` against the seed manifest's planned match matr
   pending rows; `npm run quarantine -w ingest -- --replay <id>` replays one;
   `npm run quarantine -w ingest` sweeps everything pending (each row re-validates
   through the same ingest gate — unfixable rows stay put and are counted). Note:
-  *unsigned* requests are rejected 401, never quarantined.
+  *unsigned* requests are rejected 401, never quarantined. Since the
+  numeric-integrity wave, schema-failure reasons name the offending field (e.g.
+  `schema validation failed: data.amount_cents — amount_cents must be a storable
+  integer, got "abc"`); numeric rules per event type live in
+  `ingest/src/numeric-contract.ts` — a source legitimately changing shape means
+  updating that table, not relaxing the gate.
 - **jsonb-unstorable payloads** (NUL escapes, lone UTF-16 surrogates, nesting
   depth > 1000): quarantined with `payload` null and the byte-exact wire text in
   `raw_body`. These are preserved-for-inspection — `replayQuarantined` reports
