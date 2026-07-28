@@ -289,6 +289,91 @@ describe("customer_360 — avg_csat over NULL scores is disclosed (F3)", () => {
   });
 });
 
+// Research addendum: refusing unknown-currency rows is not enough — dimensional-model
+// practice gives unknowns an explicit, VISIBLE bucket, and an average must carry its
+// base size. The mart already counts these internally; consumers must see them.
+describe("customer_360 — unknown-currency rows and the CSAT base are visibly counted (addendum)", () => {
+  it("USD + NULL invoices: null_currency_invoice_count is 1 even while the sums stay refused", async () => {
+    await seedEntity("C-17", "cust-17");
+    await pool.query(`
+      insert into tmp_invoices values
+        ('inv-22', 'cust-17', 4000, 'paid', 'USD'),
+        ('inv-23', 'cust-17', 6000, 'paid', null)
+    `);
+
+    const row = await martRow("C-17");
+    expect(row.total_invoiced_cents).toBeNull(); // refusal unchanged
+    expect(Number(row.null_currency_invoice_count)).toBe(1);
+    expect(Number(row.null_currency_deal_count)).toBe(0);
+  });
+
+  it("USD + NULL open deals: null_currency_deal_count is 1 while open_deal_amount_cents stays refused", async () => {
+    await seedEntity("C-18", "cust-18");
+    await pool.query(`
+      insert into tmp_deals values
+        ('d-12', 'C-18', 'open', 30000, 'USD'),
+        ('d-13', 'C-18', 'open', 20000, null)
+    `);
+
+    const row = await martRow("C-18");
+    expect(row.open_deal_amount_cents).toBeNull();
+    expect(Number(row.null_currency_deal_count)).toBe(1);
+    expect(Number(row.null_currency_invoice_count)).toBe(0);
+  });
+
+  it("uniformly-unknown invoices (L5.1): the total still sums AND the count says how much of it is unknown-currency (2)", async () => {
+    await seedEntity("C-19", "cust-19");
+    await pool.query(`
+      insert into tmp_invoices values
+        ('inv-24', 'cust-19', 4000, 'paid', null),
+        ('inv-25', 'cust-19', 6000, 'paid', null)
+    `);
+
+    const row = await martRow("C-19");
+    expect(row.total_invoiced_cents).toBe("10000"); // L5.1 leniency unchanged
+    expect(Number(row.null_currency_invoice_count)).toBe(2); // ...but no longer invisible
+  });
+
+  it("a clean all-USD entity and a no-billing entity both report 0 counters — the LEFT-JOIN null-extended row is NOT an unknown currency", async () => {
+    await seedEntity("C-20", "cust-20");
+    await pool.query(`
+      insert into tmp_invoices values ('inv-26', 'cust-20', 4000, 'paid', 'USD');
+      insert into tmp_deals values ('d-14', 'C-20', 'open', 30000, 'USD')
+    `);
+    await seedEntity("C-21", "cust-21"); // billing link, zero invoices, zero deals
+
+    const clean = await martRow("C-20");
+    expect(Number(clean.null_currency_invoice_count)).toBe(0);
+    expect(Number(clean.null_currency_deal_count)).toBe(0);
+
+    const empty = await martRow("C-21");
+    expect(Number(empty.null_currency_invoice_count)).toBe(0);
+    expect(Number(empty.null_currency_deal_count)).toBe(0);
+  });
+
+  it("CSAT base size: 2 valid + 3 NULL scores → csat_score_count 2 (the usable base under avg_csat); a no-csat entity reports 0", async () => {
+    await seedEntity("C-22", "cust-22");
+    await pool.query(`insert into tmp_resolution values ('support', 'req-22', 'C-22', 1)`);
+    await pool.query(`
+      insert into tmp_tickets (ticket_id, requester_id, status) values
+        ('t-6', 'req-22', 'solved'), ('t-7', 'req-22', 'solved'), ('t-8', 'req-22', 'solved'),
+        ('t-9', 'req-22', 'solved'), ('t-10', 'req-22', 'solved');
+      insert into tmp_csat values
+        ('t-6', 4), ('t-7', 5), ('t-8', null), ('t-9', null), ('t-10', null)
+    `);
+    await seedEntity("C-23", "cust-23");
+
+    const row = await martRow("C-22");
+    expect(row.avg_csat).toBe("4.50");
+    expect(Number(row.csat_score_count)).toBe(2);
+    expect(Number(row.null_score_count)).toBe(3);
+
+    const none = await martRow("C-23");
+    expect(none.avg_csat).toBeNull();
+    expect(Number(none.csat_score_count)).toBe(0);
+  });
+});
+
 // Review I3: the dbt singular test's own predicate, exercised in vitest (no local dbt
 // binary — this is its only CI-speed execution). The REAL test SQL is loaded from disk;
 // loadModel strips the config() block, so severity does not interfere. The mart is

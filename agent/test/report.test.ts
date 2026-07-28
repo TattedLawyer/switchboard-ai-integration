@@ -30,36 +30,45 @@ beforeAll(async () => {
            0::bigint as failed_payment_count,
            3::bigint as open_ticket_count, 1::bigint as solved_ticket_count,
            0::bigint as sla_breach_count, 4.50::numeric(3,2) as avg_csat,
-           0::bigint as null_score_count
+           0::bigint as null_score_count,
+           -- Addendum columns: unknown-currency row counts + the usable-CSAT base size.
+           0::bigint as null_currency_invoice_count, 0::bigint as null_currency_deal_count,
+           2::bigint as csat_score_count
     union all
     select 'DEMO-C-0002', 'DEMO Manufacturing Group 2', 'manufacturing-2.example.com',
            true, false, false, true,
-           1, 250000, 0, 0, 0, 0, 0, false, null, 'USD', false, 0, 0, 0, 0, null, 0
+           1, 250000, 0, 0, 0, 0, 0, false, null, 'USD', false, 0, 0, 0, 0, null, 0, 0, 0, 0
     union all
     select 'DEMO-C-0003', 'DEMO Retail Group 3', 'retail-3.example.com',
            true, true, false, true,
-           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0
+           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 0, 0, 0
     union all
     -- F1: the mart says this entity's amounts are unusable (L3 counters + flag) — the
     -- report must surface that, not render the partial sums as the whole story.
     select 'DEMO-C-0004', 'DEMO Services Group 4', 'services-4.example.com',
            true, true, false, true,
-           1, 100000, 50000, 0, 0, 1, 2, true, 'USD', 'USD', false, 0, 0, 0, 0, null, 0
+           1, 100000, 50000, 0, 0, 1, 2, true, 'USD', 'USD', false, 0, 0, 0, 0, null, 0, 0, 0, 0
     union all
     -- F3 report side: avg over usable scores only; 2 skipped NULL scores must be flagged.
     select 'DEMO-C-0005', 'DEMO Wholesale Group 5', 'wholesale-5.example.com',
            true, false, true, true,
-           0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 2, 0, 4.00, 2
+           0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 2, 0, 4.00, 2, 0, 0, 3
     union all
     -- Minor: a NULL sum WITHOUT has_mixed_currency — unreachable from today's mart, but
     -- the renderer must degrade to "unknown", never a fabricated $0.
     select 'DEMO-C-0006', 'DEMO Media Group 6', 'media-6.example.com',
            true, true, false, true,
-           1, null, 40000, 40000, 0, 0, 0, false, 'USD', null, false, 0, 0, 0, 0, null, 0
+           1, null, 40000, 40000, 0, 0, 0, false, 'USD', null, false, 0, 0, 0, 0, null, 0, 0, 0, 0
+    union all
+    -- Addendum: USD+NULL invoices and one NULL-currency deal — refused (mixed) AND the
+    -- unknown rows are counted (2 invoice + 1 deal = 3 rows with unknown currency).
+    select 'DEMO-C-0007', 'DEMO Energy Group 7', 'energy-7.example.com',
+           true, true, false, true,
+           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 2, 1, 0
     union all
     select 'billing:B-0015', 'DEMO Orphan Billing', 'orphan.example.com',
            false, true, false, false,
-           0, 0, 90000, 90000, 0, 0, 0, false, 'USD', null, false, 1, 0, 0, 0, null, 0
+           0, 0, 90000, 90000, 0, 0, 0, false, 'USD', null, false, 1, 0, 0, 0, null, 0, 0, 0, 0
   `);
   await pool.query(`
     create or replace view ${SCHEMA}.stg_crm__companies as
@@ -138,6 +147,27 @@ describe("Monday report (stub)", () => {
     expect(row).toBeDefined();
     expect(row!).toContain("⚠ unknown");
     expect(row!).not.toContain("$0");
+  });
+
+  // ── Research addendum: unknowns get a visible bucket, and an average carries its base.
+  it("addendum: rows with unknown currency are counted in the flags — DEMO-C-0007's 2 invoice + 1 deal rows surface as '3 row(s) with unknown currency'", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0007"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("3 row(s) with unknown currency");
+    const watch = md.split("## Accounts to watch")[1].split("##")[0];
+    expect(watch).toContain("DEMO-C-0007");
+    expect(watch).toContain("3 row(s) with unknown currency");
+  });
+
+  it("addendum: avg_csat carries its base size — DEMO-C-0001 renders '4.50 (n=2)'; a no-csat entity keeps '—'", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const withCsat = md.split("\n").find((l) => l.startsWith("| DEMO-C-0001"));
+    expect(withCsat).toBeDefined();
+    expect(withCsat!).toContain("4.50 (n=2)");
+    const without = md.split("\n").find((l) => l.startsWith("| DEMO-C-0002"));
+    expect(without).toBeDefined();
+    expect(without!).toContain("| — |"); // no csat → no fabricated base
   });
 
   it("regression: merged-away duplicates DEMO-C-0021/0022 must NOT appear (canonicals only)", async () => {
