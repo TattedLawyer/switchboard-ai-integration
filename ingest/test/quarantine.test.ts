@@ -346,4 +346,27 @@ describe("A7: quarantine operator surface", () => {
     const again = await replayAllQuarantined(pool, ingestEvent);
     expect(again.replayed).toBe(0);
   });
+
+  // Security review M1/F3: the depth-diverted branch used to run `rawBody ?? JSON.stringify(payload)`
+  // — for a beyond-stringify-cliff payload with NO wire text that stringify is the very call
+  // that RangeErrors, so quarantine (which exists to never throw on the payloads it preserves)
+  // threw. When preservation is physically impossible in-process, the door must still not
+  // throw: it records raw_body = null with a loud reason instead.
+  it("quarantineEvent resolves (does not throw) for a 7000-deep payload with no wire text, recording the content-not-preserved reason", async () => {
+    let deep: unknown = 0;
+    for (let i = 0; i < 7000; i++) deep = [deep];
+    await expect(
+      quarantineEvent(pool, "crm", deep, "test unpreservable", undefined),
+    ).resolves.toBeUndefined();
+
+    const q = await pool.query(
+      "select payload, raw_body, reason from ingest.quarantine where reason like 'test unpreservable%'",
+    );
+    expect(q.rowCount).toBe(1);
+    expect(q.rows[0].payload).toBeNull();
+    expect(q.rows[0].raw_body).toBeNull();
+    expect(q.rows[0].reason).toBe(
+      "test unpreservable — payload unserializable in-process and no wire text supplied; content not preserved",
+    );
+  });
 });

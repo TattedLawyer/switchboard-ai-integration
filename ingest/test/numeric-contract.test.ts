@@ -155,6 +155,28 @@ describe("L1 numeric contract at the trust boundary", () => {
     });
   });
 
+  describe("violation rendering is total and bounded (security review M1/L1)", () => {
+    it("a 7000-deep nested amount_cents returns a violation naming amount_cents and does NOT throw", async () => {
+      const { numericContractViolation } = await contractModule();
+      // Past V8's JSON.stringify recursion cliff (~6.6k): a throwing renderer here would
+      // propagate through safeParse and wedge the backfill poll loop.
+      let deep: unknown = 0;
+      for (let i = 0; i < 7000; i++) deep = [deep];
+      const violation = numericContractViolation("deal.updated", { amount_cents: deep });
+      expect(violation).not.toBeNull();
+      expect(violation!.field).toBe("amount_cents");
+      expect(violation!.reason).toContain("amount_cents");
+    });
+
+    it("a 10KB string value produces a bounded reason (≤ ~200 chars), not a payload dump", async () => {
+      const { numericContractViolation } = await contractModule();
+      const violation = numericContractViolation("deal.updated", { amount_cents: "x".repeat(10 * 1024) });
+      expect(violation).not.toBeNull();
+      expect(violation!.reason).toContain("amount_cents");
+      expect(violation!.reason.length).toBeLessThanOrEqual(200);
+    });
+  });
+
   describe("replay door", () => {
     it("a quarantined bad-amount payload stays 'still-invalid' on replay — the contract lives on the shared schema, so no door can drift", async () => {
       const bad = evt("evt-nc-replay", "invoice.created", { amount_cents: "abc" });

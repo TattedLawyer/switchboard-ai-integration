@@ -89,10 +89,28 @@ export async function quarantineEvent(
   if (jsonbUnstorableReason(payload) !== null) {
     // Prefer the original wire text when supplied: byte-exact preservation, and the only safe
     // option for depth-diverted payloads (stringify would RangeError on them). The stringify
-    // fallback is for direct callers without wire text, whose payloads stringify fine.
+    // fallback is for direct callers without wire text, whose payloads usually stringify fine
+    // — but a depth-diverted payload with NO wire text cannot be serialized by anything
+    // in-process. Preservation is physically impossible there; the invariant that quarantine
+    // never throws on the payloads it exists to preserve still holds: record a raw_body-less
+    // row whose reason says loudly that the content was lost, instead of crashing the door.
+    let text: string;
+    try {
+      text = rawBody ?? JSON.stringify(payload);
+    } catch {
+      const lossReason = `${reason} — payload unserializable in-process and no wire text supplied; content not preserved`;
+      console.error(
+        `[quarantine] CONTENT LOSS: ${source} payload could not be serialized (nesting beyond JSON.stringify limits) and no wire text was supplied — quarantine row records the reason only`,
+      );
+      await pool.query(
+        "insert into ingest.quarantine (tenant_id, source, raw_body, reason) values ($1, $2, $3, $4)",
+        [tenantId, source, null, lossReason]
+      );
+      return;
+    }
     await pool.query(
       "insert into ingest.quarantine (tenant_id, source, raw_body, reason) values ($1, $2, $3, $4)",
-      [tenantId, source, rawBody ?? JSON.stringify(payload), reason]
+      [tenantId, source, text, reason]
     );
     return;
   }

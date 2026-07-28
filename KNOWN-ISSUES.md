@@ -262,6 +262,8 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   ignores NULLs, so `{USD, NULL}` counts as a single currency and a NULL-currency amount
   sums into a `billing_currency = 'USD'` total. Chosen so pre-currency history stays
   summable (NULL is "unknown", not "different"); the softest spot in the currency layer.
+  Malformed currency strings (anything not `^[A-Z]{3}$`) are likewise nulled at staging,
+  so they join the same leniency path.
   *Scheduled: NULL-currency counter alongside the unusable-amount counters.*
 - **An error-severity numeric test failure halts the mart refresh.** dbt skips downstream
   models when a staging test fails at severity error, so one NULL amount that reaches

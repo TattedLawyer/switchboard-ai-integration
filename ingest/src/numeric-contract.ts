@@ -53,6 +53,19 @@ export const NUMERIC_CONTRACT: Readonly<Record<string, EventContract>> = {
 
 export interface NumericViolation { field: string; reason: string; }
 
+// Reasons embed the offending value for the operator. Rendering must be total: a
+// hostile value must never make the *renderer* throw (a throw inside a zod refinement
+// propagates through safeParse — verified — and would wedge the backfill poll loop),
+// and must be bounded so a megabyte payload cannot flood the quarantine table.
+function renderValue(v: unknown): string {
+  try {
+    const s = JSON.stringify(v) ?? String(v);
+    return s.length > 120 ? `${s.slice(0, 120)}… (${s.length} chars)` : s;
+  } catch {
+    return "[value unrenderable: nesting beyond JSON.stringify limits]";
+  }
+}
+
 // Storability: a JSON number that is not a safe integer either has a fractional part or
 // has already lost precision at JSON.parse (|v| > 2^53) — in both cases the value we
 // observe is not trustworthy as money, and values near the bigint boundary (2^63) are
@@ -72,7 +85,7 @@ export function numericContractViolation(
       continue;
     }
     if (typeof v !== "number" || !Number.isSafeInteger(v)) {
-      return { field, reason: `${field} must be a storable integer, got ${JSON.stringify(v)}` };
+      return { field, reason: `${field} must be a storable integer, got ${renderValue(v)}` };
     }
     if (rule.signed === false && v < 0) {
       return { field, reason: `${field} must be non-negative for ${eventType}, got ${v}` };

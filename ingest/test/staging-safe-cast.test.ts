@@ -146,6 +146,74 @@ for (const spec of SPECS) {
   });
 }
 
+// Security review M2: currency is payload-controlled text that flows to the mart, the MCP
+// read tool, and the report's LLM prompt. Staging constrains it to a three-letter uppercase
+// code at the source; anything else becomes NULL (the L5.1 "unknown" leniency path) rather
+// than riding a free-text channel downstream.
+describe("staging currency constraint (security M2)", () => {
+  const CURRENCY_SPECS = [
+    {
+      title: "stg_billing__invoices",
+      modelPath: "models/staging/stg_billing__invoices.sql",
+      source: "billing",
+      eventType: "invoice.created",
+      idColumn: "invoice_id",
+      makeData: (id: string, currency: unknown) => ({
+        id, customer_id: "cust-1", amount_cents: 1000,
+        ...(currency === undefined ? {} : { currency }),
+      }),
+    },
+    {
+      title: "stg_crm__deals",
+      modelPath: "models/staging/stg_crm__deals.sql",
+      source: "crm",
+      eventType: "deal.updated",
+      idColumn: "deal_id",
+      makeData: (id: string, currency: unknown) => ({
+        id, company_id: "co-1", name: `Deal ${id}`, amount_cents: 1000, status: "open",
+        ...(currency === undefined ? {} : { currency }),
+      }),
+    },
+  ] as const;
+
+  for (const spec of CURRENCY_SPECS) {
+    it(`${spec.title}: 'USD' passes; lowercase 'usd' and injection-shaped 'EUR;drop table x' are NULLed`, async () => {
+      // Numeric suffixes: the models order by (substring(event_id from 5))::bigint.
+      const rows: Array<[string, string, unknown]> = [
+        ["evt-9001", "e-upper", "USD"],
+        ["evt-9002", "e-lower", "usd"],
+        ["evt-9003", "e-inject", "EUR;drop table x"],
+        ["evt-9004", "e-absent", undefined],
+      ];
+      for (const [eventId, entityId, currency] of rows) {
+        await pool.query(
+          `insert into raw.raw_events (source, event_id, event_type, payload)
+           values ($1, $2, $3, $4::jsonb)`,
+          [
+            spec.source,
+            eventId,
+            spec.eventType,
+            JSON.stringify({
+              occurred_at: "2026-01-05T00:00:00.000Z",
+              data: spec.makeData(entityId, currency),
+            }),
+          ],
+        );
+      }
+
+      const res = await pool.query(
+        `select * from (${loadModel(spec.modelPath)}) m order by ${spec.idColumn}`,
+      );
+      expect(res.rowCount).toBe(4);
+      const byId = Object.fromEntries(res.rows.map((r) => [r[spec.idColumn], r]));
+      expect(byId["e-upper"].currency).toBe("USD");
+      expect(byId["e-lower"].currency).toBeNull();
+      expect(byId["e-inject"].currency).toBeNull();
+      expect(byId["e-absent"].currency).toBeNull(); // legacy no-currency stays NULL, as before
+    });
+  }
+});
+
 describe("pg_input_is_valid out-of-range behavior (empirical anchor)", () => {
   it("returns false for a syntactically numeric value that exceeds the target type's range", async () => {
     // The safe-cast pattern relies on pg_input_is_valid rejecting not just garbage

@@ -22,7 +22,11 @@ select
     case when pg_input_is_valid(invoice ->> 'amount_cents', 'bigint')
          then (invoice ->> 'amount_cents')::bigint end as amount_cents,
     -- L5: currency is carried, not discarded — the mart refuses to sum across currencies.
-    -- Plain text (no cast guard needed); NULL for legacy payloads that never sent it.
-    invoice ->> 'currency' as currency,
+    -- Currency is payload-controlled text that flows to the mart, the MCP read tool, and
+    -- the report's LLM prompt. Constrain it to a three-letter uppercase code at the source:
+    -- anything else becomes NULL ("unknown", the L5.1 leniency path) rather than riding a
+    -- free-text channel downstream. ISO-4217 allowlisting is registered follow-up work.
+    case when (invoice ->> 'currency') ~ '^[A-Z]{3}$'
+         then invoice ->> 'currency' end as currency,
     status
 from latest

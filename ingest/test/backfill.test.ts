@@ -202,6 +202,52 @@ describe("backfill occurred_at gate (the third door)", () => {
     expect((await pool.query("select 1 from ingest.quarantine")).rowCount).toBe(1);
   });
 
+  // Claim-pin for "a poison feed event cannot wedge the poll loop" (security review M1).
+  // A declared numeric field nested past V8's JSON.stringify cliff (~6.6k) used to throw
+  // inside the contract's reason rendering, propagate through safeParse (zod v3 does not
+  // catch refinement throws), crash pollOnce, burn catchUp's retries on the same page, and
+  // stall the cursor forever. The fix mirrors the webhook door: jsonbUnstorableReason
+  // diverts the event to quarantine BEFORE the schema ever sees it.
+  it("a 7000-deep amount_cents in a feed page cannot wedge the loop: neighbors ingest, poison quarantines with a 'poll:' reason, cursor advances", async () => {
+    // The page must be hand-assembled as TEXT: JSON.stringify (and express res.json)
+    // RangeError on the deep value, while JSON.parse handles it fine — exactly the
+    // asymmetry under test.
+    const deep = "[".repeat(7000) + "0" + "]".repeat(7000);
+    const iso = new Date().toISOString();
+    const poison =
+      `{"event_id":"evt-deep","event_type":"deal.updated","occurred_at":"${iso}",` +
+      `"data":{"id":"DEMO-D-0001","amount_cents":${deep}},"seq":2}`;
+    const pageText =
+      `{"events":[${JSON.stringify({ ...goodEvent("evt-a"), seq: 1 })},${poison},` +
+      `${JSON.stringify({ ...goodEvent("evt-c"), seq: 3 })}],"last_seq":3}`;
+
+    const app = express();
+    app.get("/events", (_req, res) => res.type("application/json").send(pageText));
+    const srv: Server = app.listen(0);
+    const port = (srv.address() as { port: number }).port;
+
+    const result = await pollOnce(pool, "crm", `http://127.0.0.1:${port}`);
+    srv.close();
+
+    expect(result.ingested).toBe(2);
+    expect(result.quarantined).toBe(1);
+
+    const raw = await pool.query("select event_id from raw.raw_events order by event_id");
+    expect(raw.rows.map((r) => r.event_id)).toEqual(["evt-a", "evt-c"]);
+
+    const q = await pool.query("select reason, raw_body, payload from ingest.quarantine");
+    expect(q.rowCount).toBe(1);
+    expect(q.rows[0].reason).toContain("poll:");
+    // Depth-diverted payloads cannot live in jsonb; the wire text of the page is the only
+    // in-process representation that survives — it must be preserved as raw_body.
+    expect(q.rows[0].payload).toBeNull();
+    expect(q.rows[0].raw_body).toBe(pageText);
+
+    // The poison event must not stall the cursor — that would re-poll it forever.
+    const cur = await pool.query("select last_seq from ingest.cursors where source = 'crm'");
+    expect(Number(cur.rows[0].last_seq)).toBe(3);
+  });
+
   it("still ingests valid feed events, and advances the cursor past a quarantined one", async () => {
     const events = [goodEvent("evt-1"), { ...goodEvent("evt-2"), occurred_at: "nope", seq: 2 },
                     { ...goodEvent("evt-3"), seq: 3 }];
