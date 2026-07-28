@@ -23,8 +23,8 @@ select
     -- L5: currency is carried, not discarded — the mart refuses to sum across currencies.
     -- Currency is payload-controlled text that flows to the mart, the MCP read tool, and
     -- the report's LLM prompt. Constrain it to a three-letter uppercase code at the source:
-    -- anything else becomes NULL ("unknown", the L5.1 leniency path) rather than riding a
-    -- free-text channel downstream. ISO-4217 allowlisting is registered follow-up work.
+    -- anything else becomes NULL ("unknown" — counted by the mart and REFUSED from its
+    -- labeled totals, never summed) rather than riding a free-text channel downstream. ISO-4217 allowlisting is registered follow-up work.
     case when (deal ->> 'currency') ~ '^[A-Z]{3}$'
          then deal ->> 'currency' end as currency,
     deal ->> 'status'     as status
