@@ -168,7 +168,17 @@ select
     -- F3 + addendum: avg_csat is the average of the usable scores only; csat_score_count
     -- is its base size and null_score_count discloses how many rows the average skipped.
     coalesce(c.null_score_count, 0)        as null_score_count,
-    coalesce(c.csat_score_count, 0)        as csat_score_count
+    coalesce(c.csat_score_count, 0)        as csat_score_count,
+    -- Kimball Design Tip #164 (audit dimension): ONE coarse warning — "tread cautiously" —
+    -- with the precise columns above as the why. The OR of every honesty signal; extend it
+    -- when a new signal lands (each trigger is pinned independently in mart-currency tests,
+    -- so forgetting fails CI). Kimball's Data Supplied Flag is deliberately absent:
+    -- switchboard never imputes, it refuses — there is no estimator to disclose.
+    (   (coalesce(d.null_amount_deal_count, 0) + coalesce(b.null_amount_invoice_count, 0)) > 0
+     or coalesce(b.billing_currency_is_mixed, false) or coalesce(d.deal_currency_is_mixed, false)
+     or coalesce(b.null_currency_invoice_rows, 0) > 0 or coalesce(d.null_currency_deal_rows, 0) > 0
+     or coalesce(c.null_score_count, 0) > 0
+    )                                      as has_data_warnings
 from entities e
 left join deals d    on d.entity_id = e.entity_id
 left join billing b  on b.entity_id = e.entity_id

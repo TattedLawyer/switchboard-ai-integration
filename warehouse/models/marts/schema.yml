@@ -38,3 +38,12 @@ models:
       - name: csat_score_count
         description: Count of usable (non-NULL) CSAT scores — the base size under avg_csat (F3 addendum).
         data_tests: [not_null]
+      - name: has_data_warnings
+        description: >
+          Kimball audit-dimension coarse warning (Design Tip #164) — true when ANY honesty
+          signal fired (unusable amounts, mixed or unknown currency, unusable CSAT scores):
+          a tread-cautiously indicator, not a diagnosis; the specific columns are the why.
+          Kimball's Data Supplied Flag is deliberately absent — switchboard refuses, never
+          imputes. An Unlikely Value flag (plausibleMax at row grain) is a registered
+          follow-up, currently only a dbt warn test.
+        data_tests: [not_null]

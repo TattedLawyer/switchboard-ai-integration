@@ -62,6 +62,7 @@ const HEALTH_COLUMNS = [
   "null_currency_invoice_count",
   "null_currency_deal_count",
   "csat_score_count",
+  "has_data_warnings",
 ].join(", ");
 
 export function createMcpServer(pool: pg.Pool): McpServer {
