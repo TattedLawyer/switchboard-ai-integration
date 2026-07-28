@@ -407,6 +407,16 @@ describe("customer_360 — unknown-currency rows and the CSAT base are visibly c
       expect(row.has_data_warnings).toBe(true);
     });
 
+    it("trigger: an unknown-currency INVOICE row alone raises the warning — isolates the invoice-side term of the OR (its deletion must fail here, not sail through)", async () => {
+      await seedEntity("C-30", "cust-30");
+      await pool.query(`insert into tmp_invoices values ('inv-30', 'cust-30', 5000, 'paid', null)`);
+
+      const row = await martRow("C-30");
+      expect(row.has_mixed_currency).toBe(false);
+      expect(Number(row.null_currency_invoice_count)).toBe(1);
+      expect(row.has_data_warnings).toBe(true);
+    });
+
     it("trigger: an unusable CSAT score raises the warning", async () => {
       await seedEntity("C-29", "cust-29");
       await pool.query(`insert into tmp_resolution values ('support', 'req-29', 'C-29', 1)`);
