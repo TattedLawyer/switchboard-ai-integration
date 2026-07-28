@@ -102,6 +102,7 @@ csat as (
     -- usable scores, but the skipped rows must be disclosed, not silently averaged around.
     select sl.entity_id,
            avg(c.score)::numeric(3,2)                  as avg_csat,
+           count(c.score)                              as csat_score_count, -- usable base under avg_csat
            count(*) filter (where c.score is null)     as null_score_count
     from support_link sl
     join {{ ref('stg_support__tickets') }} t on t.requester_id = sl.requester_id
@@ -130,6 +131,10 @@ select
     coalesce(b.open_invoice_count, 0)      as open_invoice_count,
     coalesce(d.null_amount_deal_count, 0)    as null_amount_deal_count,
     coalesce(b.null_amount_invoice_count, 0) as null_amount_invoice_count,
+    -- Addendum to F2: unknown-currency rows get a VISIBLE bucket, not just refusal —
+    -- these count the NULL-currency rows behind a refused (or L5.1 uniformly-unknown) sum.
+    coalesce(b.null_currency_invoice_rows, 0) as null_currency_invoice_count,
+    coalesce(d.null_currency_deal_rows, 0)    as null_currency_deal_count,
     -- L3: coalesce(sum(...), 0) renders "no amount" and "zero" identically; these counters
     -- make an entity with unusable amounts visibly incomplete instead of confidently zero.
     (coalesce(d.null_amount_deal_count, 0) + coalesce(b.null_amount_invoice_count, 0)) > 0
@@ -146,9 +151,10 @@ select
     coalesce(s.solved_ticket_count, 0)     as solved_ticket_count,
     coalesce(s.sla_breach_count, 0)        as sla_breach_count,
     c.avg_csat,
-    -- F3: csat rows whose score was unusable (NULLed by the safe-cast) — avg_csat is the
-    -- average of the usable scores only, and this counter discloses how many it skipped.
-    coalesce(c.null_score_count, 0)        as null_score_count
+    -- F3 + addendum: avg_csat is the average of the usable scores only; csat_score_count
+    -- is its base size and null_score_count discloses how many rows the average skipped.
+    coalesce(c.null_score_count, 0)        as null_score_count,
+    coalesce(c.csat_score_count, 0)        as csat_score_count
 from entities e
 left join deals d    on d.entity_id = e.entity_id
 left join billing b  on b.entity_id = e.entity_id

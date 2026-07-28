@@ -26,6 +26,15 @@ models:
       - name: has_mixed_currency
         description: True when invoices or deals span more than one currency, or mix a known currency with NULL-currency rows (F2) — the money sums are NULL because a cross-currency total would be a lie (L5).
         data_tests: [not_null]
+      - name: null_currency_invoice_count
+        description: Invoice rows whose currency is unknown (NULLed at staging or never carried) — the visible bucket behind a refused or uniformly-unknown billing sum (F2 addendum).
+        data_tests: [not_null]
+      - name: null_currency_deal_count
+        description: Deal rows whose currency is unknown — the visible bucket behind a refused or uniformly-unknown deal sum (F2 addendum).
+        data_tests: [not_null]
       - name: null_score_count
         description: CSAT rows whose score was unusable (NULLed by the safe-cast) — avg_csat averages only the usable scores; this counter discloses how many it skipped (F3).
+        data_tests: [not_null]
+      - name: csat_score_count
+        description: Count of usable (non-NULL) CSAT scores — the base size under avg_csat (F3 addendum).
         data_tests: [not_null]

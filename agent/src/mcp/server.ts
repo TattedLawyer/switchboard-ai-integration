@@ -59,6 +59,9 @@ const HEALTH_COLUMNS = [
   "sla_breach_count",
   "avg_csat",
   "null_score_count",
+  "null_currency_invoice_count",
+  "null_currency_deal_count",
+  "csat_score_count",
 ].join(", ");
 
 export function createMcpServer(pool: pg.Pool): McpServer {

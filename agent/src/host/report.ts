@@ -63,11 +63,19 @@ export async function generateMondayReport(
     if (a["has_unusable_amounts"] === true)
       f.push(`unusable amount(s): ${num(a, "null_amount_deal_count")} deal / ${num(a, "null_amount_invoice_count")} invoice`);
     if (num(a, "null_score_count") > 0) f.push(`${num(a, "null_score_count")} unusable CSAT score(s)`);
+    // Addendum: unknown-currency rows get a visible count, whether they forced a refusal
+    // (known + unknown = mixed) or rode the L5.1 uniformly-unknown leniency.
+    const unknownCurrencyRows = num(a, "null_currency_invoice_count") + num(a, "null_currency_deal_count");
+    if (unknownCurrencyRows > 0) f.push(`${unknownCurrencyRows} row(s) with unknown currency`);
     return f;
   };
+  // Addendum: an average must carry its base size — "4.50 (n=2)" — so a one-review 5.00
+  // and a fifty-review 5.00 stop looking identical. No csat at all stays "—".
+  const csatCell = (a: Record<string, unknown>): string =>
+    a["avg_csat"] == null ? "—" : `${a["avg_csat"]} (n=${num(a, "csat_score_count")})`;
   const tableRows = accounts.map((a) => {
     const flags = flagsFor(a);
-    return `| ${a["entity_id"]} | ${a["entity_name"]} | ${money(a, "open_deal_amount_cents")} | ${money(a, "total_invoiced_cents")} / ${money(a, "total_paid_cents")} | ${num(a, "open_ticket_count")} | ${a["avg_csat"] ?? "—"} | ${flags.length ? "⚠ " + flags.join("; ") : "ok"} |`;
+    return `| ${a["entity_id"]} | ${a["entity_name"]} | ${money(a, "open_deal_amount_cents")} | ${money(a, "total_invoiced_cents")} / ${money(a, "total_paid_cents")} | ${num(a, "open_ticket_count")} | ${csatCell(a)} | ${flags.length ? "⚠ " + flags.join("; ") : "ok"} |`;
   });
   const watch = accounts
     .map((a) => ({ a, flags: flagsFor(a) }))
