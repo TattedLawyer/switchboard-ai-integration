@@ -204,6 +204,89 @@ describe("customer_360 — cross-currency sums are refused, currency is carried 
     expect(row.open_deal_amount_cents).toBeNull();
     expect(row.has_mixed_currency).toBe(true);
   });
+
+  // ── External review F2: count(distinct) ignores NULLs, so {USD, NULL} used to count
+  // as ONE currency and the NULL-currency amount summed into a confident 'USD' total.
+  // New semantics: a source is single-currency iff its currency is uniformly unknown
+  // (0 distinct — the L5.1 leniency, see below) OR exactly one known currency with ZERO
+  // NULL-currency rows beside it. Known + unknown = MIXED.
+  it("F2: a known currency plus an unknown one (USD + NULL invoices) is MIXED — sums NULL, billing_currency NULL, flag true", async () => {
+    await seedEntity("C-12", "cust-12");
+    await pool.query(`
+      insert into tmp_invoices values
+        ('inv-18', 'cust-12', 4000, 'paid',    'USD'),
+        ('inv-19', 'cust-12', 6000, 'created', null)
+    `);
+
+    const row = await martRow("C-12");
+    expect(row.total_invoiced_cents).toBeNull(); // the NULL-currency 6000 could be any currency
+    expect(row.total_paid_cents).toBeNull();
+    expect(row.billing_currency).toBeNull(); // 'USD' is not the whole truth
+    expect(row.has_mixed_currency).toBe(true);
+  });
+
+  // THE L5.1 PIN — deliberate leniency, not an oversight: rows whose currency is
+  // UNIFORMLY unknown (pre-currency history; malformed codes nulled at staging) stay
+  // summable — there is no known currency to contradict — but the total is labeled
+  // billing_currency NULL, never a claimed code, and the row is NOT flagged as mixed.
+  it("L5.1 pin: uniformly-unknown currency (all invoices NULL) still sums, labeled NULL, flag false", async () => {
+    await seedEntity("C-13", "cust-13");
+    await pool.query(`
+      insert into tmp_invoices values
+        ('inv-20', 'cust-13', 4000, 'paid',    null),
+        ('inv-21', 'cust-13', 6000, 'created', null)
+    `);
+
+    const row = await martRow("C-13");
+    expect(row.total_invoiced_cents).toBe("10000"); // pre-currency history stays summable
+    expect(row.total_paid_cents).toBe("4000");
+    expect(row.billing_currency).toBeNull(); // unknown is labeled unknown, not 'USD'
+    expect(row.has_mixed_currency).toBe(false);
+  });
+
+  it("F2 deal-side analog: an open USD deal plus an open NULL-currency deal is MIXED — open_deal_amount_cents NULL, deal_currency NULL, flag true", async () => {
+    await seedEntity("C-14", "cust-14");
+    await pool.query(`
+      insert into tmp_deals values
+        ('d-10', 'C-14', 'open', 30000, 'USD'),
+        ('d-11', 'C-14', 'open', 20000, null)
+    `);
+
+    const row = await martRow("C-14");
+    expect(row.open_deal_amount_cents).toBeNull();
+    expect(row.deal_currency).toBeNull();
+    expect(row.has_mixed_currency).toBe(true);
+    expect(Number(row.open_deal_count)).toBe(2); // counts are not money; they survive
+  });
+});
+
+// External review F3: stg_support__csat.score is nullable since the safe-cast, and
+// avg() silently skips NULLs — the average is correct over usable scores, but the
+// skipped rows were undisclosed. null_score_count makes them visible.
+describe("customer_360 — avg_csat over NULL scores is disclosed (F3)", () => {
+  it("2 valid scores (4,5) + 3 NULL-score csat rows: avg_csat is 4.50 over the usable scores, null_score_count discloses the 3", async () => {
+    await seedEntity("C-15", "cust-15");
+    await pool.query(`insert into tmp_resolution values ('support', 'req-15', 'C-15', 1)`);
+    await pool.query(`
+      insert into tmp_tickets (ticket_id, requester_id, status) values
+        ('t-1', 'req-15', 'solved'), ('t-2', 'req-15', 'solved'), ('t-3', 'req-15', 'solved'),
+        ('t-4', 'req-15', 'solved'), ('t-5', 'req-15', 'solved');
+      insert into tmp_csat values
+        ('t-1', 4), ('t-2', 5), ('t-3', null), ('t-4', null), ('t-5', null)
+    `);
+
+    const row = await martRow("C-15");
+    expect(row.avg_csat).toBe("4.50"); // avg stays over usable scores — correct, now disclosed
+    expect(Number(row.null_score_count)).toBe(3);
+  });
+
+  it("an entity with no csat rows at all reports null_score_count 0 (not NULL)", async () => {
+    await seedEntity("C-16", "cust-16");
+
+    const row = await martRow("C-16");
+    expect(row.avg_csat).toBeNull();
+    expect(Number(row.null_score_count)).toBe(0);
+  });
 });
 
 // Review I3: the dbt singular test's own predicate, exercised in vitest (no local dbt
@@ -238,6 +321,29 @@ describe("assert_no_mixed_currency_totals — the singular test's predicate itse
     await pool.query(`create table tmp_mart as ${MART_SQL}`);
     const res = await pool.query(SINGULAR_SQL);
     expect(res.rows).toEqual([]); // correct mart → nothing to report
+  });
+
+  it("planted counter-example: a corrupted mart where a KNOWN+UNKNOWN-currency entity carries a non-NULL total IS returned — the predicate sees NULL-currency mixing (F2)", async () => {
+    // External review F2, singular-test side: count(distinct) ignores NULLs, so the old
+    // predicate (count(distinct currency) > 1) classified {USD, NULL} as single-currency
+    // and would wave a leaked cross-currency total straight through.
+    await seedEntity("C-11", "cust-11");
+    await pool.query(`
+      insert into tmp_invoices values
+        ('inv-16', 'cust-11', 4000, 'paid', 'USD'),
+        ('inv-17', 'cust-11', 6000, 'paid', null)
+    `);
+
+    await pool.query(`create table tmp_mart as ${MART_SQL}`);
+    // Corrupt the mart: a confident total over a known + unknown currency leaked out.
+    await pool.query(
+      `update tmp_mart set total_invoiced_cents = 999999 where entity_id = 'C-11'`,
+    );
+
+    const res = await pool.query(SINGULAR_SQL);
+    expect(res.rowCount).toBe(1);
+    expect(res.rows[0].entity_id).toBe("C-11");
+    expect(res.rows[0].mixed_source).toBe("billing");
   });
 
   it("planted counter-example: a corrupted mart where a mixed-billing entity carries a non-NULL total_invoiced_cents IS returned — the test can fail", async () => {
