@@ -32,7 +32,8 @@ beforeAll(async () => {
            false as has_mixed_currency,
            0::bigint as failed_payment_count,
            3::bigint as open_ticket_count, 1::bigint as solved_ticket_count,
-           0::bigint as sla_breach_count, 4.50::numeric(3,2) as avg_csat
+           0::bigint as sla_breach_count, 4.50::numeric(3,2) as avg_csat,
+           0::bigint as null_score_count
   `);
   await pool.query(`
     create or replace view ${SCHEMA}.stg_crm__companies as
@@ -69,6 +70,7 @@ describe("MCP server", () => {
       open_deal_amount_cents: "500000",
       total_invoiced_cents: "120000",
       open_ticket_count: "3",
+      null_score_count: "0", // F3 parity: the mart's new disclosure column reaches the tool
     });
   });
 
