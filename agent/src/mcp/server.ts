@@ -58,6 +58,7 @@ const HEALTH_COLUMNS = [
   "solved_ticket_count",
   "sla_breach_count",
   "avg_csat",
+  "null_score_count",
 ].join(", ");
 
 export function createMcpServer(pool: pg.Pool): McpServer {

@@ -40,16 +40,29 @@ export async function generateMondayReport(
   const accounts = snapshots.map((s) => JSON.parse(s) as Record<string, unknown>);
   const num = (a: Record<string, unknown>, k: string) => Number(a[k] ?? 0); // counts arrive as strings (pg bigint)
   const usd = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
-  // L5: a NULL sum on a has_mixed_currency row means "currencies mixed — a single total
-  // would be a lie". Render the condition, never a fabricated $0.
-  const money = (a: Record<string, unknown>, k: string): string =>
-    a[k] == null && a["has_mixed_currency"] === true ? "⚠ mixed currency" : usd(num(a, k));
+  // L5: a NULL sum means "no single figure is true" — render the condition, never a
+  // fabricated $0. Keyed off the NULL itself: with has_mixed_currency it names the cause
+  // ("mixed currency"); any other NULL renders "⚠ unknown" — unreachable from today's
+  // mart (mixing is the only NULL-sum reason), kept as the durable default so a future
+  // NULL reason degrades honestly instead of falling through num() to $0 (F1 minor).
+  const money = (a: Record<string, unknown>, k: string): string => {
+    if (a[k] == null) {
+      return a["has_mixed_currency"] === true ? "⚠ mixed currency" : "⚠ unknown";
+    }
+    return usd(num(a, k));
+  };
   const flagsFor = (a: Record<string, unknown>): string[] => {
     const f: string[] = [];
     if (num(a, "failed_payment_count") > 0) f.push(`${num(a, "failed_payment_count")} failed payment(s)`);
     if (num(a, "open_invoice_count") > 0) f.push(`${num(a, "open_invoice_count")} open invoice(s)`);
     if (num(a, "sla_breach_count") > 0) f.push(`${num(a, "sla_breach_count")} SLA breach(es)`);
     if (a["avg_csat"] != null && Number(a["avg_csat"]) <= 2.5) f.push(`low CSAT (${a["avg_csat"]})`);
+    // F1: the mart's honesty flags, finally read. L3 — amounts the safe-cast NULLed make
+    // this entity's totals incomplete, not confidently rendered; F3 — CSAT rows whose
+    // score was unusable, skipped by avg_csat and disclosed here.
+    if (a["has_unusable_amounts"] === true)
+      f.push(`unusable amount(s): ${num(a, "null_amount_deal_count")} deal / ${num(a, "null_amount_invoice_count")} invoice`);
+    if (num(a, "null_score_count") > 0) f.push(`${num(a, "null_score_count")} unusable CSAT score(s)`);
     return f;
   };
   const tableRows = accounts.map((a) => {
