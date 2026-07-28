@@ -258,13 +258,12 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   Over-refusal only: no cross-currency number can ever be emitted, and all-USD data is
   unaffected. The precise fix (`count(distinct currency) filter (where status = 'open')`)
   is known and deferred until a real multi-currency source exists to test against.
-- **Legacy rows with NO currency field fold into the labeled total.** `count(distinct)`
-  ignores NULLs, so `{USD, NULL}` counts as a single currency and a NULL-currency amount
-  sums into a `billing_currency = 'USD'` total. Chosen so pre-currency history stays
-  summable (NULL is "unknown", not "different"); the softest spot in the currency layer.
-  Malformed currency strings (anything not `^[A-Z]{3}$`) are likewise nulled at staging,
-  so they join the same leniency path.
-  *Scheduled: NULL-currency counter alongside the unusable-amount counters.*
+- **Uniformly-unknown currency still sums, with a NULL label.** A known currency alongside
+  NULL-currency rows now REFUSES like any other mix (sums NULL, `has_mixed_currency` true)
+  — the unknown amount could be any currency (external review F2). The remaining leniency
+  is deliberate and narrower: rows whose currency is uniformly unknown (pre-currency
+  history; malformed codes nulled at staging) still sum, labeled `billing_currency` /
+  `deal_currency` NULL rather than a claimed code (L5.1).
 - **An error-severity numeric test failure halts the mart refresh.** dbt skips downstream
   models when a staging test fails at severity error, so one NULL amount that reaches
   staging stops `customer_360` rebuilding until someone looks. Loud by design — with the

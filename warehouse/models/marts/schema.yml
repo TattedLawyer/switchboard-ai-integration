@@ -20,9 +20,12 @@ models:
         description: True when any deal/invoice amount was unusable — this entity's money totals are incomplete, not confidently zero (L3).
         data_tests: [not_null]
       - name: billing_currency
-        description: The single currency of this entity's invoices; NULL when currencies are mixed or no invoice carries one (L5).
+        description: The single currency of this entity's invoices; NULL when currencies are mixed (including a known currency alongside NULL-currency rows, F2) or no invoice carries one (L5/L5.1).
       - name: deal_currency
-        description: The single currency of this entity's deals; NULL when currencies are mixed or no deal carries one (L5).
+        description: The single currency of this entity's deals; NULL when currencies are mixed (including known + unknown, F2) or no deal carries one (L5/L5.1).
       - name: has_mixed_currency
-        description: True when invoices or deals span more than one currency — the money sums are NULL because a cross-currency total would be a lie (L5).
+        description: True when invoices or deals span more than one currency, or mix a known currency with NULL-currency rows (F2) — the money sums are NULL because a cross-currency total would be a lie (L5).
+        data_tests: [not_null]
+      - name: null_score_count
+        description: CSAT rows whose score was unusable (NULLed by the safe-cast) — avg_csat averages only the usable scores; this counter discloses how many it skipped (F3).
         data_tests: [not_null]
