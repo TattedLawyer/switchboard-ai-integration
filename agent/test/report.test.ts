@@ -33,43 +33,44 @@ beforeAll(async () => {
            0::bigint as null_score_count,
            -- Addendum columns: unknown-currency row counts + the usable-CSAT base size.
            0::bigint as null_currency_invoice_count, 0::bigint as null_currency_deal_count,
-           2::bigint as csat_score_count
+           2::bigint as csat_score_count,
+           false as has_data_warnings
     union all
     select 'DEMO-C-0002', 'DEMO Manufacturing Group 2', 'manufacturing-2.example.com',
            true, false, false, true,
-           1, 250000, 0, 0, 0, 0, 0, false, null, 'USD', false, 0, 0, 0, 0, null, 0, 0, 0, 0
+           1, 250000, 0, 0, 0, 0, 0, false, null, 'USD', false, 0, 0, 0, 0, null, 0, 0, 0, 0, false
     union all
     select 'DEMO-C-0003', 'DEMO Retail Group 3', 'retail-3.example.com',
            true, true, false, true,
-           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 0, 0, 0
+           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 0, 0, 0, true
     union all
     -- F1: the mart says this entity's amounts are unusable (L3 counters + flag) — the
     -- report must surface that, not render the partial sums as the whole story.
     select 'DEMO-C-0004', 'DEMO Services Group 4', 'services-4.example.com',
            true, true, false, true,
-           1, 100000, 50000, 0, 0, 1, 2, true, 'USD', 'USD', false, 0, 0, 0, 0, null, 0, 0, 0, 0
+           1, 100000, 50000, 0, 0, 1, 2, true, 'USD', 'USD', false, 0, 0, 0, 0, null, 0, 0, 0, 0, true
     union all
     -- F3 report side: avg over usable scores only; 2 skipped NULL scores must be flagged.
     select 'DEMO-C-0005', 'DEMO Wholesale Group 5', 'wholesale-5.example.com',
            true, false, true, true,
-           0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 2, 0, 4.00, 2, 0, 0, 3
+           0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 2, 0, 4.00, 2, 0, 0, 3, true
     union all
     -- A NULL sum WITHOUT has_mixed_currency: since the L5.1 retraction this is the real
     -- shape of a uniformly-unknown-currency source (here: one NULL-currency deal) — the
     -- renderer must degrade to "unknown", never a fabricated $0.
     select 'DEMO-C-0006', 'DEMO Media Group 6', 'media-6.example.com',
            true, true, false, true,
-           1, null, 40000, 40000, 0, 0, 0, false, 'USD', null, false, 0, 0, 0, 0, null, 0, 0, 1, 0
+           1, null, 40000, 40000, 0, 0, 0, false, 'USD', null, false, 0, 0, 0, 0, null, 0, 0, 1, 0, true
     union all
     -- Addendum: USD+NULL invoices and one NULL-currency deal — refused (mixed) AND the
     -- unknown rows are counted (2 invoice + 1 deal = 3 rows with unknown currency).
     select 'DEMO-C-0007', 'DEMO Energy Group 7', 'energy-7.example.com',
            true, true, false, true,
-           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 2, 1, 0
+           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 2, 1, 0, true
     union all
     select 'billing:B-0015', 'DEMO Orphan Billing', 'orphan.example.com',
            false, true, false, false,
-           0, 0, 90000, 90000, 0, 0, 0, false, 'USD', null, false, 1, 0, 0, 0, null, 0, 0, 0, 0
+           0, 0, 90000, 90000, 0, 0, 0, false, 'USD', null, false, 1, 0, 0, 0, null, 0, 0, 0, 0, false
   `);
   await pool.query(`
     create or replace view ${SCHEMA}.stg_crm__companies as

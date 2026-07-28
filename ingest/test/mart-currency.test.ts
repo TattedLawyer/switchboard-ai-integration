@@ -355,6 +355,72 @@ describe("customer_360 — unknown-currency rows and the CSAT base are visibly c
     expect(Number(empty.null_currency_deal_count)).toBe(0);
   });
 
+  // Kimball Design Tip #164 (audit dimension): a small set of COARSE warning flags is the
+  // primary consumer surface — "a warning that the business user should tread cautiously"
+  // — with the precise columns as the optional why. has_data_warnings is that one column:
+  // the OR of every honesty signal. Each trigger is pinned INDEPENDENTLY so a future
+  // precise counter that forgets to join the OR fails here — the drift risk of derived
+  // flags is exactly the surface-doesn't-carry-it defect one level up.
+  describe("has_data_warnings — the one-column tread-cautiously surface (Kimball #164)", () => {
+    it("a clean entity (known currency, usable amounts, usable scores) has NO warning", async () => {
+      await seedEntity("C-25", "cust-25");
+      await pool.query(`insert into tmp_resolution values ('support', 'req-25', 'C-25', 1)`);
+      await pool.query(`
+        insert into tmp_invoices values ('inv-29', 'cust-25', 4000, 'paid', 'USD');
+        insert into tmp_deals values ('d-15', 'C-25', 'open', 30000, 'USD');
+        insert into tmp_tickets (ticket_id, requester_id, status) values ('t-11', 'req-25', 'solved');
+        insert into tmp_csat values ('t-11', 5)
+      `);
+
+      const row = await martRow("C-25");
+      expect(row.has_data_warnings).toBe(false);
+    });
+
+    it("trigger: an unusable amount (NULL amount_cents) raises the warning", async () => {
+      await seedEntity("C-26", "cust-26");
+      await pool.query(`insert into tmp_invoices values ('inv-30', 'cust-26', null, 'paid', 'USD')`);
+
+      const row = await martRow("C-26");
+      expect(row.has_unusable_amounts).toBe(true);
+      expect(row.has_data_warnings).toBe(true);
+    });
+
+    it("trigger: mixed currency (two knowns — no NULL-currency rows in sight) raises the warning", async () => {
+      await seedEntity("C-27", "cust-27");
+      await pool.query(`
+        insert into tmp_invoices values
+          ('inv-31', 'cust-27', 4000, 'paid', 'USD'),
+          ('inv-32', 'cust-27', 6000, 'paid', 'EUR')
+      `);
+
+      const row = await martRow("C-27");
+      expect(row.has_mixed_currency).toBe(true);
+      expect(row.has_data_warnings).toBe(true);
+    });
+
+    it("trigger: uniformly-unknown currency (refused but NOT mixed) raises the warning — the coarse flag covers what has_mixed_currency deliberately does not", async () => {
+      await seedEntity("C-28", "cust-28");
+      await pool.query(`insert into tmp_deals values ('d-16', 'C-28', 'open', 30000, null)`);
+
+      const row = await martRow("C-28");
+      expect(row.has_mixed_currency).toBe(false);
+      expect(row.has_data_warnings).toBe(true);
+    });
+
+    it("trigger: an unusable CSAT score raises the warning", async () => {
+      await seedEntity("C-29", "cust-29");
+      await pool.query(`insert into tmp_resolution values ('support', 'req-29', 'C-29', 1)`);
+      await pool.query(`
+        insert into tmp_tickets (ticket_id, requester_id, status) values ('t-12', 'req-29', 'solved');
+        insert into tmp_csat values ('t-12', null)
+      `);
+
+      const row = await martRow("C-29");
+      expect(Number(row.null_score_count)).toBe(1);
+      expect(row.has_data_warnings).toBe(true);
+    });
+  });
+
   it("CSAT base size: 2 valid + 3 NULL scores → csat_score_count 2 (the usable base under avg_csat); a no-csat entity reports 0", async () => {
     await seedEntity("C-22", "cust-22");
     await pool.query(`insert into tmp_resolution values ('support', 'req-22', 'C-22', 1)`);
