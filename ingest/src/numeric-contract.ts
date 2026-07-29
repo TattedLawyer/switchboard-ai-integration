@@ -5,6 +5,11 @@
 // are per-vendor 1-2/1-3/1-5) — so each is declared per event type and a new source shape
 // is a config change, not code surgery.
 //
+// The table is now the FIELD contract, not just the numeric one: it declares numeric
+// fields and string fields (e.g. currency) alike; the NUMERIC_CONTRACT /
+// numericContractViolation names are kept for API stability and their renaming is
+// deliberately deferred (see the deferred register).
+//
 // This table is ALSO the registry of every event type any warehouse model consumes.
 // An empty rule set means "consumed, carries no numeric fields" — present on purpose.
 // The registry test in numeric-contract.test.ts extracts the event_type literals from
@@ -27,20 +32,39 @@ export interface NumericFieldRule {
   max?: number;
 }
 
-export type EventContract = Readonly<Record<string, NumericFieldRule>>;
+export interface StringFieldRule {
+  /** Discriminator vs NumericFieldRule (which is recognized by its `integer` property). */
+  type: "string";
+  /** Whether the field must be present. false = optional (absent passes untouched). */
+  required: boolean;
+  /** Anchored regex SOURCE (must carry its own ^…$) the value must fully match when present. */
+  pattern: string;
+}
+
+export type FieldRule = NumericFieldRule | StringFieldRule;
+
+export type EventContract = Readonly<Record<string, FieldRule>>;
 
 const MONEY = { integer: true, required: true, signed: false, plausibleMax: null } as const;
 
+// currency is OPTIONAL by design: quarantining an event removes its non-monetary facts
+// until replay, so absent (legacy pre-currency events) must pass — only present-but-
+// malformed quarantines, with a reason naming the field. The pattern admits plausible
+// fakes like "ABC"; the ISO-4217 allowlist is registered follow-up work.
+const CURRENCY = { type: "string", required: false, pattern: "^[A-Z]{3}$" } as const;
+
 export const NUMERIC_CONTRACT: Readonly<Record<string, EventContract>> = {
   // billing
-  "invoice.created":   { amount_cents: { ...MONEY } },
-  "invoice.paid":      { amount_cents: { ...MONEY } },
-  "invoice.voided":    { amount_cents: { ...MONEY } },
+  "invoice.created":   { amount_cents: { ...MONEY }, currency: { ...CURRENCY } },
+  "invoice.paid":      { amount_cents: { ...MONEY }, currency: { ...CURRENCY } },
+  "invoice.voided":    { amount_cents: { ...MONEY }, currency: { ...CURRENCY } },
+  // payment.* payloads carry amount_cents but NO currency today — deliberately not
+  // declared here: the table describes reality, not a wished-for shape (asymmetry noted).
   "payment.succeeded": { amount_cents: { ...MONEY, plausibleMax: 99_999_999 } }, // Stripe charge bound: 8 digits
   "payment.failed":    { amount_cents: { ...MONEY, plausibleMax: 99_999_999 } },
   "customer.created":  {},
   // crm
-  "deal.updated":      { amount_cents: { ...MONEY } },
+  "deal.updated":      { amount_cents: { ...MONEY }, currency: { ...CURRENCY } },
   "company.updated":   {},
   "company.merged":    {}, // consumed by merge_edges (identity layer), not staging
   "contact.updated":   {},
@@ -82,6 +106,18 @@ export function numericContractViolation(
     const v = data[field];
     if (v === undefined) {
       if (rule.required) return { field, reason: `${field} is required for ${eventType} and is absent` };
+      continue;
+    }
+    if ("type" in rule) {
+      // Declared string field. Both branches render via the bounded, total renderValue:
+      // a deep-nested or huge value here must produce a violation, never a throw
+      // (refinement throws propagate through safeParse — that lesson is already paid).
+      if (typeof v !== "string") {
+        return { field, reason: `${field} must be a string matching ${rule.pattern}, got ${renderValue(v)}` };
+      }
+      if (!new RegExp(rule.pattern).test(v)) {
+        return { field, reason: `${field} must match ${rule.pattern}, got ${renderValue(v)}` };
+      }
       continue;
     }
     if (typeof v !== "number" || !Number.isSafeInteger(v)) {

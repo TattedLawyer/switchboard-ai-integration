@@ -260,8 +260,17 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   Over-refusal only: no cross-currency number can ever be emitted, and all-USD data is
   unaffected. The precise fix (`count(distinct currency) filter (where status = 'open')`)
   is known and deferred until a real multi-currency source exists to test against.
+- **Currency is now validated at the door (Phase 2b Task A2).** The field contract
+  declares `currency` on the four money-bearing types: present-but-malformed quarantines
+  the whole event with a reason naming the field (replayable like any quarantined event);
+  ABSENT passes untouched — legacy pre-currency events must flow, and refused-at-mart
+  semantics for NULL currency are unchanged. The staging `^[A-Z]{3}$`-or-NULL regexp is
+  thereby demoted to containment for doorless rows (direct inserts, pre-contract history).
+  The pattern admits plausible fakes like "ABC" — the ISO-4217 allowlist stays a
+  registered follow-up.
 - **Legacy rows with NO currency field no longer sum at all.** Any NULL-currency row
-  (never carried, or malformed and nulled at staging) refuses its source's money sums:
+  (never carried, or — on doorless rows — malformed and nulled at staging) refuses its
+  source's money sums:
   known + unknown is mixed (`has_mixed_currency` true — external review F2), and
   uniformly-unknown also refuses since the L5.1 retraction — an unknown-unit total is not
   money (JD Edwards treats cross-currency grand totals as meaningless "hash totals"; D365
