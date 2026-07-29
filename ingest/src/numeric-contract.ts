@@ -48,6 +48,20 @@ export interface StringFieldRule {
 
 export type FieldRule = NumericFieldRule | StringFieldRule;
 
+// Compile-time pin for the `type?: never` guard above (A2 review I2 / re-review R1).
+// It lives in SRC because ingest/tsconfig.json includes only "src" — nothing typechecks
+// ingest/test/, so a pin there enforces nothing. Self-enforcing in both directions:
+// while the guard holds, the literal below fails to compile and the directive absorbs
+// the error; if `type?: never` is ever removed, the literal compiles and tsc fails the
+// build with "unused '@ts-expect-error'". A void-ed unexported const is the cheapest
+// form that preserves the FRESH-object-literal discriminant/excess-property check that
+// does the rejecting — a pure type-level `extends` test would NOT fail, since
+// structural assignability tolerates the extra props on non-fresh types. The literal
+// must stay on one line: @ts-expect-error only covers the next line.
+// @ts-expect-error — a rule carrying BOTH shapes (numeric constraints + type:"string") must not compile
+const BOTH_SHAPE_RULE_IS_A_COMPILE_ERROR: FieldRule = { integer: true, required: true, type: "string", pattern: "^X$" };
+void BOTH_SHAPE_RULE_IS_A_COMPILE_ERROR;
+
 export type EventContract = Readonly<Record<string, FieldRule>>;
 
 const MONEY = { integer: true, required: true, signed: false, plausibleMax: null } as const;
@@ -88,7 +102,11 @@ export const NUMERIC_CONTRACT: Readonly<Record<string, EventContract>> = {
 // 2. Every pattern must be FULLY anchored (starts with ^, ends with $): RegExp.test has
 //    substring semantics, so an unanchored pattern would silently WEAKEN the gate — an
 //    under-rejection no test catches unless that field happens to have its own anchoring
-//    pins. The assertion makes that mistake unshippable.
+//    pins. The assertion is a prefix/suffix CONVENTION check, not a regex parser: it
+//    catches the common forgot-the-anchors mistake, while pathological shapes (a
+//    top-level alternation like `^A|B$`) still pass — accepted because patterns are
+//    code-reviewed `as const` constants; auto-wrapping as `^(?:…)$` was rejected since
+//    it silently rewrites declared intent (re-review R2).
 function compileAnchoredPattern(where: string, source: string): RegExp {
   if (!source.startsWith("^") || !source.endsWith("$")) {
     throw new Error(

@@ -10,9 +10,6 @@ import { replayQuarantined } from "../src/quarantine.js";
 import { ingestEvent } from "../src/ingest-event.js";
 import { secretForSource, signBody } from "../src/hmac.js";
 import type { Source } from "../src/sources.js";
-// Type-only (erased at runtime — the lazy-import rationale below is unaffected): used by
-// the compile-time both-shape pin (review I2).
-import type { FieldRule } from "../src/numeric-contract.js";
 
 // Same resolution pattern as helpers/load-model.ts: the warehouse tree lives two levels up
 // from this test file. The registry test below scans the REAL model text on disk, so a new
@@ -294,20 +291,10 @@ describe("L1 numeric contract at the trust boundary", () => {
       });
     });
 
-    describe("contract shape is compile-time discriminated (review I2 pin)", () => {
-      it("a rule declaring BOTH shapes fails typecheck; valid shapes still compile", () => {
-        // Valid single-shape rules must keep compiling — these lines guard the guard:
-        const numeric: FieldRule = { integer: true, required: true, signed: false };
-        const str: FieldRule = { type: "string", required: false, pattern: "^[A-Z]{3}$" };
-        // The pin is self-enforcing: if `type?: never` is ever removed from
-        // NumericFieldRule, the line below COMPILES and tsc fails the build with
-        // "unused @ts-expect-error". Without the pin, a both-shape rule routes to the
-        // string branch at runtime with every numeric constraint silently unenforced.
-        // @ts-expect-error — integer constraints + type:"string" in one rule must not compile
-        const bothShapes: FieldRule = { integer: true, required: true, type: "string", pattern: "^x$" };
-        expect([numeric, str, bothShapes]).toHaveLength(3);
-      });
-    });
+    // The compile-time both-shape pin for `type?: never` (review I2) lives in
+    // ingest/src/numeric-contract.ts, NOT here: ingest/tsconfig.json includes only
+    // "src", so nothing typechecks this test dir and a @ts-expect-error here would
+    // enforce nothing (re-review R1).
 
     describe("replay door", () => {
       it("a webhook-quarantined bad-currency event stays 'still-invalid' on replay", async () => {
