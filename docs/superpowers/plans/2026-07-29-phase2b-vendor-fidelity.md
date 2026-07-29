@@ -1,104 +1,105 @@
-# Phase 2b — Vendor Fidelity: Phase Plan
+# Phase 2b — Vendor Fidelity: Phase Plan (final, rev 2)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development. This is the PHASE plan: research verdicts, resolved decisions, task decomposition with interfaces and test obligations. Each task receives its own writing-plans-grade brief at dispatch, derived from this document — a task's implementer reads its brief, not this whole plan.
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development. This is the PHASE plan: thesis, research-verified contracts, resolved decisions, and the complete task map. At dispatch, each task receives a writing-plans-grade brief (exact code, bite-sized steps) derived from its section here — the 2a-proven mechanism. An implementer reads its brief, not this whole plan.
 
-**Spec:** `docs/superpowers/specs/2026-07-22-phase2-amendment.md` §4 + Rev-2 decisions D1–D13.
-**Status of Task 1 (connector seam):** COMPLETE and merged to `main` (`b1469d4`) — `Connector` interface with `catchUp`/`reconcile`, reconcile-first contract, both CLIs migrated, behavior-preserving, chaos-verified.
-**Base:** branch `phase2b-connectors` off `main` @ `b6d1de3` (includes tenancy migration 006, durability scripts, migration tracking, and the full numeric-integrity stack).
-
----
-
-## 1. Vendor research — verified with full primary-source reads (2026-07-29)
-
-Every load-bearing contract fact below was read from the primary page this planning round, not carried from digests or prior sessions. Where a fact could not be primary-verified it is labeled.
-
-### CRM paradigm — HubSpot-style thin webhooks ([webhooks guide](https://developers.hubspot.com/docs/api-reference/legacy/webhooks/guide))
-- Payload fields, verbatim: `objectId` ("The ID of the object that was created, changed, or deleted"), `propertyName`/`propertyValue` ("only sent for property change subscriptions"), `eventId`, `subscriptionType`, `portalId`, `occurredAt` ("a millisecond timestamp"), `attemptNumber` ("Starting at 0"), `changeSource`.
-- Batching: "Each request can contain up to 100 events."
-- **Ordering: NOT guaranteed** — the guide says to use `occurredAt` for sequencing. This is a design input, not a caveat (see §2, tiebreak).
-- Retries: "up to 10 times… spread out over the next 24 hours, with varying delays"; failure = connection failure, >5s timeout, or error status.
-- Signature: SHA-256 over app-secret + raw body. Our mocks keep the repo's own per-source timestamped HMAC (D3) — the spec models vendor *contracts*, not vendor *auth* (spec §5); the delta goes in the connector ADR.
-- Payloads are SPARSE by design (property-change events carry one property). The numeric contract's `required: false` mechanism (built and unit-pinned in the numeric-integrity wave) becomes load-bearing here.
-
-### Billing paradigm — Stripe-style events feed ([Events API](https://docs.stripe.com/api/events), [List Events](https://docs.stripe.com/api/events/list))
-- Retention, verbatim: "You can access events through the Retrieve Event API for **30 days**." Backfill beyond 30 days is structurally impossible on this paradigm — the phase's second honest data-loss boundary.
-- List: `limit` "can range between 1 and 100, and the default is 10"; cursors `starting_after`/`ending_before` are object IDs; `has_more` boolean; `type`/`types` (≤20) filters.
-- **Response ordering is not documented on the list page.** The connector must not depend on response order: drain by `has_more`, order downstream by `created` + tiebreak. (The 2026-07-26 note "reverse-chronological confirmed" could not be re-verified against the current page — treat as unconfirmed.)
-- `has_more` termination replaces the spine's "empty page" inference — the bug class already fixed once at `f1e7ac4` gets a vendor-correct mechanism.
-
-### Support paradigm — event-bus subscribe/replay ([event message durability](https://developer.salesforce.com/docs/platform/pub-sub-api/guide/event-message-durability.html))
-- Retention, verbatim: "Salesforce stores platform events and change data capture events for **72 hours**."
-- Replay IDs are **opaque** and "aren't guaranteed to be contiguous for consecutive events" — they are cursors, never ordinals, never arithmetic.
-- "A subscriber can store a replay ID value and use it on resubscription to retrieve events that are within the retention window."
-- **The stream can be RESET entirely**: "on rare occasions, the stream of retained events can be reset if the Salesforce org is moved to a new instance" — so cursor invalidation has TWO causes (age-out and reset), and the second can strike a cursor younger than 72h.
-- EARLIEST/LATEST replay presets + expired-replay recovery guidance: corroborated via the [Subscribe RPC reference](https://developer.salesforce.com/docs/platform/pub-sub-api/references/methods/subscribe-rpc.html) surfaced in search (not full-read — the durability page is the primary anchor; the preset enum is verified at implementation time per the spec's re-verify rule).
-- Modeled over HTTP/JSON per locked D12.
-
-### Spreadsheet paradigm — Google Sheets as a source (verified 2026-07-27, this session, full reads)
-- Row identity: developer metadata is row-attached and follows the row through insertions; deleted row ⇒ deleted metadata ([DeveloperMetadata API reference](https://developers.google.com/sheets/api/reference/rest/v4/spreadsheets.developerMetadata)). Caps: 30,000 chars per sheet AND per spreadsheet ([metadata guide](https://developers.google.com/workspace/sheets/api/guides/metadata)).
-- **"Script executions and API requests don't cause triggers to run"** — documented ([installable triggers](https://developers.google.com/apps-script/guides/triggers/installable)). Push (Apps Script `onEdit`/`onChange` → webhook) is therefore a latency optimization only; **periodic reconcile is the primary channel** — exactly the seam's reconcile-first contract, already encoded in `connectors/types.ts`.
-- Quotas: 300 read req/min/project, 60/min/user, 429 + documented exponential backoff ([limits](https://developers.google.com/workspace/sheets/api/limits)).
-- Access: share the sheet with a service account's client_email — no OAuth flow ([gspread docs](https://docs.gspread.org/en/latest/oauth2.html)).
-- Script Properties are readable by any sheet editor (any editor can edit the bound script; corroborated by [Google Workspace DevRel](https://dev.to/googleworkspace/secure-secrets-in-google-apps-script-1dhc)) ⇒ per-sheet low-trust secrets that authenticate "I am sheet X" and authorize nothing; the ingest treats sheet events as untrusted regardless (quarantine + contract).
-- No event_id, no occurred_at, rows mutate in place ⇒ idempotency is **manufactured**: stable row key (developer metadata) + content hash; `occurred_at` is stamped at detection and flagged as derived.
-- Five behaviors remain deliberately unverified and are each pinned by a test in-task, never assumed: real metadata ceiling; metadata across sheet duplication; installable-trigger queue depth under bulk edits; `onEdit` oldValue behavior on multi-cell paste; trigger daily-quota behavior under sustained editing.
+**Spec:** `docs/superpowers/specs/2026-07-22-phase2-amendment.md` §4 + Rev-2 decisions D1–D13 (amended by 2b-D3 below).
+**Base:** branch `phase2b-connectors` off `main` @ `b6d1de3` — includes the connector seam (Task 1, complete), tenancy migration 006, durability, migration tracking, and the numeric-integrity stack. Baseline: 282 node tests (ingest 199 / agent 31 / mocks 52), dbt 79, typecheck clean, CI + chaos green.
+**Gates:** A–H per the project's verification gates — per-task RED→GREEN with evidence, task reviews with dual verdicts, fix+re-review loops, phase-close panel, register sweep, and the cold unframed review before every push. Single-flight: one implementer in the worktree at a time.
 
 ---
 
-## 2. Design consequences the research forces
+## 1. Thesis — one horizontal core, many verticals
 
-1. **The latest-state tiebreak successor (register LANDMINE, owned by Task C).** No vendor id is ordinal: HubSpot `eventId` is opaque with ordering explicitly not guaranteed, Stripe `evt_…` ids are opaque, Salesforce replay IDs are non-contiguous, Sheets has no ids at all. The `(substring(event_id from 5))::bigint` tiebreak dies with the faithful sources; its successor is `order by occurred_at desc, received_at desc, event_id desc` — deterministic, vendor-agnostic, and honest (received_at is our clock, event_id lexicographic is a pure tiebreak). Per-source `occurred_at` normalization: HubSpot ms-epoch, Stripe s-epoch, bus event time, Sheets detection-time (derived). The legacy mocks keep evt-N ids until D9 retirement; the successor ordering must produce IDENTICAL latest-state for them (pin with a test) so the swap is behavior-preserving on 2a data.
-2. **Two data-loss boundaries, both built, both chaos-injected (resolves spec open question 3 — recommend BUILD).** Bus: replay cursor invalid (aged-out past 72h or stream reset) → detect → fall back EARLIEST/LATEST by config → report an **unclosable gap** with bounds. Billing: backfill target older than 30 days → report the unreachable range. The pipeline's first admitted losses — reported, never papered over. `KNOWN-ISSUES` gets both as stated limits; chaos gets fault modes for both.
-3. **Sparse payloads are the CRM norm.** The contract's `required` flag flips per event type for the faithful CRM source; hydration supplies the full record; the numeric gate applies to the HYDRATED snapshot too (a hydrated record is still vendor data).
-4. **Reconcile-first is now uniform.** Sheets (triggers blind to API writes), bus (replay window), billing (30-day cap), CRM (10-retries-then-gone): every paradigm's push/stream channel is lossy on its own terms; every connector's `reconcile()` is the guarantee. The seam anticipated this; the tasks prove it per paradigm.
+Switchboard works for multiple businesses because different industries share the same backend practices: client intake, billing, customer service, pipeline. The core is vertical-agnostic **by construction** — the mart models entities/contacts (intake), invoices/payments (billing), tickets/CSAT (service), deals (pipeline); no column is industry-specific; connectors are *paradigm*-specific (webhook, cursor feed, event bus, spreadsheet), never *industry*-specific; vertical profiles swap only vocabulary and scenario content.
 
----
+**Applicability criterion:** any business whose client roster lives in more than one system, that invoices recurringly, fields inbound service requests, and runs a deal or booking pipeline. Industry families that fit (derived from the criterion, not a market claim): trades & field services (plumbing, HVAC, electrical, roofing, landscaping, cleaning, pest control); real estate (brokerages, property management); professional services (law, accounting, consulting, insurance brokerage, financial advisory); agencies (marketing, design, staffing); software/SaaS; logistics & wholesale distribution; auto services; education & training; hospitality & events; fitness & wellness; healthcare-adjacent practices (clinics, dental, therapy) — the last requiring a compliance layer and deliberately not a demo profile (D10's original reasoning). Vertical-specific needs land in profile content or per-engagement configuration, never in core schema — the discipline that keeps vertical N+1 a configuration exercise, not a fork. This section feeds the Phase-4 README positioning (D13).
 
-## 3. Decisions
+2b's job under this thesis: prove the *paradigm range* of the connector layer. Four genuinely different integration contracts land on one unchanged spine.
 
-**Locked (spec Rev-2, unchanged):** D12 event-bus over HTTP/JSON. D7 hydration into a separate `(event_id, fetched_at)` table with the thin event stored as received. D8 bus source = Service-Cloud-cases-shaped support. D9 old CRM mock retires at 2b exit after the chaos harness ports. D13 positioning.
+## 2. Research foundation (full primary-source reads, 2026-07-29; Sheets 2026-07-27)
 
-**Resolved this plan (Michael 2026-07-29: "research thoroughly… then fully plan"):**
-- **Sequencing: Sheets connector first** (after the already-done seam). It has a real prospect shape behind it, it is the hardest paradigm (stress-tests the seam worst-case first), and it is the most distinctive artifact in the repo.
-- **Cursor-expiry handling: BUILD** (consequence 2 above).
+**CRM — HubSpot-style thin webhooks** ([guide](https://developers.hubspot.com/docs/api-reference/legacy/webhooks/guide)): payloads carry `objectId`, `propertyName`/`propertyValue` ("only sent for property change subscriptions" — sparse by design), `eventId`, `subscriptionType`, `portalId`, `occurredAt` (ms epoch), `attemptNumber` (from 0), `changeSource`; "Each request can contain up to 100 events"; **ordering NOT guaranteed — sequence by `occurredAt`**; retries "up to 10 times… spread out over the next 24 hours", >5s response counts as failure. Auth: mocks keep the repo's per-source timestamped HMAC (D3) — the spec models contracts, not vendor auth; delta goes in the connector ADR.
 
-**Resolved (Michael, 2026-07-29):**
-- **OQ-1 Vertical profiles → `plumbing | saas | realestate`** (amends D10; logistics swapped out). Demo profiles stay three for cost; applicability is horizontal (§3a).
-- **OQ-2 Text-first raw → EXPAND now, CONTRACT at Phase 4** (research-resolved; §3b). Task A's migration adds `raw_body text NULL` to `raw.raw_events` and every door dual-writes wire text where it exists (the webhook and poll doors already hold it; the Sheets connector emits canonical JSON it can store). Claim-check enqueue, nullable `payload`, and consumer changes are the Phase-4 contract step, register-owned so the expand phase cannot rot into permanent dual-storage. Rationale: the connectors do NOT resist the current contract (Fowler's preparatory-refactoring test says skip the big rework), shipping on the current contract is prudent-deliberate debt with small interest — but pure deferral has a hidden cost the research surfaced: every event ingested before the column exists permanently lacks its wire bytes. The additive expand captures byte custody from Task A onward at near-zero risk, exactly the expand-contract pattern's design intent.
+**Billing — Stripe-style events feed** ([Events](https://docs.stripe.com/api/events), [List](https://docs.stripe.com/api/events/list)): events retrievable "for **30 days**"; `limit` 1–100 (default 10); `starting_after`/`ending_before` object-id cursors; `has_more`; `type`/`types` (≤20) filters. **Response ordering is not documented** — the connector drains by `has_more` and orders downstream, never by response position.
 
-### 3a. Applicability — the horizontal thesis (Michael, 2026-07-29)
+**Support — event-bus subscribe/replay** ([durability](https://developer.salesforce.com/docs/platform/pub-sub-api/guide/event-message-durability.html)): "Salesforce stores platform events… for **72 hours**"; replay IDs are opaque and "aren't guaranteed to be contiguous"; a stored replay ID resubscribes within the window; **the stream can be reset entirely** ("if the Salesforce org is moved to a new instance") — cursor invalidation has two causes, age-out and reset. EARLIEST/LATEST presets per the Subscribe RPC reference (re-verify enum at implementation). Modeled over HTTP/JSON (D12).
 
-Switchboard's core is vertical-agnostic by construction: the mart models client intake (entities/contacts), billing (invoices/payments), customer service (tickets/CSAT), and pipeline (deals) — no column is industry-specific, connectors are paradigm-specific never industry-specific, and profiles swap only vocabulary and scenario content. The applicability criterion: **any business whose client roster lives in more than one system, that invoices recurringly, fields inbound service requests, and runs a deal or booking pipeline.** Industry families that fit (derived from the criterion, not a market claim): trades & field services (plumbing, HVAC, electrical, roofing, landscaping, cleaning, pest control); real estate (brokerages, property management); professional services (law, accounting, consulting, insurance brokerage, financial advisory); agencies (marketing, design, staffing); software/SaaS; logistics & wholesale distribution; auto services; education & training providers; hospitality & events; fitness & wellness studios; healthcare-adjacent practices (clinics, dental, therapy) — the last only with a compliance layer (deliberately not a demo profile, per D10's original reasoning). Vertical-specific needs land in profile content or per-engagement configuration, never in core schema — that discipline is what keeps vertical N+1 a configuration exercise rather than a fork. This list feeds the Phase-4 README positioning (D13).
+**Spreadsheet — Google Sheets as a source** (verified with full reads 2026-07-27): developer metadata is row-attached, follows rows through insertions, dies with its row ([API reference](https://developers.google.com/sheets/api/reference/rest/v4/spreadsheets.developerMetadata)); 30,000-char caps per sheet AND spreadsheet ([guide](https://developers.google.com/workspace/sheets/api/guides/metadata)); **"Script executions and API requests don't cause triggers to run"** ([installable triggers](https://developers.google.com/apps-script/guides/triggers/installable)) — push is latency-only, reconcile is the guarantee; quotas 300 read/min/project, 60/min/user, 429 + documented backoff ([limits](https://developers.google.com/workspace/sheets/api/limits)); access via service-account share ([gspread](https://docs.gspread.org/en/latest/oauth2.html)); Script Properties readable by any sheet editor ([Workspace DevRel](https://dev.to/googleworkspace/secure-secrets-in-google-apps-script-1dhc)) → per-sheet low-trust secrets. No event_id, no occurred_at, in-place mutation → idempotency is manufactured (row key + content hash), `occurred_at` stamped at detection and flagged derived. Five deliberately-unverified behaviors, each pinned by a test in Task A before the connector shape freezes: real metadata ceiling; metadata across duplication; installable-trigger queue depth under bulk edits; `onEdit` oldValue on multi-cell paste; trigger daily-quota behavior.
 
-### 3b. OQ-2 research record (full-read sources)
-- Preparatory refactoring is warranted only when "the existing structure resists your planned feature"; when the feature "slots naturally into current architecture," skip it ([Fowler, preparatory refactoring](https://martinfowler.com/articles/preparatory-refactoring-example.html)). The 2b connectors write through the existing doors unchanged — no resistance.
-- Shipping on the current contract with the rework scheduled is prudent-deliberate debt: "a considered decision to adopt a design strategy that isn't sustainable in the longer term, but yields a short term benefit"; such debt "may not be worth paying down if the interest payments are sufficiently small" ([Fowler, technical debt quadrant](https://martinfowler.com/bliki/TechnicalDebtQuadrant.html)).
-- Breaking schema changes should be phased regardless of timing: expand (additive, both versions supported) → migrate (dual-write/backfill) → contract (remove old) ([Fowler, parallel change](https://martinfowler.com/bliki/ParallelChange.html); [Hodgson, expand/contract](https://blog.thepete.net/blog/2023/12/05/expand/contract-making-a-breaking-change-without-a-big-bang/); [Prisma data guide](https://www.prisma.io/dataguide/types/relational/expand-and-contract-pattern)). Known cost of the expand phase, disclosed: temporary dual storage, and the documented failure mode of never contracting — mitigated by the register-owned Phase-4 contract step.
+## 3. Design consequences
 
----
+1. **Latest-state tiebreak successor** (register LANDMINE; owned by Task C): no vendor id is ordinal. Successor ordering: `occurred_at desc, received_at desc, event_id desc` with per-source `occurred_at` normalization (HubSpot ms, Stripe s, bus event time, Sheets detection time). The `(substring(event_id from 5))::bigint` cast dies in the same task; a pin proves the successor produces IDENTICAL latest-state on 2a-shaped (evt-N) data before the swap.
+2. **Two honest data-loss boundaries, built and chaos-injected**: bus replay-cursor invalid (aged past 72h OR stream reset) → detect → configured fallback (EARLIEST/LATEST) → report an **unclosable gap with bounds**; billing backfill older than 30 days → report the unreachable range. Both in KNOWN-ISSUES as stated limits. The pipeline's first admitted losses — reported, never papered over.
+3. **Sparse payloads are the CRM norm**: the numeric contract's `required: false` mechanism (built, unit-pinned) goes live for the faithful CRM source; the contract applies to hydrated snapshots too (hydrated records are still vendor data).
+4. **Reconcile-first is uniform**: every paradigm's push/stream channel is lossy on its own terms (triggers blind to API writes; 72h window; 30-day cap; 10-retries-then-gone). Every connector's `reconcile()` is the guarantee; the seam's interface contract already says so.
+5. **Raw storage — expand now, contract at Phase 4** (2b-D4): Task A's migration adds `raw_body text NULL` to `raw.raw_events`; every door dual-writes wire bytes where they exist (webhook and poll doors already hold them; the Sheets connector stores the canonical JSON it emits). Claim-check enqueue + nullable `payload` + consumer tolerance = the Phase-4 contract step, register-owned. Rationale (full-read research): preparatory refactoring is unwarranted when the feature "slots naturally into current architecture" ([Fowler](https://martinfowler.com/articles/preparatory-refactoring-example.html)); carrying the current contract is prudent-deliberate debt with small interest ([Fowler](https://martinfowler.com/bliki/TechnicalDebtQuadrant.html)); but pure deferral permanently loses wire bytes for every event ingested meanwhile — the additive expand phase ([Fowler, parallel change](https://martinfowler.com/bliki/ParallelChange.html); [Hodgson](https://blog.thepete.net/blog/2023/12/05/expand/contract-making-a-breaking-change-without-a-big-bang/); [Prisma](https://www.prisma.io/dataguide/types/relational/expand-and-contract-pattern)) captures custody from Task A onward at near-zero risk. Disclosed costs: temporary dual storage; the pattern's documented never-contract failure mode — mitigated by the named Phase-4 owner.
 
-## 4. Task decomposition
+## 4. Decisions (all resolved — nothing open)
 
-Single-flight, one implementer at a time, RED→GREEN pairs, Gates A–H (including the cold unframed review before every push). Each task's dispatch brief carries: its slice of §1–§2, exact interfaces, its debt items, and its test obligations.
+| # | Decision | Status |
+|---|---|---|
+| 2b-D1 | Sequencing: **Sheets connector first** (hardest paradigm stress-tests the seam; real prospect class behind it; most distinctive artifact) | Resolved 2026-07-29 |
+| 2b-D2 | **Build** cursor-expiry/data-loss handling (consequence 2) | Resolved 2026-07-29 |
+| 2b-D3 | Vertical profiles **`plumbing \| saas \| realestate`** (amends D10: logistics out) | Michael, 2026-07-29 |
+| 2b-D4 | Raw storage **expand now / contract Phase 4** (consequence 5) | Michael-directed research, 2026-07-29 |
+| 2b-D5 | Horizontal-core thesis is a design CONSTRAINT: nothing industry-specific enters core schema | Michael, 2026-07-29 |
+| — | Bus over HTTP/JSON (D12) · hydration separate table (D7) · bus source = Service-Cloud-cases-shaped (D8) · old CRM retires at exit (D9) · positioning (D13) | Locked in spec Rev-2 |
+| — | Text-first CONTRACT step, tenancy analytics half, prompt-injection defense (pre-Phase-3 gate) | Explicitly out of 2b |
 
-**Task A — Google Sheets source + connector** *(first; the phase's centerpiece)*
-- Mock: an HTTP "Sheets service" modeling the API subset (values read, developer metadata, 429 injection) plus a **simulated human editor** with fault plans: in-place edits, row inserts/deletes, header rename, blank rows, free-hand dates, garbage currency, bulk paste. The sheet's row set is the reconciliation truth (the ledger-equivalent for this paradigm).
-- Connector (`kind: "sheet-snapshot"`): snapshot read → row-key via metadata (mock-side) → content-hash diff → derived events (`sheet.row_upserted`/`sheet.row_deleted` with detection-time `occurred_at`, derived event_id `sha-…`) → ingest through the standard door (contract, quarantine, idempotency all apply). `reconcile()` = full snapshot-diff against `raw` latest-state — the primary channel, per §1.
-- Contract extension: **string rules** (`pattern`, required/optional) so cell-level garbage (currency, dates) quarantines with named reasons at the door — this is Wave 5's currency-at-the-door item landing in its natural home, with the count-presence trade documented from the register.
-- Debt folded in: C4 quarantine attempt tracking + C2 `FOR ROLE` (this task's migration carries both).
-- Oracle: after any fault-plan run, sheet rows ⇄ mart rows reconcile exactly; every rejected cell has a quarantine row naming the field.
-**Task B — Billing: Stripe-faithful feed** — envelope mock (`data.object`, `evt_…` ids, `created`), cursor pagination with `has_more` termination, 30-day boundary reporting, feed-supplied-cursor skip-forward fix, poll fetch timeout (L1-G4, `AbortSignal`).
-**Task C — CRM: thin-webhook + hydrate** — batched (≤100) sparse events, hydration connector with rate budget + hydration DLQ, D7 snapshot table + tombstones, second oracle (every thin event → snapshot or DLQ, nothing in limbo), **evt-N cast removal + tiebreak successor** (consequence 1) with the 2a-identical-latest-state pin.
-**Task D — Support: bus subscribe/replay** — subscription lifecycle, replay-cursor persistence, cursor-invalid (age + reset) → fallback → **unclosable-gap report**, ledger seq enforcement (L1-G7), chaos fault: cursor expiry mid-run.
-**Task E — Vertical seed profiles** (pending OQ-1) — generator `profile` param content; README screenshot trio.
-**Task F — Old-CRM retirement (D9)** — chaos harness ports to the faithful CRM mock; legacy mock + evt-N remnants deleted; free-email blocklist + normalizer hardening land here (the register's before-tier-2-on-real-data gate) since retiring the mock touches the seed/identity fixtures anyway.
-**Task G — Wave 5 remainder** — bound-emission design decision (contract → dbt, no third hand-copy), unlikely-value row flag folded into `has_data_warnings`, declared-absence enforcement citations.
-**Close** — full gauntlet, three-lens panel, Gate E register sweep, Gate H cold review, PR (merge commit, Michael merges).
+## 5. Task map
 
-Dependencies: A → (B, C, D in any order, single-flight) → E/F/G → Close. Shared-crypto-package debt: fold into whichever of B/C/D first touches both signing copies; migration tracking is already on `main`.
+Order: **A → B → C → D → E → F → G → Close.** A is the only task others structurally depend on (its migration carries shared columns); B/C/D are mutually independent but run single-flight; E–G close out. Every task: RED→GREEN commit pairs, task review (spec + quality verdicts), fixes re-reviewed, evidence in reports.
 
-## 5. Risks (inherited + new)
-1. Task C touches the hardened ingest path → new-source-alongside rule; chaos green throughout (spec §6, unchanged).
-2. Sheets trigger-side unknowns (five pinned tests, §1) may force design adjustments — they are scheduled FIRST inside Task A so surprises land before the connector shape freezes.
-3. Effort: spec said 3–4 weekends; 2a's precedent says treat that as the floor and budget for hardening waves.
-4. Scope creep toward the engagement: the wall holds — repo stays synthetic; profile content is generic vertical language, never client data.
+### Task A — Google Sheets source + connector *(the centerpiece; carries the shared migration)*
+- **Mock** (`mocks/sheets/`): HTTP service modeling the needed Sheets API subset — values read, developer-metadata row keys, 429 fault injection — plus a **simulated human editor** with seeded fault plans: in-place edits, row insert/delete, header rename, blank rows, free-hand dates, garbage currency, bulk paste. The sheet's row set is the reconciliation truth (this paradigm's ledger-equivalent).
+- **Migration** (`ingest/migrations/007_*.sql`): `raw_body text NULL` on `raw.raw_events` (2b-D4 expand) + quarantine `attempts`/`last_attempt_at` (register C4) + `FOR ROLE` fix on default privileges (register C2).
+- **Connector** (`ingest/src/connectors/sheet-snapshot.ts`, `kind: "sheet-snapshot"`): snapshot read → row key via metadata → content-hash diff → derived events (`sheet.row_upserted` / `sheet.row_deleted`; event_id = content-addressed hash; `occurred_at` = detection time, flagged derived) → ingested through the standard door (contract, quarantine, idempotency, tenancy all apply unchanged). `reconcile()` = full snapshot-diff vs `raw` latest-state — the primary channel.
+- **Contract extension** (`ingest/src/numeric-contract.ts` → string rules): `{ pattern, required }` for text fields so garbage cells (currency, dates) quarantine with named reasons at the door. Wave 5's currency-at-door lands here; the count-presence trade is documented from the register; staging's regexp stays as doorless-row containment.
+- **Doors dual-write `raw_body`** where wire/canonical text exists (webhook `rawBody`, poll `pageText`, sheet canonical JSON).
+- **Test obligations (RED first):** the five unverified Sheets behaviors pinned FIRST (§2); derived-idempotency (same content twice → duplicate; edited cell → new event); diff correctness under each fault plan; reconcile oracle (after any fault-plan run, sheet rows ⇄ mart rows exactly; every rejected cell has a quarantine row naming the field); string-rule door tests incl. over-rejection guards; dual-write presence pins; migration idempotency.
+- **Done:** oracle green under all fault plans; full gauntlet green; KNOWN-ISSUES + RUNBOOK entries for the paradigm's limits (quota budget, trigger blindness, per-sheet secrets).
+
+### Task B — Billing: Stripe-faithful feed
+- Mock: envelope (`data.object`, `evt_…` opaque ids, `created` s-epoch), `starting_after` cursor, `has_more`, `limit` 1–100.
+- Connector: `has_more`-driven termination (kills the empty-page inference class fixed once at `f1e7ac4`); **30-day boundary**: backfill target older than retention → reported unreachable range (consequence 2); order by `created`, never response position.
+- Debt: poll fetch timeout (`AbortSignal`, register L1-G4); feed-supplied-cursor skip-forward fix (cursor advances only past verified-ingested events).
+- Tests: pagination drain (multi-page, exact-boundary, empty-feed); retention-boundary report pin; timeout wedge pin (black-holed socket → bounded failure, cursor intact); cursor-skip regression pin.
+
+### Task C — CRM: thin webhooks + hydration
+- Mock: batched (≤100) sparse property-change events with the §2 field set; out-of-order delivery in fault plans (ordering is explicitly not guaranteed).
+- Connector: batch unpacking; hydration fetches with rate budget; D7 snapshot table `(event_id, fetched_at)`; tombstones for deleted-before-fetch (404); hydration DLQ; **second oracle**: every thin event → hydrated snapshot OR DLQ, nothing in limbo.
+- **Tiebreak successor lands here** (consequence 1) + evt-N cast removal; `required: false` flips for the sparse source's contract entries.
+- Tests: hydration-failure classes (429/5xx/404) each to their path; oracle under chaos; out-of-order occurredAt convergence; the 2a-identical-latest-state pin for the ordering swap; sparse-payload acceptance + hydrated-snapshot contract enforcement.
+
+### Task D — Support: bus subscribe/replay
+- Mock: HTTP/JSON stream endpoint with per-event opaque `replay_id` (non-contiguous by design), subscription lifecycle, 72h retention window, **stream-reset fault**.
+- Connector: replay-cursor persistence (per tenant/source); cursor-invalid detection (age OR reset) → configured fallback (EARLIEST/LATEST) → **unclosable-gap report with bounds**; at-least-once → idempotent-ingest handoff.
+- Debt: ledger seq/uniqueness enforcement (register L1-G7) — replay makes duplicate-seq real.
+- Tests: resubscribe-from-cursor exactness; expiry mid-run (chaos fault) → gap reported, pipeline continues; reset → gap reported; duplicate-delivery idempotency; gap-report content pin (bounds, cause).
+
+### Task E — Vertical seed profiles (2b-D3)
+- Generator content for `plumbing | saas | realestate` (structure already stubbed per D4-2a): vertical-appropriate names, deal/invoice types, ticket categories, value ranges; still fully synthetic, hygiene-test-enforced; README screenshot trio as the horizontal-thesis proof artifact. Realestate content stays generic vertical language (listings, closings, commissions) — never client data (2b-D5 wall).
+- Tests: per-profile determinism; hygiene scan passes on all profiles; identity-oracle expectations hold per profile.
+
+### Task F — Old-CRM retirement (D9)
+- Chaos harness (fault plans + hash-chained ledger) ports to the faithful CRM mock; legacy mock + evt-N remnants deleted; free-email blocklist + normalizer hardening (register's before-tier-2-on-real-data gate) land here with the fixture rework.
+- Tests: chaos zero-loss green on the faithful mock; normalizer vector pins (trailing comma, Co/PLLC, &/and, double spaces, ZWSP/NFC); blocklist demotes free-domain tier-2 matches to manual review.
+
+### Task G — Wave 5 numeric remainder
+- Bound-emission design decision FIRST (contract → dbt: dbt var/seed emitted from `numeric-contract.ts`; never a third hand-copy), then the unlikely-value row flag folded into `has_data_warnings`; declared-absence citations wired (Data Supplied = philosophy; Out-of-Bounds = invariant, citing `assert_csat_in_scale` + `assert_amounts_non_negative`).
+- Tests: emitted-bound consistency pin (contract value == dbt value, mechanically); unlikely-value trigger pin (isolating, per the Gate-H lesson); prevalence re-measured.
+
+### Close
+Full gauntlet (node + dbt live-fire on isolated stack + demo/chaos via CI label) → three-lens panel → Gate E register sweep (every 2b-owned item resolved or explicitly re-deferred) → **Gate H cold unframed review** → docs pass (README two-layer update incl. thesis + profiles trio, RUNBOOK, KNOWN-ISSUES, connector ADR incl. auth + HTTP/JSON deltas) → PR to `main`, merge commit, Michael merges.
+
+## 6. Debt map (register items → owners)
+C4 attempts + C2 FOR ROLE → **A** · currency-at-door + string rules → **A** · L1-G4 fetch timeout + cursor skip-forward → **B** · evt-N/L2-G6 + tiebreak successor + L2-G3 straddle re-check → **C** · L1-G7 ledger seq → **D** · free-email blocklist + normalizer + L2-G4 strip-set alignment → **F** · Wave 5 → **G** · shared crypto package → first of B/C/D to touch both signing copies · text-first CONTRACT step, tenancy analytics, prompt-injection → explicitly out (owners recorded).
+
+## 7. Risks
+1. Task C touches the hardened ingest path → new-source-alongside rule; chaos green throughout; nothing rewritten in place.
+2. Sheets unknowns may force design adjustment → the five pins run FIRST in Task A, before the connector shape freezes.
+3. Effort: spec said 3–4 weekends; 2a precedent says treat as floor — hardening waves are where the quality comes from; budget for them.
+4. Engagement scope creep → 2b-D5 wall: repo stays synthetic; the broker's pain-points document (expected this week) maps to horizontal primitives in the plan's terms, feeds profile content only as generic vertical language, and everything client-specific stays engagement-side.
+
+## 8. Out of scope (unchanged from spec §5 + resolutions)
+Real vendor auth/OAuth (documented delta) · ML/fuzzy matching · LLM-driven connector decisioning (Phase 3) · production deployment/observability (Phase 4) · gRPC/Avro literalism (D12) · unmerge · text-first contract step (Phase 4, owned) · tenancy analytics half (pre-client, owned) · prompt-injection defense (hard gate before Phase 3).
