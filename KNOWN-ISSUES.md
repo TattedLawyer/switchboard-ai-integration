@@ -35,28 +35,52 @@ red would be worse than the bug:
 was fixed in 2a.2 (RED tests first, parse-guard in both verifier copies,
 truncation-totality property 6 in the green suite).
 
-## Multi-tenancy: this schema is single-tenant (HIGHEST, undisclosed until the audit)
+## Multi-tenancy: the ingest layer is tenant-scoped; the analytics layer is NOT (partially paid)
 
-- **There is no tenant discriminator anywhere** *(audit)* — not in `raw`, the
-  queues, the staging models, the identity layer, or the mart. The only
-  partition is `source` (crm/billing/support), which is a *system* boundary,
-  not a *customer* one. Consequences if two clients' data were loaded today:
-  - Identity tiers join on email / normalized domain+name with no partition, so
-    two different clients' "Acme Group / acme.com" merge into one entity —
-    cleanly, with audit evidence, and **no ambiguity flag**, because the
-    over-merge guard fires on one key mapping to *multiple* canonicals, and
-    each tenant contributes exactly one. It is an over-merge guard, not a
-    boundary guard. `customer_360` would then sum both clients' revenue.
-  - `raw_events` uniqueness is `(source, event_id)`, so two tenants' vendors
-    both emitting `evt-1` silently drop the second (202 "stored") —
-    cross-tenant data *loss*, not just leakage.
-  - One `WEBHOOK_SECRET_<SOURCE>` per source means tenant B's secret is
-    tenant A's secret.
-  This is disclosed as a *scoping decision*, not an oversight: the repo is a
-  single-tenant demonstration, and retrofitting tenancy is schema-wide (every
-  join predicate and group-by key in ~14 models, plus a caller-identity model
-  for the agent). See "What production would require" below for the plan and
-  the isolation-model decision that must come first.
+**Paid (migration 006).** The audit's highest-severity finding was cross-tenant
+data *loss*: `raw_events` uniqueness was `(source, event_id)`, so two tenants'
+vendors both emitting `evt-1` silently dropped the second and reported it as a
+successful de-duplication. That is closed:
+
+- Uniqueness is now `(tenant_id, source, event_id)` — exactly-once is preserved
+  *within* a tenant, and the same id from two businesses becomes two rows.
+- `tenant_id` is present and indexed on `raw.raw_events`, `ingest.outbox`,
+  `ingest.quarantine` and `ingest.cursors`. Cursors are keyed
+  `(tenant_id, source)`: a shared cursor would let one tenant's progress skip
+  another's events permanently.
+- A tenant is **required, never defaulted** — supplying it explicitly-but-empty
+  throws rather than silently substituting the default tenant.
+- Row-level security is enabled **and forced** on all four tables. Note the
+  reason `FORCE` alone was not enough here: PostgreSQL documents that
+  *"superusers and roles with the `BYPASSRLS` attribute always bypass the row
+  security system"*, and this project's `switchboard` role is a superuser. So
+  006 also creates a non-superuser `switchboard_app` role, and the isolation
+  test proves the boundary **through that role** — it fails if pointed back at
+  the superuser. "We enabled RLS" is not a claim worth making otherwise.
+
+**Still open, and it is the larger half:**
+
+- **The analytics layer has no tenant partition.** Staging models, the identity
+  tiers, and `customer_360` are unchanged. Two clients' "Acme Group /
+  acme.com" would still merge into one entity — cleanly, with audit evidence,
+  and **no ambiguity flag**, because the over-merge guard fires when one key
+  maps to *multiple* canonicals and each tenant contributes exactly one. It is
+  an over-merge guard, not a boundary guard. `customer_360` would sum both
+  clients' revenue. Retrofitting means a partition in every join predicate and
+  group-by across ~14 models.
+- **The RLS policy permits access when no tenant context is set.** That is what
+  keeps migrations, reconcile, dbt and the single-tenant demo working — but it
+  means RLS here guards against cross-tenant leaks in tenant-scoped code paths,
+  not against an application role that simply declines to set the context.
+  Closing it needs a policy with no fallback branch on a dedicated role.
+- **One `WEBHOOK_SECRET_<SOURCE>` per source**, so tenant B's secret is tenant
+  A's secret. Per-tenant-per-source secrets are the fix.
+- **No caller-identity model for the agent** — the read-only role is not
+  tenant-scoped, so the report worker sees all tenants.
+
+Until the analytics half lands, treat this as **single-tenant with a
+tenant-safe ingest floor**: the pipeline will no longer destroy a second
+tenant's data, but it will still merge two tenants' *entities* downstream.
 
 ## Identity resolution (HIGH interest)
 
@@ -318,12 +342,19 @@ and none is started. Effort classes are estimates by the maintainer.
    inside the queue worker, per-vendor signature schemes (every real one signs
    a timestamp — the 2a.3 scheme gives that somewhere to land), backoff that
    honors `Retry-After`, and fetch timeouts.
-3. **Operations (5–7 weeks).** Postgres volume + rehearsed restore (today
-   `docker compose down` destroys the database; the runbook's pg_dump path is
-   design, not implementation), service containers + health endpoints,
-   structured logging with correlation ids, metrics + alerts on queue/DLQ/
-   quarantine depth and backfill last-success age (the backfill can die
-   permanently while logging a reassuring line every 60s), migration tracking.
+3. **Operations.** ~~Postgres volume + rehearsed restore~~ and ~~migration
+   tracking~~ are **paid**: the database now lives in a named volume, and
+   `scripts/verify-durability.sh` proves — by executing it — that data survives
+   container destruction and that a backup restores to an identical state after
+   the schemas are dropped outright. Migrations are recorded with a checksum and
+   startup **refuses** to proceed if an applied migration's contents changed.
+   One trade-off stated openly: the dump excludes `pgboss` (its partitioned
+   tables' inherited primary keys make a full dump un-restorable), so DLQ depth
+   does not survive a restore — the events themselves do, via ledger replay.
+   **Still open:** service containers + health endpoints, structured logging with
+   correlation ids, and metrics + alerts on queue/DLQ/quarantine depth and
+   backfill last-success age (the backfill can die permanently while logging a
+   reassuring line every 60s).
 4. **The automation surface (3–5 weeks + agent loop).** Action/intent objects,
    an approval queue, outbound idempotency keys, an agent-action audit log,
    and injection defense — the OWASP LLM06 architecture. Nothing here exists;

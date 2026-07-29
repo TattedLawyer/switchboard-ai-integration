@@ -1,6 +1,6 @@
 import { getPool } from "../db.js";
-import { reconcile, verifyLedgerChain } from "../reconcile.js";
-import { enabledSources, ledgerPathFor } from "../sources.js";
+import { enabledSources } from "../sources.js";
+import { connectorFor } from "../connectors/index.js";
 
 async function main(): Promise<void> {
   const pool = getPool();
@@ -9,22 +9,24 @@ async function main(): Promise<void> {
 
   try {
     for (const source of enabledSources()) {
-      const ledgerPath = ledgerPathFor(source);
-      if (!ledgerPath) {
-        console.log(`[${source}] skipped (no LEDGER_PATH_${source.toUpperCase()})`);
+      const result = await connectorFor(source).reconcile(pool);
+
+      if (result.skipped) {
+        console.log(`[${source}] skipped (${result.skipped})`);
         continue;
       }
 
-      const chain = verifyLedgerChain(ledgerPath);
-      if (!chain.ok) {
-        console.log(`[${source}] FAIL: ledger hash chain broken at line ${chain.brokenAt}`);
+      if (!result.integrity.ok) {
+        console.log(`[${source}] FAIL: ${result.integrity.detail ?? "source record not trusted"}`);
         reconciledCount++;
         allClean = false;
         continue;
       }
       console.log(`[${source}] ledger hash chain: ok`);
 
-      const report = await reconcile(pool, source, ledgerPath);
+      // integrity.ok with no skip guarantees a report; this satisfies the type checker without
+      // inventing a fallback that would silently pass an unreconciled source.
+      const report = result.report!;
       reconciledCount++;
 
       console.log(`[${source}] ledger: ${report.ledger} distinct event_id(s)`);

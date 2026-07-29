@@ -229,14 +229,18 @@ describe("pg-boss queue", () => {
       // Same mechanism as the poison tests above (make ingestEvent throw via the pool), but
       // selective: delegate to the real pool and reject only the poison event's insert, so the
       // healthy events in the SAME batch can succeed. ingestEvent's raw_events insert carries the
-      // event_id as its second parameter (see src/ingest-event.ts).
+      // event_id as its THIRD parameter since tenant_id was added (see src/ingest-event.ts).
       const selectivePool = {
         connect: async () => {
           const client = await pool.connect();
           return {
             query: async (text: string, params?: unknown[]) => {
               if (text.includes("raw.raw_events") && Array.isArray(params)) {
-                const eventId = params[1] as string;
+                // $1 is tenant_id since migration 006; event_id is $3. Positional coupling to
+                // ingest-event.ts's INSERT — if that statement's parameter order changes again,
+                // this mock silently stops matching and the test times out rather than failing
+                // clearly, which is exactly what happened when tenant_id was introduced.
+                const eventId = params[2] as string;
                 attempts.set(eventId, (attempts.get(eventId) ?? 0) + 1);
                 if (eventId === poisonId) throw new Error("Pool is poisoned for this event");
               }

@@ -1,15 +1,16 @@
 import { getPool } from "../db.js";
-import { catchUp } from "../backfill.js";
 import { baseUrlFor, enabledSources } from "../sources.js";
+import { connectorFor } from "../connectors/index.js";
 
 async function main(): Promise<void> {
   const pool = getPool();
   let failed = false;
 
   for (const source of enabledSources()) {
+    // Reported for operator context only; the connector resolves its own source of truth.
     const baseUrl = baseUrlFor(source);
     try {
-      const ingested = await catchUp(pool, source, baseUrl);
+      const ingested = await connectorFor(source).catchUp(pool);
       console.log(`backfill[${source}]: ingested ${ingested} event(s) from ${baseUrl}`);
     } catch (err) {
       failed = true;

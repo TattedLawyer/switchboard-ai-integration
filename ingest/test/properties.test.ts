@@ -471,7 +471,11 @@ describe("property 5: random poison/healthy batch partitions — healthy ingest 
           return {
             query: async (text: string, params?: unknown[]) => {
               if (text.includes("raw.raw_events") && Array.isArray(params)) {
-                const eventId = params[1] as string;
+                // $1 is tenant_id since migration 006; event_id is $3. Positional coupling to
+                // ingest-event.ts's INSERT — if that statement's parameter order changes again,
+                // this mock silently stops matching and the test times out rather than failing
+                // clearly, which is exactly what happened when tenant_id was introduced.
+                const eventId = params[2] as string;
                 attempts.set(eventId, (attempts.get(eventId) ?? 0) + 1);
                 if (poisonIds.has(eventId)) throw new Error("Pool is poisoned for this event");
               }
