@@ -198,6 +198,102 @@ describe("L1 numeric contract at the trust boundary", () => {
     });
   });
 
+  describe("declared string fields: currency validated at the door (Task A2)", () => {
+    // The count-presence trade, accepted and documented: quarantining an event over a bad
+    // currency removes its NON-monetary facts until replay. That is why ABSENT must pass
+    // (legacy pre-currency events flow untouched) and why the reason must NAME the field.
+    describe("rejections: present-but-malformed currency quarantines event-level, naming currency", () => {
+      const currencyCases: Array<{ label: string; id: string; currency: unknown }> = [
+        { label: "lowercase 'usd'", id: "evt-sc-lower", currency: "usd" },
+        { label: "injection garbage 'EUR;drop table x'", id: "evt-sc-inject", currency: "EUR;drop table x" },
+        { label: "overlong junk string (500 chars)", id: "evt-sc-long", currency: "Z".repeat(500) },
+        { label: "non-string 123", id: "evt-sc-nonstr", currency: 123 },
+        { label: "trailing space 'USD ' (pattern is fully anchored)", id: "evt-sc-trail", currency: "USD " },
+        { label: "embedded match 'XUSDX' (pattern is fully anchored)", id: "evt-sc-anchor", currency: "XUSDX" },
+      ];
+      for (const { label, id, currency } of currencyCases) {
+        it(`invoice.created with ${label} is quarantined, names currency, raw untouched`, async () => {
+          const res = await postSigned("billing", evt(id, "invoice.created", { amount_cents: 12500, currency }));
+          await expectQuarantinedNaming(id, res, "currency");
+        });
+      }
+
+      it("the reason states the expected shape and the got-value, for the operator", async () => {
+        const q = await pool.query(
+          "select reason from ingest.quarantine where payload->>'event_id' = 'evt-sc-lower'",
+        );
+        expect(q.rowCount).toBe(1);
+        expect(q.rows[0].reason).toContain("^[A-Z]{3}$");
+        expect(q.rows[0].reason).toContain('"usd"');
+      });
+    });
+
+    describe("over-rejection guards: absent passes, valid codes pass, unknown types pass", () => {
+      it("ABSENT currency on invoice.created still ingests — legacy pre-currency events must flow (load-bearing)", async () => {
+        const res = await postSigned("billing", evt("evt-sc-absent", "invoice.created", { amount_cents: 9900 }));
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ stored: true });
+        const raw = await pool.query("select 1 from raw.raw_events where event_id = 'evt-sc-absent'");
+        expect(raw.rowCount).toBe(1);
+      });
+
+      for (const [id, source, type, currency] of [
+        ["evt-sc-usd", "billing", "invoice.created", "USD"],
+        ["evt-sc-eur", "crm", "deal.updated", "EUR"],
+        ["evt-sc-php", "billing", "invoice.paid", "PHP"],
+      ] as const) {
+        it(`valid currency ${currency} on ${type} ingests`, async () => {
+          const res = await postSigned(source, evt(id, type, { amount_cents: 5000, currency }));
+          expect(res.status).toBe(202);
+          expect(await res.json()).toEqual({ stored: true });
+          const raw = await pool.query("select 1 from raw.raw_events where event_id = $1", [id]);
+          expect(raw.rowCount).toBe(1);
+        });
+      }
+
+      it("an UNKNOWN event_type with garbage currency ingests untouched — new vendor types must never cause a feed-wide quarantine", async () => {
+        const res = await postSigned(
+          "billing",
+          evt("evt-sc-unknown", "invoice.refunded", { amount_cents: 100, currency: "usd;drop" }),
+        );
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ stored: true });
+        const raw = await pool.query("select 1 from raw.raw_events where event_id = 'evt-sc-unknown'");
+        expect(raw.rowCount).toBe(1);
+      });
+    });
+
+    describe("robustness: rendering stays total at declared string fields", () => {
+      it("a 7000-deep nested array as currency returns a violation naming currency and does NOT throw", async () => {
+        const { numericContractViolation } = await contractModule();
+        let deep: unknown = "USD";
+        for (let i = 0; i < 7000; i++) deep = [deep];
+        const violation = numericContractViolation("invoice.created", { amount_cents: 100, currency: deep });
+        expect(violation).not.toBeNull();
+        expect(violation!.field).toBe("currency");
+        expect(violation!.reason).toContain("currency");
+      });
+    });
+
+    describe("replay door", () => {
+      it("a webhook-quarantined bad-currency event stays 'still-invalid' on replay", async () => {
+        const bad = evt("evt-sc-replay", "invoice.created", { amount_cents: 100, currency: "usd" });
+        const res = await postSigned("billing", bad);
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ quarantined: true });
+
+        const row = await pool.query(
+          "select id from ingest.quarantine where payload->>'event_id' = 'evt-sc-replay'",
+        );
+        expect(row.rowCount).toBe(1);
+        const result = await replayQuarantined(pool, row.rows[0].id, ingestEvent);
+        expect(result).toBe("still-invalid");
+        const raw = await pool.query("select 1 from raw.raw_events where event_id = 'evt-sc-replay'");
+        expect(raw.rowCount).toBe(0);
+      });
+    });
+  });
+
   describe("registry completeness", () => {
     it("every event_type consumed by any warehouse model is declared in NUMERIC_CONTRACT", async () => {
       const { NUMERIC_CONTRACT } = await contractModule();
