@@ -8,6 +8,7 @@ import express from "express";
 import { prng } from "@switchboard/mock-core";
 import { createEditor, FAULT_PLANS, type Editor, type FaultPlanName } from "./editor.js";
 import { createSheet, type SheetState } from "./sheet.js";
+import { createTrigger, type SheetTrigger } from "./trigger.js";
 
 export type Read429Options = {
   seed: number;
@@ -21,6 +22,10 @@ export type SheetsAppOptions = {
   seed: number;
   rowCount?: number;
   read429?: Read429Options;
+  /** Optional push channel target. No URL → no trigger channel at all (a sheet with
+   *  no Apps-Script trigger installed — the default posture). */
+  webhookUrl?: string;
+  trigger?: { seed?: number; dropRate?: number; delayMs?: number; dailyQuota?: number };
 };
 
 export type SheetsApp = {
@@ -28,6 +33,8 @@ export type SheetsApp = {
   /** Direct state access — the API/script-driven mutation path for tests. */
   sheet: SheetState;
   editor: Editor;
+  /** Present iff webhookUrl was configured. */
+  trigger?: SheetTrigger;
 };
 
 // Error body modeled on the documented Google API 429 shape (Sheets API limits page:
@@ -46,7 +53,21 @@ const QUOTA_BODY = {
 
 export function createSheetsApp(opts: SheetsAppOptions): SheetsApp {
   const sheet = createSheet({ seed: opts.seed, rowCount: opts.rowCount });
-  const editor = createEditor(sheet, { seed: opts.seed });
+
+  // The trigger is wired ONLY into the editor's human path. sheet.apply() — the
+  // API/script write path — has no route to it (documented: "Script executions and
+  // API requests don't cause triggers to run").
+  const trigger = opts.webhookUrl
+    ? createTrigger({
+        sheetId: sheet.sheetId,
+        webhookUrl: opts.webhookUrl,
+        seed: opts.trigger?.seed ?? opts.seed,
+        dropRate: opts.trigger?.dropRate,
+        delayMs: opts.trigger?.delayMs,
+        dailyQuota: opts.trigger?.dailyQuota,
+      })
+    : undefined;
+  const editor = createEditor(sheet, { seed: opts.seed, onHumanEdit: trigger?.onHumanEdit });
 
   // Seeded read-fault stream: one draw per read request, in arrival order —
   // deterministic for any identical request sequence.
@@ -77,7 +98,7 @@ export function createSheetsApp(opts: SheetsAppOptions): SheetsApp {
   // The human path over HTTP — mirrors the other mocks' /simulate, but query-driven:
   // POST /simulate?steps=N&plan=<calm|messy|bulk|hostile>. Only THIS path is human
   // editing; direct sheet.apply() calls model API/script writes.
-  app.post("/simulate", (req, res) => {
+  app.post("/simulate", async (req, res) => {
     const steps = Number(req.query.steps ?? 1);
     const plan = String(req.query.plan ?? "calm");
     if (!Number.isInteger(steps) || steps < 1 || steps > 1000) {
@@ -87,8 +108,11 @@ export function createSheetsApp(opts: SheetsAppOptions): SheetsApp {
       return res.status(400).json({ error: `unknown plan "${plan}" (${FAULT_PLANS.join("|")})` });
     }
     editor.applySteps(steps, plan as FaultPlanName);
+    // Drain the push queue before answering so callers observe a settled channel.
+    // Failed posts are already final by then — there is no retry to wait for.
+    await trigger?.flush();
     res.json({ applied: steps, seq: editor.steps() });
   });
 
-  return { app, sheet, editor };
+  return { app, sheet, editor, trigger };
 }

@@ -13,6 +13,8 @@
 //   UNVERIFIED → conservative — daily trigger budget (the 90-min/day class): after
 //                 `dailyQuota` posts the channel goes SILENT, with no error signal.
 
+import { prng, secretForSource, signBody } from "@switchboard/mock-core";
+
 export type SheetNotification = {
   sheet_id: string;
   range: string; // A1 range the human touched — THIN: never the values themselves
@@ -46,6 +48,62 @@ export type SheetTrigger = {
   stats(): TriggerStats;
 };
 
-export function createTrigger(_opts: TriggerOptions): SheetTrigger {
-  throw new Error("not implemented (RED)");
+export function createTrigger(opts: TriggerOptions): SheetTrigger {
+  const rand = prng(opts.seed);
+  const dropRate = opts.dropRate ?? 0;
+  const delayMs = opts.delayMs ?? 0;
+  const dailyQuota = opts.dailyQuota ?? Infinity;
+  const stats: TriggerStats = { attempted: 0, posted: 0, dropped: 0, quotaSilenced: 0, failed: 0 };
+  // Budget is spent at ENQUEUE time (synchronously): posted/failed settle later in the
+  // async chain, and the quota decision cannot depend on in-flight outcomes.
+  let budgetUsed = 0;
+  // Sequential post chain: preserves delivery order and lets tests flush deterministically.
+  let chain: Promise<void> = Promise.resolve();
+
+  const onHumanEdit = (e: { range: string; occurred_at: string }): void => {
+    stats.attempted++;
+    // UNVERIFIED → conservative: daily budget exhausted means SILENCE — no error path,
+    // no signal to the sheet, nothing for the connector to key off. Only reconcile sees it.
+    if (budgetUsed >= dailyQuota) {
+      stats.quotaSilenced++;
+      return;
+    }
+    // Seeded in-flight loss. DOCUMENTED: no delivery guarantee → a dropped notification
+    // is gone forever; there is no retry machinery to even hand it to.
+    if (rand() < dropRate) {
+      stats.dropped++;
+      return;
+    }
+    const notification: SheetNotification = {
+      sheet_id: opts.sheetId,
+      range: e.range,
+      occurred_at: e.occurred_at,
+    };
+    const body = JSON.stringify(notification);
+    budgetUsed++;
+    chain = chain.then(async () => {
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+      try {
+        const res = await fetch(opts.webhookUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-switchboard-signature": signBody(body, secretForSource("sheets")),
+          },
+          body,
+        });
+        // DOCUMENTED: no retry on failure, ever — count it and move on.
+        if (res.ok) stats.posted++;
+        else stats.failed++;
+      } catch {
+        stats.failed++;
+      }
+    });
+  };
+
+  return {
+    onHumanEdit,
+    flush: () => chain,
+    stats: () => ({ ...stats }),
+  };
 }
