@@ -168,22 +168,24 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   which run as separate jobs on separate runners. The leak itself is unfixed.
   *Scheduled: next CI/ops pass — kill the process group (`setsid` + `kill -- -PGID`,
   or `pkill -P`) rather than the direct child.*
-- **`alter default privileges` in the migrations is not scoped `FOR ROLE`** *(phase-close
-  review)* — so it only governs objects created by the role that ran the migration. A
-  deployment where `DBT_USER` differs from the migrating role gets marts the agent role
-  cannot `SELECT`, presenting as a bare `permission denied for table` (42501) with nothing
-  in the migration to point at. Cannot be reached as shipped — nothing in this repo or CI
-  uses a split role — but it is a supported configuration, so it is a trap rather than a
-  bug today. Confirmed against the PostgreSQL `ALTER DEFAULT PRIVILEGES` documentation,
-  which states the target-role scoping explicitly. *Scheduled: 2b, with the split-role
-  deploy path it belongs to.*
-- **`replayAllQuarantined` records no attempt** *(phase-close review)* — no `attempts` or
-  `last_attempt_at` column, so a permanently-unreplayable row is retried forever and
-  quarantine depth can never drop. Beyond the churn, this is what stops an operator
-  answering the question dead-letter handling exists to answer: *has this been tried, and
-  can it safely be replayed?* Deferred because the fix is a schema migration, not a code
-  change. Compounding it, nothing alerts on quarantine depth (listed under operations
-  below). *Scheduled: 2b, with the migration.*
+- ~~`alter default privileges` in the migrations is not scoped `FOR ROLE`~~ *Mostly paid
+  (2b, migration 007):* the default-privilege grants for the default `public_analytics`
+  schema are now `FOR ROLE`-scoped and proven by catalog inspection under a split-role
+  migrator. **Residual:** the *runtime* grant in `migrate.ts` (`grantAgentReadOnly`, which
+  handles `DBT_SCHEMA` overrides) is still unscoped — reachable only when a deployment BOTH
+  overrides `DBT_SCHEMA` AND migrates under a non-`switchboard` role, a combination no
+  shipped config uses. Register-owned: the fix lands with the next slice that owns
+  `migrate.ts`. Also note: 007's scoped grant requires the migrator to be a member of
+  `switchboard` — a missing membership fails loudly at migrate time.
+- ~~`replayAllQuarantined` records no attempt~~ *Paid (2b, migration 007):* quarantine rows
+  now carry `attempts` and `last_attempt_at`, recorded on every replay attempt (recorded
+  *before* the outcome on purpose: a crash can overcount attempts, never undercount — the
+  forever-crashing rows this feature exists to expose are exactly the ones that must never
+  show zero). The original text for the record: a permanently-unreplayable row was retried
+  forever and quarantine depth could never drop, and an operator could not answer the
+  question dead-letter handling exists to answer: *has this been tried, and can it safely
+  be replayed?* Still open alongside it: nothing alerts on quarantine depth (listed under
+  operations below).
 - **`/simulate` has no explicit start index**, so which events a mock emits depends
   on a process-lifetime counter rather than on the request. The freshness assertion
   above converts that from a silent wrong-answer into a loud failure, but the
