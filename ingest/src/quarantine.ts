@@ -161,11 +161,17 @@ export interface QuarantineRow {
   reason: string;
   event_id: string | null;
   received_at: Date;
+  // C4: how many times replay has been TRIED on this row, and when last. The operator
+  // question dead-lettering exists to answer — "has this been tried, is it safely
+  // replayable?" — is unanswerable without them, and depth alone is uninterpretable.
+  attempts: number;
+  last_attempt_at: Date | null;
 }
 
 export async function listQuarantine(pool: pg.Pool): Promise<QuarantineRow[]> {
   const res = await pool.query(
-    `select id, source, reason, payload->>'event_id' as event_id, received_at
+    `select id, source, reason, payload->>'event_id' as event_id, received_at,
+            attempts, last_attempt_at
        from ingest.quarantine
       where replayed_at is null
       order by id`,
@@ -204,6 +210,15 @@ export async function replayQuarantined(
     throw new Error(`Quarantine row ${id} not found`);
   }
 
+  // C4: record the attempt BEFORE the outcome is known — "tried" is a fact about the
+  // operation, not about its success. Both dispositions below (replayed / still-invalid)
+  // leave the same trace, so a permanently-unreplayable row shows its mounting attempt
+  // count instead of looking forever untouched.
+  await pool.query(
+    "update ingest.quarantine set attempts = attempts + 1, last_attempt_at = now() where id = $1",
+    [id],
+  );
+
   const payload = result.rows[0].payload;
 
   // Validate the payload with the event schema
@@ -212,7 +227,11 @@ export async function replayQuarantined(
     return "still-invalid";
   }
 
-  // If valid, ingest the event under its originally-recorded source
+  // If valid, ingest the event under its originally-recorded source. raw_body is left
+  // NULL deliberately (2b-D4): quarantine rows store EITHER a jsonb payload OR raw_body
+  // text (quarantineEvent's two shapes), and only payload-bearing rows can pass the schema
+  // gate above — so a replayable row has no wire bytes to hand over, and the quarantine
+  // table itself retains custody for the rows that do.
   await ingest(pool, result.rows[0].source, parsed.data);
 
   // Set replayed_at timestamp

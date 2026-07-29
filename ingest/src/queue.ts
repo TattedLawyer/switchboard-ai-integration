@@ -72,12 +72,36 @@ export async function createQueue(
   return boss;
 }
 
+// Job envelope (2b-D4 expand): the event plus the wire bytes it arrived as, so the worker
+// can store raw_body. Safe to put in pg-boss's jsonb job table: jsonb-unstorable payloads
+// divert to quarantine BEFORE enqueue (server.ts), so any enqueued rawBody is a storable
+// JSON string. null = the enqueuing door had no wire bytes.
+export interface IngestJob {
+  event: SourceEvent;
+  rawBody: string | null;
+}
+
+// Expand-phase tolerance: during a rolling deploy an old receiver can still enqueue BARE
+// events while a new worker drains them (and old bare jobs can be sitting in the queue or
+// DLQ). Unwrap both shapes; a bare event simply has no wire bytes. `event` cannot collide
+// with real event content: enqueued events are schema-parsed, and the zod object strips
+// unknown keys, so a stored SourceEvent never has an `event` property.
+function unwrapJob(data: IngestJob | SourceEvent): { event: SourceEvent; rawBody: string | null } {
+  if (typeof data === "object" && data !== null && "event" in data) {
+    const job = data as IngestJob;
+    return { event: job.event, rawBody: job.rawBody ?? null };
+  }
+  return { event: data as SourceEvent, rawBody: null };
+}
+
 export async function enqueueEvent(
   boss: PgBoss,
   source: Source,
-  event: SourceEvent
+  event: SourceEvent,
+  rawBody?: string
 ): Promise<void> {
-  await boss.send(queueName(source), event, {
+  const job: IngestJob = { event, rawBody: rawBody ?? null };
+  await boss.send(queueName(source), job, {
     // Use queue-level defaults, but can be overridden per job if needed
   });
 }
@@ -122,7 +146,8 @@ export async function startWorker(
         const results: JobResult[] = [];
         for (const job of jobs) {
           try {
-            await ingestEvent(pool, source, job.data as SourceEvent);
+            const { event, rawBody } = unwrapJob(job.data as IngestJob | SourceEvent);
+            await ingestEvent(pool, source, event, rawBody !== null ? { rawBody } : undefined);
             results.push({ id: job.id, status: "completed" });
           } catch (err) {
             results.push({
@@ -143,12 +168,14 @@ export async function startWorker(
 export async function fetchDlq(
   boss: PgBoss,
   limit: number = 10
-): Promise<{ source: Source; id: string; data: SourceEvent }[]> {
+): Promise<{ source: Source; id: string; data: SourceEvent; rawBody: string | null }[]> {
   // Aggregate pending jobs across every source's DLQ, tagging each with its source.
   // Note: In pg-boss, a DLQ is just another queue, so we query each directly.
-  const aggregated: { source: Source; id: string; data: SourceEvent }[] = [];
+  // Jobs are unwrapped from the IngestJob envelope so callers keep seeing the event as
+  // `data` (the CLI prints event_id/event_type from it); the wire bytes ride alongside.
+  const aggregated: { source: Source; id: string; data: SourceEvent; rawBody: string | null }[] = [];
   for (const source of SOURCES) {
-    const jobs = await boss.findJobs<SourceEvent>(dlqName(source));
+    const jobs = await boss.findJobs<IngestJob | SourceEvent>(dlqName(source));
 
     // Empirically verified (pg-boss v12.26.1): when a job dead-letters out of its source
     // queue, pg-boss inserts a BRAND NEW job into the DLQ queue with state 'created' (it does
@@ -157,7 +184,8 @@ export async function fetchDlq(
     // This is a peek (read-only via findJobs), so jobs remain fetchable for the replay CLI.
     for (const job of jobs) {
       if (job.state === "created" || job.state === "retry") {
-        aggregated.push({ source, id: job.id, data: job.data });
+        const { event, rawBody } = unwrapJob(job.data);
+        aggregated.push({ source, id: job.id, data: event, rawBody });
       }
     }
   }
@@ -177,8 +205,9 @@ export async function replayDlq(
     try {
       // ingestEvent is idempotent (ON CONFLICT DO NOTHING on (source, event_id)), so re-running it
       // here is safe even in the edge case where the original job actually succeeded before
-      // dead-lettering.
-      await ingestEvent(pool, job.source, job.data);
+      // dead-lettering. The wire bytes travel with the job envelope, so a DLQ replay stores
+      // the same raw_body a first-attempt success would have.
+      await ingestEvent(pool, job.source, job.data, job.rawBody !== null ? { rawBody: job.rawBody } : undefined);
 
       // Consume the DLQ job so it isn't replayed again. fetchDlq() peeks jobs via findJobs() —
       // it does NOT fetch/lease them the way boss.work()/boss.fetch() do, so these jobs are still

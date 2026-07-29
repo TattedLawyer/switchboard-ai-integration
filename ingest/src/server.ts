@@ -12,7 +12,10 @@ export type { SourceEvent };
 
 export function createIngestApp(
   pool: pg.Pool,
-  opts?: { enqueue?: (source: Source, event: SourceEvent) => Promise<void> }
+  // rawBody: the exact request text of the webhook delivery, threaded to the queue so the
+  // worker can store it (2b-D4 expand). Always jsonb-storable by the time enqueue is
+  // reached: unstorable payloads divert to quarantine BEFORE this callback fires.
+  opts?: { enqueue?: (source: Source, event: SourceEvent, rawBody: string) => Promise<void> }
 ): express.Express {
   const app = express();
   // A5: reject non-JSON media types explicitly (415) BEFORE the parser — otherwise
@@ -111,10 +114,14 @@ export function createIngestApp(
         await quarantineEvent(pool, source, req.body, reason, rawBody);
         return res.status(202).json({ quarantined: true });
       }
+      // 2b-D4 expand: this door HOLDS the wire bytes (rawBody, verified above against the
+      // signature), so both paths carry them to the insert. Note the stored payload is
+      // parsed.data (schema-shaped); raw_body is the request text itself — the two are
+      // deliberately NOT derivable from each other.
       if (opts?.enqueue) {
-        await opts.enqueue(source, parsed.data);
+        await opts.enqueue(source, parsed.data, rawBody);
       } else {
-        await ingestEvent(pool, source, parsed.data);
+        await ingestEvent(pool, source, parsed.data, { rawBody });
       }
       res.status(202).json({ stored: true });
     } catch (err) {

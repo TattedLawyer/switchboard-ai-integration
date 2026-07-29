@@ -91,6 +91,11 @@ export async function pollOnce(
       quarantined++;
       continue;
     }
+    // raw_body stays NULL on this door (2b-D4 expand): the feed page was parsed as a UNIT,
+    // so per-event wire bytes do not exist here — and re-serializing the parsed object to
+    // fill the column would be a re-stringify masquerading as wire bytes, not custody.
+    // Faithful connectors (Tasks B–D) capture per-event text where their paradigm provides
+    // it; this legacy poll paradigm simply doesn't.
     const result = await ingestEvent(pool, source, crmEvent as SourceEvent, { tenantId });
     if (result === "inserted") ingested++;
     else duplicates++;

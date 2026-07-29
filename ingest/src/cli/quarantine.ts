@@ -21,7 +21,7 @@ async function main(): Promise<void> {
     if (listOnly) {
       for (const row of pending) {
         console.log(
-          `  id=${row.id} source=${row.source} event_id=${row.event_id ?? "<none>"} received_at=${row.received_at.toISOString()} reason=${row.reason}`,
+          `  id=${row.id} source=${row.source} event_id=${row.event_id ?? "<none>"} received_at=${row.received_at.toISOString()} attempts=${row.attempts} last_attempt_at=${row.last_attempt_at?.toISOString() ?? "<never>"} reason=${row.reason}`,
         );
       }
       process.exit(0);

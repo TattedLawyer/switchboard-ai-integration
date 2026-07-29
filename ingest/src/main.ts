@@ -68,9 +68,10 @@ async function main() {
   if (isReceiver) {
     // Create the HTTP receiver app with queue integration
     const enqueue = boss
-      ? async (source: Source, event: SourceEvent): Promise<void> => {
-          // Route each event onto its own source's queue.
-          await enqueueEvent(boss!, source, event);
+      ? async (source: Source, event: SourceEvent, rawBody: string): Promise<void> => {
+          // Route each event onto its own source's queue; the wire bytes ride the job
+          // envelope so the worker can store raw_body (2b-D4 expand).
+          await enqueueEvent(boss!, source, event, rawBody);
         }
       : undefined;
 
