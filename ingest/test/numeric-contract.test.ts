@@ -10,6 +10,9 @@ import { replayQuarantined } from "../src/quarantine.js";
 import { ingestEvent } from "../src/ingest-event.js";
 import { secretForSource, signBody } from "../src/hmac.js";
 import type { Source } from "../src/sources.js";
+// Type-only (erased at runtime — the lazy-import rationale below is unaffected): used by
+// the compile-time both-shape pin (review I2).
+import type { FieldRule } from "../src/numeric-contract.js";
 
 // Same resolution pattern as helpers/load-model.ts: the warehouse tree lives two levels up
 // from this test file. The registry test below scans the REAL model text on disk, so a new
@@ -218,9 +221,25 @@ describe("L1 numeric contract at the trust boundary", () => {
         });
       }
 
+      it("invoice.voided with lowercase 'chf' is quarantined — the rule is live on every declared type, not just invoice.created", async () => {
+        const res = await postSigned(
+          "billing",
+          evt("evt-sc-voided", "invoice.voided", { amount_cents: 100, currency: "chf" }),
+        );
+        await expectQuarantinedNaming("evt-sc-voided", res, "currency");
+      });
+
       it("the reason states the expected shape and the got-value, for the operator", async () => {
+        // Self-sufficient: seeds its own quarantine row rather than reading the sibling
+        // rejection test's write (order/skip coupling — review M1).
+        const res = await postSigned(
+          "billing",
+          evt("evt-sc-reason", "invoice.created", { amount_cents: 100, currency: "usd" }),
+        );
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ quarantined: true });
         const q = await pool.query(
-          "select reason from ingest.quarantine where payload->>'event_id' = 'evt-sc-lower'",
+          "select reason from ingest.quarantine where payload->>'event_id' = 'evt-sc-reason'",
         );
         expect(q.rowCount).toBe(1);
         expect(q.rows[0].reason).toContain("^[A-Z]{3}$");
@@ -272,6 +291,21 @@ describe("L1 numeric contract at the trust boundary", () => {
         expect(violation).not.toBeNull();
         expect(violation!.field).toBe("currency");
         expect(violation!.reason).toContain("currency");
+      });
+    });
+
+    describe("contract shape is compile-time discriminated (review I2 pin)", () => {
+      it("a rule declaring BOTH shapes fails typecheck; valid shapes still compile", () => {
+        // Valid single-shape rules must keep compiling — these lines guard the guard:
+        const numeric: FieldRule = { integer: true, required: true, signed: false };
+        const str: FieldRule = { type: "string", required: false, pattern: "^[A-Z]{3}$" };
+        // The pin is self-enforcing: if `type?: never` is ever removed from
+        // NumericFieldRule, the line below COMPILES and tsc fails the build with
+        // "unused @ts-expect-error". Without the pin, a both-shape rule routes to the
+        // string branch at runtime with every numeric constraint silently unenforced.
+        // @ts-expect-error — integer constraints + type:"string" in one rule must not compile
+        const bothShapes: FieldRule = { integer: true, required: true, type: "string", pattern: "^x$" };
+        expect([numeric, str, bothShapes]).toHaveLength(3);
       });
     });
 
