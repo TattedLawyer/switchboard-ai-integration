@@ -14,6 +14,19 @@ latest as (
 select
     invoice ->> 'id'          as invoice_id,
     invoice ->> 'customer_id' as customer_id,
-    (invoice ->> 'amount_cents')::bigint as amount_cents,
+    -- L2 safe cast: raw rows that never passed the ingest door (legacy, direct inserts,
+    -- historical backfill) must degrade to NULL, not kill the whole build. The ingest
+    -- contract (ingest/src/numeric-contract.ts) is the enforcement; this is blast-radius
+    -- containment. NULLs are deliberately left visible for downstream
+    -- surfacing (numeric-integrity plan, L3/L4 tasks) rather than erased or guessed at.
+    case when pg_input_is_valid(invoice ->> 'amount_cents', 'bigint')
+         then (invoice ->> 'amount_cents')::bigint end as amount_cents,
+    -- L5: currency is carried, not discarded — the mart refuses to sum across currencies.
+    -- Currency is payload-controlled text that flows to the mart, the MCP read tool, and
+    -- the report's LLM prompt. Constrain it to a three-letter uppercase code at the source:
+    -- anything else becomes NULL ("unknown" — counted by the mart and REFUSED from its
+    -- labeled totals, never summed) rather than riding a free-text channel downstream. ISO-4217 allowlisting is registered follow-up work.
+    case when (invoice ->> 'currency') ~ '^[A-Z]{3}$'
+         then invoice ->> 'currency' end as currency,
     status
 from latest

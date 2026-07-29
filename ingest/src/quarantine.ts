@@ -1,46 +1,16 @@
-import { z } from "zod";
 import type pg from "pg";
-import type { SourceEvent } from "./server.js";
-
-// occurred_at gate (L2-G2): staging latest-state views order by
-// (payload ->> 'occurred_at')::timestamptz, and that cast THROWS on garbage — so a non-timestamp
-// occurred_at must never reach raw.raw_events. This predicate is the single definition used by
-// ALL THREE doors into raw: the webhook schema in server.ts, the backfill poll path (which
-// applies that same schema in backfill.ts), and the replay schema below. The poll path was
-// once ungated and this comment once said "BOTH" — the count is the invariant, so if a fourth
-// door is ever added it applies here too. It lives
-// here (not server.ts) because server.ts already imports from this module — the reverse import
-// would be a runtime cycle. Accepted shape: full ISO-8601 date+time with seconds and an explicit
-// zone (Z or ±HH:MM), and the string must actually parse as a date (rejects e.g. month 13).
-const ISO_8601_SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
-export function isIsoOccurredAt(s: string): boolean {
-  return ISO_8601_SHAPE.test(s) && !Number.isNaN(Date.parse(s));
-}
-
-// A6: occurred_at is the latest-state SORT KEY, so an absurd-but-well-formed timestamp
-// is data corruption, not a formatting nit: "9999-12-31T00:00:00Z" would pin an entity's
-// state forever, undislodgeable by any later correct event, triggered by nothing more
-// exotic than a vendor timezone bug. Bound it to [now-30d, now+5m] — 30d absorbs
-// legitimate replays/backfills of recent history, +5m absorbs ordinary clock skew
-// (mirrors the A3 signature window). Out-of-window events QUARANTINE (preserved, never
-// dropped); note a quarantined event replayed after its window ages out stays
-// still-invalid — staleness is a property of the data, not of when we look at it.
-export const OCCURRED_AT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-export const OCCURRED_AT_MAX_FUTURE_MS = 5 * 60 * 1000;
-export function isAcceptableOccurredAt(s: string, nowMs: number = Date.now()): boolean {
-  if (!isIsoOccurredAt(s)) return false;
-  const t = Date.parse(s);
-  return t >= nowMs - OCCURRED_AT_MAX_AGE_MS && t <= nowMs + OCCURRED_AT_MAX_FUTURE_MS;
-}
-
-const eventSchema = z.object({
-  event_id: z.string().min(1),
-  event_type: z.string().min(1),
-  occurred_at: z
-    .string()
-    .refine((s) => isAcceptableOccurredAt(s), "occurred_at must be ISO-8601 within [now-30d, now+5m]"),
-  data: z.record(z.unknown()),
-});
+// The event schema and the occurred_at predicates live in event-schema.ts — the ONE
+// definition applied at ALL doors into raw (webhook in server.ts, the replay below in
+// replayQuarantined, the backfill poll in backfill.ts; the count is the invariant, so if a
+// fourth door is ever added it applies there too). They historically lived HERE because
+// importing them from server.ts would have been a runtime cycle; the leaf module makes
+// that cycle impossible by construction.
+import { eventSchema, type SourceEvent, isIsoOccurredAt, isAcceptableOccurredAt,
+  OCCURRED_AT_MAX_AGE_MS, OCCURRED_AT_MAX_FUTURE_MS } from "./event-schema.js";
+// Compatibility re-export of the occurred_at predicates, which historically lived here.
+// Nothing in-repo imports them from this path today; the re-export exists so external or
+// future callers that reach for the historical location still get the ONE definition.
+export { isIsoOccurredAt, isAcceptableOccurredAt, OCCURRED_AT_MAX_AGE_MS, OCCURRED_AT_MAX_FUTURE_MS };
 
 // Exactly two string contents survive JSON.parse yet are unrepresentable in Postgres jsonb: an
 // actual U+0000 (NUL, error 22P05) and a lone UTF-16 surrogate (the \ud800-style escape on the
@@ -119,10 +89,28 @@ export async function quarantineEvent(
   if (jsonbUnstorableReason(payload) !== null) {
     // Prefer the original wire text when supplied: byte-exact preservation, and the only safe
     // option for depth-diverted payloads (stringify would RangeError on them). The stringify
-    // fallback is for direct callers without wire text, whose payloads stringify fine.
+    // fallback is for direct callers without wire text, whose payloads usually stringify fine
+    // — but a depth-diverted payload with NO wire text cannot be serialized by anything
+    // in-process. Preservation is physically impossible there; the invariant that quarantine
+    // never throws on the payloads it exists to preserve still holds: record a raw_body-less
+    // row whose reason says loudly that the content was lost, instead of crashing the door.
+    let text: string;
+    try {
+      text = rawBody ?? JSON.stringify(payload);
+    } catch {
+      const lossReason = `${reason} — payload unserializable in-process and no wire text supplied; content not preserved`;
+      console.error(
+        `[quarantine] CONTENT LOSS: ${source} payload could not be serialized (nesting beyond JSON.stringify limits) and no wire text was supplied — quarantine row records the reason only`,
+      );
+      await pool.query(
+        "insert into ingest.quarantine (tenant_id, source, raw_body, reason) values ($1, $2, $3, $4)",
+        [tenantId, source, null, lossReason]
+      );
+      return;
+    }
     await pool.query(
       "insert into ingest.quarantine (tenant_id, source, raw_body, reason) values ($1, $2, $3, $4)",
-      [tenantId, source, rawBody ?? JSON.stringify(payload), reason]
+      [tenantId, source, text, reason]
     );
     return;
   }

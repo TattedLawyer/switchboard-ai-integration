@@ -22,17 +22,63 @@ beforeAll(async () => {
            true as has_crm, true as has_billing, true as has_support, true as is_complete,
            2::bigint as open_deal_count, 500000::bigint as open_deal_amount_cents,
            120000::bigint as total_invoiced_cents, 100000::bigint as total_paid_cents,
-           1::bigint as open_invoice_count, 0::bigint as failed_payment_count,
+           1::bigint as open_invoice_count,
+           0::bigint as null_amount_deal_count, 0::bigint as null_amount_invoice_count,
+           false as has_unusable_amounts,
+           'USD'::text as billing_currency, 'USD'::text as deal_currency,
+           false as has_mixed_currency,
+           0::bigint as failed_payment_count,
            3::bigint as open_ticket_count, 1::bigint as solved_ticket_count,
-           0::bigint as sla_breach_count, 4.50::numeric(3,2) as avg_csat
+           0::bigint as sla_breach_count, 4.50::numeric(3,2) as avg_csat,
+           0::bigint as null_score_count,
+           -- Addendum columns: unknown-currency row counts + the usable-CSAT base size.
+           0::bigint as null_currency_invoice_count, 0::bigint as null_currency_deal_count,
+           2::bigint as csat_score_count,
+           false as has_data_warnings
     union all
     select 'DEMO-C-0002', 'DEMO Manufacturing Group 2', 'manufacturing-2.example.com',
            true, false, false, true,
-           1, 250000, 0, 0, 0, 0, 0, 0, 0, null
+           1, 250000, 0, 0, 0, 0, 0, false, null, 'USD', false, 0, 0, 0, 0, null, 0, 0, 0, 0, false
+    union all
+    select 'DEMO-C-0003', 'DEMO Retail Group 3', 'retail-3.example.com',
+           true, true, false, true,
+           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 0, 0, 0, true
+    union all
+    -- F1: the mart says this entity's amounts are unusable (L3 counters + flag) — the
+    -- report must surface that, not render the partial sums as the whole story.
+    select 'DEMO-C-0004', 'DEMO Services Group 4', 'services-4.example.com',
+           true, true, false, true,
+           1, 100000, 50000, 0, 0, 1, 2, true, 'USD', 'USD', false, 0, 0, 0, 0, null, 0, 0, 0, 0, true
+    union all
+    -- F3 report side: avg over usable scores only; 2 skipped NULL scores must be flagged.
+    select 'DEMO-C-0005', 'DEMO Wholesale Group 5', 'wholesale-5.example.com',
+           true, false, true, true,
+           0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 2, 0, 4.00, 2, 0, 0, 3, true
+    union all
+    -- A NULL sum WITHOUT has_mixed_currency: since the L5.1 retraction this is the real
+    -- shape of a uniformly-unknown-currency source (here: one NULL-currency deal) — the
+    -- renderer must degrade to "unknown", never a fabricated $0.
+    select 'DEMO-C-0006', 'DEMO Media Group 6', 'media-6.example.com',
+           true, true, false, true,
+           1, null, 40000, 40000, 0, 0, 0, false, 'USD', null, false, 0, 0, 0, 0, null, 0, 0, 1, 0, true
+    union all
+    -- Addendum: USD+NULL invoices and one NULL-currency deal — refused (mixed) AND the
+    -- unknown rows are counted (2 invoice + 1 deal = 3 rows with unknown currency).
+    select 'DEMO-C-0007', 'DEMO Energy Group 7', 'energy-7.example.com',
+           true, true, false, true,
+           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 2, 1, 0, true
+    union all
+    -- Cold review I-2 catch-all pin: has_data_warnings true while EVERY specific component
+    -- the report knows about is clean. Synthetic ON PURPOSE at this mirror-view layer —
+    -- it simulates a FUTURE mart OR-term the report has never heard of; the catch-all
+    -- must still route this entity to the flags and the watch list.
+    select 'DEMO-C-0008', 'DEMO Horizon Group 8', 'horizon-8.example.com',
+           true, false, false, true,
+           0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 0, 0, null, 0, 0, 0, 0, true
     union all
     select 'billing:B-0015', 'DEMO Orphan Billing', 'orphan.example.com',
            false, true, false, false,
-           0, 0, 90000, 90000, 0, 1, 0, 0, 0, null
+           0, 0, 90000, 90000, 0, 0, 0, false, 'USD', null, false, 1, 0, 0, 0, null, 0, 0, 0, 0, false
   `);
   await pool.query(`
     create or replace view ${SCHEMA}.stg_crm__companies as
@@ -74,6 +120,89 @@ describe("Monday report (stub)", () => {
     expect(watch).toContain("DEMO-C-0001");
     expect(watch).toContain("open invoice");
     expect(watch).not.toContain("DEMO-C-0002");
+  });
+
+  it("a mixed-currency account (L5: sums NULL + has_mixed_currency) renders '⚠ mixed currency' in place of money figures — never a fabricated $0", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0003"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("⚠ mixed currency");
+    expect(row!).not.toContain("$0 / $0"); // NULL sums must not degrade to a confident zero
+  });
+
+  // ── External review F1: the mart's honesty flags existed, but the report never read
+  // them — an entity with unusable amounts or skipped CSAT scores rendered "ok".
+  it("F1: an entity the mart flagged has_unusable_amounts is flagged in its row AND the watch list, with the deal/invoice counts", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0004"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("unusable amount(s): 1 deal / 2 invoice");
+    const watch = md.split("## Accounts to watch")[1].split("##")[0];
+    expect(watch).toContain("DEMO-C-0004");
+    expect(watch).toContain("unusable amount(s): 1 deal / 2 invoice");
+  });
+
+  it("F3 report side: an entity with skipped NULL CSAT scores (null_score_count 2) is flagged — the average alone is not the whole story", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0005"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("2 unusable CSAT score(s)");
+    const watch = md.split("## Accounts to watch")[1].split("##")[0];
+    expect(watch).toContain("DEMO-C-0005");
+  });
+
+  it("a NULL sum WITHOUT the mixed-currency flag (uniformly-unknown currency, post L5.1 retraction) renders '⚠ unknown' — never a confident $0", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0006"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("⚠ unknown");
+    expect(row!).not.toContain("$0");
+  });
+
+  // ── Research addendum: unknowns get a visible bucket, and an average carries its base.
+  it("addendum: rows with unknown currency are counted in the flags — DEMO-C-0007's 2 invoice + 1 deal rows surface as '3 row(s) with unknown currency'", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0007"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("3 row(s) with unknown currency");
+    const watch = md.split("## Accounts to watch")[1].split("##")[0];
+    expect(watch).toContain("DEMO-C-0007");
+    expect(watch).toContain("3 row(s) with unknown currency");
+  });
+
+  it("addendum: avg_csat carries its base size — DEMO-C-0001 renders '4.50 (n=2)'; a no-csat entity keeps '—'", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const withCsat = md.split("\n").find((l) => l.startsWith("| DEMO-C-0001"));
+    expect(withCsat).toBeDefined();
+    expect(withCsat!).toContain("4.50 (n=2)");
+    const without = md.split("\n").find((l) => l.startsWith("| DEMO-C-0002"));
+    expect(without).toBeDefined();
+    expect(without!).toContain("| — |"); // no csat → no fabricated base
+  });
+
+  // ── Cold review I-2: the mart's loudest honesty flag never reached the deterministic
+  // surface. A purely-mixed entity (has_mixed_currency true, every OTHER warning component
+  // clean — exactly DEMO-C-0003's shape) rendered "⚠ mixed currency" money cells beside a
+  // Flags cell that literally said "ok", and was absent from "Accounts to watch".
+  it("I-2: a purely-mixed entity (DEMO-C-0003) flags 'mixed currencies — totals refused' in its row AND appears in Accounts to watch — never a self-contradictory 'ok'", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0003"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("mixed currencies — totals refused");
+    expect(row!).not.toContain("| ok |"); // the money cells say ⚠; the Flags cell must not say ok
+    const watch = md.split("## Accounts to watch")[1].split("##")[0];
+    expect(watch).toContain("DEMO-C-0003");
+    expect(watch).toContain("mixed currencies — totals refused");
+  });
+
+  it("I-2 catch-all pin: has_data_warnings true with every specific component clean (DEMO-C-0008 — a future mart signal the report does not yet enumerate) still reaches the flags and the watch list", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0008"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("data quality warning — see mart counters");
+    const watch = md.split("## Accounts to watch")[1].split("##")[0];
+    expect(watch).toContain("DEMO-C-0008");
+    expect(watch).toContain("data quality warning — see mart counters");
   });
 
   it("regression: merged-away duplicates DEMO-C-0021/0022 must NOT appear (canonicals only)", async () => {

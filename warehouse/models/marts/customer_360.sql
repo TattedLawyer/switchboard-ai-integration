@@ -33,9 +33,28 @@ entities as (
     select entity_id, entity_name, domain, false from external_only
 ),
 deals as (
+    -- L5 summability predicate (mirrored in the billing CTE and in
+    -- tests/assert_no_mixed_currency_totals.sql): a source's rows are summable iff at most
+    -- one distinct KNOWN currency AND zero NULL-currency rows — i.e. exactly one known
+    -- currency, or no rows at all (a true 0). L5.1 RETRACTED: uniformly-unknown currency
+    -- also refuses — an unknown-unit total is not money (JD Edwards "hash totals", D365
+    -- convert-or-filter, Stripe per-currency balances), and two unknown rows are not
+    -- provably the same currency. is_mixed is the narrower flag condition: a KNOWN
+    -- currency is contradicted (multiple knowns, or known + unknown — F2). All-unknown is
+    -- refused-but-NOT-mixed: nothing known contradicts anything; the null_currency_*
+    -- counters and NULL sums carry that story.
     select k.canonical_id as entity_id,
            count(*) filter (where d.status = 'open')                    as open_deal_count,
-           coalesce(sum(d.amount_cents) filter (where d.status = 'open'), 0) as open_deal_amount_cents
+           count(*) filter (where d.currency is null)                   as null_currency_deal_rows,
+           min(d.currency)                                              as deal_currency_raw,
+           (count(distinct d.currency) <= 1
+             and count(*) filter (where d.currency is null) = 0)        as deal_currency_is_single,
+           (count(distinct d.currency) > 1
+             or (count(distinct d.currency) = 1
+                 and count(*) filter (where d.currency is null) > 0))   as deal_currency_is_mixed,
+           -- Raw sum; the final select NULLs it unless deal_currency_is_single (L5).
+           sum(d.amount_cents) filter (where d.status = 'open')         as open_deal_amount_cents,
+           count(*) filter (where d.amount_cents is null)               as null_amount_deal_count
     from {{ ref('stg_crm__deals') }} d
     join canonical k on k.company_id = d.company_id
     group by k.canonical_id
@@ -45,10 +64,27 @@ billing_link as (
     from resolution r where r.source = 'billing'
 ),
 billing as (
+    -- Same L5 summability + mixed predicates as the deals CTE (L5.1 retracted — see there).
+    -- Summable covers the no-invoice case: 0 distinct + 0 unknown rows → true 0. LEFT JOIN
+    -- subtlety: a no-invoice entity has one null-extended row, so the NULL-currency counter
+    -- (like the null_amount one) must guard on i.invoice_id is not null or "no invoices"
+    -- would masquerade as "one unknown" and wrongly refuse the entity's true 0.
     select bl.entity_id,
-           coalesce(sum(i.amount_cents), 0)                                    as total_invoiced_cents,
-           coalesce(sum(i.amount_cents) filter (where i.status = 'paid'), 0)   as total_paid_cents,
-           count(distinct i.invoice_id) filter (where i.status = 'created')    as open_invoice_count
+           count(*) filter (where i.invoice_id is not null and i.currency is null)
+                                                   as null_currency_invoice_rows,
+           min(i.currency)                         as billing_currency_raw,
+           (count(distinct i.currency) <= 1
+             and count(*) filter (where i.invoice_id is not null and i.currency is null) = 0)
+                                                   as billing_currency_is_single,
+           (count(distinct i.currency) > 1
+             or (count(distinct i.currency) = 1
+                 and count(*) filter (where i.invoice_id is not null and i.currency is null) > 0))
+                                                   as billing_currency_is_mixed,
+           -- Raw sums; the final select NULLs them unless billing_currency_is_single (L5).
+           sum(i.amount_cents)                     as total_invoiced_cents,
+           sum(i.amount_cents) filter (where i.status = 'paid') as total_paid_cents,
+           count(distinct i.invoice_id) filter (where i.status = 'created')    as open_invoice_count,
+           count(*) filter (where i.invoice_id is not null and i.amount_cents is null) as null_amount_invoice_count
     from billing_link bl
     left join {{ ref('stg_billing__invoices') }} i on i.customer_id = bl.customer_id
     group by bl.entity_id
@@ -73,7 +109,12 @@ support as (
     group by sl.entity_id
 ),
 csat as (
-    select sl.entity_id, avg(c.score)::numeric(3,2) as avg_csat
+    -- F3: score is nullable since the safe-cast and avg() skips NULLs — correct over the
+    -- usable scores, but the skipped rows must be disclosed, not silently averaged around.
+    select sl.entity_id,
+           avg(c.score)::numeric(3,2)                  as avg_csat,
+           count(c.score)                              as csat_score_count, -- usable base under avg_csat
+           count(*) filter (where c.score is null)     as null_score_count
     from support_link sl
     join {{ ref('stg_support__tickets') }} t on t.requester_id = sl.requester_id
     join {{ ref('stg_support__csat') }} c on c.ticket_id = t.ticket_id
@@ -88,15 +129,56 @@ select
     (s.entity_id is not null)                            as has_support,
     e.has_crm                                            as is_complete,
     coalesce(d.open_deal_count, 0)         as open_deal_count,
-    coalesce(d.open_deal_amount_cents, 0)  as open_deal_amount_cents,
-    coalesce(b.total_invoiced_cents, 0)    as total_invoiced_cents,
-    coalesce(b.total_paid_cents, 0)        as total_paid_cents,
+    -- L5 sum semantics: 0 = genuinely zero or no rows; NULL = not summable — currencies
+    -- mixed (including known + unknown, F2) OR uniformly unknown (L5.1 retracted: unknown
+    -- units are counted, never totaled). The no-rows case is handled explicitly (CTE row
+    -- absent → 0, and an is_single source coalesces its empty sum to 0); a blanket
+    -- coalesce would erase the NULL-when-not-summable signal.
+    case when d.entity_id is null then 0
+         when d.deal_currency_is_single then coalesce(d.open_deal_amount_cents, 0) end as open_deal_amount_cents,
+    case when b.entity_id is null then 0
+         when b.billing_currency_is_single then coalesce(b.total_invoiced_cents, 0) end as total_invoiced_cents,
+    case when b.entity_id is null then 0
+         when b.billing_currency_is_single then coalesce(b.total_paid_cents, 0) end     as total_paid_cents,
     coalesce(b.open_invoice_count, 0)      as open_invoice_count,
+    coalesce(d.null_amount_deal_count, 0)    as null_amount_deal_count,
+    coalesce(b.null_amount_invoice_count, 0) as null_amount_invoice_count,
+    -- Addendum to F2: unknown-currency rows get a VISIBLE bucket, not just refusal —
+    -- these count the NULL-currency rows behind a refused sum (any unknown row refuses).
+    coalesce(b.null_currency_invoice_rows, 0) as null_currency_invoice_count,
+    coalesce(d.null_currency_deal_rows, 0)    as null_currency_deal_count,
+    -- L3: coalesce(sum(...), 0) renders "no amount" and "zero" identically; these counters
+    -- make an entity with unusable amounts visibly incomplete instead of confidently zero.
+    (coalesce(d.null_amount_deal_count, 0) + coalesce(b.null_amount_invoice_count, 0)) > 0
+                                             as has_unusable_amounts,
+    -- L5: currency surfaced per source; NULL when not summable (mixed, known + unknown
+    -- rows — F2 — or uniformly unknown) or when the entity has no invoices/deals.
+    case when b.billing_currency_is_single then b.billing_currency_raw end as billing_currency,
+    case when d.deal_currency_is_single   then d.deal_currency_raw   end as deal_currency,
+    -- Deliberately NARROWER than "not summable": a uniformly-unknown source refuses its
+    -- sums but is NOT mixed — nothing known contradicts anything. Its story is told by
+    -- NULL sums + the null_currency_*_count columns (and the report's unknown-currency flag).
+    (coalesce(b.billing_currency_is_mixed, false) or coalesce(d.deal_currency_is_mixed, false))
+                                                                          as has_mixed_currency,
     coalesce(p.failed_payment_count, 0)    as failed_payment_count,
     coalesce(s.open_ticket_count, 0)       as open_ticket_count,
     coalesce(s.solved_ticket_count, 0)     as solved_ticket_count,
     coalesce(s.sla_breach_count, 0)        as sla_breach_count,
-    c.avg_csat
+    c.avg_csat,
+    -- F3 + addendum: avg_csat is the average of the usable scores only; csat_score_count
+    -- is its base size and null_score_count discloses how many rows the average skipped.
+    coalesce(c.null_score_count, 0)        as null_score_count,
+    coalesce(c.csat_score_count, 0)        as csat_score_count,
+    -- Kimball Design Tip #164 (audit dimension): ONE coarse warning — "tread cautiously" —
+    -- with the precise columns above as the why. The OR of every honesty signal; extend it
+    -- when a new signal lands (each trigger is pinned independently in mart-currency tests,
+    -- so forgetting fails CI). Kimball's Data Supplied Flag is deliberately absent:
+    -- switchboard never imputes, it refuses — there is no estimator to disclose.
+    (   (coalesce(d.null_amount_deal_count, 0) + coalesce(b.null_amount_invoice_count, 0)) > 0
+     or coalesce(b.billing_currency_is_mixed, false) or coalesce(d.deal_currency_is_mixed, false)
+     or coalesce(b.null_currency_invoice_rows, 0) > 0 or coalesce(d.null_currency_deal_rows, 0) > 0
+     or coalesce(c.null_score_count, 0) > 0
+    )                                      as has_data_warnings
 from entities e
 left join deals d    on d.entity_id = e.entity_id
 left join billing b  on b.entity_id = e.entity_id

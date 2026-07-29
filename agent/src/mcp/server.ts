@@ -47,11 +47,22 @@ const HEALTH_COLUMNS = [
   "total_invoiced_cents",
   "total_paid_cents",
   "open_invoice_count",
+  "null_amount_deal_count",
+  "null_amount_invoice_count",
+  "has_unusable_amounts",
+  "billing_currency",
+  "deal_currency",
+  "has_mixed_currency",
   "failed_payment_count",
   "open_ticket_count",
   "solved_ticket_count",
   "sla_breach_count",
   "avg_csat",
+  "null_score_count",
+  "null_currency_invoice_count",
+  "null_currency_deal_count",
+  "csat_score_count",
+  "has_data_warnings",
 ].join(", ");
 
 export function createMcpServer(pool: pg.Pool): McpServer {

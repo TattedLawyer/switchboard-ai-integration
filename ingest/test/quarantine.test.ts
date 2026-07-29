@@ -48,7 +48,8 @@ describe("quarantine", () => {
     );
     expect(quarantineRows.rowCount).toBe(1);
     expect(quarantineRows.rows[0].payload).toEqual(invalidPayload);
-    expect(quarantineRows.rows[0].reason).toBe("schema validation failed");
+    // Prefix match: the reason now appends ": <path> — <message>" naming the failing field.
+    expect(quarantineRows.rows[0].reason).toContain("schema validation failed");
     expect(quarantineRows.rows[0].replayed_at).toBeNull();
 
     srv.close();
@@ -143,7 +144,8 @@ describe("quarantine", () => {
           "select reason from ingest.quarantine where payload->>'event_id' = 'evt-gate-garbage'",
         );
         expect(q.rowCount).toBe(1);
-        expect(q.rows[0].reason).toBe("schema validation failed");
+        // Prefix match: the reason now appends ": <path> — <message>" naming the failing field.
+        expect(q.rows[0].reason).toContain("schema validation failed");
         const raw = await pool.query(
           "select 1 from raw.raw_events where event_id = 'evt-gate-garbage'",
         );
@@ -343,5 +345,28 @@ describe("A7: quarantine operator surface", () => {
     // Idempotent second sweep: nothing pending that can move.
     const again = await replayAllQuarantined(pool, ingestEvent);
     expect(again.replayed).toBe(0);
+  });
+
+  // Security review M1/F3: the depth-diverted branch used to run `rawBody ?? JSON.stringify(payload)`
+  // — for a beyond-stringify-cliff payload with NO wire text that stringify is the very call
+  // that RangeErrors, so quarantine (which exists to never throw on the payloads it preserves)
+  // threw. When preservation is physically impossible in-process, the door must still not
+  // throw: it records raw_body = null with a loud reason instead.
+  it("quarantineEvent resolves (does not throw) for a 7000-deep payload with no wire text, recording the content-not-preserved reason", async () => {
+    let deep: unknown = 0;
+    for (let i = 0; i < 7000; i++) deep = [deep];
+    await expect(
+      quarantineEvent(pool, "crm", deep, "test unpreservable", undefined),
+    ).resolves.toBeUndefined();
+
+    const q = await pool.query(
+      "select payload, raw_body, reason from ingest.quarantine where reason like 'test unpreservable%'",
+    );
+    expect(q.rowCount).toBe(1);
+    expect(q.rows[0].payload).toBeNull();
+    expect(q.rows[0].raw_body).toBeNull();
+    expect(q.rows[0].reason).toBe(
+      "test unpreservable — payload unserializable in-process and no wire text supplied; content not preserved",
+    );
   });
 });

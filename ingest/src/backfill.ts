@@ -2,7 +2,7 @@ import type pg from "pg";
 import type { SourceEvent } from "./server.js";
 import { ingestEvent, DEFAULT_TENANT_ID } from "./ingest-event.js";
 import { eventSchema } from "./server.js";
-import { quarantineEvent } from "./quarantine.js";
+import { jsonbUnstorableReason, quarantineEvent } from "./quarantine.js";
 
 interface EventsPage {
   events: (SourceEvent & { seq: number })[];
@@ -49,7 +49,11 @@ export async function pollOnce(
   if (!res.ok) {
     throw new Error(`GET /events failed with status ${res.status}`);
   }
-  const page = (await res.json()) as EventsPage;
+  // Keep the wire text: for jsonb-unstorable events diverted below it is the only safe
+  // source of quarantine raw_body (re-stringifying a deep-nested payload is the very call
+  // that RangeErrors).
+  const pageText = await res.text();
+  const page = JSON.parse(pageText) as EventsPage;
 
   let ingested = 0;
   let duplicates = 0;
@@ -67,6 +71,20 @@ export async function pollOnce(
     // fails the whole dbt build, not just one row — or a well-formed but absurd timestamp that
     // wins every latest-state sort forever. Quarantine rather than drop, matching the webhook
     // path: a malformed event delivered to us is preserved and inspectable, never discarded.
+    // Same divert the webhook door runs (server.ts) BEFORE schema validation: NUL / lone
+    // surrogate / depth-past-bound payloads are unstorable as jsonb, and a depth-diverted
+    // value must never reach safeParse — the contract's refinement (or any stringify of the
+    // value) would RangeError, propagate through safeParse, and wedge this poll loop on the
+    // same page forever (cursor only advances after the loop completes).
+    const unstorable = jsonbUnstorableReason(crmEvent);
+    if (unstorable !== null) {
+      // No per-event wire bytes exist on the poll path (the page was parsed as a unit), so
+      // preserve the FULL page text as raw_body — wider than the event, but byte-exact and
+      // the only in-process representation that survives depth beyond stringify limits.
+      await quarantineEvent(pool, source, crmEvent, `poll: ${unstorable} (raw_body holds the full feed page)`, pageText, tenantId);
+      quarantined++;
+      continue;
+    }
     const parsed = eventSchema.safeParse(crmEvent);
     if (!parsed.success) {
       await quarantineEvent(pool, source, crmEvent, `poll: ${parsed.error.issues[0]?.message ?? "schema invalid"}`, undefined, tenantId);

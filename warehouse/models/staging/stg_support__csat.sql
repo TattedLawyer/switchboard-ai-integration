@@ -12,5 +12,11 @@ latest as (
 select
     csat ->> 'id'        as csat_id,
     csat ->> 'ticket_id' as ticket_id,
-    (csat ->> 'score')::int as score
+    -- L2 safe cast: raw rows that never passed the ingest door (legacy, direct inserts,
+    -- historical backfill) must degrade to NULL, not kill the whole build. The ingest
+    -- contract (ingest/src/numeric-contract.ts) is the enforcement; this is blast-radius
+    -- containment. NULLs are deliberately left visible for downstream
+    -- surfacing (numeric-integrity plan, L3/L4 tasks) rather than erased or guessed at.
+    case when pg_input_is_valid(csat ->> 'score', 'integer')
+         then (csat ->> 'score')::int end as score
 from latest

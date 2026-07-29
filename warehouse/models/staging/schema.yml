@@ -14,6 +14,11 @@ models:
     columns:
       - name: deal_id
         data_tests: [unique, not_null]
+      - name: amount_cents
+        # L4 decay detection: with L1 (ingest contract) active nothing NULL arrives
+        # through a door, so a NULL here means enforcement decayed or a direct insert —
+        # either deserves a loud build. Severity stays error.
+        data_tests: [not_null]
   - name: stg_billing__customers
     columns:
       - name: customer_id
@@ -22,6 +27,10 @@ models:
     columns:
       - name: invoice_id
         data_tests: [unique, not_null]
+      - name: amount_cents
+        # L4 decay detection: NULL means the L2 safe cast nullified a value that L1
+        # should have quarantined at the door — enforcement decayed or a direct insert.
+        data_tests: [not_null]
       - name: status
         data_tests:
           - accepted_values:
@@ -30,6 +39,9 @@ models:
     columns:
       - name: payment_id
         data_tests: [unique, not_null]
+      - name: amount_cents
+        # L4 decay detection: same rationale as invoices — NULL = decayed enforcement.
+        data_tests: [not_null]
       - name: status
         data_tests:
           - accepted_values:
@@ -48,3 +60,7 @@ models:
         data_tests: [unique, not_null]
       - name: ticket_id
         data_tests: [unique, not_null]
+      - name: score
+        # L4 decay detection: csat.recorded declares score required (numeric-contract.ts),
+        # so a NULL survived either a decayed door or a direct insert.
+        data_tests: [not_null]

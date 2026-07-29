@@ -4,7 +4,7 @@ export type Profile = "generic" | "plumbing" | "saas" | "logistics";
 
 export type Company = { id: string; name: string; domain: string; owner_email: string };
 export type Contact = { id: string; company_id: string; name: string; email: string };
-export type Deal = { id: string; company_id: string; name: string; amount_cents: number; status: "open" | "won" | "lost" };
+export type Deal = { id: string; company_id: string; name: string; amount_cents: number; status: "open" | "won" | "lost"; currency: "USD" };
 export type MergePair = { from_id: string; to_id: string };
 export type BillingCustomer = { id: string; name: string; domain: string; email: string };
 export type Invoice = { id: string; customer_id: string; amount_cents: number; currency: "USD" };
@@ -85,6 +85,7 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
       name: `DEMO Deal ${i + 1}`,
       amount_cents: Math.floor(rand() * 5_000_000) + 50_000,
       status: STATUSES[Math.floor(rand() * STATUSES.length)],
+      currency: "USD" as const,
     })),
     ...Array.from({ length: 4 }, (_, i) => ({
       id: `DEMO-D-${pad(57 + i)}`,
@@ -92,6 +93,7 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
       name: `DEMO Deal ${57 + i}`,
       amount_cents: Math.floor(rand() * 5_000_000) + 50_000,
       status: STATUSES[Math.floor(rand() * STATUSES.length)],
+      currency: "USD" as const,
     })),
   ];
 

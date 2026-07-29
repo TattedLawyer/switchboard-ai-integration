@@ -40,17 +40,53 @@ export async function generateMondayReport(
   const accounts = snapshots.map((s) => JSON.parse(s) as Record<string, unknown>);
   const num = (a: Record<string, unknown>, k: string) => Number(a[k] ?? 0); // counts arrive as strings (pg bigint)
   const usd = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+  // L5: a NULL sum means "no single figure is true" — render the condition, never a
+  // fabricated $0. Keyed off the NULL itself: with has_mixed_currency it names the cause
+  // ("mixed currency"); any other NULL renders "⚠ unknown". Reachable since the L5.1
+  // retraction: a source whose rows are UNIFORMLY unknown-currency refuses its sums
+  // without being mixed — this branch is that rendering (the unknown-currency flag below
+  // carries the row count) — and it remains the durable default for any future NULL
+  // reason, so nothing ever falls through num() to $0 (F1 minor).
+  const money = (a: Record<string, unknown>, k: string): string => {
+    if (a[k] == null) {
+      return a["has_mixed_currency"] === true ? "⚠ mixed currency" : "⚠ unknown";
+    }
+    return usd(num(a, k));
+  };
   const flagsFor = (a: Record<string, unknown>): string[] => {
     const f: string[] = [];
     if (num(a, "failed_payment_count") > 0) f.push(`${num(a, "failed_payment_count")} failed payment(s)`);
     if (num(a, "open_invoice_count") > 0) f.push(`${num(a, "open_invoice_count")} open invoice(s)`);
     if (num(a, "sla_breach_count") > 0) f.push(`${num(a, "sla_breach_count")} SLA breach(es)`);
     if (a["avg_csat"] != null && Number(a["avg_csat"]) <= 2.5) f.push(`low CSAT (${a["avg_csat"]})`);
+    // F1: the mart's honesty flags, finally read. L3 — amounts the safe-cast NULLed make
+    // this entity's totals incomplete, not confidently rendered; F3 — CSAT rows whose
+    // score was unusable, skipped by avg_csat and disclosed here.
+    if (a["has_unusable_amounts"] === true)
+      f.push(`unusable amount(s): ${num(a, "null_amount_deal_count")} deal / ${num(a, "null_amount_invoice_count")} invoice`);
+    if (num(a, "null_score_count") > 0) f.push(`${num(a, "null_score_count")} unusable CSAT score(s)`);
+    // Addendum: unknown-currency rows get a visible count. Since the L5.1 retraction any
+    // such row refuses its source's sums (known + unknown = mixed; all-unknown = unknown).
+    const unknownCurrencyRows = num(a, "null_currency_invoice_count") + num(a, "null_currency_deal_count");
+    if (unknownCurrencyRows > 0) f.push(`${unknownCurrencyRows} row(s) with unknown currency`);
+    // Cold review I-2: the loudest honesty condition, finally in the deterministic surface.
+    // money() already refuses the figure; the Flags cell must name the refusal instead of
+    // contradicting it with "ok" — and the watch list must carry the entity.
+    if (a["has_mixed_currency"] === true) f.push("mixed currencies — totals refused");
+    // CATCH-ALL (the structural fix — three rounds of this defect class prove the report's
+    // component enumeration will always lag the mart): after all specific checks, any
+    // FUTURE OR-term added to the mart's has_data_warnings reaches the watch list here
+    // with zero report changes.
+    if (a["has_data_warnings"] === true && f.length === 0) f.push("data quality warning — see mart counters");
     return f;
   };
+  // Addendum: an average must carry its base size — "4.50 (n=2)" — so a one-review 5.00
+  // and a fifty-review 5.00 stop looking identical. No csat at all stays "—".
+  const csatCell = (a: Record<string, unknown>): string =>
+    a["avg_csat"] == null ? "—" : `${a["avg_csat"]} (n=${num(a, "csat_score_count")})`;
   const tableRows = accounts.map((a) => {
     const flags = flagsFor(a);
-    return `| ${a["entity_id"]} | ${a["entity_name"]} | ${usd(num(a, "open_deal_amount_cents"))} | ${usd(num(a, "total_invoiced_cents"))} / ${usd(num(a, "total_paid_cents"))} | ${num(a, "open_ticket_count")} | ${a["avg_csat"] ?? "—"} | ${flags.length ? "⚠ " + flags.join("; ") : "ok"} |`;
+    return `| ${a["entity_id"]} | ${a["entity_name"]} | ${money(a, "open_deal_amount_cents")} | ${money(a, "total_invoiced_cents")} / ${money(a, "total_paid_cents")} | ${num(a, "open_ticket_count")} | ${csatCell(a)} | ${flags.length ? "⚠ " + flags.join("; ") : "ok"} |`;
   });
   const watch = accounts
     .map((a) => ({ a, flags: flagsFor(a) }))
