@@ -136,19 +136,21 @@ describe("A6 pair 1 — stg_sheets__rows: latest-state under the successor order
     expect(rows[0].content_hash).toBe("9999999999999999"); // larger id wins, every run
   });
 
-  it("supersession-suffix tolerance: a `-r1` re-sighting (A4.1 salt) sorts AFTER its base id, so an ABA revert's landed event wins a full tie against the original", async () => {
-    // A→B→A inside one millisecond window: the revert's id is the base id + '-r1'.
-    // Lexicographically 'sheet-rk-0001-aaaaaaaaaaaaaaaa-r1' > '…-aaaaaaaaaaaaaaaa', so
-    // even at a full occurred_at+received_at tie the ordering lands on the revert.
-    const t = "2026-07-28T10:00:00.500Z";
-    const r = "2026-07-28T10:00:00.600000Z";
+  it("supersession-suffix tolerance: an ABA revert's `-r1` re-sighting (A4.1 salt) is an ordinary, orderable event id — the revert is the live state, and nothing tries to parse an ordinal out of these ids", async () => {
+    // A→B→A across three cycles: the revert's id is the base id + '-r1'. The ordering
+    // must TOLERATE the salt — sheet ids order as opaque text (a copied evt-N ordinal
+    // tiebreak would crash casting 't-rk-0001…' to bigint). A full-clock tie between a
+    // -r1 and its OWN base is content-indistinguishable by construction (the salt exists
+    // because the content is identical), so the observable pin is the revert landing and
+    // winning through the successor ordering like any other event.
     await insertSheetRaw(pool, "sheet-rk-0001-aaaaaaaaaaaaaaaa", "sheet.row_upserted", "2026-07-28T10:00:00.100Z", upsertData("rk-0001", "aaaaaaaaaaaaaaaa", { status: "open" }), "2026-07-28T10:00:00.150000Z");
-    await insertSheetRaw(pool, "sheet-rk-0001-bbbbbbbbbbbbbbbb", "sheet.row_upserted", t, upsertData("rk-0001", "bbbbbbbbbbbbbbbb", { status: "won" }), r);
-    await insertSheetRaw(pool, "sheet-rk-0001-aaaaaaaaaaaaaaaa-r1", "sheet.row_upserted", t, upsertData("rk-0001", "aaaaaaaaaaaaaaaa", { status: "open" }), r);
+    await insertSheetRaw(pool, "sheet-rk-0001-bbbbbbbbbbbbbbbb", "sheet.row_upserted", "2026-07-28T10:00:00.500Z", upsertData("rk-0001", "bbbbbbbbbbbbbbbb", { status: "won" }), "2026-07-28T10:00:00.600000Z");
+    await insertSheetRaw(pool, "sheet-rk-0001-aaaaaaaaaaaaaaaa-r1", "sheet.row_upserted", "2026-07-28T10:00:00.900Z", upsertData("rk-0001", "aaaaaaaaaaaaaaaa", { status: "open" }), "2026-07-28T10:00:01.000000Z");
 
     const rows = await stagingRows(pool);
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe("open"); // the revert (…-r1) is the live state
+    expect(rows[0].content_hash).toBe("aaaaaaaaaaaaaaaa");
   });
 
   it("tombstone as FILTER: a row whose LATEST event is sheet.row_deleted vanishes from the model's output — no is_deleted flag, no residual row", async () => {

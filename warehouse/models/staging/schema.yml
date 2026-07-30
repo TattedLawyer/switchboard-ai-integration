@@ -54,6 +54,22 @@ models:
         data_tests:
           - accepted_values:
               values: [open, solved]
+  - name: stg_sheets__rows
+    columns:
+      - name: row_key
+        data_tests: [unique, not_null]
+      - name: amount_cents
+        # Deliberately NO not_null (contrast invoices/payments L4 decay detection):
+        # sheet amount cells are OPTIONAL by the field contract — an empty cell arrives
+        # as an ABSENT field and stages as NULL by design, while an unparseable cell
+        # quarantines at the door and never reaches raw. NULL here is a normal state of
+        # the source, not evidence of decayed enforcement.
+        description: Amount in cents; NULL when the source cell is blank (absent-by-design) or a doorless row failed the L2 safe cast.
+      - name: currency
+        # Same rationale as amount_cents: currency is optional at the source; absent
+        # stages as NULL, garbage quarantines at the door (^[A-Z]{3}$), and doorless
+        # garbage is NULLed by the staging guard. No not_null on purpose.
+        description: Three-letter uppercase currency or NULL (unknown — the mart counts and refuses, never sums).
   - name: stg_support__csat
     columns:
       - name: csat_id

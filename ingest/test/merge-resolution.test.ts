@@ -39,6 +39,17 @@ beforeEach(async () => {
       select source_entity_id as requester_id, email as requester_email, domain,
              name as company_name
       from tmp_ir_entities where source = 'support';
+    -- A6 mechanical: identity_resolution gained ref('stg_sheets__rows'); this suite's
+    -- concerns (walk, tiers, guards) are sheets-free, so the fixture is an EMPTY view
+    -- with the staging column surface. The sheets-arm pins live in
+    -- sheet-mart-oracle.test.ts.
+    create view tmp_stg_sheet_rows as
+      select null::text as row_key, null::text as client_email, null::text as client_name,
+             null::text as company_name, null::bigint as amount_cents, null::text as currency,
+             null::text as status, null::text as label, null::text as content_hash,
+             null::text as client_key, null::timestamptz as detected_at,
+             null::timestamptz as received_at
+      where false;
   `);
 });
 afterEach(async () => {
@@ -189,6 +200,7 @@ const TIER_SQL = `
     stg_crm__contacts: "tmp_stg_contacts",
     stg_billing__customers: "tmp_stg_billing",
     stg_support__tickets: "tmp_stg_support",
+    stg_sheets__rows: "tmp_stg_sheet_rows",
   })}) m
 `;
 

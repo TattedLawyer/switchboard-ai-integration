@@ -1,6 +1,8 @@
--- Three-tier identity resolution with auditable provenance for billing and support entities.
+-- Three-tier identity resolution with auditable provenance for billing, support, and
+-- sheets entities.
 -- Normalization is pinned HERE and only here (evidence strings make each resolution auditable).
--- Unit-tested by ingest/test/merge-resolution.test.ts, which loads THIS file from disk
+-- Unit-tested by ingest/test/merge-resolution.test.ts (tiers/guards) and
+-- ingest/test/sheet-mart-oracle.test.ts (the sheets arm), which load THIS file from disk
 -- (loadModel, refs → fixture views) — edits here are exercised by those tests
 -- automatically; there is no mirrored copy to keep in sync.
 with canonical as (
@@ -28,12 +30,37 @@ norm_companies as (
         regexp_replace(lower(trim(name)), '\s+(inc|llc|ltd|corp)\.?$', '') as norm_name
     from companies
 ),
+sheets_clients as (
+    -- sheets (A6): the fourth source. A sheet has no client entity id, so candidates
+    -- key on staging's manufactured client_key ('email:<lower-trimmed addr>' /
+    -- 'row:<row_key>' for rows with no usable email — each of those stays its own
+    -- tier-3 manual-review entity below, never guessed into a merge).
+    -- L2-G3 (register): a client whose rows carry differing name spellings is EXACTLY
+    -- the multi-tuple straddle shape — collapse to ONE candidate tuple per client
+    -- BEFORE the tiers see it, with the LATEST row's company as evidence. "Latest" uses
+    -- staging's exposed recency (detected_at, received_at — the successor ordering's
+    -- clocks) with row_key as a unique deterministic tail.
+    -- Domain evidence derives from the email's own domain (sheets carry no domain
+    -- column). Tier-2 is safe HERE because manifest-derived synthetic emails are
+    -- corporate-domain; the free-email blocklist (gmail.com et al. would make domain
+    -- evidence meaningless) remains Task F's gate before real data — see the deferred
+    -- register; deliberately not built in this slice.
+    select distinct on (client_key)
+        client_key,
+        nullif(lower(trim(client_email)), '') as email,
+        nullif(split_part(nullif(lower(trim(client_email)), ''), '@', 2), '') as domain,
+        company_name as name
+    from {{ ref('stg_sheets__rows') }}
+    order by client_key, detected_at desc, received_at desc, row_key desc
+),
 source_entities as (
     select 'billing' as source, customer_id as source_entity_id, email, domain, name
     from {{ ref('stg_billing__customers') }}
     union all
     select distinct 'support', requester_id, requester_email, domain, company_name
     from {{ ref('stg_support__tickets') }}
+    union all
+    select 'sheets', client_key, email, domain, name from sheets_clients
 ),
 tier1_candidates as (
     select se.source, se.source_entity_id, se.email, k.canonical_id
