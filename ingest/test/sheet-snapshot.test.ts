@@ -253,6 +253,17 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
     expect(await rawSheetEvents(pool)).toHaveLength(0);
   });
 
+  it("nudge() is a coalescing early catchUp — two concurrent nudges share ONE run (single-flight); lossiness of the channel that calls it is irrelevant to correctness", async () => {
+    const { baseUrl } = startSheet();
+    const c = connectorFor(baseUrl);
+    const [a, b] = await Promise.all([c.nudge(pool), c.nudge(pool)]);
+    // Coalesced: both callers observe the SAME run's count. Two separate runs would
+    // return [6, 0] — the second would find everything already ingested.
+    expect(a).toBe(6);
+    expect(b).toBe(6);
+    expect(await rawSheetEvents(pool)).toHaveLength(6);
+  });
+
   it("obligation 12: rawBody custody — ingested sheet events carry the connector's canonical JSON in raw.raw_events.raw_body", async () => {
     const { baseUrl } = startSheet();
     const c = connectorFor(baseUrl);
@@ -266,6 +277,96 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
       // re-canonicalizing the stored payload must reproduce raw_body byte-for-byte.
       expect(r.raw_body).toBe(canonicalStringify(r.payload));
       expect(JSON.parse(r.raw_body!).event_id).toBe(r.event_id);
+    }
+  });
+});
+
+describe("A4 pair 2 — reconcile + resilience", () => {
+  it("obligation 9a: after a clean catchUp, reconcile reports clean — and reconcile NEVER writes", async () => {
+    const { baseUrl } = startSheet();
+    const c = connectorFor(baseUrl);
+    await c.catchUp(pool);
+
+    const result = await c.reconcile(pool);
+    expect(result.skipped).toBeUndefined();
+    expect(result.integrity.ok).toBe(true);
+    expect(result.report).toEqual({
+      ledger: 6,
+      raw: 6,
+      missing: [],
+      stale: [],
+      extra: [],
+      rawDuplicates: 0,
+    });
+    // Read-only is structural, not incidental: raw is untouched by the comparison.
+    expect(await rawSheetEvents(pool)).toHaveLength(6);
+  });
+
+  it("obligation 9b: direct sheet mutation WITHOUT a catchUp — the report names the drifted row_keys by category", async () => {
+    const { sheets, baseUrl } = startSheet();
+    const c = connectorFor(baseUrl);
+    await c.catchUp(pool);
+
+    const staleRk = sheets.sheet.metadata()[0].rowKey;
+    const extraRk = sheets.sheet.metadata()[1].rowKey;
+    sheets.sheet.apply({ type: "edit_cell", rowKey: staleRk, column: COL.status, value: "renegotiating" });
+    sheets.sheet.apply({ type: "delete_row", rowKey: extraRk });
+    sheets.sheet.apply({ type: "append_row", cells: createRowSource(4242).next() });
+    const missingRk = sheets.sheet.metadata()[sheets.sheet.rowCount() - 1].rowKey;
+
+    const result = await c.reconcile(pool);
+    expect(result.integrity.ok).toBe(true);
+    expect(result.report!.stale).toEqual([staleRk]);
+    expect(result.report!.extra).toEqual([extraRk]);
+    expect(result.report!.missing).toEqual([missingRk]);
+    // Still read-only: detecting drift must not repair it (that is catchUp's job).
+    expect(await rawSheetEvents(pool)).toHaveLength(6);
+  });
+
+  it("obligation 9c: a 429 storm mid-reconcile is an integrity failure with NO report — a diff against an unreadable sheet would be confident and meaningless", async () => {
+    const { baseUrl } = startSheet({ read429: { seed: 11, rate: 1 } });
+    const c = connectorFor(baseUrl);
+
+    const result = await c.reconcile(pool);
+    expect(result.integrity.ok).toBe(false);
+    expect(result.integrity.detail).toMatch(/429/);
+    expect(result.report).toBeUndefined();
+  });
+
+  it("obligation 10a: catchUp succeeds under a seeded 429 fraction — bounded truncated-exponential retries actually observed", async () => {
+    // Seed chosen from the mock's documented deterministic draw-per-request stream:
+    // mulberry32(7) opens 1,1,0,0 at rate 0.5 → /values answers 429 twice, then serves;
+    // /metadata serves first try. Deterministic, so "retries observed" cannot flake.
+    const { baseUrl } = startSheet({ read429: { seed: 7, rate: 0.5 } });
+    const c = connectorFor(baseUrl);
+
+    expect(await c.catchUp(pool)).toBe(6);
+    // The quota hits were real and the connector retried through them (bounded).
+    expect(c.stats().retried429).toBe(2);
+    expect(c.stats().requests).toBe(4);
+  });
+
+  it("obligation 10b: a black-holed endpoint is a bounded LOUD failure via AbortSignal.timeout — never a wedge", async () => {
+    const blackHole = express();
+    blackHole.get("/values", () => {
+      /* accept the request, answer never — the wedge shape under test */
+    });
+    const bhSrv: Server = blackHole.listen(0);
+    const port = (bhSrv.address() as { port: number }).port;
+    try {
+      const c = new SheetSnapshotConnector({
+        baseUrl: `http://127.0.0.1:${port}`,
+        timeoutMs: 200,
+        backoff: { baseMs: 5, capMs: 50, maxAttempts: 6 },
+      });
+      const started = Date.now();
+      await expect(c.catchUp(pool)).rejects.toThrow(/timed out after 200ms/);
+      // Bounded: one timeout, no retry ladder for black holes — a stateless connector
+      // loses nothing by failing the cycle and re-diffing fresh next time.
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(await rawSheetEvents(pool)).toHaveLength(0);
+    } finally {
+      bhSrv.close();
     }
   });
 });
