@@ -137,7 +137,8 @@ only push surface: a thin, HMAC-signed "read the sheet soon" hint
 (`WEBHOOK_SECRET_SHEETS`, same timestamped scheme as the event doors). 401 =
 signature invalid (rejected outright — nudges carry no data worth quarantining);
 503 = this process hosts no sheets connector (the hint could have no effect);
-202 = accepted, an early catchUp ran. Losing nudges costs latency, never
+202 = accepted and an early catchUp was attempted (a failed attempt still answers 202 —
+the periodic reconcile is the guarantee, the nudge is only latency). Losing nudges costs latency, never
 correctness — periodic reconcile-first cycles are the guarantee, and
 `/webhooks/sheets` deliberately answers 404 (a sheet has no event push).
 
