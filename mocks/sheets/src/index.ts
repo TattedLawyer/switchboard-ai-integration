@@ -13,6 +13,7 @@ export {
   type JournalEntry,
   type RowKeyMapEntry,
   type SheetRow,
+  type SheetSnapshot,
   type SheetState,
 } from "./sheet.js";
 export {

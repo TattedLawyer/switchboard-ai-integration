@@ -37,7 +37,7 @@ import {
 } from "./sheet-canonical.js";
 
 export interface SheetSnapshotConnectorOptions {
-  /** Base URL of the sheet's snapshot API (/values + /metadata). */
+  /** Base URL of the sheet's snapshot API (GET /snapshot — the combined atomic read). */
   baseUrl: string;
   tenantId?: string;
   /** Per-request AbortSignal.timeout — no black-hole wedge (decision 7). Default 5000ms. */
@@ -296,18 +296,28 @@ export class SheetSnapshotConnector implements Connector {
 
   // ── snapshot fetch ────────────────────────────────────────────────────────────────────
 
-  /** Two reads of MUTABLE state (/values then /metadata) are not transactional: an edit
-   *  landing between them shows up as a row-count inconsistency (loud failure below) or
-   *  as ordinary next-cycle drift — both safe, because reconcile against a fresh snapshot
-   *  is the guarantee, and a failed cycle costs a stateless connector nothing. */
+  /** ONE combined read per cycle (GET /snapshot): grid values and row-attached metadata
+   *  from a single consistent state. Vendor-faithful — the real Sheets API can return
+   *  grid data and developer metadata in one spreadsheets.get call, so atomicity is a
+   *  capability of the source, not a mock convenience. History (cold review I4): the
+   *  previous /values-then-/metadata pair was not transactional, and a COUNT-PRESERVING
+   *  mutation between the two GETs slid past the length check while metadata rowIndexes
+   *  addressed the new order against the old grid — pairing rowKey X with row Y's
+   *  content and landing fabricated row states in append-only raw. With one read that
+   *  intra-snapshot window is gone: interleaving now happens only BETWEEN cycles, which
+   *  is ordinary next-cycle drift — reconcile against a fresh snapshot remains the
+   *  guarantee, and a failed cycle costs a stateless connector nothing. */
   private async fetchSnapshot(baseUrl: string): Promise<Snapshot> {
-    const grid = (await this.fetchJson(`${baseUrl}/values`)) as { header?: unknown; rows?: unknown };
-    const meta = (await this.fetchJson(`${baseUrl}/metadata`)) as { rows?: unknown };
-    if (!Array.isArray(grid?.header) || !Array.isArray(grid?.rows) || !Array.isArray(meta?.rows)) {
-      throw new Error("sheet snapshot malformed: /values or /metadata did not return the expected shape");
+    const snap = (await this.fetchJson(`${baseUrl}/snapshot`)) as {
+      header?: unknown;
+      rows?: unknown;
+      metadata?: unknown;
+    };
+    if (!Array.isArray(snap?.header) || !Array.isArray(snap?.rows) || !Array.isArray(snap?.metadata)) {
+      throw new Error("sheet snapshot malformed: /snapshot did not return the expected shape");
     }
-    const gridRows = grid.rows as string[][];
-    const metaRows = meta.rows as { rowKey?: unknown; rowIndex?: unknown }[];
+    const gridRows = snap.rows as string[][];
+    const metaRows = snap.metadata as { rowKey?: unknown; rowIndex?: unknown }[];
     if (metaRows.length !== gridRows.length) {
       throw new Error(
         `sheet snapshot inconsistent: ${gridRows.length} value row(s) vs ${metaRows.length} metadata entr(ies)`,
@@ -326,7 +336,7 @@ export class SheetSnapshotConnector implements Connector {
       seenKeys.add(rowKey);
       rows.push({ rowKey, cells: gridRows[rowIndex] });
     }
-    return { header: grid.header as string[], rows };
+    return { header: snap.header as string[], rows };
   }
 
   /** GET with the 429/network discipline of decision 7: per-attempt AbortSignal.timeout

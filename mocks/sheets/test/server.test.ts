@@ -41,6 +41,43 @@ describe("GET /values and /metadata", () => {
   });
 });
 
+describe("GET /snapshot (the combined atomic read — cold review I4)", () => {
+  // Mirrors the real Sheets API capability: one spreadsheets.get call can return grid
+  // data AND developer metadata together, i.e. from a single consistent state. The
+  // split /values + /metadata pair stays for other consumers, but a diffing connector
+  // must use THIS read: two reads of mutable state can pair rowKeys with wrong rows.
+  it("returns header + rows + metadata from ONE consistent grid state", async () => {
+    const { url, sheet } = await boot({ seed: 7, rowCount: 5 });
+    const res = await fetch(`${url}/snapshot`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ ...sheet.values(), metadata: sheet.metadata() });
+    expect(body.metadata.length).toBe(body.rows.length);
+  });
+
+  it("stays internally consistent after mutations: every metadata entry addresses its own row's cells", async () => {
+    const { url, sheet } = await boot({ seed: 7, rowCount: 4 });
+    const key = sheet.metadata()[1].rowKey;
+    sheet.apply({ type: "edit_cell", rowKey: key, column: COL.status, value: "won" });
+    sheet.apply({ type: "insert_row_above", position: 0, cells: sheet.values().rows[0] });
+    sheet.apply({ type: "delete_row", rowKey: sheet.metadata()[2].rowKey });
+
+    const body = await (await fetch(`${url}/snapshot`)).json();
+    expect(body.metadata.length).toBe(body.rows.length);
+    for (const { rowKey, rowIndex } of body.metadata) {
+      expect(body.rows[rowIndex]).toEqual(sheet.rowByKey(rowKey)!.cells);
+    }
+  });
+
+  it("draws from the same seeded read-fault stream as the split reads (429 injection applies)", async () => {
+    const { url } = await boot({ seed: 7, read429: { seed: 11, rate: 1 } });
+    const res = await fetch(`${url}/snapshot`);
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.error.status).toBe("RESOURCE_EXHAUSTED");
+  });
+});
+
 describe("POST /simulate (the human path over HTTP)", () => {
   it("applies N editor steps under the named plan and journals them", async () => {
     const { url, sheet, editor } = await boot({ seed: 7 });

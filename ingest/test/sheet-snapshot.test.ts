@@ -4,8 +4,8 @@ import express from "express";
 import type pg from "pg";
 // The REAL mock, in-process — house cross-workspace precedent: backfill.test.ts imports
 // mocks/crm the same way. The connector under test may only speak to it over HTTP
-// (/values, /metadata); direct `sheets.sheet.*` calls below are the API/script mutation
-// path the mock provides FOR TESTS (and deliberately never fires the trigger channel).
+// (GET /snapshot, the combined atomic read); direct `sheets.sheet.*` calls below are the
+// API/script mutation path the mock provides FOR TESTS (and never fires the trigger).
 import { COL, createRowSource, createSheetsApp, type SheetsApp, type SheetsAppOptions } from "../../mocks/sheets/src/index.js";
 import { freshTestDb } from "./helpers/testdb.js";
 import { ingestEvent } from "../src/ingest-event.js";
@@ -339,20 +339,20 @@ describe("A4 pair 2 — reconcile + resilience", () => {
 
   it("obligation 10a: catchUp succeeds under a seeded 429 fraction — bounded truncated-exponential retries actually observed", async () => {
     // Seed chosen from the mock's documented deterministic draw-per-request stream:
-    // mulberry32(7) opens 1,1,0,0 at rate 0.5 → /values answers 429 twice, then serves;
-    // /metadata serves first try. Deterministic, so "retries observed" cannot flake.
+    // mulberry32(7) opens 1,1,0 at rate 0.5 → the single combined /snapshot read (I4)
+    // answers 429 twice, then serves. Deterministic, so "retries observed" cannot flake.
     const { baseUrl } = startSheet({ read429: { seed: 7, rate: 0.5 } });
     const c = connectorFor(baseUrl);
 
     expect(await c.catchUp(pool)).toBe(6);
     // The quota hits were real and the connector retried through them (bounded).
     expect(c.stats().retried429).toBe(2);
-    expect(c.stats().requests).toBe(4);
+    expect(c.stats().requests).toBe(3);
   });
 
   it("obligation 10b: a black-holed endpoint is a bounded LOUD failure via AbortSignal.timeout — never a wedge", async () => {
     const blackHole = express();
-    blackHole.get("/values", () => {
+    blackHole.get("/snapshot", () => {
       /* accept the request, answer never — the wedge shape under test */
     });
     const bhSrv: Server = blackHole.listen(0);
@@ -372,6 +372,40 @@ describe("A4 pair 2 — reconcile + resilience", () => {
     } finally {
       bhSrv.close();
     }
+  });
+});
+
+// Cold review I4 — the two-GET race is structurally unreachable with the in-process
+// single-threaded mock, so the fix is pinned STRUCTURALLY instead: the connector takes
+// exactly one combined snapshot request per cycle (values + metadata from one grid
+// state), and the old /values + /metadata pairing path is gone from its diff surface.
+// With one read there is no intra-snapshot window in which a count-preserving mutation
+// could pair rowKey X with row Y's content and land fabricated states in raw.
+describe("cold review I4 — atomic snapshot: one combined read per cycle", () => {
+  it("catchUp and reconcile each issue exactly ONE request — GET /snapshot — and never consult /values or /metadata for diffing", async () => {
+    const sheets = createSheetsApp({ seed: 7, rowCount: 6 });
+    // Request journal wrapped AROUND the real mock: the pin must see every path the
+    // connector touches, including any it is no longer supposed to touch.
+    const journal: string[] = [];
+    const wrapper = express();
+    wrapper.use((req: express.Request, _res: express.Response, next: express.NextFunction) => {
+      journal.push(req.path);
+      next();
+    });
+    wrapper.use(sheets.app);
+    srv = wrapper.listen(0);
+    const port = (srv.address() as { port: number }).port;
+    const c = connectorFor(`http://127.0.0.1:${port}`);
+
+    expect(await c.catchUp(pool)).toBe(6);
+    expect(journal).toEqual(["/snapshot"]);
+    expect(c.stats().requests).toBe(1);
+
+    const rec = await c.reconcile(pool);
+    expect(rec.integrity.ok).toBe(true);
+    expect(journal).toEqual(["/snapshot", "/snapshot"]);
+    expect(journal).not.toContain("/values");
+    expect(journal).not.toContain("/metadata");
   });
 });
 

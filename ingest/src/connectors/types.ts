@@ -43,7 +43,7 @@ export type ConnectorKind = "ledger-feed" | "sheet-snapshot";
 
 export interface ConnectorCatchUpOptions {
   /** Overrides the source's configured base URL (the /events feed for ledger-feed
-   *  connectors, the /values+/metadata snapshot API for sheet-snapshot). */
+   *  connectors, the combined-read /snapshot API for sheet-snapshot). */
   baseUrl?: string;
   /** Feed-shaped connectors only; snapshot connectors read the whole grid per cycle. */
   limit?: number;

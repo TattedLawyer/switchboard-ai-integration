@@ -10,6 +10,8 @@ import { COL, createRowSource, SHEET_HEADER } from "./seed.js";
 export type SheetRow = { rowKey: string; cells: string[] };
 export type Grid = { header: string[]; rows: string[][] };
 export type RowKeyMapEntry = { rowKey: string; rowIndex: number };
+/** The combined atomic read: grid values AND row-attached metadata from ONE state. */
+export type SheetSnapshot = Grid & { metadata: RowKeyMapEntry[] };
 
 export type EditOp =
   | { type: "edit_cell"; rowKey: string; column: number; value: string }
@@ -47,6 +49,13 @@ export type SheetState = {
   apply(op: EditOp): AppliedEdit;
   values(): Grid;
   metadata(): RowKeyMapEntry[];
+  /** values() + metadata() materialized in ONE synchronous read of the same grid
+   *  state (cold review I4). Mirrors the real Sheets API capability: a single
+   *  spreadsheets.get call can return grid data and developer metadata together, so
+   *  an atomic combined read is vendor-faithful, not a mock convenience. Consumers
+   *  that DIFF the grid must use this; the split reads cannot promise their two
+   *  responses describe the same state. */
+  snapshot(): SheetSnapshot;
   journal(): readonly JournalEntry[];
   rowCount(): number;
   rowByKey(rowKey: string): SheetRow | undefined;
@@ -177,6 +186,11 @@ export function createSheet(opts: { seed: number; rowCount?: number }): SheetSta
     apply,
     values: () => ({ header: [...header], rows: rows.map((r) => [...r.cells]) }),
     metadata: () => rows.map((r, i) => ({ rowKey: r.rowKey, rowIndex: i })),
+    snapshot: () => ({
+      header: [...header],
+      rows: rows.map((r) => [...r.cells]),
+      metadata: rows.map((r, i) => ({ rowKey: r.rowKey, rowIndex: i })),
+    }),
     journal: () => journal,
     rowCount: () => rows.length,
     rowByKey: (rowKey) => {

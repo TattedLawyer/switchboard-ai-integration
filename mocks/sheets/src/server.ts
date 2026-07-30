@@ -88,6 +88,18 @@ export function createSheetsApp(opts: SheetsAppOptions): SheetsApp {
     res.json({ rows: sheet.metadata() });
   });
 
+  // The combined atomic read (cold review I4): values + metadata from ONE consistent
+  // grid state, in one response. Vendor-faithful — the real API's spreadsheets.get can
+  // return grid data and developer metadata in a single call. The split /values +
+  // /metadata pair stays for other consumers, but a connector DIFFING the grid must
+  // read here: two reads of mutable state can pair rowKeys with the wrong rows when a
+  // count-preserving edit lands between them. One draw from the same seeded fault
+  // stream — this is one read request, whatever it bundles.
+  app.get("/snapshot", (_req, res) => {
+    if (readFaulted()) return res.status(429).json(QUOTA_BODY);
+    res.json(sheet.snapshot());
+  });
+
   // Process honesty (house convention): an open socket proves liveness, not readiness.
   // seq = applied human-step count; a non-zero seq means this instance has drifted from
   // its seeded state and scripts expecting a fresh boot must refuse it.
