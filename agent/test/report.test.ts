@@ -34,39 +34,50 @@ beforeAll(async () => {
            -- Addendum columns: unknown-currency row counts + the usable-CSAT base size.
            0::bigint as null_currency_invoice_count, 0::bigint as null_currency_deal_count,
            2::bigint as csat_score_count,
-           false as has_data_warnings
+           false as has_data_warnings,
+           -- A6: the sheets source's mart columns (own columns, never folded into
+           -- deal/invoice figures) — mirrored across every fixture row below.
+           false as has_sheets, 0::bigint as sheet_row_count,
+           0::bigint as sheet_amount_cents, null::text as sheet_currency,
+           0::bigint as null_amount_sheet_count, 0::bigint as null_currency_sheet_count
     union all
     select 'DEMO-C-0002', 'DEMO Manufacturing Group 2', 'manufacturing-2.example.com',
            true, false, false, true,
-           1, 250000, 0, 0, 0, 0, 0, false, null, 'USD', false, 0, 0, 0, 0, null, 0, 0, 0, 0, false
+           1, 250000, 0, 0, 0, 0, 0, false, null, 'USD', false, 0, 0, 0, 0, null, 0, 0, 0, 0, false,
+           false, 0, 0, null, 0, 0
     union all
     select 'DEMO-C-0003', 'DEMO Retail Group 3', 'retail-3.example.com',
            true, true, false, true,
-           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 0, 0, 0, true
+           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 0, 0, 0, true,
+           false, 0, 0, null, 0, 0
     union all
     -- F1: the mart says this entity's amounts are unusable (L3 counters + flag) — the
     -- report must surface that, not render the partial sums as the whole story.
     select 'DEMO-C-0004', 'DEMO Services Group 4', 'services-4.example.com',
            true, true, false, true,
-           1, 100000, 50000, 0, 0, 1, 2, true, 'USD', 'USD', false, 0, 0, 0, 0, null, 0, 0, 0, 0, true
+           1, 100000, 50000, 0, 0, 1, 2, true, 'USD', 'USD', false, 0, 0, 0, 0, null, 0, 0, 0, 0, true,
+           false, 0, 0, null, 0, 0
     union all
     -- F3 report side: avg over usable scores only; 2 skipped NULL scores must be flagged.
     select 'DEMO-C-0005', 'DEMO Wholesale Group 5', 'wholesale-5.example.com',
            true, false, true, true,
-           0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 2, 0, 4.00, 2, 0, 0, 3, true
+           0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 2, 0, 4.00, 2, 0, 0, 3, true,
+           false, 0, 0, null, 0, 0
     union all
     -- A NULL sum WITHOUT has_mixed_currency: since the L5.1 retraction this is the real
     -- shape of a uniformly-unknown-currency source (here: one NULL-currency deal) — the
     -- renderer must degrade to "unknown", never a fabricated $0.
     select 'DEMO-C-0006', 'DEMO Media Group 6', 'media-6.example.com',
            true, true, false, true,
-           1, null, 40000, 40000, 0, 0, 0, false, 'USD', null, false, 0, 0, 0, 0, null, 0, 0, 1, 0, true
+           1, null, 40000, 40000, 0, 0, 0, false, 'USD', null, false, 0, 0, 0, 0, null, 0, 0, 1, 0, true,
+           false, 0, 0, null, 0, 0
     union all
     -- Addendum: USD+NULL invoices and one NULL-currency deal — refused (mixed) AND the
     -- unknown rows are counted (2 invoice + 1 deal = 3 rows with unknown currency).
     select 'DEMO-C-0007', 'DEMO Energy Group 7', 'energy-7.example.com',
            true, true, false, true,
-           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 2, 1, 0, true
+           1, null, null, null, 0, 0, 0, false, null, null, true, 0, 0, 0, 0, null, 0, 2, 1, 0, true,
+           false, 0, 0, null, 0, 0
     union all
     -- Cold review I-2 catch-all pin: has_data_warnings true while EVERY specific component
     -- the report knows about is clean. Synthetic ON PURPOSE at this mirror-view layer —
@@ -74,11 +85,29 @@ beforeAll(async () => {
     -- must still route this entity to the flags and the watch list.
     select 'DEMO-C-0008', 'DEMO Horizon Group 8', 'horizon-8.example.com',
            true, false, false, true,
-           0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 0, 0, null, 0, 0, 0, 0, true
+           0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 0, 0, null, 0, 0, 0, 0, true,
+           false, 0, 0, null, 0, 0
+    union all
+    -- A6: a SHEET-driven unusable amount (1 blank amount cell among 2 sheet rows; deals
+    -- and invoices spotless). The has_unusable_amounts branch fires BEFORE the catch-all,
+    -- so its message must tell the truth about sheets — not '0 deal / 0 invoice'.
+    select 'DEMO-C-0009', 'DEMO Harbor Group 9', 'harbor-9.example.com',
+           true, false, false, true,
+           0, 0, 0, 0, 0, 0, 0, true, null, null, false, 0, 0, 0, 0, null, 0, 0, 0, 0, true,
+           true, 2, 40000, 'USD', 1, 0
+    union all
+    -- A6 catch-all pin: uniformly-unknown SHEET currency — the mart's NEW OR term
+    -- (null_currency_sheet_count) with every component the report enumerates clean. The
+    -- catch-all must route it to the flags and watch list with ZERO report enumeration.
+    select 'DEMO-C-0010', 'DEMO Meridian Group 10', 'meridian-10.example.com',
+           true, false, false, true,
+           0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 0, 0, null, 0, 0, 0, 0, true,
+           true, 1, null, null, 0, 1
     union all
     select 'billing:B-0015', 'DEMO Orphan Billing', 'orphan.example.com',
            false, true, false, false,
-           0, 0, 90000, 90000, 0, 0, 0, false, 'USD', null, false, 1, 0, 0, 0, null, 0, 0, 0, 0, false
+           0, 0, 90000, 90000, 0, 0, 0, false, 'USD', null, false, 1, 0, 0, 0, null, 0, 0, 0, 0, false,
+           false, 0, 0, null, 0, 0
   `);
   await pool.query(`
     create or replace view ${SCHEMA}.stg_crm__companies as
@@ -202,6 +231,28 @@ describe("Monday report (stub)", () => {
     expect(row!).toContain("data quality warning — see mart counters");
     const watch = md.split("## Accounts to watch")[1].split("##")[0];
     expect(watch).toContain("DEMO-C-0008");
+    expect(watch).toContain("data quality warning — see mart counters");
+  });
+
+  // ── A6: sheet columns ride the same money()/flag machinery ──
+  it("A6: a sheet-driven unusable amount names the sheet source — '0 deal / 0 invoice / 1 sheet', never a 0/0 lie (the specific branch preempts the catch-all, so it must know about sheets)", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0009"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("unusable amount(s): 0 deal / 0 invoice / 1 sheet");
+    const watch = md.split("## Accounts to watch")[1].split("##")[0];
+    expect(watch).toContain("DEMO-C-0009");
+    expect(watch).toContain("1 sheet");
+  });
+
+  it("A6 catch-all pin: the mart's new null_currency_sheet_count OR term (uniformly-unknown sheet currency, all enumerated components clean) reaches the flags and watch list through the catch-all — zero report enumeration needed", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0010"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("data quality warning — see mart counters");
+    expect(row!).not.toContain("| ok |");
+    const watch = md.split("## Accounts to watch")[1].split("##")[0];
+    expect(watch).toContain("DEMO-C-0010");
     expect(watch).toContain("data quality warning — see mart counters");
   });
 

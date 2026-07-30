@@ -397,3 +397,241 @@ describe("A6 pair 1 — identity: sheets clients through the three tiers", () =>
     expect(rows.find((r) => r.source === "sheets")).toMatchObject({ resolved_entity_id: "C-A", matched_tier: 1 });
   });
 });
+
+// ── A6 pair 2 — customer_360: sheet columns under the per-source currency machinery ──────
+
+// The REAL mart, loaded from disk (now 10 refs → tmp_ fixtures) — no mirror to drift.
+const MART_SQL = loadModel("models/marts/customer_360.sql", {
+  int_crm__canonical_companies: "tmp_canonical",
+  stg_crm__companies: "tmp_companies",
+  identity_resolution: "tmp_resolution",
+  stg_billing__customers: "tmp_billing_customers",
+  stg_support__tickets: "tmp_tickets",
+  stg_crm__deals: "tmp_deals",
+  stg_billing__invoices: "tmp_invoices",
+  stg_billing__payments: "tmp_payments",
+  stg_support__csat: "tmp_csat",
+  stg_sheets__rows: "tmp_sheet_rows",
+});
+
+const createMartFixtures = async (db: pg.Pool): Promise<void> => {
+  await db.query(`
+    create table tmp_canonical (company_id text primary key, canonical_id text not null);
+    create table tmp_companies (company_id text primary key, name text not null, domain text);
+    create table tmp_resolution (
+      source text not null, source_entity_id text not null,
+      resolved_entity_id text not null, matched_tier int not null
+    );
+    create table tmp_billing_customers (customer_id text primary key, name text, domain text);
+    create table tmp_tickets (
+      ticket_id text, requester_id text, company_name text, domain text,
+      status text, solved_at timestamptz, sla_due_at timestamptz
+    );
+    create table tmp_deals (deal_id text, company_id text, status text, amount_cents bigint, currency text);
+    create table tmp_invoices (invoice_id text, customer_id text, amount_cents bigint, status text, currency text);
+    create table tmp_payments (customer_id text, status text);
+    create table tmp_csat (ticket_id text, score int);
+    create table tmp_sheet_rows (
+      row_key text primary key, client_email text, client_name text, company_name text,
+      amount_cents bigint, currency text, status text, label text, content_hash text,
+      client_key text not null, detected_at timestamptz not null default now(),
+      received_at timestamptz not null default now()
+    );
+  `);
+};
+
+/** One CRM entity (self-canonical) with a sheets resolution link for clientKey. */
+const seedSheetEntity = async (db: pg.Pool, companyId: string, clientKey: string): Promise<void> => {
+  await db.query("insert into tmp_canonical values ($1, $1)", [companyId]);
+  await db.query("insert into tmp_companies values ($1, $2, $3)", [
+    companyId, `Co ${companyId}`, `${companyId.toLowerCase()}.example.com`,
+  ]);
+  await db.query("insert into tmp_resolution values ('sheets', $1, $2, 1)", [clientKey, companyId]);
+};
+
+const seedSheetFixtureRow = async (
+  db: pg.Pool,
+  rowKey: string,
+  clientKey: string,
+  opts: { amount?: number | null; currency?: string | null; clientName?: string; company?: string } = {},
+): Promise<void> => {
+  await db.query(
+    `insert into tmp_sheet_rows (row_key, client_email, client_name, company_name, amount_cents, currency, client_key)
+     values ($1, $2, $3, $4, $5, $6, $7)`,
+    [
+      rowKey,
+      clientKey.startsWith("email:") ? clientKey.slice(6) : null,
+      opts.clientName ?? null,
+      opts.company ?? null,
+      opts.amount ?? null,
+      opts.currency ?? null,
+      clientKey,
+    ],
+  );
+};
+
+const martRow = async (db: pg.Pool, entityId: string): Promise<Record<string, unknown>> => {
+  const res = await db.query(`select * from (${MART_SQL}) m where entity_id = $1`, [entityId]);
+  expect(res.rowCount).toBe(1);
+  return res.rows[0];
+};
+
+describe("A6 pair 2 — customer_360 sheet columns: own columns, per-source currency rules", () => {
+  beforeEach(async () => {
+    await createMartFixtures(pool);
+  });
+
+  it("sheet sums NEVER fold into deal/invoice sums: an entity with deals + invoices + sheet rows keeps three separate figures", async () => {
+    await seedSheetEntity(pool, "C-1", "email:jane@c-1.example.com");
+    await pool.query("insert into tmp_resolution values ('billing', 'cust-1', 'C-1', 1)");
+    await pool.query(`
+      insert into tmp_deals values ('d-1', 'C-1', 'open', 30000, 'USD');
+      insert into tmp_invoices values ('inv-1', 'cust-1', 20000, 'paid', 'USD');
+    `);
+    await seedSheetFixtureRow(pool, "rk-0001", "email:jane@c-1.example.com", { amount: 5000, currency: "USD" });
+    await seedSheetFixtureRow(pool, "rk-0002", "email:jane@c-1.example.com", { amount: 7000, currency: "USD" });
+
+    const row = await martRow(pool, "C-1");
+    expect(row.open_deal_amount_cents).toBe("30000"); // NOT 42000 — sheets folded nowhere
+    expect(row.total_invoiced_cents).toBe("20000"); // NOT 32000
+    expect(row.sheet_amount_cents).toBe("12000"); // the sheet book in its OWN column
+    expect(Number(row.sheet_row_count)).toBe(2);
+    expect(row.sheet_currency).toBe("USD");
+    expect(row.has_sheets).toBe(true);
+    expect(row.has_mixed_currency).toBe(false);
+    expect(row.has_data_warnings).toBe(false);
+  });
+
+  it("has_sheets flag + the no-rows shape: an entity with no sheet link reads false / 0 / 0 / NULL — 0 stays 'genuinely nothing'", async () => {
+    await pool.query("insert into tmp_canonical values ('C-2', 'C-2')");
+    await pool.query("insert into tmp_companies values ('C-2', 'Co C-2', 'c-2.example.com')");
+
+    const row = await martRow(pool, "C-2");
+    expect(row.has_sheets).toBe(false);
+    expect(Number(row.sheet_row_count)).toBe(0);
+    expect(row.sheet_amount_cents).toBe("0"); // no rows = a true 0, not NULL
+    expect(row.sheet_currency).toBeNull();
+    expect(Number(row.null_amount_sheet_count)).toBe(0);
+    expect(Number(row.null_currency_sheet_count)).toBe(0);
+  });
+
+  it("ISOLATING PIN — sheet mixed currency: two KNOWN currencies and nothing else anywhere; ONLY the sheet-mixed OR term fires (its deletion fails exactly here)", async () => {
+    await seedSheetEntity(pool, "C-3", "email:ops@c-3.example.com");
+    await seedSheetFixtureRow(pool, "rk-0001", "email:ops@c-3.example.com", { amount: 5000, currency: "USD" });
+    await seedSheetFixtureRow(pool, "rk-0002", "email:ops@c-3.example.com", { amount: 7000, currency: "EUR" });
+
+    const row = await martRow(pool, "C-3");
+    expect(row.sheet_amount_cents).toBeNull(); // 5000+7000 across USD/EUR is a lie
+    expect(row.sheet_currency).toBeNull();
+    expect(row.has_mixed_currency).toBe(true); // ← the term under isolation
+    expect(row.has_data_warnings).toBe(true); // ← and its warnings OR arm
+    // Every OTHER honesty signal is provably silent:
+    expect(row.has_unusable_amounts).toBe(false);
+    expect(Number(row.null_currency_sheet_count)).toBe(0);
+    expect(Number(row.null_amount_sheet_count)).toBe(0);
+    expect(Number(row.null_currency_invoice_count) + Number(row.null_currency_deal_count)).toBe(0);
+    expect(Number(row.null_score_count)).toBe(0);
+  });
+
+  it("ISOLATING PIN — sheet unusable amount: one NULL-amount sheet row (currency known, all other sources clean); ONLY the sheet term of has_unusable_amounts fires", async () => {
+    await seedSheetEntity(pool, "C-4", "email:ops@c-4.example.com");
+    await seedSheetFixtureRow(pool, "rk-0001", "email:ops@c-4.example.com", { amount: 5000, currency: "USD" });
+    await seedSheetFixtureRow(pool, "rk-0002", "email:ops@c-4.example.com", { amount: null, currency: "USD" });
+
+    const row = await martRow(pool, "C-4");
+    expect(row.has_unusable_amounts).toBe(true); // ← the term under isolation
+    expect(row.has_data_warnings).toBe(true);
+    expect(Number(row.null_amount_sheet_count)).toBe(1);
+    // The usable rows still sum (single currency, unknown-currency rows absent):
+    expect(row.sheet_amount_cents).toBe("5000");
+    expect(row.sheet_currency).toBe("USD");
+    // Every OTHER signal silent — deleting the sheet term flips has_unusable_amounts
+    // AND has_data_warnings false here, failing exactly this test:
+    expect(row.has_mixed_currency).toBe(false);
+    expect(Number(row.null_amount_deal_count)).toBe(0);
+    expect(Number(row.null_amount_invoice_count)).toBe(0);
+    expect(Number(row.null_currency_sheet_count)).toBe(0);
+  });
+
+  it("ISOLATING PIN — sheet unknown currency: uniformly-NULL currency refuses the sum WITHOUT being mixed; ONLY the null_currency_sheet term of has_data_warnings fires", async () => {
+    await seedSheetEntity(pool, "C-5", "email:ops@c-5.example.com");
+    await seedSheetFixtureRow(pool, "rk-0001", "email:ops@c-5.example.com", { amount: 5000, currency: null });
+    await seedSheetFixtureRow(pool, "rk-0002", "email:ops@c-5.example.com", { amount: 7000, currency: null });
+
+    const row = await martRow(pool, "C-5");
+    expect(row.sheet_amount_cents).toBeNull(); // unknown units are counted, never totaled
+    expect(row.sheet_currency).toBeNull();
+    expect(Number(row.null_currency_sheet_count)).toBe(2); // the visible bucket
+    expect(row.has_data_warnings).toBe(true); // ← reachable ONLY through the new term here
+    // All-unknown is refused-but-NOT-mixed, and no other signal fires:
+    expect(row.has_mixed_currency).toBe(false);
+    expect(row.has_unusable_amounts).toBe(false);
+    expect(Number(row.null_amount_sheet_count)).toBe(0);
+  });
+
+  it("F2 analog for sheets: a known currency plus an unknown one (USD + NULL) is MIXED — sum refused, flag true, unknown row counted", async () => {
+    await seedSheetEntity(pool, "C-6", "email:ops@c-6.example.com");
+    await seedSheetFixtureRow(pool, "rk-0001", "email:ops@c-6.example.com", { amount: 5000, currency: "USD" });
+    await seedSheetFixtureRow(pool, "rk-0002", "email:ops@c-6.example.com", { amount: 7000, currency: null });
+
+    const row = await martRow(pool, "C-6");
+    expect(row.sheet_amount_cents).toBeNull();
+    expect(row.sheet_currency).toBeNull(); // 'USD' is not the whole truth
+    expect(row.has_mixed_currency).toBe(true);
+    expect(Number(row.null_currency_sheet_count)).toBe(1);
+  });
+
+  it("a keyless tier-3 sheet row is a mart row of its OWN — never hidden, named from its latest sheet evidence, flagged incomplete", async () => {
+    await pool.query("insert into tmp_resolution values ('sheets', 'row:rk-0009', 'sheets:row:rk-0009', 3)");
+    await seedSheetFixtureRow(pool, "rk-0009", "row:rk-0009", { amount: 9000, currency: "USD", clientName: "Jane Doe" });
+
+    const row = await martRow(pool, "sheets:row:rk-0009");
+    expect(row.has_crm).toBe(false);
+    expect(row.is_complete).toBe(false); // D6: present but visibly incomplete
+    expect(row.has_sheets).toBe(true);
+    expect(row.entity_name).toBe("Jane Doe"); // sheet evidence names the orphan
+    expect(Number(row.sheet_row_count)).toBe(1);
+    expect(row.sheet_amount_cents).toBe("9000");
+  });
+});
+
+// ── A6 pair 2 — the extended singular test's own predicate ───────────────────────────────
+
+const SINGULAR_SQL = loadModel("tests/assert_no_mixed_currency_totals.sql", {
+  customer_360: "tmp_mart",
+  identity_resolution: "tmp_resolution",
+  stg_billing__invoices: "tmp_invoices",
+  stg_crm__deals: "tmp_deals",
+  int_crm__canonical_companies: "tmp_canonical",
+  stg_sheets__rows: "tmp_sheet_rows",
+});
+
+describe("A6 pair 2 — assert_no_mixed_currency_totals gains a sheets CTE (same per-source predicate)", () => {
+  beforeEach(async () => {
+    await createMartFixtures(pool);
+  });
+
+  it("returns ZERO rows against a correct mart carrying a mixed-sheet entity (its sum is already NULL) — and the neighbor sources are untouched", async () => {
+    await seedSheetEntity(pool, "C-7", "email:ops@c-7.example.com");
+    await seedSheetFixtureRow(pool, "rk-0001", "email:ops@c-7.example.com", { amount: 5000, currency: "USD" });
+    await seedSheetFixtureRow(pool, "rk-0002", "email:ops@c-7.example.com", { amount: 7000, currency: "EUR" });
+
+    await pool.query(`create table tmp_mart as ${MART_SQL}`);
+    const res = await pool.query(SINGULAR_SQL);
+    expect(res.rows).toEqual([]);
+  });
+
+  it("planted counter-example: a corrupted mart where a mixed-sheet entity carries a non-NULL sheet_amount_cents IS returned as mixed_source 'sheets' — the extended test can fail", async () => {
+    await seedSheetEntity(pool, "C-8", "email:ops@c-8.example.com");
+    await seedSheetFixtureRow(pool, "rk-0001", "email:ops@c-8.example.com", { amount: 5000, currency: "USD" });
+    await seedSheetFixtureRow(pool, "rk-0002", "email:ops@c-8.example.com", { amount: 7000, currency: null }); // known + unknown (F2)
+
+    await pool.query(`create table tmp_mart as ${MART_SQL}`);
+    await pool.query(`update tmp_mart set sheet_amount_cents = 999999 where entity_id = 'C-8'`);
+
+    const res = await pool.query(SINGULAR_SQL);
+    expect(res.rowCount).toBe(1);
+    expect(res.rows[0].entity_id).toBe("C-8");
+    expect(res.rows[0].mixed_source).toBe("sheets"); // mixing re-derived from staging, not the mart's flag
+  });
+});

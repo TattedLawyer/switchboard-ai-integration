@@ -36,7 +36,11 @@ beforeAll(async () => {
            0::bigint as null_score_count,
            0::bigint as null_currency_invoice_count, 0::bigint as null_currency_deal_count,
            2::bigint as csat_score_count,
-           false as has_data_warnings
+           false as has_data_warnings,
+           -- A6 parity: the sheets source's mart columns reach the tool too.
+           true as has_sheets, 2::bigint as sheet_row_count,
+           30000::bigint as sheet_amount_cents, 'USD'::text as sheet_currency,
+           0::bigint as null_amount_sheet_count, 0::bigint as null_currency_sheet_count
   `);
   await pool.query(`
     create or replace view ${SCHEMA}.stg_crm__companies as
@@ -79,6 +83,14 @@ describe("MCP server", () => {
       null_currency_deal_count: "0",
       csat_score_count: "2",
       has_data_warnings: false, // Kimball #164 coarse flag reaches the tool
+      // A6 parity: sheet presence/sums/counters reach the tool (own columns — never
+      // folded into deal/invoice figures).
+      has_sheets: true,
+      sheet_row_count: "2",
+      sheet_amount_cents: "30000",
+      sheet_currency: "USD",
+      null_amount_sheet_count: "0",
+      null_currency_sheet_count: "0",
     });
   });
 
