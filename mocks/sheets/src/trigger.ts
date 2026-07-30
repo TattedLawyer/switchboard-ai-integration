@@ -12,6 +12,10 @@
 //                 thin notification per human step, however many rows it changed.
 //   UNVERIFIED → conservative — daily trigger budget (the 90-min/day class): after
 //                 `dailyQuota` posts the channel goes SILENT, with no error signal.
+//   UNVERIFIED → conservative — onEdit `oldValue` on multi-cell paste: whether real
+//                 triggers surface oldValue for pasted ranges is unverified, so the
+//                 mock renders it moot — notifications carry NO values at all (old or
+//                 new); the connector may never rely on value payloads from this channel.
 
 import { prng, secretForSource, signBody } from "@switchboard/mock-core";
 
