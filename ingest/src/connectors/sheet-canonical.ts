@@ -72,14 +72,40 @@ export interface HeaderMapping {
  * re-resolve per snapshot and nothing may persist the indices.
  */
 export function resolveHeaderMapping(header: readonly string[], map: ColumnMap = SHEET_COLUMN_MAP): HeaderMapping {
-  throw new Error("not implemented (A4 RED)");
+  const normalized = header.map((h) => h.trim().toLowerCase());
+  const positions: Partial<Record<CanonicalField, number>> = {};
+  const missing: CanonicalField[] = [];
+  // A column serves at most one canonical field (first claim in map order wins) — so a
+  // pathological header set cannot silently feed one cell into two fields.
+  const claimed = new Set<number>();
+  for (const [field, aliases] of Object.entries(map) as [CanonicalField, readonly string[]][]) {
+    let found = -1;
+    for (let i = 0; i < normalized.length; i++) {
+      if (!claimed.has(i) && aliases.includes(normalized[i])) {
+        found = i;
+        break;
+      }
+    }
+    if (found === -1) {
+      missing.push(field);
+    } else {
+      positions[field] = found;
+      claimed.add(found);
+    }
+  }
+  return { positions, missing };
 }
 
 /** Canonical row content: { canonicalField: rawCellString } for every mapped, NON-EMPTY
  *  cell. Empty cells mean "absent" (a sheet renders missing as ""), matching the
  *  contract's required:false handling — and keeping a later fill-in a real content change. */
 export function canonicalRowContent(mapping: HeaderMapping, cells: readonly string[]): Record<string, string> {
-  throw new Error("not implemented (A4 RED)");
+  const content: Record<string, string> = {};
+  for (const [field, index] of Object.entries(mapping.positions) as [CanonicalField, number][]) {
+    const value = cells[index];
+    if (value !== undefined && value !== "") content[field] = value;
+  }
+  return content;
 }
 
 /** Deterministic deep-key-sorted JSON — the connector's canonical serialization. Used for
@@ -87,19 +113,45 @@ export function canonicalRowContent(mapping: HeaderMapping, cells: readonly stri
  *  origin, so its canonical bytes are the closest thing to wire custody that exists
  *  (2b-D4 semantics for connector-born events). */
 export function canonicalStringify(value: unknown): string {
-  throw new Error("not implemented (A4 RED)");
+  return JSON.stringify(sortDeep(value));
 }
 
-/** Content hash over the CANONICAL serialized row content (never raw header labels). */
+function sortDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortDeep);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      out[key] = sortDeep((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Content hash over the CANONICAL serialized row content (never raw header labels).
+ *  sha256 truncated to 16 hex chars: collisions only matter WITHIN one rowKey's content
+ *  history (the rowKey rides in the event_id beside it), where 64 bits is beyond ample. */
 export function contentHash(content: Record<string, string>): string {
-  throw new Error("not implemented (A4 RED)");
+  return createHash("sha256").update(canonicalStringify(content)).digest("hex").slice(0, 16);
 }
 
-/** Conservative amount parsing (decision 5): strict formats only — a plain non-negative
- *  integer or decimal with 1–2 places, in string arithmetic (no float rounding). Anything
- *  else returns null and the caller passes the RAW string through as amount_cents, so the
- *  field contract quarantines it with a reason naming the field: a messy human row becomes
- *  a replayable quarantine entry, never a silent skip or a guessed number. */
+// Strict shapes only: a plain non-negative integer or a decimal with 1–2 places. No
+// thousands separators, no currency glyphs, no signs — those pass through unparsed.
+const AMOUNT_SHAPE = /^(\d+)(?:\.(\d{1,2}))?$/;
+
+/** Conservative amount parsing (decision 5): strict formats only, in integer arithmetic
+ *  (no float rounding — 1234.56 must become exactly 123456). Anything else returns null
+ *  and the caller passes the RAW string through as amount_cents, so the field contract
+ *  quarantines it with a reason naming the field: a messy human row becomes a replayable
+ *  quarantine entry, never a silent skip or a guessed number. */
 export function parseAmountToCents(raw: string): number | null {
-  throw new Error("not implemented (A4 RED)");
+  const m = AMOUNT_SHAPE.exec(raw.trim());
+  if (m === null) return null;
+  // 13 digits of whole units keeps cents comfortably inside Number.isSafeInteger; a
+  // longer digit string has already lost exactness at Number() and is not trustworthy.
+  if (m[1].length > 13) return null;
+  const whole = Number(m[1]);
+  const frac = m[2] === undefined ? 0 : Number(m[2].padEnd(2, "0"));
+  const cents = whole * 100 + frac;
+  return Number.isSafeInteger(cents) ? cents : null;
 }

@@ -235,8 +235,10 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
     }
 
     // The pipe is still alive after the degradation: a later edit flows normally.
+    // (status is a passthrough string with no contract rule; the value just has to be
+    // one the seeded row cannot already hold, or the content hash would not change.)
     const rk = sheets.sheet.metadata()[0].rowKey;
-    sheets.sheet.apply({ type: "edit_cell", rowKey: rk, column: COL.status, value: "lost" });
+    sheets.sheet.apply({ type: "edit_cell", rowKey: rk, column: COL.status, value: "renegotiating" });
     expect(await c.catchUp(pool)).toBe(1);
   });
 

@@ -92,6 +92,17 @@ export const NUMERIC_CONTRACT: Readonly<Record<string, EventContract>> = {
   "ticket.created":    {},
   "ticket.updated":    {},
   "ticket.solved":     {},
+  // sheets (Task A4) — connector-born events, consumed by no warehouse model until the
+  // sheet staging models land (A5+); declaration-without-consumption is the registry's
+  // permitted direction. amount_cents is OPTIONAL: an empty cell or an unmapped amount
+  // column means the field is absent from the event by design. Present-but-unparseable
+  // amounts arrive as the RAW cell string ON PURPOSE (the connector's conservative
+  // parsing passes them through) so this rule quarantines them with a reason naming the
+  // field. Unsigned: a negative deal value in a book-of-business sheet is human error —
+  // preserved in quarantine, never guessed at.
+  "sheet.row_upserted": { amount_cents: { integer: true, required: false, signed: false }, currency: { ...CURRENCY } },
+  // A tombstone carries no fields to validate; the empty set still means "declared".
+  "sheet.row_deleted":  {},
 };
 
 // Declared patterns compile ONCE, at module load — never per-validation — for two reasons:
