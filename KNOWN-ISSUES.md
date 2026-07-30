@@ -290,6 +290,15 @@ push channel is a latency hint only. These are the honest edges of that design.
   seam). The CLIs (`cli/backfill`, `cli/reconcile`) route through `connectorFor`
   and handle sheets correctly. *Scheduled: route the service loop through the
   seam with the A6 service wiring.*
+- **No process hosts the nudge door yet.** The `/connectors/sheets/nudge` route
+  is built, HMAC-gated, and test-hosted, but `main.ts` does not wire a runner —
+  a trigger channel pointed at a live service today gets an honest 503 (or 404
+  when sheets isn't configured). This is deliberate sequencing, not an accident:
+  hosting the nudge before the service loop speaks the connector seam would ship
+  a door that accepts nudges while the same process's poll loop 404s the
+  snapshot API (see previous bullet). Latency until then comes from the CLI
+  cycle cadence; correctness never depended on the nudge (reconcile-first).
+  *Scheduled: A6 service wiring, together with the loop above.*
 - **Closed:** the supersession counter (A4.1) — content-addressed ids made a
   human's *revert* a permanent duplicate (pipeline served B while the sheet said
   A, reconcile stale forever); re-sightings now salt the id with `-r<n>` derived
