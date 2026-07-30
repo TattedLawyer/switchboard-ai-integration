@@ -333,6 +333,14 @@ describe("L1 numeric contract at the trust boundary", () => {
         // NOT toHaveProperty: vitest treats "invoice.created" as a nested path.
         expect(declared, `event_type '${type}' is consumed by a warehouse model but undeclared`).toContain(type);
       }
+      // A4: the registry's direction is consumed ⊆ declared ONLY — declaring types no
+      // warehouse model consumes yet is allowed and correct (the sheet.* staging models
+      // are A5+ work; the door must accept the events now). The consumed floor above
+      // stays 14 because A4 touches no warehouse model; the DECLARED count moves
+      // 14 → 16 and is pinned here so the sheet declarations cannot silently vanish.
+      expect(declared.length).toBeGreaterThanOrEqual(16);
+      expect(declared).toContain("sheet.row_upserted");
+      expect(declared).toContain("sheet.row_deleted");
     });
   });
 });

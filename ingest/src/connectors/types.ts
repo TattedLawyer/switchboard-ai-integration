@@ -24,11 +24,13 @@ import type { ReconcileReport } from "../reconcile.js";
 // rather than an echo — including against a source-side agent that has been altered to stop
 // reporting.
 
-export type ConnectorKind = "ledger-feed";
+export type ConnectorKind = "ledger-feed" | "sheet-snapshot";
 
 export interface ConnectorCatchUpOptions {
-  /** Overrides the source's configured base URL. Feed-shaped connectors only. */
+  /** Overrides the source's configured base URL (the /events feed for ledger-feed
+   *  connectors, the /values+/metadata snapshot API for sheet-snapshot). */
   baseUrl?: string;
+  /** Feed-shaped connectors only; snapshot connectors read the whole grid per cycle. */
   limit?: number;
   maxRounds?: number;
 }
@@ -36,6 +38,9 @@ export interface ConnectorCatchUpOptions {
 export interface ConnectorReconcileOptions {
   /** Overrides the source's configured ledger path. Ledger-shaped connectors only. */
   ledgerPath?: string;
+  /** Overrides the source's base URL. Snapshot-shaped connectors only — their
+   *  "ledger" is the source's own current state read back over HTTP. */
+  baseUrl?: string;
 }
 
 export interface ConnectorReconcileResult {
@@ -55,7 +60,13 @@ export interface ConnectorReconcileResult {
 }
 
 export interface Connector {
-  readonly source: Source;
+  /**
+   * Widened from `Source` (A4): the `SOURCES` union is the legacy feed+ledger deployment
+   * set the CLIs iterate; connector-paradigm sources (e.g. "sheets") exist at the seam
+   * and in raw.raw_events without joining that union. Concrete connectors may still
+   * declare a narrower type (LedgerFeedConnector keeps `Source`).
+   */
+  readonly source: string;
   readonly kind: ConnectorKind;
   /** Pull path. Returns the number of events newly ingested. */
   catchUp(pool: pg.Pool, opts?: ConnectorCatchUpOptions): Promise<number>;
