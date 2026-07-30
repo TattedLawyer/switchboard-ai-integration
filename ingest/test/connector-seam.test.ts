@@ -66,17 +66,24 @@ async function startCrmMock(count: number): Promise<void> {
 }
 
 describe("connector seam — every source resolves to a connector", () => {
-  it("resolves a connector for all three current sources", () => {
+  it("resolves a connector for every registered source", () => {
     for (const source of SOURCES) {
       const c = connectorFor(source);
       expect(c.source).toBe(source);
     }
   });
 
-  it("reports all three as the ledger-feed kind today — the seam exists, but nothing has diverged yet", () => {
-    // Pins the CURRENT world explicitly. When the Sheets connector lands, this test changes
-    // deliberately and visibly, rather than a new kind appearing unnoticed.
-    expect(connectorKinds()).toEqual({ crm: "ledger-feed", billing: "ledger-feed", support: "ledger-feed" });
+  it("reports the feed trio as ledger-feed and sheets as sheet-snapshot — the seam's first real divergence, pinned deliberately", () => {
+    // SPEC CHANGE (A5): membership grew because the Sheets connector registered — the
+    // exact event the old comment predicted ("when the Sheets connector lands, this test
+    // changes deliberately and visibly"). The pin's job is unchanged: a new KIND still
+    // cannot appear unnoticed, it must arrive together with its edit to this line.
+    expect(connectorKinds()).toEqual({
+      crm: "ledger-feed",
+      billing: "ledger-feed",
+      support: "ledger-feed",
+      sheets: "sheet-snapshot",
+    });
   });
 
   it("rejects an unknown source rather than silently returning a default — an unknown source must never quietly ingest as some other source's connector", () => {
