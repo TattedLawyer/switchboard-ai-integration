@@ -1,6 +1,19 @@
 import type pg from "pg";
 import type { Source } from "../sources.js";
 import type { ReconcileReport } from "../reconcile.js";
+import type { SHEET_SOURCE } from "./sheet-canonical.js";
+
+/**
+ * Closed union of every source a connector may declare (A4 review I1). The `SOURCES`
+ * union stays the legacy feed+ledger DEPLOYMENT surface (webhook routes, CLI iteration,
+ * per-source env vars — "sheets" joins it with A5's registry wiring); this union is the
+ * SEAM's world, and it is deliberately closed: `source` participates in the idempotency
+ * key `(tenant_id, source, event_id)`, and connectors are legitimately constructed
+ * directly (bypassing connectorFor's runtime throw), so a bare `string` here would let a
+ * typo'd source compile and mint a fresh raw lane. A new connector paradigm adds its
+ * literal here — a one-line, reviewed act.
+ */
+export type ConnectorSource = Source | typeof SHEET_SOURCE;
 
 // The connector seam (Phase 2b Task 1).
 //
@@ -60,13 +73,11 @@ export interface ConnectorReconcileResult {
 }
 
 export interface Connector {
-  /**
-   * Widened from `Source` (A4): the `SOURCES` union is the legacy feed+ledger deployment
-   * set the CLIs iterate; connector-paradigm sources (e.g. "sheets") exist at the seam
-   * and in raw.raw_events without joining that union. Concrete connectors may still
-   * declare a narrower type (LedgerFeedConnector keeps `Source`).
-   */
-  readonly source: string;
+  /** See ConnectorSource above (A4/A4.1): wider than `Source` so connector-paradigm
+   *  sources exist without joining the deployment union, but still a CLOSED set.
+   *  Concrete connectors declare their narrower literal (LedgerFeedConnector keeps
+   *  `Source`; SheetSnapshotConnector declares `typeof SHEET_SOURCE`). */
+  readonly source: ConnectorSource;
   readonly kind: ConnectorKind;
   /** Pull path. Returns the number of events newly ingested. */
   catchUp(pool: pg.Pool, opts?: ConnectorCatchUpOptions): Promise<number>;

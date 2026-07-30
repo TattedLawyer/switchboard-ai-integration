@@ -89,9 +89,19 @@ interface DerivedRow {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Composite key for the supersession count map. "|" cannot occur in rowKeys (rk-NNNN),
+ *  hashes (hex), or the two event type literals, so the key cannot be ambiguous. */
+const occurrenceKey = (eventType: string, rowKey: string, hash: string) => `${eventType}|${rowKey}|${hash}`;
+
+/** n=0 stays UNSUFFIXED (reviewer's refinement to the amendment): first-occurrence ids
+ *  remain exactly `sheet-<rowKey>-<hash>`, so nothing already in raw — and no pair-1
+ *  test — moves. Only re-sightings of previously-ingested content grow `-r<n>`. */
+const supersessionSuffix = (n: number) => (n === 0 ? "" : `-r${n}`);
+
 export class SheetSnapshotConnector implements Connector {
   readonly kind = "sheet-snapshot" as const;
-  readonly source: string = SHEET_SOURCE;
+  // Literal-typed: satisfies the seam's closed ConnectorSource union (review I1).
+  readonly source = SHEET_SOURCE;
 
   private readonly fetchStats: SheetFetchStats = { requests: 0, retried429: 0 };
   private inFlight: Promise<number> | null = null;
@@ -130,7 +140,7 @@ export class SheetSnapshotConnector implements Connector {
         `from events (headers seen: [${snapshot.header.join(", ")}])`,
     );
 
-    const derived = await this.deriveState(pool, tenantId);
+    const { latest: derived, occurrences } = await this.deriveState(pool, tenantId);
     // One detection clock per cycle. Sheets have no event time — occurred_at is OUR
     // clock at diff time, which passes the ingest window gate honestly, and the payload
     // flag occurred_at_derived says so to every downstream reader.
@@ -144,16 +154,21 @@ export class SheetSnapshotConnector implements Connector {
       const hash = contentHash(content);
       const prior = derived.get(row.rowKey);
       if (prior !== undefined && prior.live && prior.hash === hash) continue; // unchanged
-      // ABA limit of pure content addressing, named: a row EDITED BACK to a content it
-      // held earlier (A→B→A) manufactures the same id as the historical event, so the
-      // door reports duplicate and the latest-known hash stays B — this row re-diffs
-      // (and re-dedupes) once per cycle. Bounded, honest (raw's history is true), and
-      // accepted: the alternative (salting ids) would break second-run idempotency.
-      pending.push(this.buildUpsert(row.rowKey, content, hash, detectedAt));
+      // Supersession counter (A4.1, amended decision 2 — review C1): a row EDITED BACK
+      // to a content it held earlier (A→B→A) would otherwise manufacture the id of the
+      // historical event; the door would say duplicate, the revert would never land, and
+      // reconcile would call the sheet's own truth `stale` forever. n = how many times
+      // raw has already ingested this (row, content); n=0 keeps the bare id (zero churn
+      // to existing ids), n>0 salts it with -r<n>. Computed ONLY on diff-change, so an
+      // unchanged sheet still emits nothing and idempotency-by-construction survives.
+      const n = occurrences.get(occurrenceKey("sheet.row_upserted", row.rowKey, hash)) ?? 0;
+      pending.push(this.buildUpsert(row.rowKey, content, hash, detectedAt, n));
     }
     for (const [rowKey, prior] of derived) {
       if (!prior.live || seen.has(rowKey)) continue;
-      pending.push(this.buildDelete(rowKey, prior.hash, detectedAt));
+      const n =
+        prior.hash === null ? 0 : occurrences.get(occurrenceKey("sheet.row_deleted", rowKey, prior.hash)) ?? 0;
+      pending.push(this.buildDelete(rowKey, prior.hash, detectedAt, n));
     }
 
     // The standard door, mirrored from backfill.ts pollOnce exactly: unstorable divert →
@@ -226,7 +241,9 @@ export class SheetSnapshotConnector implements Connector {
       };
     }
 
-    const derived = await this.deriveState(pool, tenantId);
+    // Reconcile compares CONTENT (payload hashes), never ids — the -r<n> salt is
+    // invisible here, so a landed revert reads clean, exactly the property A4.1 restores.
+    const { latest: derived } = await this.deriveState(pool, tenantId);
     const missing: string[] = [];
     const stale: string[] = [];
     const extra: string[] = [];
@@ -336,7 +353,12 @@ export class SheetSnapshotConnector implements Connector {
         await res.text().catch(() => undefined);
         if (attempt < maxAttempts - 1) {
           this.fetchStats.retried429++;
-          await sleep(Math.min(baseMs * 2 ** attempt + Math.random() * baseMs, capMs));
+          // Deterministic jitter (review M1): a Knuth multiplicative hash of the attempt
+          // index gives a stable [0,1) fraction — repo convention treats determinism as
+          // a design value, and ingest must not import the mocks' seeded prng. Same
+          // truncated-exponential shape as before; backoff traces are now reproducible.
+          const jitter = (Math.imul(attempt + 1, 0x9e3779b1) >>> 0) / 2 ** 32;
+          await sleep(Math.min(baseMs * 2 ** attempt + jitter * baseMs, capMs));
           continue;
         }
         throw new Error(`sheet read quota-limited: GET ${url} answered 429 through ${maxAttempts} bounded attempts`);
@@ -355,9 +377,19 @@ export class SheetSnapshotConnector implements Connector {
   /** The connector's only memory: the latest sheet event per row_key, read back from raw.
    *  Ordered by id (the bigserial insertion order), not occurred_at — occurred_at is our
    *  own detection clock at millisecond grain and can tie across fast cycles; id is the
-   *  strict order events actually entered raw. */
-  private async deriveState(pool: pg.Pool, tenantId: string): Promise<Map<string, DerivedRow>> {
-    const res = await pool.query<{ row_key: string; event_type: string; content_hash: string | null }>(
+   *  strict order events actually entered raw.
+   *
+   *  Also derives the supersession counts (A4.1, amended decision 2): how many events
+   *  raw already holds per (event_type, row_key, content) — the ONLY input the -r<n>
+   *  suffix needs, so the counter is exactly as stateless and crash-safe as the diff:
+   *  a cycle that dies before its insert re-derives the same n and mints the same id
+   *  (idempotent retry); one that dies after its insert leaves latest = sheet, so the
+   *  next diff emits nothing. */
+  private async deriveState(
+    pool: pg.Pool,
+    tenantId: string,
+  ): Promise<{ latest: Map<string, DerivedRow>; occurrences: Map<string, number> }> {
+    const latestRes = await pool.query<{ row_key: string; event_type: string; content_hash: string | null }>(
       `select distinct on (payload->'data'->>'row_key')
               payload->'data'->>'row_key' as row_key,
               event_type,
@@ -368,12 +400,32 @@ export class SheetSnapshotConnector implements Connector {
         order by payload->'data'->>'row_key', id desc`,
       [tenantId, this.source],
     );
-    const state = new Map<string, DerivedRow>();
-    for (const row of res.rows) {
+    const latest = new Map<string, DerivedRow>();
+    for (const row of latestRes.rows) {
       if (row.row_key === null) continue; // malformed history row: no key to attach state to
-      state.set(row.row_key, { live: row.event_type === "sheet.row_upserted", hash: row.content_hash });
+      latest.set(row.row_key, { live: row.event_type === "sheet.row_upserted", hash: row.content_hash });
     }
-    return state;
+    // Suffixed re-sightings carry the SAME content_hash in the payload (only the id is
+    // salted), so this count naturally includes them — n keeps incrementing across
+    // repeated reverts. coalesce folds the tombstones' last_content_hash into the same
+    // column so one query serves both id families.
+    const countRes = await pool.query<{ event_type: string; row_key: string; hash: string | null; n: number }>(
+      `select event_type,
+              payload->'data'->>'row_key' as row_key,
+              coalesce(payload->'data'->>'content_hash', payload->'data'->>'last_content_hash') as hash,
+              count(*)::int as n
+         from raw.raw_events
+        where tenant_id = $1 and source = $2
+          and event_type in ('sheet.row_upserted', 'sheet.row_deleted')
+        group by 1, 2, 3`,
+      [tenantId, this.source],
+    );
+    const occurrences = new Map<string, number>();
+    for (const row of countRes.rows) {
+      if (row.row_key === null || row.hash === null) continue;
+      occurrences.set(occurrenceKey(row.event_type, row.row_key, row.hash), row.n);
+    }
+    return { latest, occurrences };
   }
 
   // ── derived events ────────────────────────────────────────────────────────────────────
@@ -383,6 +435,7 @@ export class SheetSnapshotConnector implements Connector {
     content: Record<string, string>,
     hash: string,
     detectedAt: string,
+    supersessions: number,
   ): Record<string, unknown> {
     const data: Record<string, unknown> = { row_key: rowKey, content_hash: hash, occurred_at_derived: true };
     for (const [field, raw] of Object.entries(content)) {
@@ -395,20 +448,30 @@ export class SheetSnapshotConnector implements Connector {
         field === "amount_cents" ? (parseAmountToCents(raw) ?? raw) : raw;
     }
     return {
-      // Content-addressed id: same content ⇒ same id ⇒ duplicate at ingest (decision 2).
-      event_id: `sheet-${rowKey}-${hash}`,
+      // Content-addressed id (amended decision 2): same content ⇒ same id ⇒ duplicate at
+      // ingest — EXCEPT when raw shows this content was already ingested for this row,
+      // where the supersession suffix makes the re-sighting a fresh, landable event.
+      event_id: `sheet-${rowKey}-${hash}${supersessionSuffix(supersessions)}`,
       event_type: "sheet.row_upserted",
       occurred_at: detectedAt,
       data,
     };
   }
 
-  private buildDelete(rowKey: string, lastSeenHash: string | null, detectedAt: string): Record<string, unknown> {
+  private buildDelete(
+    rowKey: string,
+    lastSeenHash: string | null,
+    detectedAt: string,
+    supersessions: number,
+  ): Record<string, unknown> {
     return {
       // The last-seen hash rides in the id so the tombstone is itself content-addressed;
       // a later re-add of the same content is a NEW row (metadata dies with its row) and
-      // therefore a fresh upsert id — pinned by test obligation 4.
-      event_id: `sheet-${rowKey}-del-${lastSeenHash ?? "unknown"}`,
+      // therefore a fresh upsert id — pinned by test obligation 4. The same supersession
+      // rule applies (repeated delete cycles landing on the same last-seen content) —
+      // unreachable in the mock, where rowKeys die with their rows, but the id family
+      // must not have a blind spot the upsert family just closed.
+      event_id: `sheet-${rowKey}-del-${lastSeenHash ?? "unknown"}${supersessionSuffix(supersessions)}`,
       event_type: "sheet.row_deleted",
       occurred_at: detectedAt,
       data: { row_key: rowKey, last_content_hash: lastSeenHash, occurred_at_derived: true },
