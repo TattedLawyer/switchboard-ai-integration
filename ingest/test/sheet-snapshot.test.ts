@@ -8,14 +8,18 @@ import type pg from "pg";
 // path the mock provides FOR TESTS (and deliberately never fires the trigger channel).
 import { COL, createRowSource, createSheetsApp, type SheetsApp, type SheetsAppOptions } from "../../mocks/sheets/src/index.js";
 import { freshTestDb } from "./helpers/testdb.js";
+import { ingestEvent } from "../src/ingest-event.js";
 import { SheetSnapshotConnector } from "../src/connectors/sheet-snapshot.js";
 import { canonicalStringify } from "../src/connectors/sheet-canonical.js";
+import type { SourceEvent } from "../src/event-schema.js";
 
 // Task A4 — the sheet-snapshot connector. Two RED→GREEN pairs, named:
 //   pair 1 "connector core":        obligations 1–8, 11, 12 (catchUp, diff, canonical
 //                                   hash + header mapping, quarantine, rawBody custody)
 //   pair 2 "reconcile + resilience": obligations 9, 10 (read-only reconcile, 429 backoff,
 //                                   timeout discipline)
+// A4.1 (review C1, amended decision 2): the supersession-counter pair at the bottom —
+//   a revert to previously-seen content must LAND, with n=0 ids unsuffixed.
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -368,5 +372,136 @@ describe("A4 pair 2 — reconcile + resilience", () => {
     } finally {
       bhSrv.close();
     }
+  });
+});
+
+// A4.1 — review adjudication A (Critical C1), binding decision 2 AMENDED: when the diff
+// says a row CHANGED and the content-addressed id already exists in raw for that
+// (rowKey, contentHash), the id gains `-r<n>` where n = the count of prior ingested
+// events for that pair, derived STATELESSLY from raw at diff time. n=0 stays UNSUFFIXED,
+// so every pre-A4.1 id (and every pair-1 test) is untouched.
+describe("A4.1 — supersession counter: a human's undo must land", () => {
+  const dataOf = (r: { payload: Record<string, unknown> }) => r.payload.data as Record<string, unknown>;
+  const eventsForRow = async (db: pg.Pool, rk: string) =>
+    (await rawSheetEvents(db)).filter((r) => dataOf(r).row_key === rk);
+
+  it("F1a (the test the fix exists for): A→B→A — the revert LANDS as a third event with -r1, raw latest-state = A, reconcile CLEAN", async () => {
+    const { sheets, baseUrl } = startSheet();
+    const c = connectorFor(baseUrl);
+    await c.catchUp(pool);
+
+    const rk = sheets.sheet.metadata()[0].rowKey;
+    const statusA = sheets.sheet.rowByKey(rk)!.cells[COL.status];
+    const hashA = dataOf((await eventsForRow(pool, rk))[0]).content_hash as string;
+
+    sheets.sheet.apply({ type: "edit_cell", rowKey: rk, column: COL.status, value: "renegotiating" }); // → B
+    expect(await c.catchUp(pool)).toBe(1);
+    sheets.sheet.apply({ type: "edit_cell", rowKey: rk, column: COL.status, value: statusA }); // undo → A
+
+    // Pre-A4.1 this was 0 forever: the manufactured id collided with history, the door
+    // said duplicate, and the pipeline served B while the sheet said A.
+    expect(await c.catchUp(pool)).toBe(1);
+
+    const rkEvents = await eventsForRow(pool, rk);
+    expect(rkEvents).toHaveLength(3);
+    const revert = rkEvents[2];
+    expect(revert.event_id).toBe(`sheet-${rk}-${hashA}-r1`);
+    expect(dataOf(revert).content_hash).toBe(hashA); // payload hash stays canonical — only the id is salted
+    expect(dataOf(revert).status).toBe(statusA); // raw latest-state = A again
+
+    // The oracle can converge: reconcile is clean, not permanently `stale`.
+    const rec = await c.reconcile(pool);
+    expect(rec.integrity.ok).toBe(true);
+    expect(rec.report!.stale).toEqual([]);
+    expect(rec.report!.missing).toEqual([]);
+    expect(rec.report!.extra).toEqual([]);
+  });
+
+  it("F1b: idempotency survives — the counter fires only on diff-change; an unchanged sheet still catches up to zero, with no runaway -r suffixes", async () => {
+    const { sheets, baseUrl } = startSheet();
+    const c = connectorFor(baseUrl);
+    await c.catchUp(pool);
+
+    const rk = sheets.sheet.metadata()[1].rowKey;
+    const statusA = sheets.sheet.rowByKey(rk)!.cells[COL.status];
+    sheets.sheet.apply({ type: "edit_cell", rowKey: rk, column: COL.status, value: "renegotiating" });
+    expect(await c.catchUp(pool)).toBe(1);
+    sheets.sheet.apply({ type: "edit_cell", rowKey: rk, column: COL.status, value: statusA });
+    expect(await c.catchUp(pool)).toBe(1); // the revert lands ...
+
+    // ... and then the sheet is unchanged: a counter keyed on id-existence instead of
+    // diff-change would mint -r2, -r3, ... here, one per cycle. It must not.
+    expect(await c.catchUp(pool)).toBe(0);
+    expect(await c.catchUp(pool)).toBe(0);
+    expect(await eventsForRow(pool, rk)).toHaveLength(3);
+  });
+
+  it("F1c: A→B→A→B→A soak — every swing lands with an incrementing n, reconcile clean after each catchUp", async () => {
+    const { sheets, baseUrl } = startSheet();
+    const c = connectorFor(baseUrl);
+    await c.catchUp(pool);
+
+    const rk = sheets.sheet.metadata()[2].rowKey;
+    const statusA = sheets.sheet.rowByKey(rk)!.cells[COL.status];
+    const statusB = "renegotiating";
+    const hashA = dataOf((await eventsForRow(pool, rk))[0]).content_hash as string;
+
+    const swing = async (value: string) => {
+      sheets.sheet.apply({ type: "edit_cell", rowKey: rk, column: COL.status, value });
+      expect(await c.catchUp(pool)).toBe(1);
+      const rec = await c.reconcile(pool);
+      expect(rec.report!.stale).toEqual([]);
+      expect(rec.report!.missing).toEqual([]);
+      expect(rec.report!.extra).toEqual([]);
+    };
+    await swing(statusB); // B, first sighting → bare id
+    await swing(statusA); // A again → -r1
+    await swing(statusB); // B again → -r1
+    await swing(statusA); // A a third time → -r2
+
+    const ids = (await eventsForRow(pool, rk)).map((r) => r.event_id);
+    expect(ids).toHaveLength(5);
+    const hashB = dataOf((await eventsForRow(pool, rk))[1]).content_hash as string;
+    expect(ids[1]).toBe(`sheet-${rk}-${hashB}`);
+    expect(ids[2]).toBe(`sheet-${rk}-${hashA}-r1`);
+    expect(ids[3]).toBe(`sheet-${rk}-${hashB}-r1`);
+    expect(ids[4]).toBe(`sheet-${rk}-${hashA}-r2`);
+  });
+
+  it("F1d: crash-window self-healing — a cycle that died right after writing the -r1 event costs nothing: next catchUp emits zero, and the counter keeps counting on top of the orphan", async () => {
+    const { sheets, baseUrl } = startSheet();
+    const c = connectorFor(baseUrl);
+    await c.catchUp(pool);
+
+    const rk = sheets.sheet.metadata()[3].rowKey;
+    const statusA = sheets.sheet.rowByKey(rk)!.cells[COL.status];
+    const first = (await eventsForRow(pool, rk))[0];
+    const hashA = dataOf(first).content_hash as string;
+
+    sheets.sheet.apply({ type: "edit_cell", rowKey: rk, column: COL.status, value: "renegotiating" }); // → B
+    expect(await c.catchUp(pool)).toBe(1);
+    const hashB = dataOf((await eventsForRow(pool, rk))[1]).content_hash as string;
+
+    // Revert the sheet to A, then simulate the interrupted cycle: the -r1 upsert reached
+    // raw and the process died before anything else. (Hand-ingesting exactly what that
+    // cycle would have written IS the crash state — raw is the only state there is.)
+    sheets.sheet.apply({ type: "edit_cell", rowKey: rk, column: COL.status, value: statusA });
+    const orphan = {
+      ...(first.payload as SourceEvent),
+      event_id: `sheet-${rk}-${hashA}-r1`,
+      occurred_at: new Date().toISOString(),
+    };
+    expect(await ingestEvent(pool, "sheets", orphan, { rawBody: canonicalStringify(orphan) })).toBe("inserted");
+
+    // Self-healing: raw latest already equals the sheet — nothing new for that row.
+    expect(await c.catchUp(pool)).toBe(0);
+    expect(await eventsForRow(pool, rk)).toHaveLength(3);
+
+    // And the mechanism still counts THROUGH the orphan: the next swing back to B is a
+    // second sighting of B, so it must land as -r1 (pre-A4.1: duplicate, lost forever).
+    sheets.sheet.apply({ type: "edit_cell", rowKey: rk, column: COL.status, value: "renegotiating" });
+    expect(await c.catchUp(pool)).toBe(1);
+    const ids = (await eventsForRow(pool, rk)).map((r) => r.event_id);
+    expect(ids[3]).toBe(`sheet-${rk}-${hashB}-r1`);
   });
 });
