@@ -8,15 +8,15 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 | Variable | Default | Used by |
 |---|---|---|
 | `DATABASE_URL` | no code default — export it (scripts set it for you) | ingest, agent, CLIs |
-| `WEBHOOK_SECRET_CRM` / `_BILLING` / `_SUPPORT` | **required — fails closed.** No env var means the process throws at boot/first use; there is no silent fallback (the demo values are published in this repo). One secret **per source**, so a leaked secret compromises one source, not all | mock signing, ingest verification |
+| `WEBHOOK_SECRET_CRM` / `_BILLING` / `_SUPPORT` / `_SHEETS` | **required — fails closed.** No env var means the process throws at boot/first use; there is no silent fallback (the demo values are published in this repo). One secret **per source**, so a leaked secret compromises one source, not all. `_SHEETS` guards only the nudge door (see Sheets source operations) and is asserted at boot only when sheets is in `INGEST_SOURCES` | mock signing, ingest verification |
 | `LEDGER_HMAC_KEY` | **required — fails closed** (same rule as webhook secrets) | ledger writers (mocks), reconcile chain verification |
 | `ALLOW_DEV_SECRETS` | unset. `1` opts in to the published demo secrets (`demo-secret-<source>`, `demo-ledger-key`) — local demo/test use ONLY; demo.sh/chaos.sh and the vitest configs set it. Never set it in a real deployment | everything above |
 | `AGENT_DATABASE_URL` | derived: `DATABASE_URL` with user/password swapped to `switchboard_agent` (dev password `switchboard_agent`; override with `AGENT_DB_PASSWORD`). The agent/report pool runs as this **database-enforced read-only role** — set explicitly in production | agent report/MCP pool |
 | `INGEST_INSTANCE_ID` | unset → `/status` reports `instance_id: null` and nothing checks it. demo.sh/chaos.sh mint one per run and refuse to proceed unless `:4002/status` echoes it back, proving they are driving the ingest they just started and not one stranded by an earlier run | ingest `/status`, demo.sh, chaos.sh |
 | `LEDGER_PATH` | no code default — export it (scripts set it for you) | each mock process (its own ledger file) |
 | `LEDGER_PATH_CRM` / `_BILLING` / `_SUPPORT` | unset → that source is skipped by reconcile | reconcile CLI (per-source ledger lookup) |
-| `INGEST_SOURCES` | `crm,billing,support` | which sources ingest polls/reconciles (scripts pin it explicitly) |
-| `CRM_BASE_URL` / `BILLING_BASE_URL` / `SUPPORT_BASE_URL` | `http://localhost:4001` / `4003` / `4004` | backfill CLI |
+| `INGEST_SOURCES` | `crm,billing,support` — `sheets` is registered but **opt-in** (it has no `/events` feed for the default surfaces to poll; add it explicitly for sheets catch-up/reconcile runs) | which sources ingest polls/reconciles (scripts pin it explicitly) |
+| `CRM_BASE_URL` / `BILLING_BASE_URL` / `SUPPORT_BASE_URL` / `SHEETS_BASE_URL` | `http://localhost:4001` / `4003` / `4004` / `4005` | backfill CLI (sheets: the snapshot API — `/values` + `/metadata`) |
 | `INGEST_ROLE` | `all` (`receiver` \| `worker` \| `all`) | ingest main |
 | `CHAOS_SEED` | `7` | chaos.sh fault-plan seed (CI feeds it as a workflow input; reproduce a red run by re-entering its seed) |
 | `ANTHROPIC_API_KEY` | unset → deterministic report (risk table + watch list; a one-line notice replaces the AI narrative) | agent report |
@@ -104,6 +104,53 @@ identity layer and `customer_360` against the seed manifest's planned match matr
   Disposition workflow (assign/resolve/dismiss) is a future-phase feature; the
   table is Switchboard operational state, not a system of record.
 
+## Sheets source operations (snapshot paradigm, A5)
+
+The sheets source has no event feed and no ledger file: the connector reads the
+whole grid per cycle (`/values` + `/metadata`), diffs it against raw-derived
+state, and the sheet's own current rows are the reconciliation truth.
+
+```bash
+PORT=4005 npm run start -w mocks/sheets    # snapshot API; set WEBHOOK_URL=http://localhost:4002/connectors/sheets/nudge to install the trigger
+INGEST_SOURCES=sheets npm run backfill  -w ingest   # catchUp: full-grid diff → delta through the standard door
+INGEST_SOURCES=sheets npm run reconcile -w ingest   # compare the sheet's rows against raw (read-only)
+```
+
+Run sheets through the **CLIs**, which route every enabled source through the
+connector seam. Don't add `sheets` to the long-running service's
+`INGEST_SOURCES` yet — its interval backfill loop is still feed-shaped and will
+404 against the snapshot API once a minute (noisy, harmless; see KNOWN-ISSUES).
+
+**Reading a sheets reconcile report.** Field semantics differ from the ledger
+sources: `ledger` = rows in the sheet *right now* (the sheet is its own ledger),
+`raw` = live rows the pipeline believes exist, `stale` = present on both sides
+but content differs, `missing` = in the sheet but never landed, `extra` = gone
+from the sheet but no tombstone yet. **Check quarantine before suspecting
+loss:** a row whose current cells fail the numeric contract (garbage currency,
+unparseable amount) is *supposed* to appear under `stale`/`missing` — its
+accounting home is `ingest.quarantine`, where the entry's reason names the
+failing field. The oracle's invariant: sheet rows = converged raw rows +
+quarantined-current rows, and `extra` empties on the next catchUp.
+
+**The nudge door** (`POST /connectors/sheets/nudge`) is the sheets paradigm's
+only push surface: a thin, HMAC-signed "read the sheet soon" hint
+(`WEBHOOK_SECRET_SHEETS`, same timestamped scheme as the event doors). 401 =
+signature invalid (rejected outright — nudges carry no data worth quarantining);
+503 = this process hosts no sheets connector (the hint could have no effect);
+202 = accepted, an early catchUp ran. Losing nudges costs latency, never
+correctness — periodic reconcile-first cycles are the guarantee, and
+`/webhooks/sheets` deliberately answers 404 (a sheet has no event push).
+
+**Quarantine-and-fix-the-cell (the everyday flow).** When reconcile names a row
+and `npm run quarantine -w ingest -- --list` shows e.g. `data.currency` for it:
+**fix the cell in the sheet**, don't replay. The quarantined event is a snapshot
+of the garbage — replaying it re-fails by design. Once the cell is corrected,
+the next catchUp ingests the fixed row automatically and reconcile goes clean;
+the old quarantine entries remain as history (a row can be clean *now* without
+its past being scrubbed). Expect one quarantine entry per cycle per still-broken
+row until someone fixes the cell — depth on this lane measures patience, not
+distinct rows.
+
 ## Backup and restore
 
 ```bash
@@ -153,7 +200,7 @@ backup timestamp and now — not unbounded ledger replay from empty.
 | Symptom | Cause / fix |
 |---|---|
 | `docker: command not found` / daemon errors | colima not running: `colima start`; compose plugin registered via `~/.docker/config.json` `cliPluginsExtraDirs` |
-| Ports 4001/4002/4003/4004/5433 busy | `lsof -ti:4001,4002,4003,4004 \| xargs kill`; another Postgres on 5433 → change compose mapping |
+| Ports 4001/4002/4003/4004/4005/5433 busy | `lsof -ti:4001,4002,4003,4004,4005 \| xargs kill`; another Postgres on 5433 → change compose mapping |
 | demo/chaos FAIL with count mismatch | Worker not draining — check ingest logs; the scripts' bounded waits print both counts on timeout |
 | 401 on every webhook for one source | `WEBHOOK_SECRET_<SOURCE>` mismatch between that mock and ingest environments (each source verifies with its own secret — check the right one) |
 | 401s that appear only under load or across machines | Signature replay window (±300s, 2a.3): the timestamp is signed, so sender/receiver clocks more than 5 minutes apart reject valid traffic — check NTP/clock sync |

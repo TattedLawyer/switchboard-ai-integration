@@ -237,6 +237,64 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   fires every ~1ms), and an unrecognized `INGEST_ROLE` silently means "do
   nothing". *Scheduled: 2b config module.*
 
+## Spreadsheet source (sheets) — dispositions from the A-slice (2b)
+
+The sheet-snapshot connector treats a mutable grid as a CDC source: events are
+manufactured from row content, reconcile re-reads the sheet's own truth, and the
+push channel is a latency hint only. These are the honest edges of that design.
+
+- **Column reorder is UNPROVEN against a real sheet.** The mock models header
+  *renames* only — column positions never move — so no test can exercise a
+  reorder. The connector is built for it anyway (the carried landmine rule:
+  positions are resolved by header *name* on every fetch and never cached), so
+  reorder is expected-safe by construction, but that expectation has never met a
+  real spreadsheet. *Owner: first real-Sheets engagement; verify before trusting.*
+- **The mock's trigger quota is a lifetime budget, not a daily one.** Real Apps
+  Script refreshes its trigger budget on a day boundary; the mock has no day
+  rollover, so after `dailyQuota` posts its channel is silent *forever*. This is
+  the conservative side — the connector experiences a strictly worse channel than
+  reality — and reconcile-first cycles are what carry it. No fix scheduled; the
+  pessimism is the point.
+- **The trigger channel is lossy by design and blind to API writes** (documented:
+  "Script executions and API requests don't cause triggers to run", and Apps
+  Script gives no delivery guarantee). Any write from another tool, a future
+  integration, or our own scripts is permanently invisible to push. This is a
+  documented fact, not debt: **reconcile against the sheet's own rows is the
+  correctness guarantee**; the nudge door only shortens latency. Proven by the
+  drop-heavy oracle test (85% loss, convergence anyway).
+- **Per-sheet secrets are a low-trust model.** `WEBHOOK_SECRET_SHEETS` follows
+  the house per-source scheme, but on a real engagement the signer is an
+  Apps-Script trigger holding the secret in script properties — readable by every
+  editor of the script. The repo models the *shape* (per-source secret, blast
+  radius of one source, fail-closed boot); the rotation story and the
+  low-trust-holder consequences are engagement-side work. Treat a sheets secret
+  as cheap to rotate and worth nothing beyond nudge forgery (a forged nudge can
+  only trigger an early read of the sheet's own truth).
+- **`deriveState` is O(full history), and history only grows.** Both of its
+  queries (latest-per-row and the supersession counts) scan every sheet event
+  ever ingested — every edit *and* every revert appends forever, so per-cycle
+  cost grows monotonically. Registered: (a) near-term, a functional index on
+  `(tenant_id, source, (payload->'data'->>'row_key'), id)` serves both queries;
+  (b) the structural ceiling (compaction / materialized latest-state) belongs to
+  the Phase-4 raw-contract step, not the connector. Trigger: a sheets lane past
+  ~10⁵ events or measured catchUp latency regression.
+- **A still-garbage row re-quarantines every cycle.** The diff re-attempts any
+  row whose raw state mismatches the sheet, so a row a human left broken adds one
+  quarantine entry per catchUp until the cell is fixed. Quarantine *depth*
+  therefore overstates distinct bad rows on this lane — triage by distinct
+  `row_key`/`content_hash`, and see the RUNBOOK's fix-the-cell workflow.
+- **The long-running service's backfill loop is still feed-shaped.** `main.ts`
+  polls `/events` per enabled source on an interval; if a deployment opts sheets
+  into `INGEST_SOURCES` on the *service*, that loop 404s against the snapshot API
+  once a minute (noisy logs, no corruption — the loop predates the connector
+  seam). The CLIs (`cli/backfill`, `cli/reconcile`) route through `connectorFor`
+  and handle sheets correctly. *Scheduled: route the service loop through the
+  seam with the A6 service wiring.*
+- **Closed:** the supersession counter (A4.1) — content-addressed ids made a
+  human's *revert* a permanent duplicate (pipeline served B while the sheet said
+  A, reconcile stale forever); re-sightings now salt the id with `-r<n>` derived
+  statelessly from raw, and the ABA soak pins convergence after every cycle.
+
 ## Numeric & monetary integrity (added with the numeric-integrity wave)
 
 - **The ingest contract cannot help rows that never pass a door.** The numeric contract
