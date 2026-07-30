@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Server } from "node:http";
 import type pg from "pg";
+// The REAL mock + manifest, in-process — same cross-workspace precedent as sheet-oracle.test.ts.
+import { COL, createSheetsApp, type SheetsApp, type SheetsAppOptions } from "../../mocks/sheets/src/index.js";
+import { generateManifest } from "../../mocks/core/src/manifest.js";
 import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
+import { SheetSnapshotConnector } from "../src/connectors/sheet-snapshot.js";
+import {
+  canonicalRowContent,
+  contentHash,
+  resolveHeaderMapping,
+} from "../src/connectors/sheet-canonical.js";
 
 // Task A6 — warehouse consumption of the sheets source (stage 2 of the two-stage oracle).
 // Three RED→GREEN pairs, named:
@@ -25,11 +35,14 @@ import { loadModel } from "./helpers/load-model.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
+let srv: Server | undefined; // mock sheet server (pair 3)
 
 beforeEach(async () => {
   ({ pool, cleanup } = await freshTestDb());
 });
 afterEach(async () => {
+  srv?.close();
+  srv = undefined;
   await cleanup();
 });
 
@@ -633,5 +646,305 @@ describe("A6 pair 2 — assert_no_mixed_currency_totals gains a sheets CTE (same
     expect(res.rowCount).toBe(1);
     expect(res.rows[0].entity_id).toBe("C-8");
     expect(res.rows[0].mixed_source).toBe("sheets"); // mixing re-derived from staging, not the mart's flag
+  });
+});
+
+// ── A6 pair 3 — the stage-2 oracle: sheet ⇄ mart over the REAL chained warehouse SQL ─────
+
+// The full warehouse DAG, chained as views in the ephemeral db — every model's REAL text
+// (loadModel), refs resolved to the sibling views by their own names. This is the A5
+// in-process pattern extended one layer down: connector output in raw is consumed by the
+// same SQL dbt builds in CI.
+const chainWarehouse = async (db: pg.Pool): Promise<void> => {
+  const staging = [
+    "stg_crm__companies", "stg_crm__contacts", "stg_crm__deals",
+    "stg_billing__customers", "stg_billing__invoices", "stg_billing__payments",
+    "stg_support__tickets", "stg_support__csat", "stg_sheets__rows",
+  ];
+  for (const m of staging) await db.query(`create view ${m} as ${loadModel(`models/staging/${m}.sql`)}`);
+  await db.query(`create view merge_edges as ${loadModel("models/identity/merge_edges.sql")}`);
+  await db.query(`create view int_crm__canonical_companies as ${loadModel("models/identity/int_crm__canonical_companies.sql", {
+    stg_crm__companies: "stg_crm__companies", merge_edges: "merge_edges",
+  })}`);
+  await db.query(`create view identity_resolution as ${loadModel("models/identity/identity_resolution.sql", {
+    int_crm__canonical_companies: "int_crm__canonical_companies",
+    stg_crm__companies: "stg_crm__companies",
+    stg_crm__contacts: "stg_crm__contacts",
+    stg_billing__customers: "stg_billing__customers",
+    stg_support__tickets: "stg_support__tickets",
+    stg_sheets__rows: "stg_sheets__rows",
+  })}`);
+  await db.query(`create view customer_360 as ${loadModel("models/marts/customer_360.sql", {
+    int_crm__canonical_companies: "int_crm__canonical_companies",
+    stg_crm__companies: "stg_crm__companies",
+    identity_resolution: "identity_resolution",
+    stg_billing__customers: "stg_billing__customers",
+    stg_support__tickets: "stg_support__tickets",
+    stg_crm__deals: "stg_crm__deals",
+    stg_billing__invoices: "stg_billing__invoices",
+    stg_billing__payments: "stg_billing__payments",
+    stg_support__csat: "stg_support__csat",
+    stg_sheets__rows: "stg_sheets__rows",
+  })}`);
+};
+
+function startSheet(opts?: Partial<SheetsAppOptions>): { sheets: SheetsApp; baseUrl: string } {
+  const sheets = createSheetsApp({ seed: 7, rowCount: 6, ...opts });
+  srv = sheets.app.listen(0);
+  const port = (srv.address() as { port: number }).port;
+  return { sheets, baseUrl: `http://127.0.0.1:${port}` };
+}
+
+const mkConnector = (baseUrl: string): SheetSnapshotConnector =>
+  new SheetSnapshotConnector({ baseUrl, timeoutMs: 3000, backoff: { baseMs: 5, capMs: 50, maxAttempts: 6 } });
+
+// The door-refusal expectation, deliberately RE-STATED (A5's rationale: an expectation
+// computed by the code under test would follow that code into any regression): the L1
+// contract for the two ruled sheet fields — amount_cents strict shapes and ^[A-Z]{3}$
+// currency; empty cells are ABSENT and never fail anything.
+const AMOUNT_OK = /^\d{1,13}(\.\d{1,2})?$/;
+const CURRENCY_OK = /^[A-Z]{3}$/;
+const doorFailure = (content: Record<string, string>): string | null => {
+  if (content.amount_cents !== undefined && !AMOUNT_OK.test(content.amount_cents.trim())) return "amount_cents";
+  if (content.currency !== undefined && !CURRENCY_OK.test(content.currency)) return "currency";
+  return null;
+};
+/** Independently re-stated cents parse (whole*100 + 2-padded fraction, integer math). */
+const centsOf = (raw: string): number => {
+  const m = /^(\d+)(?:\.(\d{1,2}))?$/.exec(raw.trim())!;
+  return Number(m[1]) * 100 + (m[2] === undefined ? 0 : Number(m[2].padEnd(2, "0")));
+};
+/** The staging client_key rule, re-stated: usable email → 'email:'+lower(trim); else row-keyed. */
+const clientKeyOf = (rowKey: string, content: Record<string, string>): string =>
+  content.email !== undefined && content.email.trim() !== ""
+    ? `email:${content.email.trim().toLowerCase()}`
+    : `row:${rowKey}`;
+
+function sheetTruth(sheets: SheetsApp): { rowKey: string; content: Record<string, string>; hash: string; failure: string | null }[] {
+  const grid = sheets.sheet.values();
+  const mapping = resolveHeaderMapping(grid.header);
+  return sheets.sheet.metadata().map(({ rowKey, rowIndex }) => {
+    const content = canonicalRowContent(mapping, grid.rows[rowIndex]);
+    return { rowKey, content, hash: contentHash(content), failure: doorFailure(content) };
+  });
+}
+
+const manifest = generateManifest(42);
+let crmEvt = 0;
+const insertCrmRaw = async (db: pg.Pool, eventType: string, data: Record<string, unknown>): Promise<void> => {
+  await db.query(
+    `insert into raw.raw_events (source, event_id, event_type, payload)
+     values ('crm', $1, $2, $3::jsonb)`,
+    [`evt-${90000 + ++crmEvt}`, eventType, JSON.stringify({ occurred_at: "2026-07-20T00:00:00.000Z", data })],
+  );
+};
+/** The whole manifest CRM universe as raw events — the same people/companies the sheet
+ *  mock draws its rows from (master seed 42), so per-client resolution has real targets. */
+const seedCrmUniverse = async (db: pg.Pool): Promise<void> => {
+  for (const c of manifest.crm.companies)
+    await insertCrmRaw(db, "company.updated", { id: c.id, name: c.name, domain: c.domain, owner_email: c.owner_email });
+  for (const ct of manifest.crm.contacts)
+    await insertCrmRaw(db, "contact.updated", { id: ct.id, company_id: ct.company_id, name: ct.name, email: ct.email });
+};
+
+type MartRow = Record<string, unknown>;
+const martRows = async (db: pg.Pool): Promise<MartRow[]> =>
+  (await db.query("select * from customer_360")).rows;
+const chainedStagingRows = async (db: pg.Pool): Promise<Record<string, unknown>[]> =>
+  (await db.query("select * from stg_sheets__rows order by row_key")).rows;
+const sheetResolution = async (db: pg.Pool): Promise<Record<string, unknown>[]> =>
+  (await db.query("select * from identity_resolution where source = 'sheets'")).rows;
+
+/** Mart ⇄ staging closure with the summability rule RE-STATED: for every entity, the
+ *  sheet counters/sums must equal an independent aggregation of its staged rows (staging
+ *  itself is closed against the sheet row-wise by the callers). Also conservation: every
+ *  staged row reaches EXACTLY one mart entity. */
+const expectMartMatchesStaging = async (db: pg.Pool): Promise<void> => {
+  const staged = await chainedStagingRows(db);
+  const resolution = await sheetResolution(db);
+  // Every staged client_key resolves exactly once.
+  const byKey = new Map<string, string>();
+  for (const r of resolution) byKey.set(r.source_entity_id as string, r.resolved_entity_id as string);
+  const keys = new Set(staged.map((s) => s.client_key as string));
+  expect([...keys].filter((k) => !byKey.has(k))).toEqual([]);
+
+  const perEntity = new Map<string, Record<string, unknown>[]>();
+  for (const s of staged) {
+    const entity = byKey.get(s.client_key as string)!;
+    perEntity.set(entity, [...(perEntity.get(entity) ?? []), s]);
+  }
+  const mart = await martRows(db);
+  let counted = 0;
+  for (const m of mart) {
+    const rows = perEntity.get(m.entity_id as string) ?? [];
+    expect(m.has_sheets, `entity ${m.entity_id}: has_sheets vs staged rows`).toBe(rows.length > 0);
+    expect(Number(m.sheet_row_count)).toBe(rows.length);
+    counted += rows.length;
+    const nullCur = rows.filter((r) => r.currency === null).length;
+    const nullAmt = rows.filter((r) => r.amount_cents === null).length;
+    expect(Number(m.null_currency_sheet_count)).toBe(nullCur);
+    expect(Number(m.null_amount_sheet_count)).toBe(nullAmt);
+    const known = new Set(rows.map((r) => r.currency).filter((c) => c !== null));
+    const summable = known.size <= 1 && nullCur === 0;
+    if (rows.length === 0 || (summable && rows.length > 0)) {
+      const sum = rows.reduce((n, r) => n + (r.amount_cents === null ? 0 : Number(r.amount_cents)), 0);
+      expect(m.sheet_amount_cents, `entity ${m.entity_id}: summable sheet sum`).toBe(String(sum));
+    } else {
+      expect(m.sheet_amount_cents, `entity ${m.entity_id}: refused sheet sum`).toBeNull();
+    }
+  }
+  expect(counted).toBe(staged.length); // conservation: nothing dropped, nothing double-counted
+};
+
+describe("A6 pair 3 — stage-2 oracle: sheet ⇄ mart", () => {
+  it("calm run over the manifest universe: every sheet client tier-1 resolves to its manifest company and the mart's sheet columns equal hand-computed truth", async () => {
+    await seedCrmUniverse(pool);
+    const { sheets, baseUrl } = startSheet();
+    const c = mkConnector(baseUrl);
+    await c.catchUp(pool);
+    for (let i = 1; i <= 8; i++) {
+      sheets.editor.applyStep("calm");
+      if (i % 4 === 0) await c.catchUp(pool);
+    }
+    await c.catchUp(pool);
+    await chainWarehouse(pool);
+
+    const truth = sheetTruth(sheets);
+    expect(truth.every((r) => r.failure === null)).toBe(true); // calm: nothing refused
+
+    // Manifest expectations: email → unique contact → company (skip nothing silently —
+    // assert every sheet email exists exactly once in the manifest universe).
+    const emailToCompany = new Map<string, string>();
+    for (const ct of manifest.crm.contacts) {
+      expect(emailToCompany.has(ct.email)).toBe(false);
+      emailToCompany.set(ct.email, ct.company_id);
+    }
+    const expectedByCompany = new Map<string, { rows: number; cents: number }>();
+    for (const r of truth) {
+      const company = emailToCompany.get(r.content.email!);
+      expect(company, `sheet email ${r.content.email} must exist in the manifest`).toBeDefined();
+      const agg = expectedByCompany.get(company!) ?? { rows: 0, cents: 0 };
+      agg.rows += 1;
+      agg.cents += centsOf(r.content.amount_cents!);
+      expectedByCompany.set(company!, agg);
+    }
+    expect(expectedByCompany.size).toBeGreaterThanOrEqual(3); // the oracle checked something real
+
+    const resolution = await sheetResolution(pool);
+    expect(resolution).toHaveLength(new Set(truth.map((r) => r.content.email!.toLowerCase())).size);
+    for (const r of resolution) {
+      expect(r.matched_tier).toBe(1); // manifest contact emails are tier-1 evidence
+      const email = (r.source_entity_id as string).replace(/^email:/, "");
+      expect(r.resolved_entity_id).toBe(emailToCompany.get(email));
+    }
+
+    const mart = await martRows(pool);
+    for (const [company, agg] of expectedByCompany) {
+      const row = mart.find((m) => m.entity_id === company);
+      expect(row, `mart row for ${company}`).toBeDefined();
+      expect(row!.has_sheets).toBe(true);
+      expect(row!.has_crm).toBe(true);
+      expect(Number(row!.sheet_row_count)).toBe(agg.rows);
+      expect(row!.sheet_amount_cents).toBe(String(agg.cents)); // calm = all-USD, summable
+      expect(row!.sheet_currency).toBe("USD");
+    }
+    // And a company the sheet never mentioned has NO sheet presence:
+    const untouched = mart.find((m) => m.has_crm === true && !expectedByCompany.has(m.entity_id as string));
+    expect(untouched).toBeDefined();
+    expect(untouched!.has_sheets).toBe(false);
+    expect(untouched!.sheet_amount_cents).toBe("0");
+
+    await expectMartMatchesStaging(pool);
+  });
+
+  for (const plan of ["messy", "hostile"] as const) {
+    it(`${plan} run: CLEAN sheet rows ⇄ mart state exactly; quarantined-current rows' CURRENT content is excluded from staging AND the mart counters account for every staged row`, async () => {
+      const { sheets, baseUrl } = startSheet({ seed: plan === "messy" ? 102 : 104, rowCount: 8 });
+      const c = mkConnector(baseUrl);
+      await c.catchUp(pool);
+      for (let i = 1; i <= 24; i++) {
+        sheets.editor.applyStep(plan);
+        if (i % 4 === 0) await c.catchUp(pool);
+      }
+      await c.catchUp(pool);
+      await chainWarehouse(pool);
+
+      const truth = sheetTruth(sheets);
+      const staged = await chainedStagingRows(pool);
+      const stagedByKey = new Map(staged.map((s) => [s.row_key as string, s]));
+
+      if (plan === "hostile") {
+        // The rotation guarantees garbage: an all-clean hostile run would mean the
+        // exclusion assertions below tested nothing.
+        expect(truth.some((r) => r.failure !== null)).toBe(true);
+      }
+
+      for (const r of truth) {
+        const s = stagedByKey.get(r.rowKey);
+        if (r.failure === null) {
+          // Clean current content: the final cycle landed it — staging IS the sheet.
+          expect(s, `clean row ${r.rowKey} must be staged`).toBeDefined();
+          expect(s!.content_hash).toBe(r.hash);
+          expect(s!.client_email).toBe(r.content.email ?? null);
+          expect(s!.client_name).toBe(r.content.client_name ?? null);
+          expect(s!.company_name).toBe(r.content.company ?? null);
+          expect(s!.label).toBe(r.content.deal ?? null);
+          expect(s!.status).toBe(r.content.status ?? null);
+          expect(s!.amount_cents).toBe(r.content.amount_cents === undefined ? null : String(centsOf(r.content.amount_cents)));
+          expect(s!.currency).toBe(r.content.currency ?? null);
+          expect(s!.client_key).toBe(clientKeyOf(r.rowKey, r.content));
+        } else if (s !== undefined) {
+          // Quarantined-current, stale shape: an OLDER clean version is live — the
+          // current garbage content must NOT be what the mart consumes.
+          expect(s.content_hash).not.toBe(r.hash);
+        } // else: quarantined-current, missing shape — no version ever landed. Excluded.
+      }
+      // No phantoms: staging never carries a row the sheet does not currently have
+      // (tombstones filter; deletes always land).
+      const liveKeys = new Set(truth.map((r) => r.rowKey));
+      expect(staged.filter((s) => !liveKeys.has(s.row_key as string))).toEqual([]);
+
+      await expectMartMatchesStaging(pool); // counters make the exclusion visible + conservation
+    });
+  }
+
+  it("tombstone pin, end-to-end: a deleted row leaves staging AND its client's mart row; re-adding the same content (new row birth) brings the client back", async () => {
+    const { sheets, baseUrl } = startSheet({ rowCount: 4 });
+    const c = mkConnector(baseUrl);
+    // A manifest contact whose email is NOT already in the seeded sheet: the client's
+    // mart presence is then owned entirely by the row we control.
+    const seededEmails = new Set(sheetTruth(sheets).map((r) => r.content.email));
+    const contact = manifest.crm.contacts.find((ct) => !seededEmails.has(ct.email))!;
+    const company = manifest.crm.companies.find((co) => co.id === contact.company_id)!;
+    const cells = [contact.name, contact.email, company.name, "Renewal", "150.00", "USD", "open", "2026-07-15", ""];
+    sheets.sheet.apply({ type: "append_row", cells });
+    await c.catchUp(pool);
+    await chainWarehouse(pool);
+
+    const entityId = `sheets:email:${contact.email}`; // CRM-free run: tier-3 identity
+    const before = await martRows(pool);
+    const mine = before.find((m) => m.entity_id === entityId);
+    expect(mine).toBeDefined();
+    expect(Number(mine!.sheet_row_count)).toBe(1);
+    expect(mine!.sheet_amount_cents).toBe("15000");
+    expect(mine!.entity_name).toBe(company.name); // named from sheet evidence, not hidden
+
+    // Delete → the tombstone removes the row from staging, the client from resolution,
+    // and therefore the ENTITY from the mart (its only evidence is gone).
+    const rowKey = sheets.sheet.metadata()[sheets.sheet.rowCount() - 1].rowKey;
+    sheets.sheet.apply({ type: "delete_row", rowKey });
+    await c.catchUp(pool);
+    const afterDelete = await martRows(pool);
+    expect(afterDelete.find((m) => m.entity_id === entityId)).toBeUndefined();
+
+    // Re-add the SAME content: metadata died with the row, so this is a new row birth
+    // with a fresh key — it lands (content-addressed id is new) and the client returns.
+    sheets.sheet.apply({ type: "append_row", cells });
+    await c.catchUp(pool);
+    const afterReadd = await martRows(pool);
+    const back = afterReadd.find((m) => m.entity_id === entityId);
+    expect(back).toBeDefined();
+    expect(Number(back!.sheet_row_count)).toBe(1);
+    expect(back!.sheet_amount_cents).toBe("15000");
   });
 });
