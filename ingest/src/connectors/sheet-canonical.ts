@@ -9,10 +9,11 @@
 
 import { createHash } from "node:crypto";
 
-/** The source name sheet events are ingested under. Deliberately NOT added to the
- *  `SOURCES` union in sources.ts: that union is the legacy feed+ledger deployment set
- *  (webhook routes, CLI iteration, per-source env vars); this connector needs none of it.
- */
+/** The source name sheet events are ingested under. A4 kept it out of the `SOURCES`
+ *  union (the connector needed none of the deployment surface then); A5 registered it —
+ *  "sheets" is now a member of `SOURCES`, with `SHEETS_BASE_URL`/port 4005 conventions,
+ *  `WEBHOOK_SECRET_SHEETS` for the nudge door, and a registry arm in connectors/index.ts.
+ *  This constant stays the single spelling both sides share. */
 export const SHEET_SOURCE = "sheets";
 
 /** The connector's stable vocabulary. Events carry THESE names, never raw header labels —

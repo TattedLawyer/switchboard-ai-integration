@@ -4,14 +4,16 @@ import type { ReconcileReport } from "../reconcile.js";
 import type { SHEET_SOURCE } from "./sheet-canonical.js";
 
 /**
- * Closed union of every source a connector may declare (A4 review I1). The `SOURCES`
- * union stays the legacy feed+ledger DEPLOYMENT surface (webhook routes, CLI iteration,
- * per-source env vars — "sheets" joins it with A5's registry wiring); this union is the
- * SEAM's world, and it is deliberately closed: `source` participates in the idempotency
- * key `(tenant_id, source, event_id)`, and connectors are legitimately constructed
- * directly (bypassing connectorFor's runtime throw), so a bare `string` here would let a
- * typo'd source compile and mint a fresh raw lane. A new connector paradigm adds its
- * literal here — a one-line, reviewed act.
+ * Closed union of every source a connector may declare (A4 review I1). A5 registered
+ * "sheets" into `SOURCES`, so today this union is EQUAL to `Source` — kept as a distinct
+ * name because the two worlds it separates are still real: `Source` is the deployment
+ * surface (registry, env conventions, per-source secrets), this is the SEAM's world, and
+ * a future connector paradigm may again exist here before it earns deployment wiring.
+ * Deliberately closed either way: `source` participates in the idempotency key
+ * `(tenant_id, source, event_id)`, and connectors are legitimately constructed directly
+ * (bypassing connectorFor's runtime throw), so a bare `string` here would let a typo'd
+ * source compile and mint a fresh raw lane. A new paradigm adds its literal here — a
+ * one-line, reviewed act.
  */
 export type ConnectorSource = Source | typeof SHEET_SOURCE;
 

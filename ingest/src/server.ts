@@ -15,7 +15,13 @@ export function createIngestApp(
   // rawBody: the exact request text of the webhook delivery, threaded to the queue so the
   // worker can store it (2b-D4 expand). Always jsonb-storable by the time enqueue is
   // reached: unstorable payloads divert to quarantine BEFORE this callback fires.
-  opts?: { enqueue?: (source: Source, event: SourceEvent, rawBody: string) => Promise<void> }
+  opts?: {
+    enqueue?: (source: Source, event: SourceEvent, rawBody: string) => Promise<void>;
+    /** A5: the sheets nudge runner hook. Wiring it means "this process hosts a sheets
+     *  connector; an authenticated nudge may trigger its early catchUp". Processes that
+     *  don't host one leave it unset and the nudge door answers 503 (see below). */
+    sheetsNudge?: () => Promise<number>;
+  }
 ): express.Express {
   const app = express();
   // A5: reject non-JSON media types explicitly (415) BEFORE the parser — otherwise
@@ -80,6 +86,17 @@ export function createIngestApp(
       if (!isSource(sourceParam)) {
         return res.status(404).json({ error: "unknown source" });
       }
+      // A5: sheets is registered (deployment surface: base URL, secret, port) but its raw
+      // lane is CONNECTOR-BORN — every event_id is manufactured from row content, and
+      // deriveState reads the lane back as the connector's own memory. A generic signed
+      // event accepted here would mint a foreign id inside that lane and poison every
+      // later diff. So the generic event door stays closed BY NAME and points at the one
+      // push surface the paradigm actually has (the thin, dataless nudge below).
+      if (sourceParam === "sheets") {
+        return res
+          .status(404)
+          .json({ error: "sheets has no event door; its push surface is POST /connectors/sheets/nudge" });
+      }
       const source: Source = sourceParam;
       const rawBody = (req as express.Request & { rawBody?: string }).rawBody ?? "";
       const signature = req.header("x-switchboard-signature");
@@ -124,6 +141,45 @@ export function createIngestApp(
         await ingestEvent(pool, source, parsed.data, { rawBody });
       }
       res.status(202).json({ stored: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+  // A5: the sheets nudge door — the ONLY push surface the sheet paradigm has. The mock's
+  // Apps-Script-shaped trigger posts a thin {sheet_id, range, occurred_at} notification
+  // here; it carries no row values (the channel may never be trusted with data — see
+  // mocks/sheets/src/trigger.ts's honesty ledger), so its only meaning is "read the sheet
+  // soon". Same house HMAC scheme and verify path as the event doors (per-source secret,
+  // D3) — never a new crypto copy.
+  app.post("/connectors/sheets/nudge", async (req, res, next) => {
+    try {
+      const rawBody = (req as express.Request & { rawBody?: string }).rawBody ?? "";
+      const signature = req.header("x-switchboard-signature");
+      if (!verifySignature(rawBody, signature, secretForSource("sheets"))) {
+        // REJECTED, never quarantined — the deliberate contrast with the event doors:
+        // there, an authenticated-but-malformed EVENT is preserved because the payload is
+        // the asset (a vendor delivered it exactly once). A nudge preserves nothing — the
+        // sheet's truth is re-readable at will — so a forged/unsigned one is pure noise.
+        return res.status(401).json({ error: "invalid signature" });
+      }
+      const nudge = opts?.sheetsNudge;
+      if (!nudge) {
+        // Authenticated but unwired: this process hosts no sheets connector, so a 202
+        // would claim an effect that cannot happen. 503 is the honest answer.
+        return res.status(503).json({ error: "no sheets connector in this process" });
+      }
+      // v1 (disclosed): await the coalescing nudge() directly — the mock is in-process,
+      // so "an early catchUp soon" is simply "now", and single-flight coalescing in the
+      // connector absorbs bursts. No scheduler (out of scope per the phase plan). A
+      // failed catchUp still answers 202: the trigger channel has no retry machinery
+      // (documented — a failed post is counted and abandoned), so failure detail is
+      // useless to it; reconcile-first cycles remain the correctness guarantee.
+      try {
+        await nudge();
+      } catch (err) {
+        console.error("[ingest] sheets nudge catchUp failed (reconcile will recover):", err);
+      }
+      res.status(202).json({ accepted: true });
     } catch (err) {
       next(err);
     }

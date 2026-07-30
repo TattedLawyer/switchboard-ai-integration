@@ -1,5 +1,6 @@
-import { SOURCES, isSource, type Source } from "../sources.js";
+import { SOURCES, baseUrlFor, isSource, type Source } from "../sources.js";
 import { LedgerFeedConnector } from "./ledger-feed.js";
+import { SheetSnapshotConnector } from "./sheet-snapshot.js";
 import type { Connector, ConnectorKind } from "./types.js";
 
 export type {
@@ -10,14 +11,17 @@ export type {
   ConnectorReconcileResult,
 } from "./types.js";
 export { LedgerFeedConnector } from "./ledger-feed.js";
+export { SheetSnapshotConnector } from "./sheet-snapshot.js";
 
-// Registry. Every source today is the pre-existing feed+ledger shape; the vendor-faithful
-// sources and the Google Sheets source register here as they land, which is the point of the
-// seam — a new paradigm becomes a new entry, not a fork of the spine.
+// Registry. The point of the seam, now exercised: a new paradigm is a new entry, not a
+// fork of the spine. sheets (A5) is the first non-feed arm — its base URL resolves at
+// construction time because the snapshot connector's endpoint is a constructor input,
+// unlike the ledger-feed connectors, which re-read their env per call.
 const REGISTRY: Record<Source, () => Connector> = {
   crm: () => new LedgerFeedConnector("crm"),
   billing: () => new LedgerFeedConnector("billing"),
   support: () => new LedgerFeedConnector("support"),
+  sheets: () => new SheetSnapshotConnector({ baseUrl: baseUrlFor("sheets") }),
 };
 
 /**
