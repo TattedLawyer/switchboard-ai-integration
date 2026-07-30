@@ -3,6 +3,9 @@ import { runMigrations } from "../../src/migrate.js";
 
 export interface TestDbResult {
   pool: pg.Pool;
+  /** Connection string of the ephemeral database — for tests that spawn a CLI as a
+   *  child process and must point ITS DATABASE_URL at the same throwaway db. */
+  url: string;
   cleanup: () => Promise<void>;
 }
 
@@ -45,5 +48,5 @@ export async function freshTestDb(): Promise<TestDbResult> {
     }
   };
 
-  return { pool: testPool, cleanup };
+  return { pool: testPool, url: testUrl, cleanup };
 }

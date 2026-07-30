@@ -107,11 +107,13 @@ identity layer and `customer_360` against the seed manifest's planned match matr
 ## Sheets source operations (snapshot paradigm, A5)
 
 The sheets source has no event feed and no ledger file: the connector reads the
-whole grid per cycle (`/values` + `/metadata`), diffs it against raw-derived
-state, and the sheet's own current rows are the reconciliation truth.
+whole grid per cycle in one combined `GET /snapshot` (values + row metadata from
+a single consistent grid state — atomic, so a mid-read edit can never pair a
+row key with another row's content), diffs it against raw-derived state, and
+the sheet's own current rows are the reconciliation truth.
 
 ```bash
-PORT=4005 npm run start -w mocks/sheets    # snapshot API; set WEBHOOK_URL=http://localhost:4002/connectors/sheets/nudge to install the trigger
+PORT=4005 npm run start -w mocks/sheets    # snapshot API (leave WEBHOOK_URL unset — see the nudge-door note below)
 INGEST_SOURCES=sheets npm run backfill  -w ingest   # catchUp: full-grid diff → delta through the standard door
 INGEST_SOURCES=sheets npm run reconcile -w ingest   # compare the sheet's rows against raw (read-only)
 ```
@@ -125,7 +127,9 @@ connector seam. Don't add `sheets` to the long-running service's
 sources: `ledger` = rows in the sheet *right now* (the sheet is its own ledger),
 `raw` = live rows the pipeline believes exist, `stale` = present on both sides
 but content differs, `missing` = in the sheet but never landed, `extra` = gone
-from the sheet but no tombstone yet. **Check quarantine before suspecting
+from the sheet but no tombstone yet. All four buckets gate the exit code — a
+non-empty `stale` is a FAIL naming the drifted row_keys (listing capped at 20),
+exactly like `missing`/`extra`. **Check quarantine before suspecting
 loss:** a row whose current cells fail the numeric contract (garbage currency,
 unparseable amount) is *supposed* to appear under `stale`/`missing` — its
 accounting home is `ingest.quarantine`, where the entry's reason names the
@@ -134,13 +138,27 @@ quarantined-current rows, and `extra` empties on the next catchUp.
 
 **The nudge door** (`POST /connectors/sheets/nudge`) is the sheets paradigm's
 only push surface: a thin, HMAC-signed "read the sheet soon" hint
-(`WEBHOOK_SECRET_SHEETS`, same timestamped scheme as the event doors). 401 =
+(`WEBHOOK_SECRET_SHEETS`, same timestamped scheme as the event doors). 404 =
+this deployment never configured sheets (no secret resolvable — the route is
+effectively absent, and an anonymous probe can never mint a 500 here); 401 =
 signature invalid (rejected outright — nudges carry no data worth quarantining);
 503 = this process hosts no sheets connector (the hint could have no effect);
 202 = accepted and an early catchUp was attempted (a failed attempt still answers 202 —
 the periodic reconcile is the guarantee, the nudge is only latency). Losing nudges costs latency, never
 correctness — periodic reconcile-first cycles are the guarantee, and
 `/webhooks/sheets` deliberately answers 404 (a sheet has no event push).
+
+**Hosting truth (until the A6 service wiring):** no shipped process wires a
+sheets runner into the door yet — `main.ts` starts the ingest service without a
+`sheetsNudge` hook, so on the real service every *valid* nudge answers 503
+(honest: the hint can have no effect there). The 202 path is exercised only by
+tests, which construct `createIngestApp(pool, { sheetsNudge })` directly. Do
+**not** point the mock's trigger (`WEBHOOK_URL`) at the real service: every
+surviving notification would answer 503 and count as `failed` in the trigger's
+stats. Correctness never depends on this — reconcile-first cycles via the CLIs
+above are the guarantee; A6's service wiring (routing the service loop through
+the connector seam) is where the runner, and therefore the live 202 path,
+lands.
 
 **Quarantine-and-fix-the-cell (the everyday flow).** When reconcile names a row
 and `npm run quarantine -w ingest -- --list` shows e.g. `data.currency` for it:

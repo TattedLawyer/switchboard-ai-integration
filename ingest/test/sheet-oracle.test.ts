@@ -174,6 +174,39 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
     expect(await rawSheetEvents(pool)).toHaveLength(6);
   });
 
+  it("a deployment that never configured sheets answers 404 on the nudge door — never the anonymous, repeatable 500 of cold review I3", async () => {
+    // I3: the door is mounted unconditionally and resolves the sheets secret per
+    // request. On a deploy that never opted into sheets (no WEBHOOK_SECRET_SHEETS, no
+    // dev opt-in) that resolution THREW, so any anonymous POST minted a 500 plus a
+    // server-side error log, repeatable at will. Fail-closed here means ABSENT: with
+    // no secret there is nothing to verify against, so the route is effectively not
+    // there — 404 (mirroring the unknown-source shape). 401 stays reserved for the
+    // configured-but-badly-signed case pinned above.
+    const saved = {
+      allow: process.env.ALLOW_DEV_SECRETS,
+      secret: process.env.WEBHOOK_SECRET_SHEETS,
+    };
+    delete process.env.ALLOW_DEV_SECRETS;
+    delete process.env.WEBHOOK_SECRET_SHEETS;
+    try {
+      const { sheets } = startSheet();
+      const { port } = startIngest(createIngestApp(pool)); // sheets never configured here
+      const body = notification(sheets);
+
+      const unsigned = await postNudge(port, body);
+      expect(unsigned.status).toBe(404);
+      // Even a correctly-formed demo signature gets 404, not 401: with no secret
+      // configured there is no verification to fail — the door does not exist.
+      const signed = await postNudge(port, body, signBody(body, "demo-secret-sheets"));
+      expect(signed.status).toBe(404);
+    } finally {
+      if (saved.allow !== undefined) process.env.ALLOW_DEV_SECRETS = saved.allow;
+      if (saved.secret !== undefined) process.env.WEBHOOK_SECRET_SHEETS = saved.secret;
+    }
+    expect(await rawSheetEvents(pool)).toHaveLength(0);
+    expect(await quarantineRows(pool)).toHaveLength(0);
+  });
+
   it("a signed nudge in a process with NO sheets runner wired answers 503 — accepting a nudge that can have no effect would be a lie to the channel", async () => {
     const { sheets } = startSheet();
     const { port } = startIngest(createIngestApp(pool)); // no sheetsNudge hook

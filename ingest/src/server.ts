@@ -153,9 +153,24 @@ export function createIngestApp(
   // D3) — never a new crypto copy.
   app.post("/connectors/sheets/nudge", async (req, res, next) => {
     try {
+      // Cold review I3: resolve the secret FIRST, and treat "no secret resolvable" as
+      // "this deployment never configured sheets" — the route is effectively absent, so
+      // answer 404 (mirroring the unknown-source shape above). Before this, the
+      // fail-closed throw inside secretForSource surfaced as a generic 500 plus a
+      // server-side error log on EVERY anonymous POST to this path on a sheets-less
+      // deploy — repeatable noise a prober can mint at will. The event doors never had
+      // this shape because their secrets are boot-asserted exactly when their source is
+      // enabled; this door is mounted unconditionally, so it must fail closed as
+      // absence. 401 stays reserved for configured-but-badly-signed, below.
+      let secret: string;
+      try {
+        secret = secretForSource("sheets");
+      } catch {
+        return res.status(404).json({ error: "not found" });
+      }
       const rawBody = (req as express.Request & { rawBody?: string }).rawBody ?? "";
       const signature = req.header("x-switchboard-signature");
-      if (!verifySignature(rawBody, signature, secretForSource("sheets"))) {
+      if (!verifySignature(rawBody, signature, secret)) {
         // REJECTED, never quarantined — the deliberate contrast with the event doors:
         // there, an authenticated-but-malformed EVENT is preserved because the payload is
         // the asset (a vendor delivered it exactly once). A nudge preserves nothing — the
