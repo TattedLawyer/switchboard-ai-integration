@@ -24,13 +24,30 @@ deal_mixed as (
     group by k.canonical_id
     having count(distinct d.currency) > 1
         or count(*) filter (where d.currency is null) > 0
+),
+sheet_mixed as (
+    -- A6: the sheets source under the SAME per-source predicate — sheet rows join their
+    -- entity through the sheets resolution arm on staging's client_key.
+    select r.resolved_entity_id as entity_id
+    from {{ ref('identity_resolution') }} r
+    join {{ ref('stg_sheets__rows') }} s on s.client_key = r.source_entity_id
+    where r.source = 'sheets'
+    group by r.resolved_entity_id
+    having count(distinct s.currency) > 1
+        or count(*) filter (where s.currency is null) > 0
 )
-select c.entity_id, 'billing' as mixed_source, c.total_invoiced_cents, c.total_paid_cents, null::bigint as open_deal_amount_cents
+select c.entity_id, 'billing' as mixed_source, c.total_invoiced_cents, c.total_paid_cents,
+       null::bigint as open_deal_amount_cents, null::bigint as sheet_amount_cents
 from {{ ref('customer_360') }} c
 join billing_mixed m on m.entity_id = c.entity_id
 where c.total_invoiced_cents is not null or c.total_paid_cents is not null
 union all
-select c.entity_id, 'deals', null, null, c.open_deal_amount_cents
+select c.entity_id, 'deals', null, null, c.open_deal_amount_cents, null
 from {{ ref('customer_360') }} c
 join deal_mixed m on m.entity_id = c.entity_id
 where c.open_deal_amount_cents is not null
+union all
+select c.entity_id, 'sheets', null, null, null, c.sheet_amount_cents
+from {{ ref('customer_360') }} c
+join sheet_mixed m on m.entity_id = c.entity_id
+where c.sheet_amount_cents is not null

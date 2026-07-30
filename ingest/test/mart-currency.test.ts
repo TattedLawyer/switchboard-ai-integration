@@ -38,6 +38,15 @@ beforeEach(async () => {
     );
     create table tmp_payments (customer_id text, status text);
     create table tmp_csat (ticket_id text, score int);
+    -- A6 mechanical: customer_360 gained ref('stg_sheets__rows'); this suite's concerns
+    -- are billing/deal/csat currency semantics, so the fixture stays EMPTY. The sheet
+    -- column pins live in sheet-mart-oracle.test.ts.
+    create table tmp_sheet_rows (
+      row_key text primary key, client_email text, client_name text, company_name text,
+      amount_cents bigint, currency text, status text, label text, content_hash text,
+      client_key text not null, detected_at timestamptz not null default now(),
+      received_at timestamptz not null default now()
+    );
   `);
 });
 
@@ -56,6 +65,7 @@ const MART_SQL = loadModel("models/marts/customer_360.sql", {
   stg_billing__invoices: "tmp_invoices",
   stg_billing__payments: "tmp_payments",
   stg_support__csat: "tmp_csat",
+  stg_sheets__rows: "tmp_sheet_rows",
 });
 
 /** One CRM entity (self-canonical) resolved to one billing customer. */
@@ -477,6 +487,7 @@ const SINGULAR_SQL = loadModel("tests/assert_no_mixed_currency_totals.sql", {
   stg_billing__invoices: "tmp_invoices",
   stg_crm__deals: "tmp_deals",
   int_crm__canonical_companies: "tmp_canonical",
+  stg_sheets__rows: "tmp_sheet_rows",
 });
 
 describe("assert_no_mixed_currency_totals — the singular test's predicate itself", () => {

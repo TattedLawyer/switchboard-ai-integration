@@ -327,17 +327,18 @@ describe("L1 numeric contract at the trust boundary", () => {
         const sql = readFileSync(join(modelsDir, f), "utf8");
         for (const m of sql.matchAll(/'([a-z_]+\.[a-z_]+)'/g)) consumed.add(m[1]);
       }
-      expect(consumed.size).toBeGreaterThanOrEqual(14); // 13 staging + company.merged; guards a silent scan break
+      // 13 staging + company.merged + the two sheet.* types stg_sheets__rows consumes
+      // (A6). The floor guards a silent SCAN break (a regex or directory change that
+      // stops finding event types), not the exact count.
+      expect(consumed.size).toBeGreaterThanOrEqual(16);
       const declared = Object.keys(NUMERIC_CONTRACT);
       for (const type of consumed) {
         // NOT toHaveProperty: vitest treats "invoice.created" as a nested path.
         expect(declared, `event_type '${type}' is consumed by a warehouse model but undeclared`).toContain(type);
       }
-      // A4: the registry's direction is consumed ⊆ declared ONLY — declaring types no
-      // warehouse model consumes yet is allowed and correct (the sheet.* staging models
-      // are A5+ work; the door must accept the events now). The consumed floor above
-      // stays 14 because A4 touches no warehouse model; the DECLARED count moves
-      // 14 → 16 and is pinned here so the sheet declarations cannot silently vanish.
+      // A4 declared the sheet.* types ahead of consumption (the door had to accept the
+      // events first); A6 landed the consuming staging model, so consumed caught up:
+      // both floors now sit at 16, still pinned so the declarations cannot vanish.
       expect(declared.length).toBeGreaterThanOrEqual(16);
       expect(declared).toContain("sheet.row_upserted");
       expect(declared).toContain("sheet.row_deleted");

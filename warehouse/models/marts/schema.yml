@@ -17,20 +17,34 @@ models:
         description: Invoices whose amount_cents is NULL (unusable post-L2 safe cast) — excluded from sums, counted here (L3).
         data_tests: [not_null]
       - name: has_unusable_amounts
-        description: True when any deal/invoice amount was unusable — this entity's money totals are incomplete, not confidently zero (L3).
+        description: True when any deal/invoice/sheet amount was unusable — this entity's money totals are incomplete, not confidently zero (L3).
         data_tests: [not_null]
       - name: billing_currency
         description: The single known currency of this entity's invoices; NULL when not summable — currencies mixed, any NULL-currency row (F2, L5.1 retracted), or no invoices.
       - name: deal_currency
         description: The single known currency of this entity's deals; NULL when not summable — currencies mixed, any NULL-currency row (F2, L5.1 retracted), or no deals.
       - name: has_mixed_currency
-        description: True when a KNOWN currency is contradicted — invoices/deals span more than one known currency, or mix a known currency with NULL-currency rows (F2). Deliberately narrower than "sums refused" — a uniformly-unknown source refuses its sums but is NOT mixed; the null_currency counters carry that case (L5).
+        description: True when a KNOWN currency is contradicted — invoices/deals/sheet rows span more than one known currency, or mix a known currency with NULL-currency rows (F2). Deliberately narrower than "sums refused" — a uniformly-unknown source refuses its sums but is NOT mixed; the null_currency counters carry that case (L5).
         data_tests: [not_null]
       - name: null_currency_invoice_count
         description: Invoice rows whose currency is unknown (NULLed at staging or never carried) — the visible bucket behind a refused billing sum; any such row refuses the total (F2 addendum, L5.1 retracted).
         data_tests: [not_null]
       - name: null_currency_deal_count
         description: Deal rows whose currency is unknown — the visible bucket behind a refused deal sum; any such row refuses the total (F2 addendum, L5.1 retracted).
+        data_tests: [not_null]
+      - name: has_sheets
+        description: True when the sheets source resolved at least one client to this entity (parity with has_billing/has_support — presence, not completeness).
+      - name: sheet_row_count
+        description: Live (non-tombstoned) sheet rows resolved to this entity — never folded into deal or invoice counts.
+      - name: sheet_amount_cents
+        description: Sum of the entity's sheet-row amounts in the SINGLE known sheet currency; 0 when no rows; NULL when not summable — currencies mixed or any unknown-currency row (same L5/F2 rules as deals/invoices). NEVER folded into deal/invoice sums.
+      - name: sheet_currency
+        description: The single known currency of this entity's sheet rows; NULL when not summable or no rows.
+      - name: null_amount_sheet_count
+        description: Sheet rows whose amount is NULL — blank cells arrive as absent BY DESIGN (unparseable cells quarantine at the door and never stage), plus doorless rows the L2 safe cast NULLed. Excluded from sheet_amount_cents, counted here (L3).
+        data_tests: [not_null]
+      - name: null_currency_sheet_count
+        description: Sheet rows whose currency is unknown (absent by design at the source, or NULLed by the staging guard) — the visible bucket behind a refused sheet sum; any such row refuses the total (F2 addendum, L5.1 retracted).
         data_tests: [not_null]
       - name: null_score_count
         description: CSAT rows whose score was unusable (NULLed by the safe-cast) — avg_csat averages only the usable scores; this counter discloses how many it skipped (F3).

@@ -11,9 +11,16 @@ import { catchUp } from "../ingest/src/backfill.js";
 import { createCrmApp } from "../mocks/crm/src/server.js";
 import { createBillingApp } from "../mocks/billing/src/server.js";
 import { createSupportApp } from "../mocks/support/src/server.js";
+import { createSheetsApp } from "../mocks/sheets/src/index.js";
+import { SheetSnapshotConnector } from "../ingest/src/connectors/sheet-snapshot.js";
 
 // Counts chosen for full entity coverage (see Task 7's demo rationale):
 const COUNTS = { crm: 108, billing: 100, support: 80 } as const;
+// The sheets leg is calm-plan and fully seeded, so its raw event count is a constant of
+// (seed, rowCount, steps) — pinned like the ledger counts to catch a silently short run.
+// 22 = 10 seeded row births + 12 calm steps × exactly one diff event each (every calm op
+// touches one row; deletes tombstone, appends/duplicates birth, edits re-upsert).
+const SHEETS = { seed: 7, rowCount: 10, steps: 12, expectedEvents: 22 } as const;
 
 async function main() {
   const pool = getPool();
@@ -46,8 +53,25 @@ async function main() {
   }
   ingestSrv.close();
 
+  // sheets (A6): the snapshot-paradigm arm — the REAL connector diffing the in-process
+  // mock over a small, deterministic calm-plan run (no garbage ops → nothing quarantines,
+  // and CI's dbt leg builds stg_sheets__rows + the identity/mart extensions from REAL
+  // pipeline output). Direct construction mirrors the oracle's mkConnector rationale:
+  // the endpoint is a constructor input; the registry path is pinned by sources tests.
+  const sheets = createSheetsApp({ seed: SHEETS.seed, rowCount: SHEETS.rowCount });
+  const sheetsSrv = sheets.app.listen(0);
+  const sheetsPort = (sheetsSrv.address() as { port: number }).port;
+  const connector = new SheetSnapshotConnector({ baseUrl: `http://127.0.0.1:${sheetsPort}` });
+  await connector.catchUp(pool); // baseline: the seeded book
+  for (let i = 1; i <= SHEETS.steps; i++) {
+    sheets.editor.applyStep("calm");
+    if (i % 4 === 0) await connector.catchUp(pool); // interleaved cycles, like the oracle
+  }
+  await connector.catchUp(pool); // final cycle: converged
+  sheetsSrv.close();
+
   const n = await pool.query("select source, count(*)::int as n from raw.raw_events group by source order by source");
-  const expected = [["billing", COUNTS.billing], ["crm", COUNTS.crm], ["support", COUNTS.support]];
+  const expected = [["billing", COUNTS.billing], ["crm", COUNTS.crm], ["sheets", SHEETS.expectedEvents], ["support", COUNTS.support]];
   const got = n.rows.map((r) => [r.source, r.n]);
   if (JSON.stringify(got) !== JSON.stringify(expected))
     throw new Error(`fixture counts mismatch: expected ${JSON.stringify(expected)}, got ${JSON.stringify(got)}`);

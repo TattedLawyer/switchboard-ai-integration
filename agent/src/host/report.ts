@@ -62,8 +62,12 @@ export async function generateMondayReport(
     // F1: the mart's honesty flags, finally read. L3 — amounts the safe-cast NULLed make
     // this entity's totals incomplete, not confidently rendered; F3 — CSAT rows whose
     // score was unusable, skipped by avg_csat and disclosed here.
+    // A6: the sheet term joined has_unusable_amounts, and THIS branch preempts the
+    // catch-all — without the sheet count a sheet-driven blank amount would render the
+    // active lie "0 deal / 0 invoice". The one disclosed report change of A6; the other
+    // new mart terms are covered by the mixed-currency line and the catch-all below.
     if (a["has_unusable_amounts"] === true)
-      f.push(`unusable amount(s): ${num(a, "null_amount_deal_count")} deal / ${num(a, "null_amount_invoice_count")} invoice`);
+      f.push(`unusable amount(s): ${num(a, "null_amount_deal_count")} deal / ${num(a, "null_amount_invoice_count")} invoice / ${num(a, "null_amount_sheet_count")} sheet`);
     if (num(a, "null_score_count") > 0) f.push(`${num(a, "null_score_count")} unusable CSAT score(s)`);
     // Addendum: unknown-currency rows get a visible count. Since the L5.1 retraction any
     // such row refuses its source's sums (known + unknown = mixed; all-unknown = unknown).

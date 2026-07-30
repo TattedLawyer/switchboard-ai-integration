@@ -1,7 +1,8 @@
--- customer_360 (D6): one row per resolved canonical entity, unifying CRM + billing + support
--- through identity_resolution. Merged companies collapse into their canonical and their deals
--- roll up (the re-pointed-history proof). Entities present only in billing or support (no CRM
--- company) STILL get a row, flagged incomplete — never hidden.
+-- customer_360 (D6): one row per resolved canonical entity, unifying CRM + billing +
+-- support + sheets through identity_resolution. Merged companies collapse into their
+-- canonical and their deals roll up (the re-pointed-history proof). Entities present only
+-- in billing, support, or a sheet (no CRM company) STILL get a row, flagged incomplete —
+-- never hidden.
 with canonical as (
     select company_id, canonical_id from {{ ref('int_crm__canonical_companies') }}
 ),
@@ -17,13 +18,20 @@ resolution as (
 ),
 external_only as (
     select r.resolved_entity_id as entity_id,
-           max(coalesce(bc.name, st.company_name)) as entity_name,
+           -- Sheets evidence trails billing/support and prefers the org name over the
+           -- person: company_name, then client_name — an orphan row is still NAMED,
+           -- never a null-labelled mystery.
+           max(coalesce(bc.name, st.company_name, sh.company_name, sh.client_name)) as entity_name,
            max(coalesce(bc.domain, st.domain))     as domain
     from resolution r
     left join {{ ref('stg_billing__customers') }} bc
       on r.source = 'billing' and bc.customer_id = r.source_entity_id
     left join (select distinct requester_id, company_name, domain from {{ ref('stg_support__tickets') }}) st
       on r.source = 'support' and st.requester_id = r.source_entity_id
+    left join (select distinct on (client_key) client_key, company_name, client_name
+               from {{ ref('stg_sheets__rows') }}
+               order by client_key, detected_at desc, received_at desc, row_key desc) sh
+      on r.source = 'sheets' and sh.client_key = r.source_entity_id
     where r.matched_tier = 3
     group by r.resolved_entity_id
 ),
@@ -95,6 +103,34 @@ payments as (
     join {{ ref('stg_billing__payments') }} p on p.customer_id = bl.customer_id
     group by bl.entity_id
 ),
+sheets_link as (
+    select r.resolved_entity_id as entity_id, r.source_entity_id as client_key
+    from resolution r where r.source = 'sheets'
+),
+sheets as (
+    -- Same L5 summability + mixed predicates as the deals/billing CTEs (L5.1 retracted —
+    -- see the deals CTE). Sheet money lives in its OWN columns and NEVER folds into
+    -- deal/invoice sums: a spreadsheet book of business is a fourth source, not extra
+    -- deals. INNER join (contrast billing's LEFT JOIN subtlety): every sheets resolution
+    -- row exists BECAUSE of a staged row, so there is no null-extended no-rows row to
+    -- guard the counters against — no-rows entities simply have no CTE row (→ true 0 in
+    -- the final select).
+    select sl.entity_id,
+           count(*)                                                     as sheet_row_count,
+           count(*) filter (where s.currency is null)                   as null_currency_sheet_rows,
+           min(s.currency)                                              as sheet_currency_raw,
+           (count(distinct s.currency) <= 1
+             and count(*) filter (where s.currency is null) = 0)        as sheet_currency_is_single,
+           (count(distinct s.currency) > 1
+             or (count(distinct s.currency) = 1
+                 and count(*) filter (where s.currency is null) > 0))   as sheet_currency_is_mixed,
+           -- Raw sum; the final select NULLs it unless sheet_currency_is_single (L5).
+           sum(s.amount_cents)                                          as sheet_amount_cents,
+           count(*) filter (where s.amount_cents is null)               as null_amount_sheet_count
+    from sheets_link sl
+    join {{ ref('stg_sheets__rows') }} s on s.client_key = sl.client_key
+    group by sl.entity_id
+),
 support_link as (
     select r.resolved_entity_id as entity_id, r.source_entity_id as requester_id
     from resolution r where r.source = 'support'
@@ -127,6 +163,7 @@ select
     e.has_crm,
     (b.entity_id is not null or p.entity_id is not null) as has_billing,
     (s.entity_id is not null)                            as has_support,
+    (sh.entity_id is not null)                           as has_sheets,
     e.has_crm                                            as is_complete,
     coalesce(d.open_deal_count, 0)         as open_deal_count,
     -- L5 sum semantics: 0 = genuinely zero or no rows; NULL = not summable — currencies
@@ -147,9 +184,19 @@ select
     -- these count the NULL-currency rows behind a refused sum (any unknown row refuses).
     coalesce(b.null_currency_invoice_rows, 0) as null_currency_invoice_count,
     coalesce(d.null_currency_deal_rows, 0)    as null_currency_deal_count,
+    -- Sheet contributions in their OWN columns (never folded into deal/invoice sums),
+    -- under the SAME per-source machinery: 0 = no rows / genuine zero; NULL = not
+    -- summable (mixed, or any unknown-currency row present — L5, F2, L5.1 retracted).
+    coalesce(sh.sheet_row_count, 0)          as sheet_row_count,
+    case when sh.entity_id is null then 0
+         when sh.sheet_currency_is_single then coalesce(sh.sheet_amount_cents, 0) end as sheet_amount_cents,
+    case when sh.sheet_currency_is_single then sh.sheet_currency_raw end as sheet_currency,
+    coalesce(sh.null_amount_sheet_count, 0)  as null_amount_sheet_count,
+    coalesce(sh.null_currency_sheet_rows, 0) as null_currency_sheet_count,
     -- L3: coalesce(sum(...), 0) renders "no amount" and "zero" identically; these counters
     -- make an entity with unusable amounts visibly incomplete instead of confidently zero.
-    (coalesce(d.null_amount_deal_count, 0) + coalesce(b.null_amount_invoice_count, 0)) > 0
+    (coalesce(d.null_amount_deal_count, 0) + coalesce(b.null_amount_invoice_count, 0)
+      + coalesce(sh.null_amount_sheet_count, 0)) > 0
                                              as has_unusable_amounts,
     -- L5: currency surfaced per source; NULL when not summable (mixed, known + unknown
     -- rows — F2 — or uniformly unknown) or when the entity has no invoices/deals.
@@ -158,8 +205,8 @@ select
     -- Deliberately NARROWER than "not summable": a uniformly-unknown source refuses its
     -- sums but is NOT mixed — nothing known contradicts anything. Its story is told by
     -- NULL sums + the null_currency_*_count columns (and the report's unknown-currency flag).
-    (coalesce(b.billing_currency_is_mixed, false) or coalesce(d.deal_currency_is_mixed, false))
-                                                                          as has_mixed_currency,
+    (coalesce(b.billing_currency_is_mixed, false) or coalesce(d.deal_currency_is_mixed, false)
+      or coalesce(sh.sheet_currency_is_mixed, false))                     as has_mixed_currency,
     coalesce(p.failed_payment_count, 0)    as failed_payment_count,
     coalesce(s.open_ticket_count, 0)       as open_ticket_count,
     coalesce(s.solved_ticket_count, 0)     as solved_ticket_count,
@@ -174,9 +221,12 @@ select
     -- when a new signal lands (each trigger is pinned independently in mart-currency tests,
     -- so forgetting fails CI). Kimball's Data Supplied Flag is deliberately absent:
     -- switchboard never imputes, it refuses — there is no estimator to disclose.
-    (   (coalesce(d.null_amount_deal_count, 0) + coalesce(b.null_amount_invoice_count, 0)) > 0
+    (   (coalesce(d.null_amount_deal_count, 0) + coalesce(b.null_amount_invoice_count, 0)
+          + coalesce(sh.null_amount_sheet_count, 0)) > 0
      or coalesce(b.billing_currency_is_mixed, false) or coalesce(d.deal_currency_is_mixed, false)
+     or coalesce(sh.sheet_currency_is_mixed, false)
      or coalesce(b.null_currency_invoice_rows, 0) > 0 or coalesce(d.null_currency_deal_rows, 0) > 0
+     or coalesce(sh.null_currency_sheet_rows, 0) > 0
      or coalesce(c.null_score_count, 0) > 0
     )                                      as has_data_warnings
 from entities e
@@ -185,3 +235,4 @@ left join billing b  on b.entity_id = e.entity_id
 left join payments p on p.entity_id = e.entity_id
 left join support s  on s.entity_id = e.entity_id
 left join csat c     on c.entity_id = e.entity_id
+left join sheets sh  on sh.entity_id = e.entity_id
