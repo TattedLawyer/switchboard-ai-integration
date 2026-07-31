@@ -337,11 +337,17 @@ describe("L1 numeric contract at the trust boundary", () => {
         expect(declared, `event_type '${type}' is consumed by a warehouse model but undeclared`).toContain(type);
       }
       // A4 declared the sheet.* types ahead of consumption (the door had to accept the
-      // events first); A6 landed the consuming staging model, so consumed caught up:
-      // both floors now sit at 16, still pinned so the declarations cannot vanish.
-      expect(declared.length).toBeGreaterThanOrEqual(16);
+      // events first); A6 landed the consuming staging model, so consumed caught up to
+      // 16. Task B grew DECLARATIONS to 19 (the stripefeed types, ahead of consumption
+      // — Task F owns the staging switch), so the declared floor moves with them and
+      // each declared-but-unconsumed type is pinned BY NAME: until a model consumes it,
+      // this pin is the only thing that stops a declaration from vanishing silently.
+      expect(declared.length).toBeGreaterThanOrEqual(19);
       expect(declared).toContain("sheet.row_upserted");
       expect(declared).toContain("sheet.row_deleted");
+      expect(declared).toContain("invoice.finalized");
+      expect(declared).toContain("charge.succeeded");
+      expect(declared).toContain("charge.failed");
     });
   });
 });

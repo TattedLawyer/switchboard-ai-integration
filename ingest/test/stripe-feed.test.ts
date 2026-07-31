@@ -279,6 +279,21 @@ describe("fetch discipline (register L1-G4 paid here)", () => {
     expect(result.integrity.ok).toBe(false);
     expect(result.report).toBeUndefined();
   });
+
+  it("reconcile against a broken feed that RE-SERVES the same non-empty page forever is a bounded integrity failure, not a wedge (review I2)", async () => {
+    // catchUp already refuses an endless feed loudly (maxRounds); reconcile's full-window
+    // drain must hold the same discipline. A page whose deepest event equals the cursor
+    // we just advanced past is proof the feed is not advancing — pages after a cursor
+    // can never contain the cursor event itself on an honest feed.
+    const t = NOW_S() - 60;
+    const page = pageBody([evt("evt_j1", t), evt("evt_j2", t + 1)], true);
+    const { baseUrl } = scriptedFeed([(_req, res) => res.json(page)]);
+    const c = new StripeFeedConnector({ baseUrl: await baseUrl });
+    const result = await c.reconcile(pool);
+    expect(result.integrity.ok).toBe(false);
+    expect(result.integrity.detail).toMatch(/re-serv|not advancing/i);
+    expect(result.report).toBeUndefined();
+  });
 });
 
 describe("numeric contract for the new event types (rejections AND over-rejection guards)", () => {
