@@ -50,6 +50,17 @@ export const HUBCRM_SOURCE = "hubcrm" as const;
  *  DLQ'd event; replay is a deliberate operator act (register follow-up). */
 export const HYDRATE_DLQ = "hydrate-hubcrm-dlq";
 
+/** Retention for the hydration DLQ. pg-boss deletes `created`/`retry` jobs past
+ *  `keep_until`, defaulting to 14 days — which made "terminal" quietly time-bounded: past
+ *  the horizon the event is in NO state, reconcile reports it `hydrationPending` (a FAIL),
+ *  the pump re-fetches the same broken object, and it re-quarantines forever (review F3).
+ *  The docs say terminal, so the CODE is what changes: an operator-visible dead letter
+ *  that grows is a known, watched surface (RUNBOOK names DLQ depth); one that evaporates
+ *  is a silent regression to limbo. int4 max seconds (~68 years) is the longest "never"
+ *  pg-boss's schema can express — retentionSeconds must be >= 1, so there is no literal
+ *  infinity to ask for. Applied to the queue, so every job inherits it. */
+const DLQ_QUEUE_OPTIONS = { retentionSeconds: 2147483647 } as const;
+
 const HUB_OBJECT_TYPES = ["company", "contact", "deal"] as const;
 type HubObjectType = (typeof HUB_OBJECT_TYPES)[number];
 
@@ -262,7 +273,17 @@ interface RawThinRow {
   event_id: string;
   event_type: string;
   payload: { occurred_at?: string; data?: Record<string, unknown> };
-  received_at: string;
+  /** node-pg parses `timestamptz` into a Date OBJECT. This field said `string` and the
+   *  tiebreak below compared it with `===`, which is identity on Dates — false even for
+   *  the same instant, so the event_id tail was dead code (review F1). Typed honestly
+   *  here and compared BY VALUE everywhere; the union tolerates a pool configured with a
+   *  string parser rather than assuming this one. */
+  received_at: Date | string;
+}
+
+/** received_at as epoch ms — total over both parser shapes, never an identity compare. */
+function receivedMsOf(v: Date | string): number {
+  return v instanceof Date ? v.getTime() : Date.parse(v);
 }
 
 function objectRefOf(row: RawThinRow): { objectType: HubObjectType; objectId: string } | null {
@@ -336,7 +357,7 @@ export class HubHydrateConnector implements Connector {
     if (pending.rowCount === 0) return report;
 
     return await this.withBoss(async (boss) => {
-      const dlqIds = await this.dlqEventIds(boss);
+      const dlqIds = await this.dlqEventIds(boss, tenantId);
       let spent = 0;
       for (const row of pending.rows) {
         if (dlqIds.has(row.event_id)) continue; // terminal — replay is an operator act
@@ -344,7 +365,7 @@ export class HubHydrateConnector implements Connector {
         if (ref === null) {
           // Un-hydratable shape: it passed the door contract (or predates it), but names
           // no object. Terminal, visible, preserved — never silently skipped.
-          await this.dlqSend(boss, {
+          await this.dlqSend(boss, tenantId, {
             event_id: row.event_id,
             object_type: "unknown",
             object_id: "unknown",
@@ -369,7 +390,7 @@ export class HubHydrateConnector implements Connector {
           continue;
         }
         if (outcome.kind === "failed") {
-          await this.dlqSend(boss, {
+          await this.dlqSend(boss, tenantId, {
             event_id: row.event_id,
             object_type: ref.objectType,
             object_id: ref.objectId,
@@ -402,7 +423,7 @@ export class HubHydrateConnector implements Connector {
             undefined,
             tenantId,
           );
-          await this.dlqSend(boss, {
+          await this.dlqSend(boss, tenantId, {
             event_id: row.event_id,
             object_type: ref.objectType,
             object_id: ref.objectId,
@@ -467,14 +488,21 @@ export class HubHydrateConnector implements Connector {
     }
 
     // 2. Raw thin events, grouped per object; deletion events remembered per object.
+    // ORDER BY is not decoration: it states the successor precedence in the query itself
+    // (strongest key first, `desc` like staging), so the scan hands the winner over
+    // before any candidate that loses to it. occurred_at lives in the payload, so only
+    // the two stored keys can be ordered here — which is exactly the pair a full tie
+    // turns on. Without it, a true tie resolved to whatever row the plan happened to
+    // emit first (review F1).
     const rawRes = await pool.query<RawThinRow>(
       `select event_id, event_type, payload, received_at
          from raw.raw_events
-        where tenant_id = $1 and source = $2`,
+        where tenant_id = $1 and source = $2
+        order by received_at desc, event_id desc`,
       [tenantId, this.source],
     );
     interface ObjEvents {
-      latest: { event_id: string; occurredMs: number; received_at: string } | null;
+      latest: { event_id: string; occurredMs: number; receivedMs: number } | null;
       deletionSeen: boolean;
     }
     const rawByObject = new Map<string, ObjEvents>();
@@ -488,16 +516,19 @@ export class HubHydrateConnector implements Connector {
         typeof row.payload?.data?.occurredAt === "number"
           ? row.payload.data.occurredAt
           : Date.parse(String(row.payload?.occurred_at ?? ""));
-      const candidate = { event_id: row.event_id, occurredMs, received_at: row.received_at };
+      const candidate = { event_id: row.event_id, occurredMs, receivedMs: receivedMsOf(row.received_at) };
       // Latest per object mirrors the staging successor: occurred desc, received desc,
-      // event_id desc.
+      // event_id desc. Every key compares BY VALUE — epoch ms for both timestamps, so a
+      // true tie falls through to the event_id tail instead of dying on Date identity,
+      // and the ordering is total: (tenant, source, event_id) uniqueness means no two
+      // candidates can tie all three.
       const cur = entry.latest;
       if (
         cur === null ||
         candidate.occurredMs > cur.occurredMs ||
         (candidate.occurredMs === cur.occurredMs &&
-          (candidate.received_at > cur.received_at ||
-            (candidate.received_at === cur.received_at && candidate.event_id > cur.event_id)))
+          (candidate.receivedMs > cur.receivedMs ||
+            (candidate.receivedMs === cur.receivedMs && candidate.event_id > cur.event_id)))
       ) {
         entry.latest = candidate;
       }
@@ -510,7 +541,7 @@ export class HubHydrateConnector implements Connector {
       [tenantId],
     );
     const snapByEvent = new Map(snapRes.rows.map((r) => [r.event_id, r]));
-    const dlqEntries = await this.withBoss(async (boss) => this.dlqList(boss));
+    const dlqEntries = await this.withBoss(async (boss) => this.dlqList(boss, tenantId));
     const dlqIds = new Set(dlqEntries.map((d) => d.event_id));
 
     // 4. Buckets.
@@ -628,29 +659,42 @@ export class HubHydrateConnector implements Connector {
     });
     await boss.start();
     try {
-      await boss.createQueue(HYDRATE_DLQ, {});
+      // createQueue is an ON CONFLICT DO NOTHING insert, so options passed to it are
+      // silently ignored for a queue that already exists (queue.ts learned this the hard
+      // way). updateQueue after it is the house upsert — without it, a queue created by
+      // an earlier build would keep the 14-day default forever.
+      await boss.createQueue(HYDRATE_DLQ, DLQ_QUEUE_OPTIONS);
+      await boss.updateQueue(HYDRATE_DLQ, DLQ_QUEUE_OPTIONS);
       return await fn(boss);
     } finally {
       await boss.stop();
     }
   }
 
-  private async dlqSend(boss: PgBoss, entry: HydrationDlqEntry): Promise<void> {
-    // singletonKey = event_id: one terminal record per event, even across racing pumps.
-    await boss.send(HYDRATE_DLQ, entry, { singletonKey: entry.event_id });
+  private async dlqSend(boss: PgBoss, tenantId: string, entry: HydrationDlqEntry): Promise<void> {
+    // singletonKey = tenant + event_id: one terminal record per event, even across racing
+    // pumps. The TENANT belongs in the key because raw uniqueness is
+    // (tenant_id, source, event_id) — two tenants legitimately receive the same vendor
+    // event id, and a bare-id key let one tenant's dead letter suppress the other's event
+    // into invisible limbo (review F2).
+    await boss.send(HYDRATE_DLQ, { ...entry, tenant_id: tenantId }, { singletonKey: `${tenantId}:${entry.event_id}` });
   }
 
-  private async dlqList(boss: PgBoss): Promise<HydrationDlqEntry[]> {
-    const jobs = await boss.findJobs<HydrationDlqEntry>(HYDRATE_DLQ);
+  /** The DLQ as ONE TENANT sees it. Scoped in the query (`data @> {tenant_id}`), never
+   *  filtered afterwards, so a count and a listing can never disagree. */
+  private async dlqList(boss: PgBoss, tenantId: string): Promise<HydrationDlqEntry[]> {
+    const jobs = await boss.findJobs<HydrationDlqEntry & { tenant_id?: string }>(HYDRATE_DLQ, {
+      data: { tenant_id: tenantId },
+    });
     // Same state reading as fetchDlq (queue.ts): a never-worked queue's live jobs sit in
     // 'created' (or 'retry' after a replay tool touches them).
     return jobs
       .filter((j) => j.state === "created" || j.state === "retry")
-      .map((j) => j.data)
+      .map(({ data: { tenant_id: _tenant, ...entry } }) => entry)
       .sort((a, b) => a.event_id.localeCompare(b.event_id));
   }
 
-  private async dlqEventIds(boss: PgBoss): Promise<Set<string>> {
-    return new Set((await this.dlqList(boss)).map((d) => d.event_id));
+  private async dlqEventIds(boss: PgBoss, tenantId: string): Promise<Set<string>> {
+    return new Set((await this.dlqList(boss, tenantId)).map((d) => d.event_id));
   }
 }

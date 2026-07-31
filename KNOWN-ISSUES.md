@@ -379,7 +379,15 @@ fetched afterwards. Three stated limits of the paradigm itself:
   listed with reasons by reconcile, but a replay mechanism (re-arm a DLQ'd
   event for another fetch) is register-owned follow-up. Until it lands, the
   operator's path is: fix the vendor-side object, then delete the DLQ job so
-  the pump retries (RUNBOOK).
+  the pump retries (RUNBOOK). "Terminal" is retention-backed, not aspirational:
+  the queue sets `retentionSeconds` explicitly (~68 years, the longest span
+  pg-boss's int4 column can express) because the default is 14 days, after
+  which the job is deleted and the event falls back into *no* state — reconcile
+  would report it `hydrationPending` again, the pump would re-fetch the same
+  broken object, and it would re-quarantine every cycle. The consequence is
+  that the DLQ GROWS until an operator clears it, which is deliberate: depth
+  is the documented watch surface, and a dead letter that evaporates is a
+  silent return to limbo.
 
 ## Numeric & monetary integrity (added with the numeric-integrity wave)
 
