@@ -40,10 +40,13 @@ export function isAcceptableOccurredAt(s: string, nowMs: number = Date.now()): b
   return t >= nowMs - OCCURRED_AT_MAX_AGE_MS && t <= nowMs + OCCURRED_AT_MAX_FUTURE_MS;
 }
 
-// Raw has THREE doors, not two: the webhook (server.ts), the quarantine replay
-// (quarantine.ts), and the backfill poll path in backfill.ts. All three must apply the same
-// predicate — the poll path once did not, and could put a value in raw that throws the
-// staging cast. The definition lives HERE, with the predicates it depends on.
+// Raw's doors — the webhook (server.ts), the quarantine replay (quarantine.ts), the
+// backfill poll (backfill.ts), the sheet-snapshot connector (connectors/sheet-snapshot.ts),
+// and the stripe-feed connector (connectors/stripe-feed.ts) — must ALL apply this same
+// predicate; the invariant is the enumeration, not a count (a stale "three doors" here
+// survived two door additions — cold-review comment-drift class). The poll path once did
+// not apply it, and could put a value in raw that throws the staging cast. The definition
+// lives HERE, with the predicates it depends on; a new door imports it or it is not a door.
 export const eventSchema = z
   .object({
     event_id: z.string().min(1),

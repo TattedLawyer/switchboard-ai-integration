@@ -7,7 +7,7 @@ import { createIngestApp, type SourceEvent } from "./server.js";
 import { assertWebhookSecrets } from "./hmac.js";
 import { baseUrlFor, enabledSources, type Source } from "./sources.js";
 import { createQueue, enqueueEvent, startWorker } from "./queue.js";
-import { connectorFor } from "./connectors/index.js";
+import { catchUpReporter, connectorFor, formatUnclosableGap } from "./connectors/index.js";
 
 const pool = getPool();
 const port = Number(process.env.PORT ?? 4002);
@@ -41,7 +41,17 @@ export function createBackfillRunner(
 
     running = true;
     try {
-      await connector.catchUp(pgPool, { baseUrl });
+      // Gate-H cold review C1: the service loop consumes the REPORT where the connector
+      // offers one — a retention-boundary fallback is not an error (the catch below
+      // never fires for it), so without this the service log showed nothing at all
+      // while events were permanently lost. Same shared phrasing as the CLIs.
+      const reporter = catchUpReporter(connector);
+      if (reporter) {
+        const report = await reporter.catchUpWithReport(pgPool, { baseUrl });
+        for (const gap of report.gaps ?? []) console.error(formatUnclosableGap(source, gap));
+      } else {
+        await connector.catchUp(pgPool, { baseUrl });
+      }
     } catch (err) {
       console.error("backfill round failed:", err);
     } finally {

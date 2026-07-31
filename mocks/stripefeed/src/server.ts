@@ -135,6 +135,11 @@ export function createStripeFeedApp(opts: StripeFeedAppOptions): StripeFeedApp {
     if (!parsed.success || (parsed.data.count === undefined && parsed.data.advance_s === undefined)) {
       return res.status(400).json({ error: "invalid request: need count (1..1000) and/or advance_s" });
     }
+    // age_s modifies an emission; without count there is nothing to age — an operator
+    // typo that silently did nothing before (cold review Minor 5). Refuse it loudly.
+    if (parsed.data.age_s !== undefined && parsed.data.count === undefined) {
+      return res.status(400).json({ error: "invalid request: age_s only applies to an emission — supply count" });
+    }
     const { count, age_s, advance_s } = parsed.data;
     if (advance_s !== undefined) feed.advance(advance_s);
     let emitted = 0;

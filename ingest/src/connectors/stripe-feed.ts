@@ -80,14 +80,22 @@ export interface StripeFeedCatchUpReport {
  * Seam-report semantics for a retention-bounded feed: `ledger` = the feed's currently
  * retained event count (the paradigm's ledger-equivalent — the feed IS the interface),
  * `raw` = this source's distinct events in raw, `missing` = retained but never ingested
- * (real failures), `rawDuplicates` = 0 by the same uniqueness argument as reconcile.ts.
- * `extra` keeps its "in raw, unexplained by the source" meaning: raw events the feed no
- * longer serves whose occurred_at is INSIDE the retained window — those cannot be mere
- * age-outs. Raw events older than the earliest retained event are the paradigm's normal
- * metabolism (ingested, then aged out) and are counted in `agedOutRaw`, not flagged.
+ * AND not quarantined — real failures, after the quarantine cross-reference below.
+ * `rawDuplicates` = 0 by the same uniqueness argument as reconcile.ts. `extra` keeps
+ * its "in raw, unexplained by the source" meaning: raw events the feed no longer serves
+ * whose occurred_at is INSIDE the retained window — those cannot be mere age-outs. Raw
+ * events older than the earliest retained event are the paradigm's normal metabolism
+ * (ingested, then aged out) and are counted in `agedOutRaw`, not flagged.
  */
 export interface StripeFeedReconcileReport extends ReconcileReport {
   agedOutRaw: number;
+  /** Retained-but-not-in-raw events that were deliberately QUARANTINED (cold review
+   *  I2, the sheets quarantined-current precedent): processed, preserved in
+   *  ingest.quarantine, cursor-advanced past — by design. They sit in the feed's
+   *  window for up to 30 days looking exactly like `missing`; classifying them there
+   *  would red every reconcile for a month over one poisoned vendor event. `count` =
+   *  quarantine rows for that event id (re-serves re-quarantine, so it accumulates). */
+  quarantined: { event_id: string; count: number }[];
   /** Gaps recorded by this instance's catchUp runs, plus a live-detected one when the
    *  persisted cursor has aged out and no fallback has run yet. See the honesty note on
    *  reconcile(): a gap whose fallback completed in an earlier PROCESS is not
@@ -298,7 +306,29 @@ export class StripeFeedConnector implements Connector {
     );
 
     const rawIds = new Set(rawRes.rows.map((r) => r.event_id));
-    const missing = [...retained.keys()].filter((id) => !rawIds.has(id)).sort();
+
+    // Quarantine cross-reference (cold review I2): retained-but-not-in-raw splits into
+    // real failures (`missing`) and deliberately-diverted events preserved in
+    // ingest.quarantine (`quarantined`, with row counts — re-serves accumulate).
+    const missingCandidates = [...retained.keys()].filter((id) => !rawIds.has(id));
+    const quarantined: { event_id: string; count: number }[] = [];
+    let missing = missingCandidates;
+    if (missingCandidates.length > 0) {
+      const qRes = await pool.query<{ event_id: string; count: number }>(
+        `select payload->>'event_id' as event_id, count(*)::int as count
+           from ingest.quarantine
+          where tenant_id = $1 and source = $2 and payload->>'event_id' = any($3::text[])
+          group by 1`,
+        [tenantId, this.source, missingCandidates],
+      );
+      const qMap = new Map(qRes.rows.map((r) => [r.event_id, r.count]));
+      missing = missingCandidates.filter((id) => !qMap.has(id));
+      for (const id of missingCandidates) {
+        if (qMap.has(id)) quarantined.push({ event_id: id, count: qMap.get(id)! });
+      }
+      quarantined.sort((a, b) => a.event_id.localeCompare(b.event_id));
+    }
+    missing = [...missing].sort();
 
     // The retention boundary in time: anything in raw older than the earliest retained
     // event is normal metabolism (ingested, then aged out). Anything the feed no longer
@@ -334,6 +364,7 @@ export class StripeFeedConnector implements Connector {
         extra,
         rawDuplicates: 0, // structurally impossible: uq (tenant_id, source, event_id)
         agedOutRaw,
+        quarantined,
         gaps,
       },
     };

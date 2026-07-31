@@ -205,15 +205,29 @@ Operational notes:
   undocumented, so the connector's order-blind cursor can sit mid-window;
   duplicate deliveries are absorbed by `(tenant, source, event_id)` idempotency.
   `duplicates` in a catch-up report measures this, not a fault.
-- **A 30-day-stale cursor is a data-loss event, and it is REPORTED**: the run
-  log (and the reconcile report's `gaps`) carries the unclosable range with
-  bounds. See KNOWN-ISSUES "Billing feed source (stripefeed)" — including the
-  disclosed limit that gap reports are per-process, not yet durable.
-- **Reading a stripefeed reconcile report**: `ledger` = events the feed retains
-  *right now* (30-day window), `raw` = everything ever ingested, `agedOutRaw` =
-  raw rows older than the retained window (expected metabolism, not flagged),
-  `extra` = raw rows *inside* the window the feed no longer serves (a real
-  anomaly), `missing` = retained but never ingested.
+- **A 30-day-stale cursor is a data-loss event, and it is REPORTED on every
+  shipped surface** (verified by CLI-path tests that run the real entrypoints):
+  the backfill CLI and the service log print `PERMANENT DATA LOSS — unclosable
+  gap (retention): …` with bounds (one shared phrasing — grep/alert on
+  `PERMANENT DATA LOSS`); the reconcile CLI prints the same line **and exits
+  nonzero** — a gap is never a PASS-silently condition. Backfill itself still
+  exits 0 on a fallback run (the drain succeeded; a nonzero would teach cron to
+  retry a loss no retry can close) — reconcile is the gate. An
+  acknowledged-gap workflow (so a known, accepted loss stops redding runs) is
+  register follow-up shared with the durable-gap-ledger item; until that
+  ledger lands, gap detection is per-process (KNOWN-ISSUES), so a fresh
+  process after the fallback cannot produce a permanent red.
+- **Reading a stripefeed reconcile report**: `retained window` = events the
+  feed retains *right now* (its 30-day ledger-equivalent), `raw` = everything
+  ever ingested, `aged out of window` = raw rows older than the retained
+  window (expected metabolism, not flagged), `extra` = raw rows *inside* the
+  window the feed no longer serves (a real anomaly), `missing` = retained but
+  never ingested AND not quarantined (real failures), `quarantined` = retained
+  events deliberately diverted to `ingest.quarantine` (named with row counts;
+  fix upstream or replay — **not** counted as missing and not a FAIL by
+  itself). The integrity line reads `feed window integrity: ok …` — this
+  paradigm has no ledger file and no hash chain, and the CLI says what it
+  actually verified.
 - Enabling stripefeed on the long-running service makes
   `WEBHOOK_SECRET_STRIPEFEED` a boot requirement like every registered source,
   even though the paradigm never uses its generic webhook door — an armed door

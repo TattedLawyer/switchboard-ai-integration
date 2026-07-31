@@ -1,8 +1,9 @@
 import { SOURCES, baseUrlFor, isSource, type Source } from "../sources.js";
+import type pg from "pg";
 import { LedgerFeedConnector } from "./ledger-feed.js";
 import { SheetSnapshotConnector } from "./sheet-snapshot.js";
-import { StripeFeedConnector } from "./stripe-feed.js";
-import type { Connector, ConnectorKind } from "./types.js";
+import { StripeFeedConnector, type StripeFeedGap } from "./stripe-feed.js";
+import type { Connector, ConnectorCatchUpOptions, ConnectorKind } from "./types.js";
 
 export type {
   Connector,
@@ -46,4 +47,44 @@ export function connectorKinds(): Record<Source, ConnectorKind> {
   return Object.fromEntries(
     SOURCES.map((s) => [s, REGISTRY[s]().kind]),
   ) as Record<Source, ConnectorKind>;
+}
+
+// ── loss-report plumbing (Gate-H cold review C1) ─────────────────────────────────────────
+//
+// The report-bearing catchUp variant is a widening METHOD on the concrete connectors
+// (house precedent: sheets' catchUpWithReport), not a seam-interface change — but the
+// operator surfaces (backfill CLI, service loop) must still reach it, because the whole
+// point of a gap report is to be SEEN. The cold review proved the machinery existed,
+// tested, and was wired to no door an operator uses: a permanent 8-event loss printed
+// as "ingested 6 event(s)". This guard is how every catchUp surface asks "does this
+// connector have more to say than a number?" without the seam knowing paradigm shapes.
+
+/** The common shape of the widening reports (sheets carries degradations, stripe-feed
+ *  carries gaps; both count ingested/duplicates/quarantined). */
+export interface CatchUpReport {
+  ingested: number;
+  duplicates: number;
+  quarantined: number;
+  gaps?: StripeFeedGap[];
+  degradations?: string[];
+}
+
+export interface ReportingConnector {
+  catchUpWithReport(pool: pg.Pool, opts?: ConnectorCatchUpOptions): Promise<CatchUpReport>;
+}
+
+export function catchUpReporter(connector: Connector): ReportingConnector | null {
+  const candidate = connector as Partial<ReportingConnector>;
+  return typeof candidate.catchUpWithReport === "function" ? (candidate as ReportingConnector) : null;
+}
+
+/** ONE rendering of an unclosable gap, shared by every operator surface (backfill CLI,
+ *  service log, reconcile CLI) so grep/alerting can key on a single phrase. */
+export function formatUnclosableGap(source: string, gap: StripeFeedGap): string {
+  return (
+    `[${source}] PERMANENT DATA LOSS — unclosable gap (${gap.cause}): events after ` +
+    `${gap.fromEventId} (occurred ${gap.fromOccurredAt ?? "unknown"}) up to ` +
+    `${gap.toOccurredAt ?? "the end of the retained window"} aged out of the feed's ` +
+    `retention window before ingestion and cannot be recovered`
+  );
 }
