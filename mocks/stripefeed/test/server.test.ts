@@ -250,6 +250,9 @@ describe("seeded 429 fault injection (house pattern from mocks/sheets)", () => {
     a.feed.emit(2);
     const { status, body } = await getPage(a, "?limit=10");
     expect(status).toBe(429);
+    // Legacy wire type by deliberate choice (see server.ts's enum-drift note);
+    // code "rate_limit" is the currently-documented error code for this condition.
     expect(body.error.type).toBe("rate_limit_error");
+    expect(body.error.code).toBe("rate_limit");
   });
 });

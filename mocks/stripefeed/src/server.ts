@@ -63,8 +63,18 @@ export function createStripeFeedApp(opts: StripeFeedAppOptions): StripeFeedApp {
 
   app.get("/v1/events", (req, res) => {
     if (readFaulted()) {
+      // Enum-drift disclosure (review Minor 1): the CURRENT api/errors reference
+      // enumerates the error-object `type` as only api_error | card_error |
+      // idempotency_error | invalid_request_error; `rate_limit_error` is the legacy
+      // wire type — still what stripe-node maps to its documented StripeRateLimitError
+      // class (error-handling guide). Kept because no current-docs pairing of a 429
+      // with an enum member is documented, and inventing one would trade real-wire
+      // fidelity for a fabricated shape. `code: "rate_limit"` IS currently documented
+      // (error-codes: "Too many requests hit the API too quickly"). The connector keys
+      // on HTTP 429 only and never reads these fields — pinned in its 429 tests.
       return stripeError(res, 429, {
         type: "rate_limit_error",
+        code: "rate_limit",
         message: "Request rate limit exceeded. Retry the request with exponential backoff.",
       });
     }

@@ -231,11 +231,27 @@ export class StripeFeedConnector implements Connector {
 
     // Full drain of the retained window. Any fetch failure (including a mid-drain aged
     // cursor, impossible unless the window moves under us) is an integrity failure:
-    // no report against a truth we could not finish reading.
+    // no report against a truth we could not finish reading. Same bounded-loud-failure
+    // discipline as catchUp (review I2): a broken feed re-serving pages must produce an
+    // integrity verdict within bounds, never a wedge — detected structurally (a page
+    // after a cursor can never contain the cursor event itself on an honest feed, so
+    // deepest == cursor proves the feed is not advancing) with a rounds budget as the
+    // backstop for shapes the structural check cannot see.
+    const RECONCILE_MAX_ROUNDS = 10_000;
     const retained = new Map<string, number>(); // id → created
     try {
       let cursor: string | null = null;
-      for (;;) {
+      for (let rounds = 0; ; rounds++) {
+        if (rounds >= RECONCILE_MAX_ROUNDS) {
+          return {
+            integrity: {
+              ok: false,
+              detail:
+                `feed did not finish serving its retained window within ${RECONCILE_MAX_ROUNDS} pages — ` +
+                "has_more never went false; suspect the feed is re-serving pages or its cursor is not advancing",
+            },
+          };
+        }
         const page = await this.fetchPage(baseUrl, cursor, this.opts.pageLimit ?? 100);
         let deepest: { created: number; id: string } | null = null;
         for (const e of page.data) {
@@ -252,6 +268,17 @@ export class StripeFeedConnector implements Connector {
           ) {
             deepest = { created: e.created, id: e.id };
           }
+        }
+        if (deepest !== null && deepest.id === cursor) {
+          // An honest page after `starting_after=cursor` excludes the cursor event by
+          // definition; seeing it again (as the page's own deepest, no less) means the
+          // feed re-served the window we just read — looping would never terminate.
+          return {
+            integrity: {
+              ok: false,
+              detail: `feed is re-serving pages: page after starting_after=${cursor} still contains it — cursor not advancing`,
+            },
+          };
         }
         if (deepest !== null) cursor = deepest.id;
         if (!page.has_more) break;
