@@ -61,13 +61,20 @@ type HubObjectType = (typeof HUB_OBJECT_TYPES)[number];
 // split and each element runs the EXISTING per-event pipeline: vendor→door mapping →
 // unstorable divert → shared schema gate (numeric contract included) → per-event
 // quarantine or ingest. BATCH-FATAL IS FORBIDDEN (the register's STANDING RULE): one
-// bad element quarantines alone; its batchmates land.
+// bad element quarantines alone; its batchmates land. That is enforced BY CONSTRUCTION,
+// not by enumerating the failures we thought of: every element runs inside its own
+// try/catch, so an UNEXPECTED throw (transient DB error, an unstorable class the
+// predicate does not yet recognize) is quarantined-or-counted for that element and the
+// loop continues (review finding I1).
 
 /** Vendor thin event → door shape. TOTAL: garbage in any position still produces a
  *  door-shaped object that flows to the schema gate and quarantines with a named
  *  reason — never a throw, never a drop. The vendor event rides under `data` VERBATIM
  *  (D7); occurred_at is the ms-epoch `occurredAt` ISO-rendered (per-source occurred_at
- *  normalization, consequence 1) — the original ms value stays in data. */
+ *  normalization, consequence 1) — the original ms value stays in data. A non-finite /
+ *  non-numeric `occurredAt` normalizes to NULL rather than passing arbitrary vendor JSON
+ *  into the timestamp position (review M1); the outcome is unchanged — the schema gate
+ *  quarantines it with a reason naming occurred_at — but only one shape reaches it. */
 export function mapThinEvent(item: unknown): Record<string, unknown> {
   const o = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
   const occurred = o.occurredAt;
@@ -75,14 +82,25 @@ export function mapThinEvent(item: unknown): Record<string, unknown> {
     event_id: o.eventId === undefined || o.eventId === null ? "" : String(o.eventId),
     event_type: typeof o.subscriptionType === "string" ? o.subscriptionType : "",
     occurred_at:
-      typeof occurred === "number" && Number.isFinite(occurred) ? new Date(occurred).toISOString() : occurred,
+      typeof occurred === "number" && Number.isFinite(occurred) ? new Date(occurred).toISOString() : null,
     data: o,
   };
 }
 
 export interface HubBatchOutcome {
   status: number;
-  body: { stored: number; duplicates: number; quarantined: number } | { error: string };
+  body:
+    | {
+        stored: number;
+        duplicates: number;
+        quarantined: number;
+        /** Elements whose processing threw AND whose quarantine write also failed — so
+         *  they are in no bucket at all. Reported (and logged) rather than folded into
+         *  `quarantined`, which would claim a custody that does not exist. Omitted when
+         *  zero so the healthy response shape is unchanged. */
+        failed?: number;
+      }
+    | { error: string };
 }
 
 export async function handleHubcrmBatch(
@@ -106,29 +124,63 @@ export async function handleHubcrmBatch(
   let stored = 0;
   let duplicates = 0;
   let quarantined = 0;
+  let failed = 0;
   for (const item of body) {
-    const event = mapThinEvent(item);
-    const unstorable = jsonbUnstorableReason(event);
-    if (unstorable !== null) {
-      await quarantineEvent(pool, HUBCRM_SOURCE, event, `hubcrm: ${unstorable} (raw_body holds the full batch)`, rawBody, tenantId);
-      quarantined++;
-      continue;
+    try {
+      const event = mapThinEvent(item);
+      const unstorable = jsonbUnstorableReason(event);
+      if (unstorable !== null) {
+        await quarantineEvent(pool, HUBCRM_SOURCE, event, `hubcrm: ${unstorable} (raw_body holds the full batch)`, rawBody, tenantId);
+        quarantined++;
+        continue;
+      }
+      const parsed = eventSchema.safeParse(event);
+      if (!parsed.success) {
+        const detail = parsed.error.issues[0];
+        const reason = detail
+          ? `schema validation failed: ${detail.path.join(".")} — ${detail.message}`
+          : "schema validation failed";
+        await quarantineEvent(pool, HUBCRM_SOURCE, event, reason, undefined, tenantId);
+        quarantined++;
+        continue;
+      }
+      const result = await ingestEvent(pool, HUBCRM_SOURCE, parsed.data, { tenantId });
+      if (result === "inserted") stored++;
+      else duplicates++;
+    } catch (err) {
+      // The construction that makes batch-fatal impossible. Anything that throws here is
+      // by definition unexpected (every KNOWN failure above returns a reason instead), so
+      // the element is preserved the same way every other bad element is — quarantine
+      // with a reason naming the throw — and the loop moves on to its batchmates.
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await quarantineEvent(
+          pool,
+          HUBCRM_SOURCE,
+          mapThinEvent(item),
+          `hubcrm: unexpected error processing batch element: ${message} (raw_body holds the full batch)`,
+          rawBody,
+          tenantId,
+        );
+        quarantined++;
+      } catch (quarantineErr) {
+        // Custody itself failed (the database is the thing that is broken). We refuse to
+        // count this as quarantined — that would claim a custody we do not have — so it
+        // is counted as `failed` and logged on the gap channel. The element is not lost
+        // in the vendor's terms: the batch is retried whole, and ingest is idempotent.
+        failed++;
+        console.error(
+          JSON.stringify({
+            source: HUBCRM_SOURCE,
+            event: "batch_element_unrecoverable",
+            message,
+            quarantineError: quarantineErr instanceof Error ? quarantineErr.message : String(quarantineErr),
+          }),
+        );
+      }
     }
-    const parsed = eventSchema.safeParse(event);
-    if (!parsed.success) {
-      const detail = parsed.error.issues[0];
-      const reason = detail
-        ? `schema validation failed: ${detail.path.join(".")} — ${detail.message}`
-        : "schema validation failed";
-      await quarantineEvent(pool, HUBCRM_SOURCE, event, reason, undefined, tenantId);
-      quarantined++;
-      continue;
-    }
-    const result = await ingestEvent(pool, HUBCRM_SOURCE, parsed.data, { tenantId });
-    if (result === "inserted") stored++;
-    else duplicates++;
   }
-  return { status: 202, body: { stored, duplicates, quarantined } };
+  return { status: 202, body: { stored, duplicates, quarantined, ...(failed > 0 ? { failed } : {}) } };
 }
 
 // ── the connector ──────────────────────────────────────────────────────────────────────

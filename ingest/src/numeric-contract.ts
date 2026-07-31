@@ -233,6 +233,15 @@ export function numericContractViolation(
     // every legitimate clear into an operator incident. On a REQUIRED field null still
     // violates (requiredness means a value must exist, and null says it does not) —
     // both directions pinned in hub-hydrate.test.ts.
+    //
+    // THIS RULE IS GLOBAL, not hubcrm-scoped — it lives in the shared contract check, so
+    // it is a SPEC CHANGE for every source declared in NUMERIC_CONTRACT. Concretely: an
+    // explicit null on `sheet.row_upserted.amount_cents`, or on any source's optional
+    // `currency`, previously fell through to the type/pattern branch below and
+    // QUARANTINED; from Task C onward it passes as absent. That is the intended
+    // behavior everywhere (a cleared cell is a clear, not garbage, whichever vendor
+    // sent it), but it changed 2a sources' quarantine behavior and is recorded as such
+    // in the Task C report's decision index rather than living only here.
     if (v === undefined || v === null) {
       if (rule.required) {
         return { field, reason: `${field} is required for ${eventType} and is ${v === null ? "null" : "absent"}` };

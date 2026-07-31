@@ -94,10 +94,23 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   whose tickets carry different (domain, name) or email values produces
   multiple candidate rows; two clean groups matching different canonicals pick
   a plan-dependent winner, and a clean group can outrank an ambiguity flag.
-  The per-key guards don't compose per-entity. *Scheduled: Phase 2b identity
-  work.* Since 2a.3 the unit tests run the REAL model SQL (loaded from disk,
-  unions intact), so this failure mode is now *expressible* in a test — the
-  fix will land with a RED test first.
+  The per-key guards don't compose per-entity: each tuple forms its own clean
+  count = 1 group, so no guard fires, and the final `DISTINCT ON` orders by
+  matched_tier alone. **Reproduced live against the real `identity_resolution`
+  SQL on 2026-07-31** — both shapes, not just the tier-2 one: at tier 2, one
+  requester with two tickets carrying two clean (domain, name) tuples matching
+  different canonicals collapses to a single row with no ambiguity flag; the
+  tier-1 shape (different emails across tickets, each matching a different
+  canonical) **bypasses `tier1_ambiguous` entirely**, because that guard groups
+  per email and each email is unambiguous on its own. Both are pinned at
+  `ingest/test/identity-straddle.test.ts` as `it.fails` — they pass only while
+  the defect exists and will fail loudly the instant a fix lands, forcing
+  promotion to plain `it`. *Owned by Phase 2b Task F (identity/normalization),
+  where the fix — per-entity cross-group ambiguity detection, or a
+  deterministic same-tier tiebreak plus demotion — can be shaped against that
+  task's final source set rather than reshaping guard semantics twice.* Until
+  then, a real requester with conflicting clean evidence resolves silently and
+  plan-dependently.
 - **Tier 2 is unsafe on free-email domains** *(audit)* — there is no
   free-domain blocklist, so for gmail-heavy SMB data the domain half of
   domain+name carries no signal and every duplicate common name merges into
