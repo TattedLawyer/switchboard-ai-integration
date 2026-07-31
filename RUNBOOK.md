@@ -233,6 +233,56 @@ Operational notes:
   even though the paradigm never uses its generic webhook door — an armed door
   with a real secret, not a silent hole. The pull path itself needs no secret.
 
+## Hubcrm source operations (thin-webhook + hydration paradigm, Task C)
+
+The hubcrm source is the HubSpot-STYLE CRM: **push-first** — the vendor POSTs
+signed batches of up to 100 *metadata-only* events to
+`POST /webhooks/hubcrm` (the request body is a JSON array; a single object is
+a 400), and the full record is fetched afterwards through the hydration API.
+It lands *alongside* the 2a crm mock; nothing consumes it in the warehouse
+until Task F retires the old CRM.
+
+```bash
+PORT=4007 npm run start -w mocks/hubcrm                # the object store + webhook batches
+INGEST_SOURCES=hubcrm npm run backfill  -w ingest      # the HYDRATION PUMP (see below)
+INGEST_SOURCES=hubcrm npm run reconcile -w ingest      # object-store truth vs raw + snapshots
+```
+
+Operational notes:
+
+- **`backfill` here is a hydration pump, not an ingester.** Thin events only
+  arrive by webhook push; the pump scans raw for events without a terminal
+  hydration state and fetches each one's object. Its log line says exactly
+  that (`hydrated N snapshot(s), M tombstone(s) …`) — an `ingested 0` reading
+  would be answering the wrong question. Fetches are rate-budgeted (default
+  500/run); spillover prints as `pending hydration` and continues next run.
+- **Every thin event ends in exactly one of three states** (the trichotomy,
+  test-pinned): a snapshot row in `ingest.hydrated_snapshots`, a tombstone row
+  (the object answered 404 — deleted before we fetched), or the hydration DLQ
+  (`hydrate-hubcrm-dlq`: fetch retries exhausted, or the snapshot failed the
+  field contract — in which case the garbage record is also preserved in
+  `ingest.quarantine` with a reason naming the field). Nothing sits in limbo.
+- **A DLQ'd hydration is terminal and LOUD but does not red reconcile by
+  itself** — one permanently-broken vendor object must not fail every
+  reconcile forever (the stripefeed quarantine precedent). It is printed by
+  the backfill CLI and service log (`HYDRATION DLQ: …` on stderr) and listed
+  with reasons by reconcile. Recovery today: fix the object vendor-side, then
+  delete the DLQ job (pg-boss queue `hydrate-hubcrm-dlq`) so the pump
+  re-fetches; a first-class replay command is register-owned follow-up.
+- **Reading a hubcrm reconcile report**: `object store` = live objects right
+  now (the paradigm's ledger-equivalent), `raw` = thin events ever ingested,
+  `missing` = store objects raw never heard of (lost webhooks — FAILS),
+  `drifted` = store moved and no webhook told us (FAILS), `extra` = raw-known
+  objects the store lacks with no deletion event (FAILS), `tombstoned` =
+  deleted with a deletion event in raw (expected metabolism), `hydration
+  pending` = not yet terminal (FAILS if nonzero at reconcile time — run the
+  pump). The integrity line reads `object-store integrity: ok …` — this
+  paradigm has no ledger file and no hash chain, and the CLI says what it
+  actually verified: all three object listings read and compared.
+- Enabling hubcrm makes `WEBHOOK_SECRET_HUBCRM` a boot requirement; the mock
+  signs its batches with the same house per-source HMAC scheme (signature over
+  the whole request body — the batch is the wire unit).
+
 ## Backup and restore
 
 ```bash

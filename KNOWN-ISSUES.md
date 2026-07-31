@@ -333,6 +333,41 @@ second admitted loss class, reported with bounds rather than papered over.
   longer serves. The two are separable only by that time boundary; an event
   exactly at the boundary second is classified conservatively as `extra`.
 
+## CRM thin-webhook source (hubcrm) — metadata-only push + hydration (2b Task C)
+
+The HubSpot-style source delivers **metadata-only** webhook batches (up to 100
+events per request, ordering not guaranteed, 10 retries over 24 hours and then
+the delivery is gone — all research-verified) and the full record must be
+fetched afterwards. Three stated limits of the paradigm itself:
+
+- **A webhook that exhausts its retries is permanently undeliverable, and this
+  source has no feed to re-read.** Unlike stripefeed (whose catchUp re-drains a
+  window), a lost hubcrm notification cannot be re-pulled: the vendor's events
+  API does not exist in this paradigm's modeled contract. The loss is
+  *detected* — reconcile reads the object store's own listings and names the
+  classes: `missing` (an object the store has that raw never heard of),
+  `drifted` (the store's current state no longer matches the latest hydrated
+  snapshot — a mutation whose webhook died), `extra` (raw knows an object the
+  store lacks, with no deletion event to explain it) — but it is not
+  *recoverable* by the connector. Recovery is an operator decision (vendor-side
+  re-send, or accepting the gap); deriving events from the store would be
+  fabricating history and is deliberately not done.
+- **Hydrated snapshots are FETCH-time state, not notify-time state (D7).** A
+  mutation landing between the webhook and the fetch means an event's snapshot
+  can be newer than the event itself; two events for the same object can carry
+  identical snapshots. This is a fact of the vendor's design, stored honestly
+  (`ingest.hydrated_snapshots.fetched_at` says when we looked); sequencing is
+  governed by staging's occurred_at-wins ordering, never by snapshot content.
+- **The hydration DLQ is terminal until an operator acts.** An event whose
+  object fetch exhausts its bounded retries (or whose snapshot fails the field
+  contract — quarantined with a named reason, never silently stored) is
+  dead-lettered to the pg-boss queue `hydrate-hubcrm-dlq` and never re-fetched
+  automatically. It is printed loudly by both CLIs and the service log and
+  listed with reasons by reconcile, but a replay mechanism (re-arm a DLQ'd
+  event for another fetch) is register-owned follow-up. Until it lands, the
+  operator's path is: fix the vendor-side object, then delete the DLQ job so
+  the pump retries (RUNBOOK).
+
 ## Numeric & monetary integrity (added with the numeric-integrity wave)
 
 - **The ingest contract cannot help rows that never pass a door.** The numeric contract
