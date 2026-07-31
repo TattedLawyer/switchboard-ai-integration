@@ -205,6 +205,106 @@ describe("STANDING RULE — co-batched poison isolation (batch-fatal is forbidde
   });
 });
 
+describe("STANDING RULE — batch-fatal is forbidden BY CONSTRUCTION, not by enumeration", () => {
+  // Task C fix wave (review finding I1). Every VALIDATION failure was already isolated
+  // per element, but the loop had no per-element try/catch: an unexpected throw from
+  // ingestEvent/quarantineEvent (a transient DB error, or an unstorable class
+  // jsonbUnstorableReason does not yet recognize) aborted the remaining batchmates and
+  // 500'd the request. Not lossy — the vendor retries the batch and ingest is idempotent
+  // — but the standing rule says batch-fatal is FORBIDDEN, and "prevented by enumerating
+  // the throwers we thought of" is not that. These two tests inject the throw directly.
+
+  /** The real pool, with one element's ingest (and optionally its quarantine) rigged to
+   *  reject — the transient-DB-error shape, injected at the exact element boundary. */
+  const poolFailingOn = (targetEventId: string, opts: { alsoQuarantine?: boolean } = {}): pg.Pool =>
+    new Proxy(pool, {
+      get(target, prop) {
+        if (prop === "connect") {
+          return async () => {
+            const client = await pool.connect();
+            const original = client.query.bind(client) as (...args: unknown[]) => unknown;
+            // Variadic passthrough on purpose: pg's own pool.query calls client.query
+            // with a CALLBACK third argument, and a 2-arg wrapper silently strips it —
+            // the promise then never settles and the "failure" reads as a hang.
+            (client as { query: unknown }).query = (...args: unknown[]) => {
+              const [text, params] = args;
+              if (
+                typeof text === "string" &&
+                text.includes("insert into raw.raw_events") &&
+                Array.isArray(params) &&
+                params[2] === targetEventId
+              ) {
+                return Promise.reject(new Error("simulated transient DB failure on one element"));
+              }
+              return original(...args);
+            };
+            return client;
+          };
+        }
+        if (prop === "query" && opts.alsoQuarantine) {
+          return (...args: unknown[]) => {
+            const [, params] = args;
+            if (Array.isArray(params) && params.some((p) => typeof p === "string" && p.includes(targetEventId))) {
+              return Promise.reject(new Error("simulated quarantine failure on the same element"));
+            }
+            return (pool.query as (...a: unknown[]) => unknown).apply(pool, args);
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    }) as pg.Pool;
+
+  it("an unexpected THROW mid-batch does not abort the batchmates: the thrower is quarantined with a reason naming the failure, the healthy events still land", async () => {
+    const { handleHubcrmBatch } = await import("../src/connectors/hub-hydrate.js");
+    const h1 = thin();
+    const thrower = thin();
+    const h2 = thin();
+    const batch = [h1, thrower, h2];
+
+    const outcome = await handleHubcrmBatch(
+      poolFailingOn(String(thrower.eventId)),
+      JSON.parse(JSON.stringify(batch)),
+      JSON.stringify(batch),
+    );
+
+    expect(outcome.status).toBe(202);
+    expect(outcome.body).toEqual({ stored: 2, duplicates: 0, quarantined: 1 });
+    // The batchmates AFTER the thrower are the ones a batch-fatal abort would have lost.
+    for (const h of [h1, h2]) {
+      expect(await rawRows(`source = 'hubcrm' and event_id = '${h.eventId}'`)).toHaveLength(1);
+    }
+    expect(await rawRows(`source = 'hubcrm' and event_id = '${thrower.eventId}'`)).toHaveLength(0);
+    const q = await pool.query("select reason from ingest.quarantine where payload->>'event_id' = $1", [
+      String(thrower.eventId),
+    ]);
+    expect(q.rowCount).toBe(1);
+    expect(q.rows[0].reason).toContain("simulated transient DB failure");
+  });
+
+  it("when even the quarantine write fails for the throwing element, the batchmates STILL land and the element is COUNTED as failed — never silently dropped", async () => {
+    const { handleHubcrmBatch } = await import("../src/connectors/hub-hydrate.js");
+    const h1 = thin();
+    const thrower = thin();
+    const h2 = thin();
+    const batch = [h1, thrower, h2];
+
+    const outcome = await handleHubcrmBatch(
+      poolFailingOn(String(thrower.eventId), { alsoQuarantine: true }),
+      JSON.parse(JSON.stringify(batch)),
+      JSON.stringify(batch),
+    );
+
+    expect(outcome.status).toBe(202);
+    // Honest arithmetic: the element is neither stored nor quarantined, so it is reported
+    // as `failed` rather than folded into a bucket it never reached.
+    expect(outcome.body).toEqual({ stored: 2, duplicates: 0, quarantined: 0, failed: 1 });
+    for (const h of [h1, h2]) {
+      expect(await rawRows(`source = 'hubcrm' and event_id = '${h.eventId}'`)).toHaveLength(1);
+    }
+  });
+});
+
 describe("end-to-end: the mock's own signed delivery lands through the real door", () => {
   it("mocks/hubcrm deliver() → the door: every non-dropped emitted event is in raw exactly once, under fault-plan disorder and duplication", async () => {
     const store = createHubStore({ seed: 1234 });

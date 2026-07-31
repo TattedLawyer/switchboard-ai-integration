@@ -79,6 +79,12 @@ describe("the hydration trichotomy under chaos", () => {
       "select event_id, tombstone from ingest.hydrated_snapshots",
     );
     const snapIds = new Set(snap.rows.map((r) => r.event_id));
+    // Review M3: the trichotomy's first two legs are DISTINCT states, not one bucket —
+    // a hydrated snapshot and a tombstone are different terminal answers. Split them
+    // here so the partition assertion below is self-contained rather than leaning on the
+    // separate fetch-time-state test for the snapshot-vs-tombstone distinction.
+    const hydratedIds = new Set(snap.rows.filter((r) => !r.tombstone).map((r) => r.event_id));
+    const tombstoneIds = new Set(snap.rows.filter((r) => r.tombstone).map((r) => r.event_id));
 
     const rec = await c.reconcile(pool);
     expect(rec.integrity.ok).toBe(true);
@@ -86,10 +92,10 @@ describe("the hydration trichotomy under chaos", () => {
 
     // THE TRICHOTOMY: partition, exactly.
     for (const { event_id } of raw.rows) {
-      const inSnap = snapIds.has(event_id);
-      const inDlq = dlqIds.has(event_id);
-      expect(inSnap || inDlq).toBe(true); // nothing in limbo
-      expect(inSnap && inDlq).toBe(false); // and no double-life
+      // Exactly ONE of the three terminal states — snapshot, tombstone, DLQ. Counting
+      // the trues is the whole trichotomy: 0 = limbo, 2+ = double-life.
+      const states = [hydratedIds.has(event_id), tombstoneIds.has(event_id), dlqIds.has(event_id)];
+      expect(states.filter(Boolean)).toHaveLength(1);
     }
     // Snapshot/DLQ rows only exist for raw events (no phantoms).
     const rawIds = new Set(raw.rows.map((r) => r.event_id));
