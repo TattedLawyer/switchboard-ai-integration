@@ -18,7 +18,31 @@ async function main(): Promise<void> {
       if (reporter) {
         const report = await reporter.catchUpWithReport(pool);
         const quarantineNote = report.quarantined > 0 ? `, quarantined ${report.quarantined}` : "";
-        console.log(`backfill[${source}]: ingested ${report.ingested} event(s)${quarantineNote} from ${baseUrl}`);
+        if (report.hydrated !== undefined) {
+          // Hydration paradigm (Task C standing checklist): this connector's catchUp is
+          // a hydration PUMP — thin events arrive by webhook push, so an "ingested 0"
+          // line here would be a number-only truth hiding the actual work and the
+          // actual failures. Print what the run really did.
+          console.log(
+            `backfill[${source}]: hydrated ${report.hydrated} snapshot(s), ` +
+              `${report.tombstoned ?? 0} tombstone(s) (thin events arrive by webhook push; ` +
+              `catchUp is the hydration pump)${quarantineNote} from ${baseUrl}`,
+          );
+          if ((report.hydrationDlq ?? 0) > 0) {
+            console.error(
+              `[${source}] HYDRATION DLQ: ${report.hydrationDlq} event(s) dead-lettered this run — ` +
+                "terminal, preserved, listed by reconcile; replay is an operator act (RUNBOOK)",
+            );
+          }
+          if ((report.hydrationPending ?? 0) > 0) {
+            console.log(
+              `backfill[${source}]: ${report.hydrationPending} event(s) still pending hydration ` +
+                "(rate budget reached) — the next run continues",
+            );
+          }
+        } else {
+          console.log(`backfill[${source}]: ingested ${report.ingested} event(s)${quarantineNote} from ${baseUrl}`);
+        }
         // Loud, on stderr, one shared phrasing (grep/alert target). Deliberate
         // semantics: the exit code stays 0 — the drain itself SUCCEEDED and forward
         // progress is real; reconcile is the gate that turns a gap into a red. A

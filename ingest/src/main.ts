@@ -49,6 +49,21 @@ export function createBackfillRunner(
       if (reporter) {
         const report = await reporter.catchUpWithReport(pgPool, { baseUrl });
         for (const gap of report.gaps ?? []) console.error(formatUnclosableGap(source, gap));
+        // Task C standing checklist: the hydration paradigm's failures reach the
+        // service log on the same loud channel as gaps — a dead-lettered hydration is
+        // an event whose full record we could not obtain, and a log that stays silent
+        // about it is the exact class the Gate-H cold review caught (C1/I1).
+        if ((report.hydrationDlq ?? 0) > 0) {
+          console.error(
+            `[${source}] HYDRATION DLQ: ${report.hydrationDlq} event(s) dead-lettered this run — ` +
+              "terminal, preserved, listed by reconcile; replay is an operator act (RUNBOOK)",
+          );
+        }
+        if ((report.hydrationPending ?? 0) > 0) {
+          console.log(
+            `[${source}] hydration pending: ${report.hydrationPending} event(s) waiting on the rate budget — next cycle continues`,
+          );
+        }
       } else {
         await connector.catchUp(pgPool, { baseUrl });
       }

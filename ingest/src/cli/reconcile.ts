@@ -3,6 +3,7 @@ import { enabledSources } from "../sources.js";
 import { connectorFor, formatUnclosableGap } from "../connectors/index.js";
 import type { SheetReconcileReport } from "../connectors/sheet-snapshot.js";
 import type { StripeFeedReconcileReport } from "../connectors/stripe-feed.js";
+import type { HubReconcileReport } from "../connectors/hub-hydrate.js";
 
 // Bounded listing for the stale bucket: unlike missing/extra (which converge toward
 // empty on a healthy source), stale can be O(sheet) after a bulk edit — an operator
@@ -41,6 +42,15 @@ async function main(): Promise<void> {
         console.log(
           `[${source}] feed window integrity: ok (retained window fully drained, envelopes well-formed, feed advancing)`,
         );
+      } else if (connector.kind === "hub-hydrate") {
+        // Task C standing checklist: the fourth paradigm's honest line — an object
+        // store has no ledger file and no hash chain; what reconcile ACTUALLY verified
+        // is that all three object listings were readable and every object was compared
+        // against raw thin events + hydrated snapshots.
+        console.log(
+          `[${source}] object-store integrity: ok (company/contact/deal listings read; ` +
+            "current state compared against raw thin events + hydrated snapshots)",
+        );
       } else {
         console.log(`[${source}] ledger hash chain: ok`);
       }
@@ -50,19 +60,37 @@ async function main(): Promise<void> {
       const report = result.report!;
       reconciledCount++;
 
+      // Task C: hub-shaped reports reconcile OBJECTS against the vendor store, not
+      // event ids against a ledger — label every count as what it actually is.
+      const hub = connector.kind === "hub-hydrate" && "drifted" in report ? (report as HubReconcileReport) : undefined;
+
       if (connector.kind === "stripe-feed") {
         // The number is a 30-day WINDOW, not a ledger file — label it as what it is.
         console.log(`[${source}] retained window: ${report.ledger} event(s) (the feed's 30-day ledger-equivalent)`);
+      } else if (hub !== undefined) {
+        console.log(`[${source}] object store: ${report.ledger} live object(s) (the paradigm's ledger-equivalent)`);
       } else {
         console.log(`[${source}] ledger: ${report.ledger} distinct event_id(s)`);
       }
-      console.log(`[${source}] raw:    ${report.raw} distinct event_id(s)`);
+      if (hub !== undefined) {
+        console.log(`[${source}] raw:    ${report.raw} thin event(s)`);
+      } else {
+        console.log(`[${source}] raw:    ${report.raw} distinct event_id(s)`);
+      }
       console.log(`[${source}] raw duplicates: ${report.rawDuplicates}`);
-      console.log(`[${source}] missing (in ledger, not in raw): ${report.missing.length}`);
+      if (hub !== undefined) {
+        console.log(`[${source}] missing (in the object store, never seen in raw — lost webhooks): ${report.missing.length}`);
+      } else {
+        console.log(`[${source}] missing (in ledger, not in raw): ${report.missing.length}`);
+      }
       if (report.missing.length > 0) {
         for (const id of report.missing) console.log(`  - ${id}`);
       }
-      console.log(`[${source}] extra (in raw, not in ledger): ${report.extra.length}`);
+      if (hub !== undefined) {
+        console.log(`[${source}] extra (in raw, absent from the store, no deletion event to explain it): ${report.extra.length}`);
+      } else {
+        console.log(`[${source}] extra (in raw, not in ledger): ${report.extra.length}`);
+      }
       if (report.extra.length > 0) {
         for (const id of report.extra) console.log(`  - ${id}`);
       }
@@ -92,6 +120,23 @@ async function main(): Promise<void> {
       // process after the fallback no longer sees it, so a permanent red is impossible
       // today); the acknowledged-gap workflow arrives with the durable gap ledger
       // (register follow-up, shared with the bus task).
+      // Task C: the hydration paradigm's own buckets, each printed with its meaning.
+      // tombstonedRaw is normal metabolism (deleted WITH a deletion event — context,
+      // never gated). `drifted` and `missing` are the paradigm's admitted webhook
+      // losses and they GATE. `hydration pending` gates too: limbo violates the
+      // trichotomy oracle. The DLQ is DELIBERATELY not a failure by itself (stripefeed
+      // quarantine precedent: one permanently-broken vendor object must not red every
+      // reconcile forever) — it is counted and listed with reasons so the operator
+      // looks in the right place.
+      if (hub !== undefined) {
+        console.log(`[${source}] tombstoned (deleted with a deletion event in raw — expected metabolism): ${hub.tombstonedRaw}`);
+        console.log(`[${source}] drifted (store moved, no webhook told us — latest snapshot differs): ${hub.drifted.length}`);
+        for (const key of hub.drifted) console.log(`  - ${key}`);
+        console.log(`[${source}] hydration pending (no terminal state yet — the pump continues next run): ${hub.hydrationPending}`);
+        console.log(`[${source}] hydration DLQ (terminal fetch failures, preserved — replay is an operator act): ${hub.hydrationDlq.length}`);
+        for (const d of hub.hydrationDlq) console.log(`  - ${d.event_id} (${d.object_type}:${d.object_id}) ${d.reason}`);
+      }
+
       const sf = "gaps" in report ? (report as StripeFeedReconcileReport) : undefined;
       if (sf !== undefined) {
         console.log(`[${source}] aged out of window (in raw, ingested before expiry — expected): ${sf.agedOutRaw}`);
@@ -107,9 +152,15 @@ async function main(): Promise<void> {
         report.extra.length === 0 &&
         report.rawDuplicates === 0 &&
         (stale?.length ?? 0) === 0 &&
-        (sf?.gaps.length ?? 0) === 0;
+        (sf?.gaps.length ?? 0) === 0 &&
+        (hub?.drifted.length ?? 0) === 0 &&
+        (hub?.hydrationPending ?? 0) === 0;
       if (clean) {
-        console.log(`[${source}] PASS: raw matches ledger exactly, no duplicates`);
+        if (hub !== undefined) {
+          console.log(`[${source}] PASS: store, raw thin events, and hydrated snapshots agree; nothing pending`);
+        } else {
+          console.log(`[${source}] PASS: raw matches ledger exactly, no duplicates`);
+        }
       } else if ((sf?.gaps.length ?? 0) > 0) {
         console.log(`[${source}] FAIL: unclosable gap(s) reported — permanent data loss at the retention boundary`);
         allClean = false;
