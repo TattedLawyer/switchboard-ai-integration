@@ -87,6 +87,10 @@ describe("connector seam — every source resolves to a connector", () => {
       // has_more termination and a 30-day retention boundary. Lands ALONGSIDE the 2a
       // billing mock (risk rule: nothing rewritten in place; Task F owns the switch).
       stripefeed: "stripe-feed",
+      // SPEC CHANGE (Task C): the fourth paradigm — thin batched webhooks + a
+      // hydration pump with a D7 snapshot table. Lands ALONGSIDE the 2a crm mock
+      // (same risk rule; Task F owns the old CRM's retirement).
+      hubcrm: "hub-hydrate",
     });
   });
 

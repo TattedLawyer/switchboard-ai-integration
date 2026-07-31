@@ -20,11 +20,18 @@ describe("source registry", () => {
   // deployment surface (STRIPEFEED_BASE_URL, port 4006, INGEST_SOURCES opt-in, the
   // connector registry arm) off `Source`. Pull-only paradigm — its webhook door and
   // queue exist as inert registry consequences and are documented as unused (RUNBOOK).
-  it("knows exactly crm, billing, support, sheets, stripefeed", () => {
-    expect([...SOURCES]).toEqual(["crm", "billing", "support", "sheets", "stripefeed"]);
+  // SPEC CHANGE (Task C, deliberate): membership grew again → +hubcrm, the
+  // HubSpot-STYLE thin-webhook + hydration source. Registration hangs the deployment
+  // surface (HUBCRM_BASE_URL, port 4007, INGEST_SOURCES opt-in, WEBHOOK_SECRET_HUBCRM
+  // as a boot requirement when enabled, the connector registry arm) off `Source`. It
+  // lands ALONGSIDE the 2a crm mock (risk rule: nothing rewritten in place; Task F
+  // owns the old CRM's retirement).
+  it("knows exactly crm, billing, support, sheets, stripefeed, hubcrm", () => {
+    expect([...SOURCES]).toEqual(["crm", "billing", "support", "sheets", "stripefeed", "hubcrm"]);
     expect(isSource("crm")).toBe(true);
     expect(isSource("sheets")).toBe(true);
     expect(isSource("stripefeed")).toBe(true);
+    expect(isSource("hubcrm")).toBe(true);
     expect(isSource("hubspot")).toBe(false);
   });
   it("defaults base URLs to the documented ports and honors env overrides", () => {
@@ -35,6 +42,8 @@ describe("source registry", () => {
     expect(baseUrlFor("sheets")).toBe("http://localhost:4005");
     // Task B: 4006 is the stripefeed mock's documented default (mocks/stripefeed/src/main.ts).
     expect(baseUrlFor("stripefeed")).toBe("http://localhost:4006");
+    // Task C: 4007 is the hubcrm mock's documented default (mocks/hubcrm/src/main.ts).
+    expect(baseUrlFor("hubcrm")).toBe("http://localhost:4007");
     process.env.BILLING_BASE_URL = "http://127.0.0.1:9999";
     expect(baseUrlFor("billing")).toBe("http://127.0.0.1:9999");
     process.env.SHEETS_BASE_URL = "http://127.0.0.1:9998";
@@ -56,6 +65,11 @@ describe("source registry", () => {
     // a deployment opts in explicitly and the seam routes it through its own connector.
     process.env.INGEST_SOURCES = "billing,stripefeed";
     expect(enabledSources()).toEqual(["billing", "stripefeed"]);
+    // Task C: hubcrm follows the same posture — registered, never default. Its push
+    // channel is the batch webhook door; its catchUp is a hydration pump, not a feed
+    // poll — nothing main.ts's default trio wiring should ever drive uninvited.
+    process.env.INGEST_SOURCES = "crm,hubcrm";
+    expect(enabledSources()).toEqual(["crm", "hubcrm"]);
   });
   it("ledgerPathFor reads LEDGER_PATH_<SOURCE>", () => {
     expect(ledgerPathFor("support")).toBeUndefined();
