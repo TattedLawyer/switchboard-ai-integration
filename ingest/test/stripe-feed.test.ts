@@ -180,14 +180,17 @@ describe("cursor discipline — ours, never the feed's", () => {
     const report = await c.catchUpWithReport(pool);
     expect(report).toMatchObject({ ingested: 1, quarantined: 1 });
     expect(await rawIds()).toEqual(["evt_g1"]);
-    // Preserved with the page's exact wire text and a reason naming the field —
-    // replayable via the standard quarantine CLI, which is why advancing is not a drop.
+    // Preserved as the quarantine row's jsonb payload (the replayable custody the
+    // replay CLI operates on — raw_body is the separate lane for payloads jsonb cannot
+    // hold) with a reason naming the field. That preservation is why advancing the
+    // cursor is not a drop: refusing to advance would wedge the feed on one poisoned
+    // event forever while adding zero custody.
     const q = await pool.query(
-      "select reason, raw_body from ingest.quarantine where payload->>'event_id' = 'evt_g2'",
+      "select reason, payload from ingest.quarantine where payload->>'event_id' = 'evt_g2'",
     );
     expect(q.rowCount).toBe(1);
     expect(q.rows[0].reason).toMatch(/amount_cents/);
-    expect(q.rows[0].raw_body).toContain('"evt_g2"');
+    expect(q.rows[0].payload.data.amount_cents).toBe(-500); // full event preserved, replayable
     expect(await storedCursor()).toBe("evt_g2"); // advanced past the quarantined event
   });
 });

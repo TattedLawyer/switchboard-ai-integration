@@ -92,6 +92,17 @@ export const NUMERIC_CONTRACT: Readonly<Record<string, EventContract>> = {
   "ticket.created":    {},
   "ticket.updated":    {},
   "ticket.solved":     {},
+  // stripefeed (Task B) — the Stripe-STYLE envelope feed's types, declared ahead of
+  // consumption (Task F owns the staging switch; declaration-without-consumption is the
+  // registry's permitted direction). Amounts per Stripe's charge semantics: integer
+  // minor units, unsigned (a negative charge amount on this surface is corruption, not
+  // a reversal — refunds are their own event family), plausibleMax 99_999_999 per the
+  // researched 8-digit charge bound — warn-tier by the table's own rule, never a gate.
+  // customer.created is deliberately REUSED from the 2a billing declaration above: same
+  // type name, same (empty) rule set — the registry is keyed by event_type, not source.
+  "invoice.finalized": { amount_cents: { ...MONEY, plausibleMax: 99_999_999 }, currency: { ...CURRENCY } },
+  "charge.succeeded":  { amount_cents: { ...MONEY, plausibleMax: 99_999_999 }, currency: { ...CURRENCY } },
+  "charge.failed":     { amount_cents: { ...MONEY, plausibleMax: 99_999_999 }, currency: { ...CURRENCY } },
   // sheets (Task A4) — connector-born events, consumed by no warehouse model until the
   // sheet staging models land (A5+); declaration-without-consumption is the registry's
   // permitted direction. amount_cents is OPTIONAL: an empty cell or an unmapped amount

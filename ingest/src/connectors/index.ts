@@ -1,6 +1,7 @@
 import { SOURCES, baseUrlFor, isSource, type Source } from "../sources.js";
 import { LedgerFeedConnector } from "./ledger-feed.js";
 import { SheetSnapshotConnector } from "./sheet-snapshot.js";
+import { StripeFeedConnector } from "./stripe-feed.js";
 import type { Connector, ConnectorKind } from "./types.js";
 
 export type {
@@ -12,16 +13,20 @@ export type {
 } from "./types.js";
 export { LedgerFeedConnector } from "./ledger-feed.js";
 export { SheetSnapshotConnector } from "./sheet-snapshot.js";
+export { StripeFeedConnector, STRIPEFEED_SOURCE } from "./stripe-feed.js";
 
 // Registry. The point of the seam, now exercised: a new paradigm is a new entry, not a
 // fork of the spine. sheets (A5) is the first non-feed arm — its base URL resolves at
 // construction time because the snapshot connector's endpoint is a constructor input,
-// unlike the ledger-feed connectors, which re-read their env per call.
+// unlike the ledger-feed connectors, which re-read their env per call. stripefeed
+// (Task B) is the third paradigm: an opaque-cursor envelope feed, same
+// construction-time base URL convention as sheets.
 const REGISTRY: Record<Source, () => Connector> = {
   crm: () => new LedgerFeedConnector("crm"),
   billing: () => new LedgerFeedConnector("billing"),
   support: () => new LedgerFeedConnector("support"),
   sheets: () => new SheetSnapshotConnector({ baseUrl: baseUrlFor("sheets") }),
+  stripefeed: () => new StripeFeedConnector({ baseUrl: baseUrlFor("stripefeed") }),
 };
 
 /**

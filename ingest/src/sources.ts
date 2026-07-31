@@ -1,11 +1,16 @@
-export const SOURCES = ["crm", "billing", "support", "sheets"] as const;
+// stripefeed (Task B) is the Stripe-STYLE opaque-cursor envelope feed — registered like
+// sheets (A5) for the deployment surface (base URL env, port, INGEST_SOURCES opt-in,
+// connector registry arm), and like sheets deliberately NOT default-enabled. It lands
+// ALONGSIDE the 2a billing mock (risk rule: nothing rewritten in place; the staging/
+// warehouse switch is Task F's).
+export const SOURCES = ["crm", "billing", "support", "sheets", "stripefeed"] as const;
 export type Source = (typeof SOURCES)[number];
 
 export function isSource(v: string): v is Source {
   return (SOURCES as readonly string[]).includes(v);
 }
 
-const DEFAULT_PORTS: Record<Source, number> = { crm: 4001, billing: 4003, support: 4004, sheets: 4005 };
+const DEFAULT_PORTS: Record<Source, number> = { crm: 4001, billing: 4003, support: 4004, sheets: 4005, stripefeed: 4006 };
 
 export function baseUrlFor(source: Source): string {
   return process.env[`${source.toUpperCase()}_BASE_URL`] ?? `http://localhost:${DEFAULT_PORTS[source]}`;
@@ -18,6 +23,11 @@ export function baseUrlFor(source: Source): string {
 // (assertWebhookSecrets runs over enabledSources) exactly where the source is on. The
 // connector-seam CLIs (cli/backfill, cli/reconcile) route every enabled source through
 // connectorFor, so an opted-in sheets source catches up and reconciles correctly there.
+// stripefeed (Task B) follows the same posture: registered, opt-in only. Its /v1/events
+// contract is its own connector's business; opting in makes WEBHOOK_SECRET_STRIPEFEED a
+// boot requirement even though the paradigm is pull-only — the generic /webhooks/:source
+// door exists for every registered source, and an armed-but-unused door still needs a
+// real secret rather than a silent hole (documented in RUNBOOK).
 const DEFAULT_ENABLED: readonly Source[] = ["crm", "billing", "support"];
 
 // Which sources this deployment actually polls/reconciles. Scripts pin this explicitly;
