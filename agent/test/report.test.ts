@@ -254,15 +254,21 @@ describe("Monday report (stub)", () => {
     expect(watch).toContain("1 sheet");
   });
 
-  it("A6 catch-all pin: the mart's new null_currency_sheet_count OR term (uniformly-unknown sheet currency, all enumerated components clean) reaches the flags and watch list through the catch-all — zero report enumeration needed", async () => {
+  // Cold review I1 upgraded this pin: DEMO-C-0010 originally reached the watch list via
+  // the catch-all ("zero report enumeration needed") — but the catch-all was exactly what
+  // let the COMBINED case (DEMO-C-0011) undercount, so null_currency_sheet_count is now
+  // ENUMERATED in the unknown-currency sum. The sheet-only case therefore gets the
+  // specific, more informative flag; the future-term catch-all stays pinned by
+  // DEMO-C-0008 (a term the report genuinely has never heard of).
+  it("A6/I1: uniformly-unknown SHEET currency (all other components clean) surfaces with the SPECIFIC unknown-currency count — '1 row(s) with unknown currency', not the generic catch-all", async () => {
     const md = await generateMondayReport(pool, new TemplateLlm());
     const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0010"));
     expect(row).toBeDefined();
-    expect(row!).toContain("data quality warning — see mart counters");
+    expect(row!).toContain("1 row(s) with unknown currency");
     expect(row!).not.toContain("| ok |");
     const watch = md.split("## Accounts to watch")[1].split("##")[0];
     expect(watch).toContain("DEMO-C-0010");
-    expect(watch).toContain("data quality warning — see mart counters");
+    expect(watch).toContain("1 row(s) with unknown currency");
   });
 
   // ── Cold review I1: the unknown-currency sum omitted null_currency_sheet_count. The

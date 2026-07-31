@@ -64,14 +64,20 @@ export async function generateMondayReport(
     // score was unusable, skipped by avg_csat and disclosed here.
     // A6: the sheet term joined has_unusable_amounts, and THIS branch preempts the
     // catch-all — without the sheet count a sheet-driven blank amount would render the
-    // active lie "0 deal / 0 invoice". The one disclosed report change of A6; the other
-    // new mart terms are covered by the mixed-currency line and the catch-all below.
+    // active lie "0 deal / 0 invoice". null_currency_sheet_count joins the
+    // unknown-currency sum below for the same reason (cold review I1); only genuinely
+    // FUTURE mart terms are the catch-all's to cover.
     if (a["has_unusable_amounts"] === true)
       f.push(`unusable amount(s): ${num(a, "null_amount_deal_count")} deal / ${num(a, "null_amount_invoice_count")} invoice / ${num(a, "null_amount_sheet_count")} sheet`);
     if (num(a, "null_score_count") > 0) f.push(`${num(a, "null_score_count")} unusable CSAT score(s)`);
     // Addendum: unknown-currency rows get a visible count. Since the L5.1 retraction any
     // such row refuses its source's sums (known + unknown = mixed; all-unknown = unknown).
-    const unknownCurrencyRows = num(a, "null_currency_invoice_count") + num(a, "null_currency_deal_count");
+    // Cold review I1 (A6): the sheet count is PART of this sum, not the catch-all's
+    // problem — an entity with unknown currency in a ledger source AND sheets fires this
+    // flag (which blocks the catch-all) and must state the whole count, never an
+    // understated invoice+deal figure. Same defect class as the "0 deal / 0 invoice"
+    // lie fixed for has_unusable_amounts above.
+    const unknownCurrencyRows = num(a, "null_currency_invoice_count") + num(a, "null_currency_deal_count") + num(a, "null_currency_sheet_count");
     if (unknownCurrencyRows > 0) f.push(`${unknownCurrencyRows} row(s) with unknown currency`);
     // Cold review I-2: the loudest honesty condition, finally in the deterministic surface.
     // money() already refuses the figure; the Flags cell must name the refusal instead of
