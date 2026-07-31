@@ -102,11 +102,12 @@ describe("GET /v1/events — pagination per the researched contract", () => {
     const p1 = await getPage(a, "?limit=3");
     expect(p1.body.data).toHaveLength(3);
     expect(p1.body.has_more).toBe(true);
-    // cursor = any id from the page; use the one the FEED considers deepest (max created,
-    // then id) — position in the response array is deliberately meaningless.
-    const deepest = (evs: FeedEvent[]) =>
-      [...evs].sort((x, y) => x.created - y.created || x.id.localeCompare(y.id)).at(-1)!.id;
-    const p2 = await getPage(a, `?limit=3&starting_after=${deepest(p1.body.data)}`);
+    // Cursor = the response array's last element. Valid ONLY because this app has no
+    // shuffle flag, so pages serve window order — this test walks the MOCK's window
+    // mechanics exactly. A connector can never assume this (shuffle + same-second
+    // created ties make window position unrecoverable); its order-blind cursor choice
+    // and the resulting harmless re-serves are pinned in ingest/test/stripe-feed.test.ts.
+    const p2 = await getPage(a, `?limit=3&starting_after=${p1.body.data.at(-1)!.id}`);
     expect(p2.body.data).toHaveLength(3);
     expect(p2.body.has_more).toBe(false);
     const seen = new Set([...p1.body.data, ...p2.body.data].map((e: FeedEvent) => e.id));
