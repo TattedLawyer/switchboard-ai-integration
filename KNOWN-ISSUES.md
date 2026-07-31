@@ -283,22 +283,20 @@ push channel is a latency hint only. These are the honest edges of that design.
   quarantine entry per catchUp until the cell is fixed. Quarantine *depth*
   therefore overstates distinct bad rows on this lane — triage by distinct
   `row_key`/`content_hash`, and see the RUNBOOK's fix-the-cell workflow.
-- **The long-running service's backfill loop is still feed-shaped.** `main.ts`
-  polls `/events` per enabled source on an interval; if a deployment opts sheets
-  into `INGEST_SOURCES` on the *service*, that loop 404s against the snapshot API
-  once a minute (noisy logs, no corruption — the loop predates the connector
-  seam). The CLIs (`cli/backfill`, `cli/reconcile`) route through `connectorFor`
-  and handle sheets correctly. *Scheduled: route the service loop through the
-  seam with the A6 service wiring.*
-- **No process hosts the nudge door yet.** The `/connectors/sheets/nudge` route
-  is built, HMAC-gated, and test-hosted, but `main.ts` does not wire a runner —
-  a trigger channel pointed at a live service today gets an honest 503 (or 404
-  when sheets isn't configured). This is deliberate sequencing, not an accident:
-  hosting the nudge before the service loop speaks the connector seam would ship
-  a door that accepts nudges while the same process's poll loop 404s the
-  snapshot API (see previous bullet). Latency until then comes from the CLI
-  cycle cadence; correctness never depended on the nudge (reconcile-first).
-  *Scheduled: A6 service wiring, together with the loop above.*
+- ~~The long-running service's backfill loop is still feed-shaped~~ *Paid (A7):*
+  the interval runner now routes every enabled source through
+  `connectorFor(source).catchUp` — the feed trio's behavior is pinned unchanged
+  (regression tests in `service-wiring.test.ts`), and an opted-in sheets source
+  runs snapshot catchUp cycles instead of 404ing `/events` once a minute.
+- ~~No process hosts the nudge door yet~~ *Paid (A7, with the loop above — the
+  deliberate sequencing this bullet promised):* `main.ts` now wires the sheets
+  interval runner into `createIngestApp` as the nudge hook whenever sheets is
+  enabled in a worker/all-role process, so a signed nudge runs an early catchUp
+  through the same overlap guard as the loop (a nudge during a running cycle
+  coalesces — skipped, never queued: the stateless connector's next cycle reads
+  a fresh snapshot anyway). Receiver-only processes still host no runner and
+  answer the honest 503; `WEBHOOK_SECRET_SHEETS` stays boot-asserted exactly
+  when sheets ∈ `INGEST_SOURCES`.
 - **Closed:** the supersession counter (A4.1) — content-addressed ids made a
   human's *revert* a permanent duplicate (pipeline served B while the sheet said
   A, reconcile stale forever); re-sightings now salt the id with `-r<n>` derived

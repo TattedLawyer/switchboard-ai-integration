@@ -7,7 +7,7 @@ import { createIngestApp, type SourceEvent } from "./server.js";
 import { assertWebhookSecrets } from "./hmac.js";
 import { baseUrlFor, enabledSources, type Source } from "./sources.js";
 import { createQueue, enqueueEvent, startWorker } from "./queue.js";
-import { catchUp } from "./backfill.js";
+import { connectorFor } from "./connectors/index.js";
 
 const pool = getPool();
 const port = Number(process.env.PORT ?? 4002);
@@ -21,11 +21,17 @@ const ingestRole = (process.env.INGEST_ROLE ?? "all").toLowerCase();
 const BACKFILL_INTERVAL_MS = Number(process.env.BACKFILL_INTERVAL_MS ?? 60_000);
 
 // Factory to create a backfill runner with in-flight guard (prevents overlapping runs).
+// A7: routed through the connector seam — connectorFor picks the right paradigm per
+// source (ledger-feed sources keep the exact catchUp this loop always called, pinned by
+// connector-seam.test.ts + the service-wiring regression pins; sheets gets the snapshot
+// connector instead of a once-a-minute 404 against /events). One connector per runner,
+// constructed once: the seam's registry may resolve construction-time config.
 export function createBackfillRunner(
   pgPool: pg.Pool,
   source: Source,
   baseUrl: string,
 ): () => Promise<void> {
+  const connector = connectorFor(source);
   let running = false;
   return async () => {
     if (running) {
@@ -35,13 +41,36 @@ export function createBackfillRunner(
 
     running = true;
     try {
-      await catchUp(pgPool, source, baseUrl);
+      await connector.catchUp(pgPool, { baseUrl });
     } catch (err) {
       console.error("backfill round failed:", err);
     } finally {
       running = false;
     }
   };
+}
+
+/**
+ * The service's per-source wiring, composed once so the interval loop and the nudge door
+ * share the SAME runner — and therefore the same overlap guard (A7). `sheetsNudge` is
+ * defined exactly when sheets is enabled: the nudge door's early catchUp IS the sheets
+ * runner. A nudge that arrives while a cycle is running COALESCES — the guard skips it,
+ * it is never queued — because the connector is stateless: the next cycle reads a fresh
+ * snapshot and re-diffs from scratch anyway, so a queued re-run could only repeat the
+ * same work the in-flight cycle is already doing.
+ */
+export interface ServiceWiring {
+  runners: { source: Source; run: () => Promise<void>; baseUrl: string }[];
+  sheetsNudge?: () => Promise<void>;
+}
+
+export function createServiceWiring(pgPool: pg.Pool, sources: Source[]): ServiceWiring {
+  const runners = sources.map((source) => {
+    const baseUrl = baseUrlFor(source);
+    return { source, run: createBackfillRunner(pgPool, source, baseUrl), baseUrl };
+  });
+  const sheets = runners.find((r) => r.source === "sheets");
+  return { runners, sheetsNudge: sheets?.run };
 }
 
 async function main() {
@@ -65,6 +94,13 @@ async function main() {
     boss = await createQueue(connectionUrl);
   }
 
+  // A7: the per-source wiring — seam-routed interval runners plus (when sheets is
+  // enabled) the nudge hook that shares the sheets runner's overlap guard. Worker-role
+  // only, for the same reason the interval loop is: backfill/catchUp belongs with the
+  // roles that own event ingestion. A receiver-only process therefore hosts NO runner
+  // and its nudge door keeps answering the honest 503 (see server.ts).
+  const wiring = isWorker ? createServiceWiring(pool, enabledSources()) : undefined;
+
   if (isReceiver) {
     // Create the HTTP receiver app with queue integration
     const enqueue = boss
@@ -75,7 +111,7 @@ async function main() {
         }
       : undefined;
 
-    app = createIngestApp(pool, { enqueue });
+    app = createIngestApp(pool, { enqueue, sheetsNudge: wiring?.sheetsNudge });
     server = app.listen(port, () =>
       console.log(`ingest receiver listening on :${port} (role: ${ingestRole})`)
     );
@@ -90,17 +126,17 @@ async function main() {
   // Periodic backfill: recovers events whose webhook delivery was dropped/failed. Must not
   // run in a receiver-only process (that role only accepts pushes; backfill belongs with
   // the worker/all roles that also own event ingestion). One runner + interval per enabled
-  // source, each polling that source's own feed and cursor.
-  if (isWorker) {
-    for (const source of enabledSources()) {
-      const baseUrl = baseUrlFor(source);
-      const runBackfill = createBackfillRunner(pool, source, baseUrl);
-      runBackfill().catch(() => {
+  // source, each driving that source's own connector and cursor through the seam (A7) —
+  // ledger-feed sources poll their /events feed exactly as before; sheets runs snapshot
+  // catchUp cycles instead of 404ing a feed it never had.
+  if (wiring) {
+    for (const { source, run, baseUrl } of wiring.runners) {
+      run().catch(() => {
         /* initial run errors already logged */
       });
       backfillTimers.push(
         setInterval(() => {
-          runBackfill().catch(() => {
+          run().catch(() => {
             /* errors already logged */
           });
         }, BACKFILL_INTERVAL_MS),

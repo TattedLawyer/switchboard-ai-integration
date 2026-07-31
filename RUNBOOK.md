@@ -113,15 +113,17 @@ row key with another row's content), diffs it against raw-derived state, and
 the sheet's own current rows are the reconciliation truth.
 
 ```bash
-PORT=4005 npm run start -w mocks/sheets    # snapshot API (leave WEBHOOK_URL unset — see the nudge-door note below)
+PORT=4005 npm run start -w mocks/sheets    # snapshot API (WEBHOOK_URL optional — see the nudge-door note below)
 INGEST_SOURCES=sheets npm run backfill  -w ingest   # catchUp: full-grid diff → delta through the standard door
 INGEST_SOURCES=sheets npm run reconcile -w ingest   # compare the sheet's rows against raw (read-only)
 ```
 
-Run sheets through the **CLIs**, which route every enabled source through the
-connector seam. Don't add `sheets` to the long-running service's
-`INGEST_SOURCES` yet — its interval backfill loop is still feed-shaped and will
-404 against the snapshot API once a minute (noisy, harmless; see KNOWN-ISSUES).
+The CLIs and the long-running service both route every enabled source through
+the connector seam (A7): adding `sheets` to the service's `INGEST_SOURCES`
+gives it interval snapshot catchUp cycles — the same full-grid diff the
+backfill CLI runs — not the `/events` 404 noise the pre-A7 feed-shaped loop
+produced. Enabling sheets on the service also makes `WEBHOOK_SECRET_SHEETS` a
+boot requirement (one aggregated error names anything missing).
 
 **Reading a sheets reconcile report.** Field semantics differ from the ledger
 sources: `ledger` = rows in the sheet *right now* (the sheet is its own ledger),
@@ -148,17 +150,25 @@ the periodic reconcile is the guarantee, the nudge is only latency). Losing nudg
 correctness — periodic reconcile-first cycles are the guarantee, and
 `/webhooks/sheets` deliberately answers 404 (a sheet has no event push).
 
-**Hosting truth (until the A6 service wiring):** no shipped process wires a
-sheets runner into the door yet — `main.ts` starts the ingest service without a
-`sheetsNudge` hook, so on the real service every *valid* nudge answers 503
-(honest: the hint can have no effect there). The 202 path is exercised only by
-tests, which construct `createIngestApp(pool, { sheetsNudge })` directly. Do
-**not** point the mock's trigger (`WEBHOOK_URL`) at the real service: every
-surviving notification would answer 503 and count as `failed` in the trigger's
-stats. Correctness never depends on this — reconcile-first cycles via the CLIs
-above are the guarantee; A6's service wiring (routing the service loop through
-the connector seam) is where the runner, and therefore the live 202 path,
-lands.
+**Hosting truth (A7):** the service hosts the door. When `sheets` is in the
+service's `INGEST_SOURCES` (worker or all role), `main.ts` wires the sheets
+interval runner into `createIngestApp` as the nudge hook, so a signed nudge
+runs an early catchUp through the **same overlap guard as the interval loop**:
+a nudge that arrives while a cycle is running is coalesced — skipped, never
+queued — because the stateless connector's next cycle reads a fresh snapshot
+and re-diffs from scratch anyway. The trigger channel may now point at the
+live service; its target is the nudge route itself:
+
+```bash
+INGEST_SOURCES=crm,billing,support,sheets PORT=4002 npm run start -w ingest
+PORT=4005 WEBHOOK_URL=http://localhost:4002/connectors/sheets/nudge npm run start -w mocks/sheets
+```
+
+A receiver-only process (`INGEST_ROLE=receiver`) still hosts no runner —
+backfill belongs with the roles that own event ingestion — so its door keeps
+answering the honest 503. Latency is all a nudge ever buys: reconcile-first
+cycles (the service interval, or the CLIs above) remain the correctness
+guarantee.
 
 **Quarantine-and-fix-the-cell (the everyday flow).** When reconcile names a row
 and `npm run quarantine -w ingest -- --list` shows e.g. `data.currency` for it:

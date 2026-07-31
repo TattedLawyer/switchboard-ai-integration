@@ -19,8 +19,12 @@ export function createIngestApp(
     enqueue?: (source: Source, event: SourceEvent, rawBody: string) => Promise<void>;
     /** A5: the sheets nudge runner hook. Wiring it means "this process hosts a sheets
      *  connector; an authenticated nudge may trigger its early catchUp". Processes that
-     *  don't host one leave it unset and the nudge door answers 503 (see below). */
-    sheetsNudge?: () => Promise<number>;
+     *  don't host one leave it unset and the nudge door answers 503 (see below).
+     *  A7 (signature): the return is a union because two hosts exist — a directly-held
+     *  connector reports its ingested count (`nudge()` → number, the test hosting), while
+     *  the service wiring's shared interval runner reports nothing (void: a coalesced
+     *  nudge skips, and this door never used the count anyway — it only awaits). */
+    sheetsNudge?: () => Promise<number | void>;
   }
 ): express.Express {
   const app = express();
