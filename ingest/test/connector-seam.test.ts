@@ -83,6 +83,10 @@ describe("connector seam — every source resolves to a connector", () => {
       billing: "ledger-feed",
       support: "ledger-feed",
       sheets: "sheet-snapshot",
+      // SPEC CHANGE (Task B): the third paradigm — an opaque-cursor envelope feed with
+      // has_more termination and a 30-day retention boundary. Lands ALONGSIDE the 2a
+      // billing mock (risk rule: nothing rewritten in place; Task F owns the switch).
+      stripefeed: "stripe-feed",
     });
   });
 
