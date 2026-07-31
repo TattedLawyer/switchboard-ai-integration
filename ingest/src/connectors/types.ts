@@ -39,7 +39,189 @@ export type ConnectorSource = Source | typeof SHEET_SOURCE;
 // rather than an echo — including against a source-side agent that has been altered to stop
 // reporting.
 
-export type ConnectorKind = "ledger-feed" | "sheet-snapshot" | "stripe-feed" | "hub-hydrate";
+export type ConnectorKind = "ledger-feed" | "sheet-snapshot" | "stripe-feed" | "hub-hydrate" | "bus-replay";
+
+// ── the durable gap ledger (Task D, cross-cutting) ───────────────────────────────────────
+//
+// It lives HERE, in the seam, because it belongs to no single paradigm: two connectors
+// write it today (stripefeed's 30-day retention boundary, casebus's 72-hour window and
+// its stream reset) and any future retention-bounded source will write the same table.
+// The alternative — a helper inside one connector that the other imports — would make
+// billing depend on the bus module for no reason other than birth order.
+//
+// A gap is UNCLOSABLE by construction: the events existed, were never ingested, and the
+// source no longer serves them. No retry closes it. That is why the record carries an
+// acknowledgement rather than a resolution.
+
+/** The two honest data-loss boundaries (phase plan §3 consequence 2). `retention` = the
+ *  cursor fell out of the source's window with time. `reset` = the source's retained
+ *  stream was replaced wholesale, which can strike a cursor of ANY age. */
+export type GapCause = "retention" | "reset";
+
+/** The in-memory report shape shared by every loss-bearing connector. Bounds are the best
+ *  KNOWABLE, and null means "not knowable", never "zero". */
+export interface UnclosableGap {
+  fromEventId: string | null;
+  fromOccurredAt: string | null;
+  toEventId?: string | null;
+  toOccurredAt: string | null;
+  cause: GapCause;
+}
+
+/** A gap as the ledger holds it. Every timestamp is an ISO STRING on this side of the
+ *  boundary: node-pg parses `timestamptz` into Date OBJECTS, and comparing those with
+ *  `===` is reference equality — false even for the same instant. That mistake already
+ *  cost this project a silently-dead tiebreak (Task C cold review I1), so instants cross
+ *  this seam by value or not at all. */
+export interface GapLedgerRow {
+  id: number;
+  tenantId: string;
+  source: string;
+  cause: GapCause;
+  fromEventId: string | null;
+  fromOccurredAt: string | null;
+  toEventId: string | null;
+  toOccurredAt: string | null;
+  detectedAt: string;
+  acknowledgedAt: string | null;
+  acknowledgedBy: string | null;
+  note: string | null;
+}
+
+interface GapLedgerDbRow {
+  id: string | number;
+  tenant_id: string;
+  source: string;
+  cause: GapCause;
+  from_event_id: string | null;
+  from_occurred_at: Date | string | null;
+  to_event_id: string | null;
+  to_occurred_at: Date | string | null;
+  detected_at: Date | string;
+  acknowledged_at: Date | string | null;
+  acknowledged_by: string | null;
+  note: string | null;
+}
+
+/** Date|string → ISO string, total in both directions. The union is not defensive
+ *  clutter: a pool configured with a string parser for timestamptz is legitimate, and
+ *  assuming one shape is how the identity-compare bug got in. */
+function isoOf(v: Date | string | null): string | null {
+  if (v === null) return null;
+  return v instanceof Date ? v.toISOString() : new Date(v).toISOString();
+}
+
+function toGapRow(r: GapLedgerDbRow): GapLedgerRow {
+  return {
+    id: Number(r.id), // bigint arrives as a string from node-pg
+    tenantId: r.tenant_id,
+    source: r.source,
+    cause: r.cause,
+    fromEventId: r.from_event_id,
+    fromOccurredAt: isoOf(r.from_occurred_at),
+    toEventId: r.to_event_id,
+    toOccurredAt: isoOf(r.to_occurred_at),
+    detectedAt: isoOf(r.detected_at)!,
+    acknowledgedAt: isoOf(r.acknowledged_at),
+    acknowledgedBy: r.acknowledged_by,
+    note: r.note,
+  };
+}
+
+const GAP_COLUMNS =
+  "id, tenant_id, source, cause, from_event_id, from_occurred_at, to_event_id, to_occurred_at, " +
+  "detected_at, acknowledged_at, acknowledged_by, note";
+
+/**
+ * Record a permanent loss. IDEMPOTENT by (tenant, source, cause, from_event_id): the same
+ * loss re-detected by a later run is the SAME gap, so a cron loop cannot manufacture a
+ * row per tick. On a repeat the ORIGINAL row is returned unchanged — deliberately:
+ *   · the FAR edge is not refreshed. It records where the source's window stood when the
+ *     loss was first observed; letting it drift forward with every re-detection would
+ *     quietly widen a reported loss that never grew.
+ *   · an acknowledgement is not cleared. The loss did not get worse; it is the same loss,
+ *     and un-acknowledging it would resurrect a red the operator already answered.
+ */
+export async function recordGap(
+  pool: pg.Pool,
+  gap: {
+    tenantId: string;
+    source: string;
+    cause: GapCause;
+    fromEventId: string | null;
+    fromOccurredAt: string | null;
+    toEventId?: string | null;
+    toOccurredAt: string | null;
+  },
+): Promise<GapLedgerRow> {
+  const res = await pool.query<GapLedgerDbRow>(
+    `insert into ingest.gap_ledger
+       (tenant_id, source, cause, from_event_id, from_occurred_at, to_event_id, to_occurred_at)
+     values ($1, $2, $3, $4, $5, $6, $7)
+     on conflict (tenant_id, source, cause, coalesce(from_event_id, '')) do nothing
+     returning ${GAP_COLUMNS}`,
+    [
+      gap.tenantId,
+      gap.source,
+      gap.cause,
+      gap.fromEventId,
+      gap.fromOccurredAt,
+      gap.toEventId ?? null,
+      gap.toOccurredAt,
+    ],
+  );
+  if (res.rowCount === 1) return toGapRow(res.rows[0]);
+  // DO NOTHING returns no row on conflict; read the incumbent back. Not an error path —
+  // this is the common path once a loss has been detected once.
+  const existing = await pool.query<GapLedgerDbRow>(
+    `select ${GAP_COLUMNS} from ingest.gap_ledger
+      where tenant_id = $1 and source = $2 and cause = $3 and coalesce(from_event_id, '') = coalesce($4, '')`,
+    [gap.tenantId, gap.source, gap.cause, gap.fromEventId],
+  );
+  return toGapRow(existing.rows[0]);
+}
+
+/** This (tenant, source)'s recorded losses, newest first. Scoped IN THE QUERY, never
+ *  filtered afterwards, so a count and a listing can never disagree. */
+export async function listGaps(
+  pool: pg.Pool,
+  tenantId: string,
+  source: string,
+  opts?: { unacknowledgedOnly?: boolean },
+): Promise<GapLedgerRow[]> {
+  const res = await pool.query<GapLedgerDbRow>(
+    `select ${GAP_COLUMNS} from ingest.gap_ledger
+      where tenant_id = $1 and source = $2
+        ${opts?.unacknowledgedOnly ? "and acknowledged_at is null" : ""}
+      order by detected_at desc, id desc`,
+    [tenantId, source],
+  );
+  return res.rows.map(toGapRow);
+}
+
+/**
+ * The operator act. Returns the acknowledged row, or null when no such gap exists FOR
+ * THIS TENANT — the tenant is in the WHERE clause, so acknowledging across the tenant
+ * line is a no-op that says so rather than a silent success.
+ *
+ * Re-acknowledging an already-acknowledged gap overwrites the operator/note and refreshes
+ * the timestamp: an operator correcting or re-signing a disclosure is a legitimate act,
+ * and the gap's BOUNDS — the part that is a factual claim about lost data — are never
+ * touched here.
+ */
+export async function acknowledgeGap(
+  pool: pg.Pool,
+  opts: { tenantId: string; id: number; by: string; note?: string },
+): Promise<GapLedgerRow | null> {
+  const res = await pool.query<GapLedgerDbRow>(
+    `update ingest.gap_ledger
+        set acknowledged_at = now(), acknowledged_by = $3, note = coalesce($4, note)
+      where tenant_id = $1 and id = $2
+      returning ${GAP_COLUMNS}`,
+    [opts.tenantId, opts.id, opts.by, opts.note ?? null],
+  );
+  return res.rowCount === 0 ? null : toGapRow(res.rows[0]);
+}
 
 export interface ConnectorCatchUpOptions {
   /** Overrides the source's configured base URL (the /events feed for ledger-feed

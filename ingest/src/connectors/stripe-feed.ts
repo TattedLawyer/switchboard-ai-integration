@@ -30,6 +30,7 @@ import type {
   ConnectorReconcileOptions,
   ConnectorReconcileResult,
 } from "./types.js";
+import { listGaps, recordGap } from "./types.js";
 import type { ReconcileReport } from "../reconcile.js";
 import { eventSchema } from "../event-schema.js";
 import { DEFAULT_TENANT_ID, ingestEvent } from "../ingest-event.js";
@@ -56,7 +57,9 @@ export interface StripeFeedConnectorOptions {
 /** An unclosable gap: events that existed, were never ingested, and have aged out of
  *  the feed's retention window. Bounds are the best knowable: the last event we DID
  *  ingest (id + its stored occurred_at, when raw still has it) up to the earliest event
- *  the feed still retains. Shape shared with the bus task's future gap report. */
+ *  the feed still retains. Structurally a `UnclosableGap` (types.ts) narrowed to this
+ *  paradigm's single cause — the bus paradigm carries the same shape with `reset` too,
+ *  and both now PERSIST into the shared `ingest.gap_ledger` (Task D). */
 export interface StripeFeedGap {
   fromEventId: string;
   /** occurred_at of the last-ingested event, read back from raw; null when the cursor
@@ -96,10 +99,10 @@ export interface StripeFeedReconcileReport extends ReconcileReport {
    *  would red every reconcile for a month over one poisoned vendor event. `count` =
    *  quarantine rows for that event id (re-serves re-quarantine, so it accumulates). */
   quarantined: { event_id: string; count: number }[];
-  /** Gaps recorded by this instance's catchUp runs, plus a live-detected one when the
-   *  persisted cursor has aged out and no fallback has run yet. See the honesty note on
-   *  reconcile(): a gap whose fallback completed in an earlier PROCESS is not
-   *  re-derivable — the KNOWN-ISSUES entry owns that disclosure. */
+  /** Every gap this (tenant, source) has EVER recorded, read from the durable gap ledger
+   *  — plus any live-detected one, which reconcile records before reading. Task D
+   *  retired the per-process caveat that used to live here: a gap whose fallback ran in
+   *  an earlier process is now re-reported, because the record is state, not memory. */
   gaps: StripeFeedGap[];
 }
 
@@ -129,9 +132,6 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export class StripeFeedConnector implements Connector {
   readonly kind = "stripe-feed" as const;
   readonly source = STRIPEFEED_SOURCE;
-
-  /** Gaps this instance has detected — reconcile()'s memory of catchUp-time fallbacks. */
-  private readonly recordedGaps: StripeFeedGap[] = [];
 
   constructor(private readonly opts: StripeFeedConnectorOptions) {}
 
@@ -174,7 +174,19 @@ export class StripeFeedConnector implements Connector {
           // of importance.
           const gap = await this.buildGap(pool, tenantId, baseUrl, err.cursorId, limit);
           report.gaps.push(gap);
-          this.recordedGaps.push(gap);
+          // Task D: the loss goes into the DURABLE ledger, not just this process's
+          // memory. Idempotent by (tenant, source, cause, from_event_id), so a
+          // once-a-minute backfill loop that keeps re-detecting the same permanent loss
+          // writes one row, not one row per tick.
+          await recordGap(pool, {
+            tenantId,
+            source: this.source,
+            cause: gap.cause,
+            fromEventId: gap.fromEventId,
+            fromOccurredAt: gap.fromOccurredAt,
+            toEventId: null, // this paradigm knows its far edge by TIME, not by id
+            toOccurredAt: gap.toOccurredAt,
+          });
           cursor = null;
           continue;
         }
@@ -223,12 +235,13 @@ export class StripeFeedConnector implements Connector {
    * of the pull path's cursor: reconcile drains the WHOLE retained window from the
    * start, every run (seam rule — built on nothing catchUp produced).
    *
-   * Honesty note on gaps: a gap is only re-derivable from live state while the aged-out
-   * cursor still points at it (i.e. before catchUp's fallback advances the cursor).
-   * After that, this process's instance memory is the only witness — a catchUp-then-exit
-   * process followed by a fresh reconcile process will NOT re-report it. Disclosed in
-   * KNOWN-ISSUES; the durable gap ledger is register-owned follow-up shared with the
-   * bus task's identical need.
+   * Gaps (AMENDED by Task D — the previous note here claimed a limitation that is now
+   * false, and a stale invariant claim in a comment is exactly the class the Task C cold
+   * review caught): gap reporting no longer depends on instance memory. Reconcile detects
+   * a live gap condition (the persisted cursor names an event the feed has forgotten),
+   * RECORDS it into `ingest.gap_ledger`, and then reports everything that ledger holds
+   * for this (tenant, source). A catchUp-then-exit process followed by a fresh reconcile
+   * process now re-reports the loss, because the witness is state.
    */
   async reconcile(
     pool: pg.Pool,
@@ -347,13 +360,33 @@ export class StripeFeedConnector implements Connector {
     }
     extra.sort();
 
-    // Live gap detection: the persisted cursor names an event the feed has forgotten
-    // and no fallback has advanced past it yet — the loss window is still observable.
-    const gaps = [...this.recordedGaps];
+    // Live gap detection, then the DURABLE read. Detection first: the persisted cursor
+    // names an event the feed has forgotten and no fallback has advanced past it yet, so
+    // the loss window is still observable and worth recording from here too. Then the
+    // report is simply what the ledger holds — including losses this process never saw.
     const cursorNow = await this.getCursor(pool, tenantId);
-    if (cursorNow !== null && !retained.has(cursorNow) && !gaps.some((g) => g.fromEventId === cursorNow)) {
-      gaps.push(await this.describeGap(pool, tenantId, cursorNow, earliestRetainedS));
+    if (cursorNow !== null && !retained.has(cursorNow)) {
+      const live = await this.describeGap(pool, tenantId, cursorNow, earliestRetainedS);
+      await recordGap(pool, {
+        tenantId,
+        source: this.source,
+        cause: live.cause,
+        fromEventId: live.fromEventId,
+        fromOccurredAt: live.fromOccurredAt,
+        toEventId: null,
+        toOccurredAt: live.toOccurredAt,
+      });
     }
+    const gaps: StripeFeedGap[] = (await listGaps(pool, tenantId, this.source))
+      // A stripefeed gap always names the cursor it lost; the ledger's nullable near edge
+      // exists for the bus paradigm's first-subscribe reset, which cannot occur here.
+      .filter((g) => g.fromEventId !== null)
+      .map((g) => ({
+        fromEventId: g.fromEventId!,
+        fromOccurredAt: g.fromOccurredAt,
+        toOccurredAt: g.toOccurredAt,
+        cause: "retention" as const,
+      }));
 
     return {
       integrity: { ok: true },
