@@ -295,7 +295,11 @@ describe("STANDING RULE — batch-fatal is forbidden BY CONSTRUCTION, not by enu
       JSON.stringify(batch),
     );
 
-    expect(outcome.status).toBe(202);
+    // NOT 202: an element counted `failed` reached no bucket at all — not raw, not
+    // quarantine, not the DLQ. HubSpot retries only on non-2xx, so acknowledging here
+    // would strand it as a log line forever. Answering 500 buys the vendor's retry;
+    // the batchmates that already landed come back as idempotent duplicates.
+    expect(outcome.status).toBe(500);
     // Honest arithmetic: the element is neither stored nor quarantined, so it is reported
     // as `failed` rather than folded into a bucket it never reached.
     expect(outcome.body).toEqual({ stored: 2, duplicates: 0, quarantined: 0, failed: 1 });

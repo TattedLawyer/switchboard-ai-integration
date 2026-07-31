@@ -166,8 +166,12 @@ export async function handleHubcrmBatch(
       } catch (quarantineErr) {
         // Custody itself failed (the database is the thing that is broken). We refuse to
         // count this as quarantined — that would claim a custody we do not have — so it
-        // is counted as `failed` and logged on the gap channel. The element is not lost
-        // in the vendor's terms: the batch is retried whole, and ingest is idempotent.
+        // is counted as `failed`, logged on the gap channel, AND answered non-2xx below.
+        // The non-2xx is what actually saves the element: HubSpot retries only on
+        // non-2xx (10 attempts over 24h), so a 202 here would acknowledge an element
+        // that reached NO bucket — not raw, not quarantine, not the DLQ — and nothing
+        // would ever retry it. Redelivered batchmates are idempotent duplicates by the
+        // per-element mechanism above, so re-answering the whole batch costs nothing.
         failed++;
         console.error(
           JSON.stringify({
@@ -180,7 +184,12 @@ export async function handleHubcrmBatch(
       }
     }
   }
-  return { status: 202, body: { stored, duplicates, quarantined, ...(failed > 0 ? { failed } : {}) } };
+  // 202 only when every element reached a bucket. An element counted `failed` reached
+  // none, so the batch must NOT be acknowledged — see the custody-failure comment above.
+  return {
+    status: failed > 0 ? 500 : 202,
+    body: { stored, duplicates, quarantined, ...(failed > 0 ? { failed } : {}) },
+  };
 }
 
 // ── the connector ──────────────────────────────────────────────────────────────────────
