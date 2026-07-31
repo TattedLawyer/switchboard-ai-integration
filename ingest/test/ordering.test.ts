@@ -89,7 +89,11 @@ describe("stg_crm__companies latest-state ordering", () => {
     expect(res.rows[0].name).toBe("True latest (09:00 UTC)");
   });
 
-  it("evt-N ordinal breaks ties when occurred_at is identical", async () => {
+  it("received_at breaks ties when occurred_at is identical (successor tiebreak, Task C — evt-9 arrives later and wins)", async () => {
+    // Was "evt-N ordinal breaks ties": the ordinal is retired (it throws on real vendor
+    // ids). Under the successor (occurred_at desc, received_at desc, event_id desc) the
+    // same winner emerges here because evt-9 is INSERTED second — its received_at is
+    // later. The full swap evidence lives in tiebreak-successor.test.ts.
     const companyId = "c-tie-test";
     const sameTimestamp = "2026-01-05T00:00:00.000Z";
 

@@ -178,7 +178,8 @@ describe("staging currency constraint (security M2)", () => {
 
   for (const spec of CURRENCY_SPECS) {
     it(`${spec.title}: 'USD' passes; lowercase 'usd' and injection-shaped 'EUR;drop table x' are NULLed`, async () => {
-      // Numeric suffixes: the models order by (substring(event_id from 5))::bigint.
+      // Distinct entities per row — the latest-state tiebreak (occurred_at desc,
+      // received_at desc, event_id desc; Task C successor) never fires here.
       const rows: Array<[string, string, unknown]> = [
         ["evt-9001", "e-upper", "USD"],
         ["evt-9002", "e-lower", "usd"],

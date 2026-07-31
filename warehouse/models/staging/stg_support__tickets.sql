@@ -1,5 +1,6 @@
 with events as (
-    select event_id, event_type, payload from raw.raw_events
+    -- received_at: the successor tiebreak's second clock (see stg_crm__companies.sql).
+    select event_id, event_type, payload, received_at from raw.raw_events
     where source = 'support' and event_type in ('ticket.created', 'ticket.updated', 'ticket.solved')
 ),
 latest as (
@@ -9,7 +10,8 @@ latest as (
     from events
     order by payload -> 'data' ->> 'id',
              ((payload ->> 'occurred_at')::timestamptz) desc,
-             (substring(event_id from 5))::bigint desc
+             received_at desc,
+             event_id desc
 )
 select
     ticket ->> 'id'              as ticket_id,

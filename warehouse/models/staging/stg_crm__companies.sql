@@ -7,22 +7,30 @@ with company_events as (
 ),
 latest as (
     -- Latest state per company is decided by EVENT time (occurred_at), not arrival time
-    -- (received_at): out-of-order delivery must never let a stale update win. The evt-N
-    -- ordinal is the deterministic tiebreak for identical occurred_at values.
+    -- (received_at): out-of-order delivery must never let a stale update win.
+    -- SUCCESSOR tiebreak (plan §3.1, Task C — retiring the evt-N ordinal): when
+    -- occurred_at ties, received_at desc resolves toward the LATER INGEST, then
+    -- event_id desc is the last-resort deterministic tail. The old substring-cast
+    -- ordinal was the 2a mocks' private emission counter — no real vendor id carries
+    -- it, and the bigint cast THROWS on vendor-shaped ids (HubSpot numeric,
+    -- Stripe evt_…). The swap is pinned by
+    -- ingest/test/tiebreak-successor.test.ts: identical winners on 2a-shaped data,
+    -- divergences enumerated there as a documented spec change.
     -- occurred_at is compared as timestamptz, NOT text (L2-G2): text ordering mis-picks across
     -- timezone offsets and mixed precision (e.g. "…T10:00:00+05:00" is EARLIER in real time
     -- than "…T09:00:00Z" but sorts later as a string). The cast throws on garbage — acceptable
     -- ONLY because every door into raw rejects non-ISO-8601 occurred_at first: the webhook
     -- schema (eventSchema in ingest/src/server.ts), the backfill poll path (same schema, applied
     -- in ingest/src/backfill.ts), and the replay gate in ingest/src/quarantine.ts.
-    -- Same cast applies in all staging views and merge_edges.sql.
+    -- Same cast and ordering apply in all staging views and merge_edges.sql.
     select distinct on (payload -> 'data' ->> 'id')
         payload -> 'data' as company,
         received_at
     from company_events
     order by payload -> 'data' ->> 'id',
              ((payload ->> 'occurred_at')::timestamptz) desc,
-             (substring(event_id from 5))::bigint desc
+             received_at desc,
+             event_id desc
 )
 select
     company ->> 'id'     as company_id,
