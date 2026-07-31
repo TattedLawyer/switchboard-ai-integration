@@ -83,6 +83,50 @@ const seedCompanies = async () => {
   `);
 };
 
+// The `it.fails` pins below say the spec is violated; they pass on ANY throw, so on their
+// own they would stay green if `loadModel` stopped resolving a ref or the SQL errored
+// outright (cold-review M1). These companions pin the OBSERVED WRONG OUTCOME by value —
+// one row, a clean low tier, evidence that never says "ambiguous", and a canonical picked
+// arbitrarily from the two the entity straddles. They are green exactly while the defect
+// is what we say it is, and they go red both when it is fixed AND when it changes shape.
+describe("L2-G3 straddle: the defect as currently OBSERVED (pins the wrong value, not just the wrong direction)", () => {
+  it("tier-2 straddle resolves to ONE row at tier 2 with non-ambiguous evidence and an arbitrary one of the two canonicals", async () => {
+    await seedCompanies();
+    await pool.query(`
+      insert into tmp_support_tickets values
+        ('R-1', null, 'acme.example.com', 'Acme Logistics'),
+        ('R-1', null, 'beta.example.com', 'Beta Freight');
+    `);
+    const rows = (await pool.query(RESOLUTION_SQL)).rows.filter(
+      (r) => r.source === "support" && r.source_entity_id === "R-1",
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].matched_tier).toBe(2);
+    expect(String(rows[0].match_evidence)).not.toMatch(/ambiguous/);
+    // Which one is plan-dependent — that IS the defect, so the pin names the set, not a member.
+    expect(["C-1", "C-2"]).toContain(rows[0].resolved_entity_id);
+  });
+
+  it("tier-1 straddle resolves to ONE row at tier 1 with non-ambiguous evidence and an arbitrary one of the two canonicals", async () => {
+    await seedCompanies();
+    await pool.query(`
+      insert into tmp_ir_crm_emails values
+        ('r@acme.example.com', 'C-1'),
+        ('r@beta.example.com', 'C-2');
+      insert into tmp_support_tickets values
+        ('R-2', 'r@acme.example.com', 'nowhere.example.com', 'Unrelated Name'),
+        ('R-2', 'r@beta.example.com', 'elsewhere.example.com', 'Other Name');
+    `);
+    const rows = (await pool.query(RESOLUTION_SQL)).rows.filter(
+      (r) => r.source === "support" && r.source_entity_id === "R-2",
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].matched_tier).toBe(1);
+    expect(String(rows[0].match_evidence)).not.toMatch(/ambiguous/);
+    expect(["C-1", "C-2"]).toContain(rows[0].resolved_entity_id);
+  });
+});
+
 describe("L2-G3 straddle: one entity, two clean evidence tuples, two canonicals", () => {
   it.fails(
     "tier-2 straddle: a requester whose tickets carry two (domain,name) tuples, each cleanly matching a DIFFERENT canonical, must not silently resolve to an arbitrary one [REPRODUCED — awaiting its own fix decision]",

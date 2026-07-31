@@ -53,14 +53,69 @@ async function deliverThroughDoor(hub: HubcrmApp): Promise<void> {
   }
 }
 
-async function connector(baseUrl: string) {
+async function connector(baseUrl: string, tenantId?: string) {
   const { HubHydrateConnector } = await import("../src/connectors/hub-hydrate.js");
   return new HubHydrateConnector({
     baseUrl,
     databaseUrl: dbUrl,
     timeoutMs: 3000,
     backoff: { baseMs: 1, capMs: 10, maxAttempts: 6 },
+    ...(tenantId === undefined ? {} : { tenantId }),
   });
+}
+
+/** A hand-built object store: the reconcile-truth surface, with exactly the objects a test
+ *  wants and nothing the mock's generator would add. Same two routes the connector uses. */
+interface StoreObject {
+  objectId: number | string;
+  properties: Record<string, unknown>;
+}
+function storeApp(objects: Partial<Record<"company" | "contact" | "deal", StoreObject[]>>): express.Express {
+  const app = express();
+  app.get("/objects/:type", (req, res) => {
+    res.json({ results: objects[req.params.type as keyof typeof objects] ?? [] });
+  });
+  app.get("/objects/:type/:id", (req, res) => {
+    const found = (objects[req.params.type as keyof typeof objects] ?? []).find(
+      (o) => String(o.objectId) === req.params.id,
+    );
+    if (found === undefined) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
+    res.json(found);
+  });
+  return app;
+}
+
+/** Insert a thin event straight into raw with an EXACT received_at. The door stamps
+ *  received_at with now(), which cannot produce the identical-instant tie these tests are
+ *  about; the stored payload shape is byte-for-byte what the door writes. */
+async function insertThin(opts: {
+  tenantId?: string;
+  eventId: string;
+  eventType: string;
+  occurredAtMs: number;
+  receivedAt: string;
+  data: Record<string, unknown>;
+}): Promise<void> {
+  const payload = {
+    event_id: opts.eventId,
+    event_type: opts.eventType,
+    occurred_at: new Date(opts.occurredAtMs).toISOString(),
+    data: opts.data,
+  };
+  await pool.query(
+    `insert into raw.raw_events (tenant_id, source, event_id, event_type, payload, received_at)
+     values ($1, 'hubcrm', $2, $3, $4, $5)`,
+    [
+      opts.tenantId ?? "00000000-0000-0000-0000-000000000000",
+      opts.eventId,
+      opts.eventType,
+      JSON.stringify(payload),
+      opts.receivedAt,
+    ],
+  );
 }
 
 const snapshotRows = async () =>
@@ -265,5 +320,97 @@ describe("hydration: every thin event meets exactly one fate", () => {
       expect(snap.rowCount).toBe(1);
       expect(snap.rows[0].snapshot.properties.currency).toBeNull();
     }
+  });
+});
+
+// ── the latest-event tiebreak (cold review F1) ──────────────────────────────────────────
+
+describe("reconcile's latest-event tiebreak is TOTAL, including the event_id tail", () => {
+  it("two events at the IDENTICAL received_at instant: the event_id tail decides, so the compared snapshot is the successor's — node-pg hands back Date objects, and `a === b` on two Dates is false", async () => {
+    const baseUrl = listen(storeApp({ company: [{ objectId: 111, properties: { name: "current" } }] }));
+    const occurredAtMs = Date.UTC(2026, 0, 1, 12, 0, 0);
+    const receivedAt = "2026-01-01T12:00:01.000Z";
+
+    // Same object, same occurred_at, same received_at — a FULL tie. Under
+    // `occurred_at desc, received_at desc, event_id desc` the successor is `hub-b`.
+    await insertThin({ eventId: "hub-a", eventType: "company.propertyChange", occurredAtMs, receivedAt, data: { objectId: 111, occurredAt: occurredAtMs } });
+    await insertThin({ eventId: "hub-b", eventType: "company.propertyChange", occurredAtMs, receivedAt, data: { objectId: 111, occurredAt: occurredAtMs } });
+
+    // The root cause, pinned rather than described: raw.received_at comes back as a Date.
+    const probe = await pool.query("select received_at from raw.raw_events where event_id = 'hub-a'");
+    expect(probe.rows[0].received_at).toBeInstanceOf(Date);
+
+    // hub-a's snapshot AGREES with the store; hub-b's does not. So the bucket depends
+    // entirely on which event reconcile calls "latest".
+    await pool.query(
+      `insert into ingest.hydrated_snapshots (event_id, object_type, object_id, snapshot, tombstone) values
+         ('hub-a', 'company', '111', '{"properties":{"name":"current"}}'::jsonb, false),
+         ('hub-b', 'company', '111', '{"properties":{"name":"stale"}}'::jsonb, false)`,
+    );
+
+    const rec = await (await connector(baseUrl)).reconcile(pool);
+    expect(rec.integrity.ok).toBe(true);
+    expect(rec.report!.hydrationPending).toBe(0);
+    expect(rec.report!.drifted).toEqual(["company:111"]);
+  });
+});
+
+// ── the hydration DLQ is per TENANT (cold review F2) ────────────────────────────────────
+
+const TENANT_B = "11111111-1111-1111-1111-111111111111";
+
+describe("the hydration DLQ is tenant-scoped, because raw uniqueness is (tenant_id, source, event_id)", () => {
+  it("two tenants legitimately share a vendor event id: tenant A's DLQ'd event must not suppress tenant B's — B hydrates, and B's DLQ listing is its own", async () => {
+    const baseUrl = listen(storeApp({ company: [{ objectId: 222, properties: { name: "b-co" } }] }));
+    const occurredAtMs = Date.UTC(2026, 0, 2, 9, 0, 0);
+    const sharedId = "3816279531"; // one vendor id, two tenants, two different events
+
+    // Tenant A (default): names no hydratable object → terminal in the DLQ, no fetch.
+    await insertThin({ eventId: sharedId, eventType: "company.propertyChange", occurredAtMs, receivedAt: "2026-01-02T09:00:01.000Z", data: { occurredAt: occurredAtMs } });
+    // Tenant B: the same id, a perfectly hydratable event.
+    await insertThin({ tenantId: TENANT_B, eventId: sharedId, eventType: "company.propertyChange", occurredAtMs, receivedAt: "2026-01-02T09:00:02.000Z", data: { objectId: 222, occurredAt: occurredAtMs } });
+
+    const a = await connector(baseUrl);
+    const reportA = await a.catchUpWithReport(pool);
+    expect(reportA.hydrationDlq).toBe(1);
+
+    const b = await connector(baseUrl, TENANT_B);
+    const reportB = await b.catchUpWithReport(pool);
+    expect(reportB.hydrated).toBe(1); // NOT skipped as "already terminal" — that is A's id
+    expect(reportB.hydrationDlq).toBe(0);
+    expect(reportB.hydrationPending).toBe(0);
+    expect(
+      (await pool.query("select 1 from ingest.hydrated_snapshots where tenant_id = $1 and event_id = $2", [TENANT_B, sharedId])).rowCount,
+    ).toBe(1);
+
+    // And B's reconcile reports B's world: no limbo, no borrowed dead letter.
+    const recB = await b.reconcile(pool);
+    expect(recB.integrity.ok).toBe(true);
+    expect(recB.report!.hydrationDlq).toEqual([]);
+    expect(recB.report!.hydrationPending).toBe(0);
+    expect(recB.report!.missing).toEqual([]);
+    expect(recB.report!.drifted).toEqual([]);
+    expect(recB.report!.extra).toEqual([]);
+
+    // A's own terminal record is still exactly one, still A's.
+    const recA = await a.reconcile(pool);
+    expect(recA.report!.hydrationDlq.map((d) => d.event_id)).toEqual([sharedId]);
+  });
+});
+
+// ── "terminal" must not expire (cold review F3) ─────────────────────────────────────────
+
+describe("a dead-lettered hydration is terminal in the RETENTION sense too", () => {
+  it("the DLQ job's keep_until is decades out, not pg-boss's 14-day default — an operator-visible dead letter that evaporates would put the event back in limbo", async () => {
+    await insertThin({ eventId: "hub-terminal", eventType: "company.propertyChange", occurredAtMs: Date.UTC(2026, 0, 3), receivedAt: "2026-01-03T00:00:01.000Z", data: { occurredAt: Date.UTC(2026, 0, 3) } });
+
+    const c = await connector(listen(storeApp({})));
+    expect((await c.catchUpWithReport(pool)).hydrationDlq).toBe(1);
+
+    const { HYDRATE_DLQ } = await import("../src/connectors/hub-hydrate.js");
+    const rows = (await pool.query("select keep_until from pgboss.job where name = $1", [HYDRATE_DLQ])).rows;
+    expect(rows).toHaveLength(1);
+    const yearsOut = (new Date(rows[0].keep_until).getTime() - Date.now()) / (365 * 24 * 3600 * 1000);
+    expect(yearsOut).toBeGreaterThan(50);
   });
 });
