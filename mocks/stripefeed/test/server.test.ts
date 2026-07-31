@@ -222,6 +222,22 @@ describe("house conventions — /simulate and /status process honesty", () => {
         body: JSON.stringify({ count: 0 }),
       });
       expect(bad.status).toBe(400);
+      // Cold-review Minor 5: age_s without count is an operator typo — there is nothing
+      // to age. The lone form was already rejected by the need-count-or-advance rule;
+      // the {advance_s, age_s} form slipped through as a 200 that silently discarded
+      // age_s. Both must be 400.
+      const loneAge = await fetch(`http://127.0.0.1:${port}/simulate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ age_s: 5 }),
+      });
+      expect(loneAge.status).toBe(400);
+      const discardedAge = await fetch(`http://127.0.0.1:${port}/simulate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ advance_s: 60, age_s: 5 }),
+      });
+      expect(discardedAge.status).toBe(400);
     } finally {
       srv.close();
     }
