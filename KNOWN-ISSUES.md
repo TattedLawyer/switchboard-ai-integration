@@ -302,6 +302,37 @@ push channel is a latency hint only. These are the honest edges of that design.
   A, reconcile stale forever); re-sightings now salt the id with `-r<n>` derived
   statelessly from raw, and the ABA soak pins convergence after every cycle.
 
+## Billing feed source (stripefeed) — the 30-day retention boundary (2b Task B)
+
+The Stripe-style feed retains events for **30 days** (research-verified; the
+mock models it with a seeded clock). That window is a *stated data-loss
+boundary of the paradigm itself*, not a bug in the connector — the pipeline's
+second admitted loss class, reported with bounds rather than papered over.
+
+- **Events that age out before ingestion are permanently unreachable.** If the
+  connector's cursor falls more than 30 days behind (long outage, first
+  deployment against an old account), the feed answers the documented 400
+  `resource_missing` for the cursor. The connector then falls back to the
+  earliest retained event, ingests forward (forward progress is never held
+  hostage), and reports the unreachable range as an **unclosable gap with
+  bounds** — last-ingested event id + its `occurred_at` → earliest-retained
+  `created` — via `catchUpWithReport` and the reconcile report (`gaps`,
+  `cause: "retention"`). A backfill target older than 30 days is the same
+  story: the feed cannot serve it, and no amount of retrying changes that.
+- **Gap reports are not yet durable across processes.** A gap is re-derivable
+  from live state only while the aged-out cursor still points at it; once the
+  fallback advances the cursor, the loss is historical and only the detecting
+  *instance* remembers it (surfaced in that process's reconcile). A
+  catchUp-then-exit process followed by a fresh reconcile process will not
+  re-report it. The durable gap ledger is register-owned follow-up, shared
+  with the bus task's identical need (its 72-hour window has the same shape).
+- **Aged-out raw rows are metabolism, not anomalies.** Reconcile counts raw
+  events older than the feed's earliest retained event as `agedOutRaw`
+  (ingested, then aged out — the point of ingestion) and reserves `extra` for
+  the real anomaly: a raw event *inside* the retained window that the feed no
+  longer serves. The two are separable only by that time boundary; an event
+  exactly at the boundary second is classified conservatively as `extra`.
+
 ## Numeric & monetary integrity (added with the numeric-integrity wave)
 
 - **The ingest contract cannot help rows that never pass a door.** The numeric contract

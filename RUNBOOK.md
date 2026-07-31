@@ -8,15 +8,15 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 | Variable | Default | Used by |
 |---|---|---|
 | `DATABASE_URL` | no code default — export it (scripts set it for you) | ingest, agent, CLIs |
-| `WEBHOOK_SECRET_CRM` / `_BILLING` / `_SUPPORT` / `_SHEETS` | **required — fails closed.** No env var means the process throws at boot/first use; there is no silent fallback (the demo values are published in this repo). One secret **per source**, so a leaked secret compromises one source, not all. `_SHEETS` guards only the nudge door (see Sheets source operations) and is asserted at boot only when sheets is in `INGEST_SOURCES` | mock signing, ingest verification |
+| `WEBHOOK_SECRET_CRM` / `_BILLING` / `_SUPPORT` / `_SHEETS` / `_STRIPEFEED` | **required — fails closed.** No env var means the process throws at boot/first use; there is no silent fallback (the demo values are published in this repo). One secret **per source**, so a leaked secret compromises one source, not all. `_SHEETS` guards only the nudge door (see Sheets source operations); `_STRIPEFEED` guards a door the pull-only paradigm never uses (see Stripefeed source operations); each is asserted at boot only when its source is in `INGEST_SOURCES` | mock signing, ingest verification |
 | `LEDGER_HMAC_KEY` | **required — fails closed** (same rule as webhook secrets) | ledger writers (mocks), reconcile chain verification |
 | `ALLOW_DEV_SECRETS` | unset. `1` opts in to the published demo secrets (`demo-secret-<source>`, `demo-ledger-key`) — local demo/test use ONLY; demo.sh/chaos.sh and the vitest configs set it. Never set it in a real deployment | everything above |
 | `AGENT_DATABASE_URL` | derived: `DATABASE_URL` with user/password swapped to `switchboard_agent` (dev password `switchboard_agent`; override with `AGENT_DB_PASSWORD`). The agent/report pool runs as this **database-enforced read-only role** — set explicitly in production | agent report/MCP pool |
 | `INGEST_INSTANCE_ID` | unset → `/status` reports `instance_id: null` and nothing checks it. demo.sh/chaos.sh mint one per run and refuse to proceed unless `:4002/status` echoes it back, proving they are driving the ingest they just started and not one stranded by an earlier run | ingest `/status`, demo.sh, chaos.sh |
 | `LEDGER_PATH` | no code default — export it (scripts set it for you) | each mock process (its own ledger file) |
 | `LEDGER_PATH_CRM` / `_BILLING` / `_SUPPORT` | unset → that source is skipped by reconcile | reconcile CLI (per-source ledger lookup) |
-| `INGEST_SOURCES` | `crm,billing,support` — `sheets` is registered but **opt-in** (it has no `/events` feed for the default surfaces to poll; add it explicitly for sheets catch-up/reconcile runs) | which sources ingest polls/reconciles (scripts pin it explicitly) |
-| `CRM_BASE_URL` / `BILLING_BASE_URL` / `SUPPORT_BASE_URL` / `SHEETS_BASE_URL` | `http://localhost:4001` / `4003` / `4004` / `4005` | backfill CLI (sheets: the snapshot API — `/values` + `/metadata`) |
+| `INGEST_SOURCES` | `crm,billing,support` — `sheets` and `stripefeed` are registered but **opt-in** (neither speaks the `/events` shape the default surfaces poll; add them explicitly for catch-up/reconcile runs) | which sources ingest polls/reconciles (scripts pin it explicitly) |
+| `CRM_BASE_URL` / `BILLING_BASE_URL` / `SUPPORT_BASE_URL` / `SHEETS_BASE_URL` / `STRIPEFEED_BASE_URL` | `http://localhost:4001` / `4003` / `4004` / `4005` / `4006` | backfill CLI (sheets: the snapshot API; stripefeed: the `/v1/events` cursor feed) |
 | `INGEST_ROLE` | `all` (`receiver` \| `worker` \| `all`) | ingest main |
 | `CHAOS_SEED` | `7` | chaos.sh fault-plan seed (CI feeds it as a workflow input; reproduce a red run by re-entering its seed) |
 | `ANTHROPIC_API_KEY` | unset → deterministic report (risk table + watch list; a one-line notice replaces the AI narrative) | agent report |
@@ -179,6 +179,45 @@ the old quarantine entries remain as history (a row can be clean *now* without
 its past being scrubbed). Expect one quarantine entry per cycle per still-broken
 row until someone fixes the cell — depth on this lane measures patience, not
 distinct rows.
+
+## Stripefeed source operations (opaque-cursor feed paradigm, Task B)
+
+The stripefeed source is the Stripe-STYLE envelope feed: **pull-only** (no
+webhook push, no ledger file — `GET /v1/events` *is* the interface, and the
+feed's currently retained event set is the reconciliation truth). It lands
+*alongside* the 2a billing mock; nothing consumes it in the warehouse until
+Task F flips the switch.
+
+```bash
+PORT=4006 npm run start -w mocks/stripefeed          # the feed (shuffle ON: ordering is undocumented)
+INGEST_SOURCES=stripefeed npm run backfill  -w ingest  # drain via starting_after + has_more
+INGEST_SOURCES=stripefeed npm run reconcile -w ingest  # full retained-window drain vs raw (read-only)
+```
+
+Operational notes:
+
+- **The cursor is ours, not the feed's**: `ingest.cursors.last_event_id` holds
+  the id of the last event the connector *processed* (quarantined events
+  included — they are preserved and replayable, so advancing past them is not a
+  drop). Never hand-edit it to "skip ahead"; events between the cursor and the
+  feed's head would be silently unreachable until they age out.
+- **Re-served pages are normal.** Ids are opaque and response ordering is
+  undocumented, so the connector's order-blind cursor can sit mid-window;
+  duplicate deliveries are absorbed by `(tenant, source, event_id)` idempotency.
+  `duplicates` in a catch-up report measures this, not a fault.
+- **A 30-day-stale cursor is a data-loss event, and it is REPORTED**: the run
+  log (and the reconcile report's `gaps`) carries the unclosable range with
+  bounds. See KNOWN-ISSUES "Billing feed source (stripefeed)" — including the
+  disclosed limit that gap reports are per-process, not yet durable.
+- **Reading a stripefeed reconcile report**: `ledger` = events the feed retains
+  *right now* (30-day window), `raw` = everything ever ingested, `agedOutRaw` =
+  raw rows older than the retained window (expected metabolism, not flagged),
+  `extra` = raw rows *inside* the window the feed no longer serves (a real
+  anomaly), `missing` = retained but never ingested.
+- Enabling stripefeed on the long-running service makes
+  `WEBHOOK_SECRET_STRIPEFEED` a boot requirement like every registered source,
+  even though the paradigm never uses its generic webhook door — an armed door
+  with a real secret, not a silent hole. The pull path itself needs no secret.
 
 ## Backup and restore
 
