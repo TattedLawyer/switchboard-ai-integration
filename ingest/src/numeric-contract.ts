@@ -157,6 +157,21 @@ export const NUMERIC_CONTRACT: Readonly<Record<string, EventContract>> = {
   // passes by the absent-equivalence decision).
   "hubcrm.company.snapshot": {},
   "hubcrm.contact.snapshot": {},
+  // casebus (Task D) — the event-bus SUBSCRIBE/REPLAY support source (Service-Cloud-case
+  // shaped, spec D8). Declared ahead of warehouse consumption (Task F owns the staging
+  // switch) — the registry's permitted direction. The rules bind the two payload fields
+  // that carry real constraints; the lifecycle events that carry none still get an empty
+  // rule set, which means "declared and consumed-able", not "forgotten".
+  //
+  // priority is REQUIRED on creation: a case with no priority cannot be triaged, and a
+  // vendor sending one outside the vocabulary is a contract drift the operator must see
+  // rather than a value to guess at. resolution_minutes is an unsigned integer — a
+  // negative resolution time is corruption (the case closed before it opened), not a
+  // signed-surface reversal, so it quarantines with a reason naming the field.
+  "case.created":       { priority: { type: "string", required: true, pattern: "^(low|normal|high)$" } },
+  "case.comment.added": {},
+  "case.updated":       {},
+  "case.closed":        { resolution_minutes: { integer: true, required: true, signed: false } },
   "hubcrm.deal.snapshot": {
     amount_cents: { type: "string", required: false, pattern: "^\\d{1,15}$" },
     currency:     { ...CURRENCY },

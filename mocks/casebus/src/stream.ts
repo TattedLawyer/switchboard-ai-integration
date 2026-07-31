@@ -43,6 +43,14 @@ export interface StreamOptions {
   /** Research: 72 hours. Overridable only so tests can pin the boundary cheaply; the
    *  default IS the researched contract. */
   retentionHours?: number;
+  /** Poison fault (house knob, hubcrm's poisonObjectIds precedent): these EMISSION
+   *  ordinals ship an unparseable `event_time`. A vendor clock bug is the realistic way
+   *  a single bad event lands mid-batch, and it exercises the standing poison-isolation
+   *  rule against a field EVERY event has — so the test does not depend on which slot of
+   *  the script cycle happened to carry a contract-bound field. The stream's own
+   *  bookkeeping is unaffected: retention and append-order run off an internal clock
+   *  value, never off the wire string. */
+  poisonEmissionIndexes?: number[];
 }
 
 export interface FetchResult {
@@ -121,8 +129,16 @@ export function createStream(opts: StreamOptions): StreamState {
   const nowS = () => bootS + offsetS;
 
   let streamId = randomUUID();
-  let events: BusEvent[] = [];
+  // The internal clock value rides ALONGSIDE the event, never inside it: a poisoned
+  // event_time must corrupt the wire without corrupting the stream's own retention and
+  // append-order arithmetic (otherwise the fault would break the mock, not the client).
+  interface Entry {
+    ev: BusEvent;
+    tS: number;
+  }
+  let entries: Entry[] = [];
   let emitted = 0;
+  const poisoned = new Set(opts.poisonEmissionIndexes ?? []);
 
   // 4-slot script cycle over the shared support universe: created → comment → updated →
   // closed, the Service-Cloud-case lifecycle (spec D8) rather than reinvented entities.
@@ -162,8 +178,8 @@ export function createStream(opts: StreamOptions): StreamState {
 
   const emit = (count: number, emitOpts?: { ageS?: number }): BusEvent[] => {
     const t = nowS() - (emitOpts?.ageS ?? 0);
-    const last = events.at(-1);
-    if (last !== undefined && t < Math.floor(Date.parse(last.event.event_time) / 1000)) {
+    const last = entries.at(-1);
+    if (last !== undefined && t < last.tS) {
       throw new Error(
         "stream refuses emission: event_time would regress — the bus appends; history never " +
           "interleaves. Emit aged batches first.",
@@ -171,18 +187,24 @@ export function createStream(opts: StreamOptions): StreamState {
     }
     const batch: BusEvent[] = [];
     for (let i = 0; i < count; i++) {
-      const { type, payload } = script(emitted++);
-      batch.push({
+      const ordinal = emitted++;
+      const { type, payload } = script(ordinal);
+      const ev: BusEvent = {
         replay_id: mintReplayId(),
-        event: { id: mintEventId(), type, event_time: new Date(t * 1000).toISOString(), payload },
-      });
+        event: {
+          id: mintEventId(),
+          type,
+          event_time: poisoned.has(ordinal) ? "not-a-timestamp" : new Date(t * 1000).toISOString(),
+          payload,
+        },
+      };
+      batch.push(ev);
+      entries.push({ ev, tS: t });
     }
-    events.push(...batch);
     return batch;
   };
 
-  const retained = (): BusEvent[] =>
-    events.filter((e) => nowS() - Math.floor(Date.parse(e.event.event_time) / 1000) <= retentionS);
+  const retained = (): BusEvent[] => entries.filter((e) => nowS() - e.tS <= retentionS).map((e) => e.ev);
 
   const fetch = (preset: ReplayPreset, replayId: string | null, numRequested: number): FetchResult => {
     const window = retained();
@@ -214,7 +236,7 @@ export function createStream(opts: StreamOptions): StreamState {
     seq: () => emitted,
     streamId: () => streamId,
     reset: () => {
-      events = [];
+      entries = [];
       streamId = randomUUID();
       return streamId;
     },

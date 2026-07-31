@@ -43,6 +43,10 @@ import { CorruptedReplayIdError, REPLAY_PRESETS, createStream, type ReplayPreset
 export interface CasebusAppOptions {
   seed: number;
   retentionHours?: number;
+  /** See StreamOptions: these emission ordinals ship an unparseable `event_time`, so a
+   *  poison event lands MID-BATCH between healthy ones — the standing poison-isolation
+   *  rule's test material. */
+  poisonEmissionIndexes?: number[];
   /** At-least-once delivery, as a seeded fault: this fraction of served events is
    *  re-served within the SAME batch. The connector's idempotency must absorb it, and
    *  the oracle must prove the absorption is COUNTED, not silently swallowed. */
@@ -62,7 +66,11 @@ const busError = (
 ) => res.status(status).type("application/json").send(JSON.stringify({ error: err }));
 
 export function createCasebusApp(opts: CasebusAppOptions): CasebusApp {
-  const stream = createStream({ seed: opts.seed, retentionHours: opts.retentionHours });
+  const stream = createStream({
+    seed: opts.seed,
+    retentionHours: opts.retentionHours,
+    poisonEmissionIndexes: opts.poisonEmissionIndexes,
+  });
   const dupRand = opts.duplicate ? prng(opts.duplicate.seed) : null;
   const instance_id = randomUUID(); // minted per BOOT — the /status freshness identity,
   // deliberately distinct from stream_id, which moves on every reset.

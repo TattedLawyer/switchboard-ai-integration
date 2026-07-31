@@ -342,12 +342,25 @@ describe("L1 numeric contract at the trust boundary", () => {
       // — Task F owns the staging switch), so the declared floor moves with them and
       // each declared-but-unconsumed type is pinned BY NAME: until a model consumes it,
       // this pin is the only thing that stops a declaration from vanishing silently.
-      expect(declared.length).toBeGreaterThanOrEqual(19);
+      // SPEC CHANGE (Task D, deliberate): the floor moves 19 → 35. The jump is not this
+      // task alone — Task C's hubcrm thin-event and hydrated-snapshot types were declared
+      // without raising the floor, so the pin had gone slack by 12 and would not have
+      // noticed them vanishing. Task D adds 4 (the casebus case lifecycle) and the floor
+      // is re-tightened to the true count, deliberately, so it goes back to doing its job.
+      expect(declared.length).toBeGreaterThanOrEqual(35);
       expect(declared).toContain("sheet.row_upserted");
       expect(declared).toContain("sheet.row_deleted");
       expect(declared).toContain("invoice.finalized");
       expect(declared).toContain("charge.succeeded");
       expect(declared).toContain("charge.failed");
+      // hubcrm (Task C), pinned by name here for the first time — see the note above.
+      expect(declared).toContain("company.propertyChange");
+      expect(declared).toContain("hubcrm.deal.snapshot");
+      // casebus (Task D): the Service-Cloud-case lifecycle, declared ahead of consumption.
+      expect(declared).toContain("case.created");
+      expect(declared).toContain("case.comment.added");
+      expect(declared).toContain("case.updated");
+      expect(declared).toContain("case.closed");
     });
   });
 });

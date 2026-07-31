@@ -91,6 +91,12 @@ describe("connector seam — every source resolves to a connector", () => {
       // hydration pump with a D7 snapshot table. Lands ALONGSIDE the 2a crm mock
       // (same risk rule; Task F owns the old CRM's retirement).
       hubcrm: "hub-hydrate",
+      // SPEC CHANGE (Task D): the FIFTH arm and the fourth-and-last paradigm — a stream
+      // you SUBSCRIBE to, resumed by an opaque replay id, bounded by a 72h window that
+      // can also be reset out from under the cursor. Lands ALONGSIDE the 2a support mock
+      // (same risk rule; Task F owns the warehouse switch). With this entry the seam has
+      // carried every paradigm the phase set out to prove.
+      casebus: "bus-replay",
     });
   });
 

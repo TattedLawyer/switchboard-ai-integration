@@ -8,14 +8,19 @@
 // WEBHOOK_SECRET_HUBCRM boot requirement when enabled, connector registry arm) and like
 // it deliberately NOT default-enabled. It lands ALONGSIDE the 2a crm mock (risk rule:
 // nothing rewritten in place; Task F owns the old CRM's retirement).
-export const SOURCES = ["crm", "billing", "support", "sheets", "stripefeed", "hubcrm"] as const;
+// casebus (Task D) is the event-bus SUBSCRIBE/REPLAY support source — the fourth and last
+// paradigm — registered like stripefeed and hubcrm (deployment surface: CASEBUS_BASE_URL,
+// port 4008, INGEST_SOURCES opt-in) and like them deliberately NOT default-enabled. It
+// lands ALONGSIDE the 2a support mock (risk rule: nothing rewritten in place; the
+// staging/warehouse switch is Task F's).
+export const SOURCES = ["crm", "billing", "support", "sheets", "stripefeed", "hubcrm", "casebus"] as const;
 export type Source = (typeof SOURCES)[number];
 
 export function isSource(v: string): v is Source {
   return (SOURCES as readonly string[]).includes(v);
 }
 
-const DEFAULT_PORTS: Record<Source, number> = { crm: 4001, billing: 4003, support: 4004, sheets: 4005, stripefeed: 4006, hubcrm: 4007 };
+const DEFAULT_PORTS: Record<Source, number> = { crm: 4001, billing: 4003, support: 4004, sheets: 4005, stripefeed: 4006, hubcrm: 4007, casebus: 4008 };
 
 export function baseUrlFor(source: Source): string {
   return process.env[`${source.toUpperCase()}_BASE_URL`] ?? `http://localhost:${DEFAULT_PORTS[source]}`;
@@ -32,7 +37,10 @@ export function baseUrlFor(source: Source): string {
 // contract is its own connector's business; opting in makes WEBHOOK_SECRET_STRIPEFEED a
 // boot requirement even though the paradigm is pull-only — the generic /webhooks/:source
 // door exists for every registered source, and an armed-but-unused door still needs a
-// real secret rather than a silent hole (documented in RUNBOOK).
+// real secret rather than a silent hole (documented in RUNBOOK). casebus (Task D) takes
+// the identical posture: registered, opt-in only, pull-only (a SUBSCRIBER, not a
+// receiver), and opting it in makes WEBHOOK_SECRET_CASEBUS a boot requirement for the
+// same armed-door reason.
 const DEFAULT_ENABLED: readonly Source[] = ["crm", "billing", "support"];
 
 // Which sources this deployment actually polls/reconciles. Scripts pin this explicitly;

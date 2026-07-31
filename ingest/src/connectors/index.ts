@@ -2,9 +2,10 @@ import { SOURCES, baseUrlFor, isSource, type Source } from "../sources.js";
 import type pg from "pg";
 import { LedgerFeedConnector } from "./ledger-feed.js";
 import { SheetSnapshotConnector } from "./sheet-snapshot.js";
-import { StripeFeedConnector, type StripeFeedGap } from "./stripe-feed.js";
+import { StripeFeedConnector } from "./stripe-feed.js";
 import { HubHydrateConnector } from "./hub-hydrate.js";
-import type { Connector, ConnectorCatchUpOptions, ConnectorKind } from "./types.js";
+import { BusReplayConnector } from "./bus-replay.js";
+import type { Connector, ConnectorCatchUpOptions, ConnectorKind, GapLedgerRow, UnclosableGap } from "./types.js";
 
 export type {
   Connector,
@@ -12,11 +13,16 @@ export type {
   ConnectorCatchUpOptions,
   ConnectorReconcileOptions,
   ConnectorReconcileResult,
+  GapCause,
+  GapLedgerRow,
+  UnclosableGap,
 } from "./types.js";
+export { acknowledgeGap, listGaps, recordGap } from "./types.js";
 export { LedgerFeedConnector } from "./ledger-feed.js";
 export { SheetSnapshotConnector } from "./sheet-snapshot.js";
 export { StripeFeedConnector, STRIPEFEED_SOURCE } from "./stripe-feed.js";
 export { HubHydrateConnector, HUBCRM_SOURCE, handleHubcrmBatch, mapThinEvent } from "./hub-hydrate.js";
+export { BusReplayConnector, CASEBUS_SOURCE, type BusGap, type FallbackPreset } from "./bus-replay.js";
 
 // Registry. The point of the seam, now exercised: a new paradigm is a new entry, not a
 // fork of the spine. sheets (A5) is the first non-feed arm — its base URL resolves at
@@ -33,6 +39,10 @@ const REGISTRY: Record<Source, () => Connector> = {
   // hubcrm (Task C): the fourth paradigm — thin batched webhooks land at the door;
   // catchUp is a hydration pump; reconcile reads the vendor object store's own truth.
   hubcrm: () => new HubHydrateConnector({ baseUrl: baseUrlFor("hubcrm") }),
+  // casebus (Task D): the fifth arm and the LAST paradigm — a stream you subscribe to.
+  // catchUp resubscribes from a stored opaque replay id; reconcile reads the retained
+  // 72h window, which is the only truth this paradigm has.
+  casebus: () => new BusReplayConnector({ baseUrl: baseUrlFor("casebus") }),
 };
 
 /**
@@ -74,7 +84,9 @@ export interface CatchUpReport {
   ingested: number;
   duplicates: number;
   quarantined: number;
-  gaps?: StripeFeedGap[];
+  /** Widened in Task D from the stripefeed-only shape: the bus paradigm reports the same
+   *  kind of loss with a second cause (`reset`) and a far edge that can be an event ID. */
+  gaps?: UnclosableGap[];
   degradations?: string[];
   hydrated?: number;
   tombstoned?: number;
@@ -92,12 +104,31 @@ export function catchUpReporter(connector: Connector): ReportingConnector | null
 }
 
 /** ONE rendering of an unclosable gap, shared by every operator surface (backfill CLI,
- *  service log, reconcile CLI) so grep/alerting can key on a single phrase. */
-export function formatUnclosableGap(source: string, gap: StripeFeedGap): string {
+ *  service log, reconcile CLI) so grep/alerting can key on a single phrase. The leading
+ *  "PERMANENT DATA LOSS — unclosable gap (<cause>)" is that phrase and is deliberately
+ *  identical for both causes; only the EXPLANATION differs, because the two causes call
+ *  for different operator responses (wait-and-widen-the-poll vs. check the source org's
+ *  instance move). Naming a reset "aged out of the retention window" — which the
+ *  stripefeed-shaped wording did — would send the operator to the wrong investigation. */
+export function formatUnclosableGap(source: string, gap: UnclosableGap): string {
+  const why =
+    gap.cause === "reset"
+      ? "were purged when the source's retained event stream was RESET (the vendor documents this " +
+        "for an org moved to a new instance; it can strike a cursor of any age) and cannot be recovered"
+      : "aged out of the source's retention window before ingestion and cannot be recovered";
   return (
     `[${source}] PERMANENT DATA LOSS — unclosable gap (${gap.cause}): events after ` +
-    `${gap.fromEventId} (occurred ${gap.fromOccurredAt ?? "unknown"}) up to ` +
-    `${gap.toOccurredAt ?? "the end of the retained window"} aged out of the feed's ` +
-    `retention window before ingestion and cannot be recovered`
+    `${gap.fromEventId ?? "the start of our record"} (occurred ${gap.fromOccurredAt ?? "unknown"}) up to ` +
+    `${gap.toEventId ?? gap.toOccurredAt ?? "the end of the retained window"} ${why}`
   );
+}
+
+/** The same gap as the DURABLE ledger holds it, for the reconcile surface: adds the
+ *  acknowledgement state, which is what decides whether the gap still reds the run. */
+export function formatGapLedgerRow(source: string, gap: GapLedgerRow): string {
+  const base = formatUnclosableGap(source, gap);
+  return gap.acknowledgedAt === null
+    ? `${base} [gap #${gap.id}, detected ${gap.detectedAt}, UNACKNOWLEDGED]`
+    : `${base} [gap #${gap.id}, detected ${gap.detectedAt}, acknowledged ${gap.acknowledgedAt} by ` +
+        `${gap.acknowledgedBy ?? "unknown"}${gap.note ? `: ${gap.note}` : ""}]`;
 }

@@ -26,8 +26,16 @@ describe("source registry", () => {
   // as a boot requirement when enabled, the connector registry arm) off `Source`. It
   // lands ALONGSIDE the 2a crm mock (risk rule: nothing rewritten in place; Task F
   // owns the old CRM's retirement).
-  it("knows exactly crm, billing, support, sheets, stripefeed, hubcrm", () => {
-    expect([...SOURCES]).toEqual(["crm", "billing", "support", "sheets", "stripefeed", "hubcrm"]);
+  // SPEC CHANGE (Task D, deliberate): membership grew again → +casebus, the event-bus
+  // SUBSCRIBE/REPLAY support source. Registration hangs the deployment surface
+  // (CASEBUS_BASE_URL, port 4008, INGEST_SOURCES opt-in, WEBHOOK_SECRET_CASEBUS as a
+  // boot requirement when enabled, the connector registry arm) off `Source`. Subscribe-
+  // only paradigm — like stripefeed its webhook door and queue exist as inert registry
+  // consequences and are documented as unused (RUNBOOK). It lands ALONGSIDE the 2a
+  // support mock (risk rule: nothing rewritten in place; Task F owns the switch).
+  it("knows exactly crm, billing, support, sheets, stripefeed, hubcrm, casebus", () => {
+    expect([...SOURCES]).toEqual(["crm", "billing", "support", "sheets", "stripefeed", "hubcrm", "casebus"]);
+    expect(isSource("casebus")).toBe(true);
     expect(isSource("crm")).toBe(true);
     expect(isSource("sheets")).toBe(true);
     expect(isSource("stripefeed")).toBe(true);
