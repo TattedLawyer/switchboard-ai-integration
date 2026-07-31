@@ -104,6 +104,15 @@ beforeAll(async () => {
            0, 0, 0, 0, 0, 0, 0, false, null, null, false, 0, 0, 0, 0, null, 0, 0, 0, 0, true,
            true, 1, null, null, 0, 1
     union all
+    -- Cold review I1 (A6): the COMBINED unknown-currency case — unknown currency in a
+    -- ledger source (1 invoice) AND in sheets (3 sheet rows). The unknown-currency flag
+    -- fires (so the catch-all is blocked) and must count ALL 4 rows; summing only
+    -- invoice+deal renders an understated "1 row(s)".
+    select 'DEMO-C-0011', 'DEMO Compass Group 11', 'compass-11.example.com',
+           true, true, false, true,
+           0, 0, null, null, 0, 0, 0, false, null, null, false, 0, 0, 0, 0, null, 0, 1, 0, 0, true,
+           true, 3, null, null, 0, 3
+    union all
     select 'billing:B-0015', 'DEMO Orphan Billing', 'orphan.example.com',
            false, true, false, false,
            0, 0, 90000, 90000, 0, 0, 0, false, 'USD', null, false, 1, 0, 0, 0, null, 0, 0, 0, 0, false,
@@ -254,6 +263,20 @@ describe("Monday report (stub)", () => {
     const watch = md.split("## Accounts to watch")[1].split("##")[0];
     expect(watch).toContain("DEMO-C-0010");
     expect(watch).toContain("data quality warning — see mart counters");
+  });
+
+  // ── Cold review I1: the unknown-currency sum omitted null_currency_sheet_count. The
+  // sheet-ONLY case (DEMO-C-0010) reaches the watch list via the catch-all, but the
+  // COMBINED case (unknown currency in invoices AND sheets) fires the unknown-currency
+  // flag — which blocks the catch-all — with an understated count.
+  it("I1: an entity with unknown currency in invoices AND sheets counts BOTH — DEMO-C-0011's 1 invoice + 3 sheet rows surface as '4 row(s) with unknown currency', never an understated 1", async () => {
+    const md = await generateMondayReport(pool, new TemplateLlm());
+    const row = md.split("\n").find((l) => l.startsWith("| DEMO-C-0011"));
+    expect(row).toBeDefined();
+    expect(row!).toContain("4 row(s) with unknown currency");
+    const watch = md.split("## Accounts to watch")[1].split("##")[0];
+    expect(watch).toContain("DEMO-C-0011");
+    expect(watch).toContain("4 row(s) with unknown currency");
   });
 
   it("regression: merged-away duplicates DEMO-C-0021/0022 must NOT appear (canonicals only)", async () => {
