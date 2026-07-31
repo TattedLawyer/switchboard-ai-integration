@@ -39,7 +39,7 @@ export type ConnectorSource = Source | typeof SHEET_SOURCE;
 // rather than an echo — including against a source-side agent that has been altered to stop
 // reporting.
 
-export type ConnectorKind = "ledger-feed" | "sheet-snapshot" | "stripe-feed";
+export type ConnectorKind = "ledger-feed" | "sheet-snapshot" | "stripe-feed" | "hub-hydrate";
 
 export interface ConnectorCatchUpOptions {
   /** Overrides the source's configured base URL (the /events feed for ledger-feed

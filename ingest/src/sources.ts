@@ -3,14 +3,19 @@
 // connector registry arm), and like sheets deliberately NOT default-enabled. It lands
 // ALONGSIDE the 2a billing mock (risk rule: nothing rewritten in place; the staging/
 // warehouse switch is Task F's).
-export const SOURCES = ["crm", "billing", "support", "sheets", "stripefeed"] as const;
+// hubcrm (Task C) is the HubSpot-STYLE thin-webhook + hydration source — registered like
+// stripefeed (deployment surface: base URL env, port 4007, INGEST_SOURCES opt-in,
+// WEBHOOK_SECRET_HUBCRM boot requirement when enabled, connector registry arm) and like
+// it deliberately NOT default-enabled. It lands ALONGSIDE the 2a crm mock (risk rule:
+// nothing rewritten in place; Task F owns the old CRM's retirement).
+export const SOURCES = ["crm", "billing", "support", "sheets", "stripefeed", "hubcrm"] as const;
 export type Source = (typeof SOURCES)[number];
 
 export function isSource(v: string): v is Source {
   return (SOURCES as readonly string[]).includes(v);
 }
 
-const DEFAULT_PORTS: Record<Source, number> = { crm: 4001, billing: 4003, support: 4004, sheets: 4005, stripefeed: 4006 };
+const DEFAULT_PORTS: Record<Source, number> = { crm: 4001, billing: 4003, support: 4004, sheets: 4005, stripefeed: 4006, hubcrm: 4007 };
 
 export function baseUrlFor(source: Source): string {
   return process.env[`${source.toUpperCase()}_BASE_URL`] ?? `http://localhost:${DEFAULT_PORTS[source]}`;

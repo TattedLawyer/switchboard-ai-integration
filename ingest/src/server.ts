@@ -5,6 +5,7 @@ import { ingestEvent } from "./ingest-event.js";
 import { secretForSource, verifySignature } from "./hmac.js";
 import { isSource, type Source } from "./sources.js";
 import { eventSchema, type SourceEvent } from "./event-schema.js";
+import { handleHubcrmBatch } from "./connectors/hub-hydrate.js";
 // Compatibility re-export: backfill.ts, ingest-event.ts, the connectors and several tests
 // import the schema and its type from this module. The definition lives in event-schema.ts.
 export { eventSchema };
@@ -106,6 +107,17 @@ export function createIngestApp(
       const signature = req.header("x-switchboard-signature");
       if (!verifySignature(rawBody, signature, secretForSource(source))) {
         return res.status(401).json({ error: "invalid signature" });
+      }
+      // Task C: hubcrm delivers BATCHES (≤100 metadata-only events per request — the
+      // researched vendor contract), so after the door's shared machinery (media-type
+      // gate, raw-body capture, HMAC over the whole request) has run, the verified
+      // request is handed to the connector module's batch handler: it splits the batch
+      // and runs each element through the SAME per-event pipeline as below (unstorable
+      // divert → schema gate → quarantine or ingest). Vendor knowledge stays in
+      // connectors/hub-hydrate.ts; batch-fatal is forbidden there by construction.
+      if (source === "hubcrm") {
+        const outcome = await handleHubcrmBatch(pool, req.body, rawBody);
+        return res.status(outcome.status).json(outcome.body);
       }
       // Unstorable divert: a U+0000 (the \u0000 escape) or a lone UTF-16 surrogate (the \ud800
       // escape) in any string is valid JSON and passes the signature check, but Postgres jsonb

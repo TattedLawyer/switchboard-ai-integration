@@ -3,6 +3,7 @@ import type pg from "pg";
 import { LedgerFeedConnector } from "./ledger-feed.js";
 import { SheetSnapshotConnector } from "./sheet-snapshot.js";
 import { StripeFeedConnector, type StripeFeedGap } from "./stripe-feed.js";
+import { HubHydrateConnector } from "./hub-hydrate.js";
 import type { Connector, ConnectorCatchUpOptions, ConnectorKind } from "./types.js";
 
 export type {
@@ -15,6 +16,7 @@ export type {
 export { LedgerFeedConnector } from "./ledger-feed.js";
 export { SheetSnapshotConnector } from "./sheet-snapshot.js";
 export { StripeFeedConnector, STRIPEFEED_SOURCE } from "./stripe-feed.js";
+export { HubHydrateConnector, HUBCRM_SOURCE, handleHubcrmBatch, mapThinEvent } from "./hub-hydrate.js";
 
 // Registry. The point of the seam, now exercised: a new paradigm is a new entry, not a
 // fork of the spine. sheets (A5) is the first non-feed arm — its base URL resolves at
@@ -28,6 +30,9 @@ const REGISTRY: Record<Source, () => Connector> = {
   support: () => new LedgerFeedConnector("support"),
   sheets: () => new SheetSnapshotConnector({ baseUrl: baseUrlFor("sheets") }),
   stripefeed: () => new StripeFeedConnector({ baseUrl: baseUrlFor("stripefeed") }),
+  // hubcrm (Task C): the fourth paradigm — thin batched webhooks land at the door;
+  // catchUp is a hydration pump; reconcile reads the vendor object store's own truth.
+  hubcrm: () => new HubHydrateConnector({ baseUrl: baseUrlFor("hubcrm") }),
 };
 
 /**
@@ -60,13 +65,21 @@ export function connectorKinds(): Record<Source, ConnectorKind> {
 // connector have more to say than a number?" without the seam knowing paradigm shapes.
 
 /** The common shape of the widening reports (sheets carries degradations, stripe-feed
- *  carries gaps; both count ingested/duplicates/quarantined). */
+ *  carries gaps, hub-hydrate carries hydration accounting; all count
+ *  ingested/duplicates/quarantined). Every optional field here is an OPERATOR-SURFACE
+ *  OBLIGATION: the standing checklist (Gate-H 4-for-4) says a field a connector reports
+ *  must be consumed and PRINTED by the shipped CLIs and service log in the same task —
+ *  never oracle-only. */
 export interface CatchUpReport {
   ingested: number;
   duplicates: number;
   quarantined: number;
   gaps?: StripeFeedGap[];
   degradations?: string[];
+  hydrated?: number;
+  tombstoned?: number;
+  hydrationDlq?: number;
+  hydrationPending?: number;
 }
 
 export interface ReportingConnector {

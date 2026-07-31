@@ -72,6 +72,23 @@ const MONEY = { integer: true, required: true, signed: false, plausibleMax: null
 // fakes like "ABC"; the ISO-4217 allowlist is registered follow-up work.
 const CURRENCY = { type: "string", required: false, pattern: "^[A-Z]{3}$" } as const;
 
+// The hubcrm thin-event base: the researched metadata field set, all vendor-named
+// (camelCase — the payload is stored verbatim). occurredAt is the vendor's ms-epoch
+// clock; the door normalizes a COPY into the envelope's ISO occurred_at, the original
+// stays here under the contract's eye.
+const INT_REQ = { integer: true, required: true, signed: false } as const;
+const HUB_THIN = {
+  eventId: { ...INT_REQ },
+  objectId: { ...INT_REQ },
+  portalId: { ...INT_REQ },
+  occurredAt: { ...INT_REQ },
+  attemptNumber: { ...INT_REQ },
+} as const;
+const HUB_PROP = {
+  propertyName:  { type: "string", required: true, pattern: "^[a-zA-Z][a-zA-Z0-9_]*$" },
+  propertyValue: { type: "string", required: false, pattern: "^[\\s\\S]{0,10000}$" },
+} as const;
+
 export const NUMERIC_CONTRACT: Readonly<Record<string, EventContract>> = {
   // billing
   "invoice.created":   { amount_cents: { ...MONEY }, currency: { ...CURRENCY } },
@@ -114,6 +131,36 @@ export const NUMERIC_CONTRACT: Readonly<Record<string, EventContract>> = {
   "sheet.row_upserted": { amount_cents: { integer: true, required: false, signed: false }, currency: { ...CURRENCY } },
   // A tombstone carries no fields to validate; the empty set still means "declared".
   "sheet.row_deleted":  {},
+  // hubcrm (Task C) — the HubSpot-STYLE thin-webhook source. `data` is the vendor event
+  // VERBATIM (D7: stored exactly as received), so the rules bind the vendor's own
+  // metadata fields. Sparse by design: property-change events carry ONE property;
+  // creation/deletion events carry none — `required: false` is the live mechanism, and
+  // explicit null is absent-equivalent (see numericContractViolation). propertyValue is
+  // ALWAYS a string on this vendor's wire (or null = cleared); the pattern is
+  // deliberately shape-only with a length bound — value semantics belong to the
+  // hydrated snapshot, where the real field rules live. Declared ahead of warehouse
+  // consumption (Task F owns the staging switch) — the registry's permitted direction.
+  "company.creation":       { ...HUB_THIN },
+  "company.propertyChange": { ...HUB_THIN, ...HUB_PROP },
+  "company.deletion":       { ...HUB_THIN },
+  "contact.creation":       { ...HUB_THIN },
+  "contact.propertyChange": { ...HUB_THIN, ...HUB_PROP },
+  "contact.deletion":       { ...HUB_THIN },
+  "deal.creation":          { ...HUB_THIN },
+  "deal.propertyChange":    { ...HUB_THIN, ...HUB_PROP },
+  "deal.deletion":          { ...HUB_THIN },
+  // hubcrm hydrated snapshots (Task C): hydrated records are STILL VENDOR DATA — the
+  // contract applies to them exactly as to wire events. These pseudo-types are the
+  // connector's validation keys (numericContractViolation over snapshot.properties);
+  // no raw event ever carries them. Vendor-faithful string properties: amount_cents
+  // arrives as a digit STRING on this surface, currency as a code or null (cleared —
+  // passes by the absent-equivalence decision).
+  "hubcrm.company.snapshot": {},
+  "hubcrm.contact.snapshot": {},
+  "hubcrm.deal.snapshot": {
+    amount_cents: { type: "string", required: false, pattern: "^\\d{1,15}$" },
+    currency:     { ...CURRENCY },
+  },
 };
 
 // Declared patterns compile ONCE, at module load — never per-validation — for two reasons:
@@ -179,8 +226,17 @@ export function numericContractViolation(
   if (!contract) return null; // unknown event type: the door stays open (see header)
   for (const [field, rule] of Object.entries(contract)) {
     const v = data[field];
-    if (v === undefined) {
-      if (rule.required) return { field, reason: `${field} is required for ${eventType} and is absent` };
+    // DECIDED (Task C, register A2 design question): explicit null on an OPTIONAL field
+    // is ABSENT-EQUIVALENT. Sparse vendors serialize "no value now" as null — HubSpot
+    // sends null for a cleared property, a Sheets empty cell serializes null — and a
+    // cleared field is the absence of a value, not garbage. Quarantining it would turn
+    // every legitimate clear into an operator incident. On a REQUIRED field null still
+    // violates (requiredness means a value must exist, and null says it does not) —
+    // both directions pinned in hub-hydrate.test.ts.
+    if (v === undefined || v === null) {
+      if (rule.required) {
+        return { field, reason: `${field} is required for ${eventType} and is ${v === null ? "null" : "absent"}` };
+      }
       continue;
     }
     if (rule.type === "string") {
