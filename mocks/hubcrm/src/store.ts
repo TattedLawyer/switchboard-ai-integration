@@ -8,7 +8,7 @@
 // carry up to 100 events; ordering NOT guaranteed. The full record is reachable only
 // through the hydration API (server.ts), which serves FETCH-time state.
 
-import { generateManifest, prng, secretForSource, signBody, type Profile } from "@switchboard/mock-core";
+import { appendToLedger, generateManifest, prng, secretForSource, signBody, type Profile } from "@switchboard/mock-core";
 
 export type HubObjectType = "company" | "contact" | "deal";
 
@@ -78,6 +78,11 @@ export interface DeliverOptions {
 export interface HubStoreOptions {
   seed: number;
   portalId?: number;
+  /** F-1c chaos port: when set, every EMITTED event appends to a hash-chained ledger
+   *  (mocks/core's chain, imported — never copied) at emission time, BEFORE any delivery
+   *  fate is decided. The ledger is the emission record — an event the fault plan drops
+   *  is still on it, which is exactly what lets the chaos oracle name the loss. */
+  ledgerPath?: string;
   /** Vertical profile (F-1): threads to generateManifest exactly like the 2a mocks'
    *  opts.profile — the SHARED-universe premise holds only if every mock in a stack
    *  derives from the same (seed, profile). Unknown names refuse at construction. */
@@ -135,6 +140,18 @@ export function createHubStore(opts: HubStoreOptions): HubStore {
   };
   const emitted: ThinEvent[] = [];
   let pendingQueue: ThinEvent[] = [];
+  /** Emission-side record (see HubStoreOptions.ledgerPath): one chained line per event,
+   *  in emission order, seq = the emission ordinal. */
+  const recordEmission = (event: ThinEvent): void => {
+    if (opts.ledgerPath === undefined) return;
+    appendToLedger(opts.ledgerPath, {
+      event_id: String(event.eventId),
+      event_type: event.subscriptionType,
+      occurred_at: new Date(event.occurredAt).toISOString(),
+      data: event as unknown as Record<string, unknown>,
+      seq: emitted.length,
+    });
+  };
   let ops = 0;
   let createdCompanies = 0;
   let createdContacts = 0;
@@ -157,6 +174,7 @@ export function createHubStore(opts: HubStoreOptions): HubStore {
       attemptNumber: 0,
     };
     emitted.push(event);
+    recordEmission(event);
     pendingQueue.push(event);
     return event;
   };
@@ -235,6 +253,7 @@ export function createHubStore(opts: HubStoreOptions): HubStore {
       attemptNumber: 0,
     };
     emitted.push(event);
+    recordEmission(event);
     pendingQueue.push(event);
     return event;
   };

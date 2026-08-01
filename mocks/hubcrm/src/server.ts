@@ -29,6 +29,8 @@ export interface HubcrmAppOptions {
   read5xx?: { seed: number; rate: number };
   /** Object ids whose single-object read ALWAYS 500s — the persistent-poison fault. */
   poisonObjectIds?: number[];
+  /** F-1c chaos port: emission-side hash-chained ledger path (see HubStoreOptions). */
+  ledgerPath?: string;
 }
 
 export interface HubcrmApp {
@@ -40,7 +42,7 @@ const OBJECT_TYPES: readonly HubObjectType[] = ["company", "contact", "deal"];
 const isObjectType = (v: string): v is HubObjectType => (OBJECT_TYPES as readonly string[]).includes(v);
 
 export function createHubcrmApp(opts: HubcrmAppOptions): HubcrmApp {
-  const store = createHubStore({ seed: opts.seed, portalId: opts.portalId, profile: opts.profile });
+  const store = createHubStore({ seed: opts.seed, portalId: opts.portalId, profile: opts.profile, ledgerPath: opts.ledgerPath });
   const rand429 = opts.read429 ? prng(opts.read429.seed) : null;
   const rand5xx = opts.read5xx ? prng(opts.read5xx.seed) : null;
   const poison = new Set(opts.poisonObjectIds ?? []);
