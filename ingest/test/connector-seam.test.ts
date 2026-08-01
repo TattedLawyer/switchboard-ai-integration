@@ -150,10 +150,22 @@ describe("connector seam — behavior preserving vs the functions it replaces", 
     expect(result.report).toBeUndefined();
   });
 
-  it("skips — rather than fails — a source with no ledger configured, preserving cli/reconcile.ts's documented behavior", async () => {
+  it("FAILS — rather than skips — an enabled source with no ledger configured, naming the missing variable; `skip` is the explicit opt-out (debt-burn A8)", async () => {
+    // SPEC CHANGE (debt-burn A8): this test used to PIN the skip. Fail-closed config
+    // validation (envalid/12-factor: run only when every env dependency is met) says an
+    // env-var typo must never silently drop a source from the zero-loss proof — a
+    // reconcile that PASSes on the remainder is not a proof of anything. Unset is not
+    // consent; the literal value `skip` is, by name, on the record.
     const result = await connectorFor("billing").reconcile(pool, { ledgerPath: undefined });
-    expect(result.skipped).toMatch(/LEDGER_PATH_BILLING/);
+    expect(result.skipped).toBeUndefined();
+    expect(result.integrity.ok).toBe(false);
+    expect(result.integrity.detail).toMatch(/LEDGER_PATH_BILLING/);
     expect(result.report).toBeUndefined();
-    expect(result.integrity.ok).toBe(true);
+
+    // The explicit escape hatch, for the record and by name:
+    const optedOut = await connectorFor("billing").reconcile(pool, { ledgerPath: "skip" });
+    expect(optedOut.skipped).toMatch(/explicit opt-out/);
+    expect(optedOut.integrity.ok).toBe(true);
+    expect(optedOut.report).toBeUndefined();
   });
 });
