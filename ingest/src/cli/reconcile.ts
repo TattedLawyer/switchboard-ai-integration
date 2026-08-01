@@ -26,6 +26,7 @@ function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
   return i === -1 ? undefined : process.argv[i + 1];
 }
+const has = (name: string): boolean => process.argv.includes(`--${name}`);
 
 /**
  * Tenancy (debt-burn A5): with `--tenant`, every tenant-capable connector is constructed
@@ -55,7 +56,16 @@ async function main(): Promise<void> {
   const pool = getPool();
   let reconciledCount = 0;
   let allClean = true;
-  const tenantId = arg("tenant") ?? DEFAULT_TENANT_ID;
+  // Bare-flag guard (review I2), identical to gap-ack's: a --tenant whose value was
+  // forgotten or swallowed must refuse, not silently reconcile the DEFAULT tenant and
+  // exit 0 while the operator believes tenant X was checked.
+  const tenantArg = arg("tenant");
+  if (has("tenant") && (tenantArg === undefined || tenantArg.startsWith("--"))) {
+    console.error("--tenant requires a tenant id");
+    await pool.end();
+    process.exit(1);
+  }
+  const tenantId = tenantArg ?? DEFAULT_TENANT_ID;
 
   try {
     if (tenantId !== DEFAULT_TENANT_ID) {
