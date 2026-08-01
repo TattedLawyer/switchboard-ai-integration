@@ -600,7 +600,22 @@ leaves it is gone from the source forever.
   `bus-replay.ts` again; the fix wants A1's per-source containment shape
   applied to the write path without weakening A2's record-before-report rule).
 
-### Deferred minors from the debt-burn cold pass (owners assigned)
+### Deferred minors from the debt-burn cold pass and Task E (owners assigned)
+
+- **The service log sits outside the compile-time consumption contract** —
+  Task E's rest-destructure wall (`satisfies Record<string, never>`) makes an
+  unconsumed report field a compile error in both CLIs, but the service loop
+  (`createBackfillRunner` consuming `CatchUpReport` in `main.ts`) has no such
+  wall: a new field silently unprinted by the SERVICE surface would compile
+  fine. Checklist line 1 names all three surfaces; the contract enforces two.
+  *Owner: Task F (first slice owning `main.ts`), else phase-2b close.*
+- **Profile flavor-word vetting is review-enforced, not machine-enforced** —
+  the per-profile hygiene scans catch real email/domain shapes, but a real
+  brand name used as a flavor word would pass (plant-verified in the Task E
+  review). The limit is stated at the `ProfileContent` comment; content edits
+  need human vetting against real-world names. *Standing limit, disclosed —
+  no fix scheduled; machine-enforcing "is this a real company" is not
+  tractable here.*
 
 - **The bus arm of the gaps-vs-ledger cross-check is structurally vacuous** —
   for bus-replay, `report.gaps` is built from the same `listGaps` query the

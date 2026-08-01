@@ -44,6 +44,12 @@ export type Manifest = {
  * emits must keep the `DEMO` marker and *.example.com domains — the hygiene wall.
  * amount ranges are cents: amount = floor(rand() * span) + min, one rand() call either
  * way, so the PRNG stream is call-for-call identical across profiles.
+ *
+ * LIMIT OF THE HYGIENE WALL (Task E review, Minor 2): the scans catch real
+ * email/domain shapes, not real BRAND NAMES used as flavor words — a real
+ * company name would pass both scans. Vetting flavor words against real-world
+ * names is review-enforced, not machine-enforced: anyone editing the content
+ * tables below must check new words are invented, and the reviewer must too.
  */
 type ProfileContent = {
   /** Ten flavor words; word i%10 names company i+1 and slugs its domain
