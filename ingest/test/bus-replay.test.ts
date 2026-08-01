@@ -499,3 +499,103 @@ describe("reconcile: the retained window is the truth, read independently of the
     expect(rec.gaps).toHaveLength(1);
   });
 });
+
+// ── M4 (Task F, register): an identity-omitting status frame must not bind a NEW cursor
+// to an OLD stream's identity ─────────────────────────────────────────────────────────────
+//
+// The wire's status frame is the only carrier of stream identity, and it may simply not
+// carry it. setCursor's SQL coalesce filled that hole with whatever identity the row
+// already had — remembered evidence presented as observed evidence. The simulated
+// consequence (direction VERIFIED here, per the standing simulate-don't-reason rule): a
+// cursor advanced on the NEW stream under an omitting frame keeps the OLD stream's id,
+// so the next ordinary AGE-OUT compares stale-old vs current, sees a difference, and
+// files the loss as "reset" — sending the operator to investigate an org migration that
+// never happened (checklist line 5: a cause label wearing the wrong explanation).
+describe("M4: status frames without stream_id — unknown identity stays unknown", () => {
+  it("a cursor advanced under identity-omitting frames records NULL stream identity — never the PREVIOUS stream's id resurrected by coalesce", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
+
+    mock.stream.emit(3);
+    await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUp(pool);
+    const oldStreamId = (await cursorRow(pool))!.stream_id;
+    expect(oldStreamId).not.toBeNull();
+
+    // The stream resets; every frame of the recovery run omits stream_id.
+    mock.stream.reset();
+    mock.stream.emit(4);
+    mock.omitStreamIdInStatusFrames(5);
+    await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUpWithReport(pool);
+    mock.omitStreamIdInStatusFrames(0);
+
+    const after = await cursorRow(pool);
+    expect(after!.last_event_id).not.toBeNull(); // the cursor DID advance on the new stream
+    expect(after!.stream_id).toBeNull(); // identity was never observed this run — say so
+  });
+
+  it("the downstream mislabel, end-to-end: after an omitting-frame recovery, an ordinary AGE-OUT must be cause 'retention' — not 'reset' derived from a stale coalesced identity", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
+
+    // Run 1: normal drain on stream 1 — cursor carries stream 1's identity.
+    mock.stream.emit(3, { ageS: 70 * 3600 });
+    await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUp(pool);
+
+    // Run 2: the stream RESETS to stream 2, and every recovery frame omits stream_id.
+    // (That recovery's own gap is conservatively labeled 'retention' — identity was
+    // hidden at probe time; asserted below as the documented unknown-identity path.)
+    mock.stream.reset();
+    mock.stream.emit(4, { ageS: 70 * 3600 });
+    mock.omitStreamIdInStatusFrames(5);
+    const run2 = await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUpWithReport(pool);
+    mock.omitStreamIdInStatusFrames(0);
+    expect(run2.ingested).toBe(4);
+    expect(run2.gaps).toHaveLength(1);
+    expect(run2.gaps[0].cause).toBe("retention");
+
+    // Run 3: stream 2 simply AGES OUT the cursor — the ordinary retention loss, no
+    // reset anywhere near it. Frames now carry stream 2's identity normally.
+    mock.stream.emit(1);
+    mock.stream.advance(3 * 3600);
+    const run3 = await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUpWithReport(pool);
+    expect(run3.gaps).toHaveLength(1);
+    // Pre-fix: the coalesced stream-1 identity differs from stream 2's, and the loss
+    // files as 'reset' — the wrong investigation. The truth of THIS loss is retention.
+    expect(run3.gaps[0].cause).toBe("retention");
+
+    const stored = await listGaps(pool, DEFAULT_TENANT, CASEBUS_SOURCE);
+    expect(stored.map((g) => g.cause).sort()).toEqual(["retention", "retention"]);
+  });
+
+  it("boundary: identity observed EARLIER IN THE SAME RUN still binds — a mid-run omitting frame does not amnesia a cursor whose stream was just seen", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
+
+    mock.stream.emit(5);
+    // batchSize 2 → multiple rounds; frames 2+ omit stream_id, frame 1 carries it.
+    mock.omitStreamIdInStatusFrames(0);
+    const connector = new BusReplayConnector({ baseUrl, batchSize: 2 });
+    // First round observes the id; then the knob blinds the rest of the run.
+    // (Set AFTER construction but BEFORE the drain's later rounds via a tiny shim:
+    // the first /subscribe consumes no budget, later ones do.)
+    const origFetch = globalThis.fetch;
+    let served = 0;
+    globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+      const res = await origFetch(...args);
+      if (String(args[0]).includes("/subscribe") && res.ok) {
+        served++;
+        if (served === 1) mock.omitStreamIdInStatusFrames(99);
+      }
+      return res;
+    }) as typeof fetch;
+    try {
+      await connector.catchUp(pool);
+    } finally {
+      globalThis.fetch = origFetch;
+      mock.omitStreamIdInStatusFrames(0);
+    }
+
+    const row = await cursorRow(pool);
+    expect(row!.stream_id).toBe(mock.stream.streamId()); // run-observed identity carried forward
+  });
+});

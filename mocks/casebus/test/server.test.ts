@@ -319,3 +319,37 @@ describe("house operator surfaces: /status honesty and /simulate", () => {
     expect((await post(a, "/simulate", { age_s: 100 })).status).toBe(400); // age_s without count
   });
 });
+
+describe("M4 knob (Task F): status frames that omit stream_id", () => {
+  it("with a budget of 2, exactly the next two SERVED status frames carry no stream_id — then the field returns; error responses never consume the budget", async () => {
+    const a = app();
+    a.stream.emit(3);
+    a.omitStreamIdInStatusFrames(2);
+
+    // An error response first: corrupted cursor, no status frame rendered — the budget
+    // must survive it untouched.
+    const err = await subscribe(a, "?replay_preset=CUSTOM&replay_id=rid-nonexistent");
+    expect(err.status).toBe(400);
+
+    const first = await subscribe(a, "?replay_preset=EARLIEST&num_requested=2");
+    const firstStatus = first.frames.at(-1)!.status;
+    expect(firstStatus).toBeDefined();
+    expect(firstStatus.stream_id).toBeUndefined();
+    expect(firstStatus.has_more).toBe(true); // the frame is otherwise intact
+
+    const second = await subscribe(a, "?replay_preset=EARLIEST&num_requested=2");
+    expect(second.frames.at(-1)!.status.stream_id).toBeUndefined();
+
+    const third = await subscribe(a, "?replay_preset=EARLIEST&num_requested=2");
+    expect(third.frames.at(-1)!.status.stream_id).toBe(a.stream.streamId());
+  });
+
+  it("a budget of 0 turns the knob off immediately", async () => {
+    const a = app();
+    a.stream.emit(1);
+    a.omitStreamIdInStatusFrames(3);
+    a.omitStreamIdInStatusFrames(0);
+    const res = await subscribe(a, "?replay_preset=EARLIEST");
+    expect(res.frames.at(-1)!.status.stream_id).toBe(a.stream.streamId());
+  });
+});

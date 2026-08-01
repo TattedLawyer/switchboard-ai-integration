@@ -57,6 +57,14 @@ export interface CasebusApp {
   app: express.Express;
   /** Direct state access — the test/oracle path to the reconcile truth. */
   stream: StreamState;
+  /** M4 fault knob (Task F): the next `n` successfully-served /subscribe responses
+   *  render their trailing status frame WITHOUT `stream_id`. The field is the ONLY
+   *  observable that distinguishes a reset from an age-out, and a real wire may simply
+   *  not carry it — a connector that fills the hole with remembered identity is
+   *  fabricating evidence. Error responses (corrupted cursor etc.) do not consume the
+   *  budget: they never render a status frame. Overwrites any previous budget; 0 turns
+   *  the knob off. */
+  omitStreamIdInStatusFrames(n: number): void;
 }
 
 const busError = (
@@ -74,6 +82,7 @@ export function createCasebusApp(opts: CasebusAppOptions): CasebusApp {
   const dupRand = opts.duplicate ? prng(opts.duplicate.seed) : null;
   const instance_id = randomUUID(); // minted per BOOT — the /status freshness identity,
   // deliberately distinct from stream_id, which moves on every reset.
+  let omitStreamIdBudget = 0; // M4 knob — see CasebusApp.omitStreamIdInStatusFrames
 
   const app = express();
   app.use(express.json());
@@ -137,11 +146,15 @@ export function createCasebusApp(opts: CasebusAppOptions): CasebusApp {
       // identical, including the replay id — a redelivery is not a new event.
       if (dupRand !== null && dupRand() < (opts.duplicate?.rate ?? 0)) lines.push(JSON.stringify(e));
     }
+    // M4 knob: an identity-omitting status frame — consumed only here, where a frame is
+    // actually rendered (error paths above never reach this line).
+    const omitStreamId = omitStreamIdBudget > 0;
+    if (omitStreamId) omitStreamIdBudget--;
     lines.push(
       JSON.stringify({
         status: {
           code: "OK",
-          stream_id: stream.streamId(),
+          ...(omitStreamId ? {} : { stream_id: stream.streamId() }),
           has_more: result.hasMore,
           latest_replay_id: result.latestReplayId,
         },
@@ -193,5 +206,11 @@ export function createCasebusApp(opts: CasebusAppOptions): CasebusApp {
     res.json({ emitted, seq: stream.seq(), now_s: stream.nowS(), stream_id: stream.streamId(), reset: reset === true });
   });
 
-  return { app, stream };
+  return {
+    app,
+    stream,
+    omitStreamIdInStatusFrames: (n: number) => {
+      omitStreamIdBudget = n;
+    },
+  };
 }
