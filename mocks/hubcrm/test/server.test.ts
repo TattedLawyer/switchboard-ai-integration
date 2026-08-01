@@ -285,3 +285,58 @@ describe("hydration API (fetch-time state; 404 after deletion; 429/5xx injection
     expect(typeof body.instance_id).toBe("string");
   });
 });
+
+// ── F-1b decision 1 (f2-wire-research.md Q1, HubSpot guide read by both passes): merges
+// are their OWN thin event, never a property change; the survivor is a NEW record. ─────
+describe("F-1b merge modeling: company.merge thin events + new-survivor semantics", () => {
+  it("once both participants of a manifest merge pair exist, the script MERGES them: a thin company.merge event with primaryObjectId, mergedObjectIds, a DISTINCT newObjectId, and numberOfPropertiesMoved", () => {
+    const store = createHubStore({ seed: 42 });
+    store.simulate(240); // 22 companies by op 210; the two merges land at the next slot-0 ops
+    const merges = store.emittedEvents().filter((e) => e.subscriptionType === "company.merge");
+    expect(merges).toHaveLength(2);
+    for (const m of merges) {
+      expect(typeof m.primaryObjectId).toBe("number");
+      expect(Array.isArray(m.mergedObjectIds)).toBe(true);
+      expect(m.mergedObjectIds).toHaveLength(1);
+      expect(typeof m.newObjectId).toBe("number");
+      // The researched behavior that breaks naive from→to modeling: the survivor is a
+      // NEW record id — neither input survives under its own id.
+      expect(m.newObjectId).not.toBe(m.primaryObjectId);
+      expect(m.newObjectId).not.toBe(m.mergedObjectIds![0]);
+      expect(m.objectId).toBe(m.newObjectId); // the record the event is about (disclosed inference)
+      expect((m.numberOfPropertiesMoved ?? 0) > 0).toBe(true);
+    }
+  });
+
+  it("store end-state is the 22→20 shape: 20 live companies, the two survivors carry hs_merged_object_ids naming BOTH consumed record ids, and every consumed id stops being fetchable (404 class)", () => {
+    const store = createHubStore({ seed: 42 });
+    store.simulate(240);
+    const companies = store.list("company");
+    expect(companies).toHaveLength(20);
+    const manifestIds = companies.map((c) => String(c.properties.hs_manifest_id)).sort();
+    expect(new Set(manifestIds).size).toBe(20); // one live record per canonical manifest company
+
+    const survivors = companies.filter((c) => c.properties.hs_merged_object_ids);
+    expect(survivors).toHaveLength(2);
+    const merges = store.emittedEvents().filter((e) => e.subscriptionType === "company.merge");
+    for (const m of merges) {
+      const survivor = companies.find((c) => c.objectId === m.newObjectId)!;
+      const merged = String(survivor.properties.hs_merged_object_ids);
+      expect(merged).toContain(String(m.primaryObjectId)); // the winner's OLD id is preserved…
+      expect(merged).toContain(String(m.mergedObjectIds![0])); // …beside the merged-away id
+      expect(store.get("company", m.primaryObjectId!)).toBeUndefined();
+      expect(store.get("company", m.mergedObjectIds![0])).toBeUndefined();
+    }
+  });
+
+  it("determinism: two same-seed stores merge identically (same events, same survivor properties)", () => {
+    const a = createHubStore({ seed: 11 });
+    const b = createHubStore({ seed: 11 });
+    a.simulate(240);
+    b.simulate(240);
+    const pick = (s: ReturnType<typeof createHubStore>) =>
+      s.emittedEvents().filter((e) => e.subscriptionType === "company.merge")
+        .map((e) => ({ p: e.primaryObjectId, m: e.mergedObjectIds, n: e.newObjectId }));
+    expect(pick(a)).toEqual(pick(b));
+  });
+});
