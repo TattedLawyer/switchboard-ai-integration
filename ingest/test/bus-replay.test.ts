@@ -307,6 +307,54 @@ describe("tenancy — pinned with a NON-DEFAULT tenant (migration 006's floor, t
   });
 });
 
+describe("audit-write failure is LOUD (debt-burn A2): the gap ledger is a precondition, not a best effort", () => {
+  it("a gap-ledger insert failure fails the run with the cursor unmoved — and the next healthy run re-detects the same loss", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
+    mock.stream.emit(5, { ageS: 70 * 3600 });
+    await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUp(pool);
+    const deadCursor = (await cursorRow(pool))!.last_event_id;
+    mock.stream.emit(6);
+    mock.stream.advance(3 * 3600); // the cursor ages out: the corrupted-cursor path is next
+
+    // Fault injection on the ONE statement under test. Variadic wrapper (standing trap
+    // 4): pool.query is invoked with (text), (text, values) and (config) shapes.
+    const failing = new Proxy(pool, {
+      get(target, prop, receiver) {
+        if (prop === "query") {
+          return (...args: unknown[]) => {
+            const first = args[0];
+            const sql = typeof first === "string" ? first : ((first as { text?: string })?.text ?? "");
+            if (/insert into ingest\.gap_ledger/i.test(sql)) {
+              return Promise.reject(new Error("injected: gap_ledger insert failed"));
+            }
+            return (target.query as (...a: unknown[]) => unknown)(...args);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as pg.Pool;
+
+    // The WAL rule (research A2): the durable loss record is a PRECONDITION for forward
+    // progress. Record fails => run fails. Never forward progress + exit 0 over a loss
+    // whose only durable trace was dropped — the exit code IS this system's alarm.
+    await expect(new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUpWithReport(failing)).rejects.toThrow(
+      /gap_ledger insert failed/,
+    );
+
+    // Mechanism, not narrative: the cursor still names the dead replay id and no gap row
+    // exists — so nothing was skipped past an unrecorded loss.
+    expect((await cursorRow(pool))!.last_event_id).toBe(deadCursor);
+    expect(await listGaps(pool, DEFAULT_TENANT, CASEBUS_SOURCE)).toHaveLength(0);
+
+    // Self-healing: the next run against a healthy ledger re-detects, records, drains.
+    const report = await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUpWithReport(pool);
+    expect(report.ingested).toBe(6);
+    expect(report.gaps).toHaveLength(1);
+    expect(await listGaps(pool, DEFAULT_TENANT, CASEBUS_SOURCE)).toHaveLength(1);
+  });
+});
+
 describe("the cursor-liveness probe: transient failure is NOT a verdict (debt-burn A1)", () => {
   /** Forward everything to the real mock except CUSTOM subscribes, which fail like a
    *  network blip. The reconcile DRAIN reads EARLIEST (one batch at batchSize 100), so

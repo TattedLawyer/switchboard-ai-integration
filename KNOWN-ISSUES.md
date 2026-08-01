@@ -520,11 +520,13 @@ leaves it is gone from the source forever.
   reset as `retention`. Unreachable against this mock, which always sends the
   field; the honest fix needs a mock knob that omits it plus its own RED, not
   a defensive coalesce swap. Owner: Task F (mock/fixture rework).
-- **A ledger-insert failure in the corrupted-cursor path now fails the
-  backfill** (the awaited `recordGap`), where before the run made forward
-  progress and exited 0. Loud-over-silent is the house bias, but it is an
-  unremarked change to a shipped connector's failure mode with no test naming
-  it. Owner: Task F, alongside the fault-injection fixtures it needs.
+- ~~A ledger-insert failure in the corrupted-cursor path now fails the
+  backfill — an unremarked failure-mode change with no test naming it~~ *Paid
+  (debt-burn A2):* research (WAL record-before-act) resolved the open
+  loud-vs-forward decision to **fail loud, on purpose** — the accidental
+  behavior was the correct behavior. Now remarked at both `recordGap` sites in
+  `bus-replay.ts` and pinned in `bus-replay.test.ts`: insert fails ⇒ run
+  fails, cursor not advanced, no gap row; the next healthy run re-detects.
 
 ## Numeric & monetary integrity (added with the numeric-integrity wave)
 

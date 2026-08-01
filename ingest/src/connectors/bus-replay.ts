@@ -214,6 +214,13 @@ export class BusReplayConnector implements Connector {
 
           const gap = await this.buildGap(pool, tenantId, cursor.replayId, cause, fallback, probe);
           report.gaps.push(gap);
+          // FAIL LOUD, deliberately (debt-burn A2 — the WAL rule): the durable loss
+          // record is a PRECONDITION for forward progress. If this insert fails, the run
+          // fails with the cursor still naming the dead replay id — advancing and exiting
+          // 0 would mean a permanent loss whose only durable trace was silently dropped,
+          // and the exit code is this system's only alarm channel. Re-running re-detects
+          // and re-records (idempotent by (tenant, source, cause, from_event_id)).
+          // Pinned in bus-replay.test.ts.
           await recordGap(pool, {
             tenantId,
             source: this.source,
@@ -441,6 +448,8 @@ export class BusReplayConnector implements Connector {
             ? "reset"
             : "retention";
         const near = await this.nearEdge(pool, tenantId, cursor.replayId);
+        // Same fail-loud rule as catchUp's recordGap (debt-burn A2): a failed insert
+        // throws into reconcile's caller — record-before-report, never report-without-record.
         await recordGap(pool, {
           tenantId,
           source: this.source,
