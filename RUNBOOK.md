@@ -56,6 +56,10 @@ Both are self-cleaning at start and fail loudly with counts on any mismatch.
 `demo.sh` also runs `scripts/verify-identity.ts`, which set-compares the dbt
 identity layer and `customer_360` against the seed manifest's planned match matrix.
 
+Contributors: any change to a connector, CLI, or the service log is bound by the
+seven-line standing checklist in
+[docs/operator-surface-checklist.md](docs/operator-surface-checklist.md).
+
 ## Recovery procedures
 
 - **Webhook outage / dropped events:** nothing to do — the scheduled backfill
