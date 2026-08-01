@@ -12,10 +12,11 @@ import { numericContractViolation } from "./numeric-contract.js";
 // occurred_at gate (L2-G2): staging latest-state views order by
 // (payload ->> 'occurred_at')::timestamptz, and that cast THROWS on garbage — so a non-timestamp
 // occurred_at must never reach raw.raw_events. This predicate is the single definition used by
-// ALL THREE doors into raw: the webhook schema in server.ts, the backfill poll path (which
-// applies that same schema in backfill.ts), and the replay schema in quarantine.ts. The poll
-// path was once ungated and this comment once said "BOTH" — the count is the invariant, so if a
-// fourth door is ever added it applies here too. It lives in this leaf module (historically in
+// EVERY door into raw — the canonical door enumeration lives ONCE, above `eventSchema` below;
+// every door applies this predicate through that shared schema (quarantine.ts also imports it
+// directly for its replay gate). This comment once said "BOTH", then "ALL THREE", and rotted
+// each time a door was added — door counts drift, so it no longer carries one.
+// It lives in this leaf module (historically in
 // quarantine.ts, because server.ts already imported from that module and the reverse import
 // would have been a runtime cycle). Accepted shape: full ISO-8601 date+time with seconds and an
 // explicit zone (Z or ±HH:MM), and the string must actually parse as a date (rejects e.g. month 13).
@@ -42,10 +43,12 @@ export function isAcceptableOccurredAt(s: string, nowMs: number = Date.now()): b
 
 // Raw's doors — the webhook (server.ts), the quarantine replay (quarantine.ts), the
 // backfill poll (backfill.ts), the sheet-snapshot connector (connectors/sheet-snapshot.ts),
-// the stripe-feed connector (connectors/stripe-feed.ts), and the bus-replay connector
-// (connectors/bus-replay.ts, 2b Task D) — must ALL apply this same
+// the stripe-feed connector (connectors/stripe-feed.ts), the hub-hydrate connector
+// (connectors/hub-hydrate.ts, 2b Task C — thin events run this gate before raw), and the
+// bus-replay connector (connectors/bus-replay.ts, 2b Task D) — must ALL apply this same
 // predicate; the invariant is the enumeration, not a count (a stale "three doors" here
-// survived two door additions — cold-review comment-drift class). The poll path once did
+// survived two door additions, and the first fix of THIS list itself missed a door — verify
+// against `grep -rn "eventSchema.safeParse" src/` before trusting it). The poll path once did
 // not apply it, and could put a value in raw that throws the staging cast. The definition
 // lives HERE, with the predicates it depends on; a new door imports it or it is not a door.
 export const eventSchema = z

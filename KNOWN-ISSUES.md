@@ -258,8 +258,12 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
     not noise); `--source` narrows; `--tenant` landed on both CLIs in the same
     pass (see the tenancy entry below).
 - ~~The door-enumeration comment in `ingest/src/event-schema.ts` is stale~~
-  *Paid (debt-burn, B12 rider):* the bus-replay door joined the enumeration —
-  the one-line fix the entry asked for.
+  *Paid (debt-burn, B12 rider + review fix):* the bus-replay door joined the
+  enumeration as this entry asked — and the review's grep of
+  `eventSchema.safeParse` call sites then found **hub-hydrate** (Task C's
+  door) also missing, now added. The enumeration matches the grep at head:
+  seven doors (webhook, quarantine replay, backfill poll, sheet-snapshot,
+  stripe-feed, hub-hydrate, bus-replay).
 - **`ingest.outbox` has no consumer** *(audit)* — written in the hot ingest
   transaction, `processed_at` never set, grows one row per event forever. It
   serves only as the demo's equality counter; it is *named* for a
