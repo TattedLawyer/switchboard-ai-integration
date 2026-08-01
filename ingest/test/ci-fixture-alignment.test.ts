@@ -1,13 +1,14 @@
 // C1 (cold review A6–A7): the CI fixture must seed ONE correlated universe.
 //
-// The fixture's CRM leg ingests only the scripted feed's contacts (108 events → 26
-// distinct contact emails), while the sheets leg's row source draws from the FULL
-// manifest contact pool. Any sheet client whose email the CRM leg never ingested has no
-// tier-1 evidence, lands tier-3 (correctly — identity_resolution's sheets arm is not the
-// defect), flows into manual_review and customer_360, and scripts/verify-identity.ts —
-// which pins the tier-3 universe to billing+support — fails checks 4 and 5b on the next
-// CI push. The fixture is a FAULTLESS fixture by design: tier-3 sheets orphans belong to
-// the fault-plan oracles (sheet-mart-oracle.test.ts), not the CI gate.
+// F-1c: the CRM arm is hubcrm — its identity evidence is the hydrated CONTACT snapshots
+// (300 script ops → contact indices 0..29 hydrated), while the sheets leg's row source
+// draws from the FULL manifest contact pool. Any sheet client whose email the CRM arm
+// never landed has no tier-1 evidence, lands tier-3 (correctly — identity_resolution's
+// sheets arm is not the defect), flows into manual_review and customer_360, and
+// scripts/verify-identity.ts — which pins the tier-3 universe to billing+support —
+// fails checks 4 and 5b on the next CI push. The fixture is a FAULTLESS fixture by
+// design: tier-3 sheets orphans belong to the fault-plan oracles
+// (sheet-mart-oracle.test.ts), not the CI gate.
 //
 // This test pins the alignment invariant STRUCTURALLY against the real script: it runs
 // scripts/ci-fixture.ts as a child process (the exact surface ci.yml runs) against an
@@ -21,9 +22,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { freshTestDb, type TestDbResult } from "./helpers/testdb.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
-// The fixture provisions four in-process servers, pushes 288 ledger events, and runs
-// five connector cycles — well beyond the config's 30s under contention.
-const FIXTURE_TIMEOUT = 120_000;
+// The fixture provisions five in-process servers, runs 30 interleaved hydration pumps
+// (each with its own pg-boss lifecycle) plus three pull-connector drains and five sheet
+// cycles — well beyond the config's 30s under contention.
+const FIXTURE_TIMEOUT = 180_000;
 
 let db: TestDbResult;
 let run: { code: number; stdout: string; stderr: string };
@@ -66,7 +68,7 @@ describe("ci-fixture correlated universe (cold review C1)", () => {
   });
 
   it(
-    "alignment invariant: every sheets-leg client email is a contact email the CRM leg actually ingested (⊆, over all upserts) — no tier-3 sheets orphans in the CI gate's universe",
+    "alignment invariant: every sheets-leg client email is a contact email the hubcrm arm actually hydrated (⊆, over all upserts) — no tier-3 sheets orphans in the CI gate's universe",
     async () => {
       const sheetEmails = await db.pool.query(`
         select distinct payload -> 'data' ->> 'email' as email
@@ -76,9 +78,9 @@ describe("ci-fixture correlated universe (cold review C1)", () => {
         order by email
       `);
       const crmEmails = await db.pool.query(`
-        select distinct payload -> 'data' ->> 'email' as email
-        from raw.raw_events
-        where source = 'crm' and event_type = 'contact.updated'
+        select distinct s.snapshot -> 'properties' ->> 'email' as email
+        from ingest.hydrated_snapshots s
+        where s.object_type = 'contact' and not s.tombstone
       `);
       // Guard against a vacuous pass: both legs must actually have seeded emails.
       expect(sheetEmails.rows.length).toBeGreaterThan(0);
