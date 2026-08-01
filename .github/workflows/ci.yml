@@ -3,12 +3,17 @@ on:
   push:
   pull_request:
 # B7: `push` + `pull_request` double-runs every PR-branch commit. One concurrency group
-# per workflow+ref lets the newest run supersede its sibling ("only a single job or
+# per workflow+branch lets the newest run supersede its sibling ("only a single job or
 # workflow using the same concurrency group will run at a time" — GitHub docs); the
 # conditional keeps main-branch runs uncancelled, so a push to main never kills a
 # release-relevant run mid-flight (the docs' own caveat on cancel-in-progress).
+# Task F ride-along (register): `github.ref` alone did NOT dedupe across event types —
+# a PR-branch commit runs as `refs/heads/<branch>` (push) AND `refs/pull/<n>/merge`
+# (pull_request), two different refs, so the double-run B7 targeted survived between
+# events (bitten live: the burn-wave PR run, 2026-08-01). Keying on the PR's HEAD
+# branch when the event carries one collapses both events onto the same group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   suite:
