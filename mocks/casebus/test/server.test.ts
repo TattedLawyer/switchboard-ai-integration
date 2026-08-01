@@ -353,3 +353,49 @@ describe("M4 knob (Task F): status frames that omit stream_id", () => {
     expect(res.frames.at(-1)!.status.stream_id).toBe(a.stream.streamId());
   });
 });
+
+// ── F-1b decision 2 (f2-wire-research.md Q2, primary-verified): case CREATE events carry
+// the supplied-* intake fields + nullable server-resolved ContactId; UPDATE-shaped events
+// stay changed-only (no supplied fields re-sent). This is what makes the support arm
+// STAGEABLE from the faithful wire — identity evidence comes from SuppliedEmail/
+// SuppliedName/SuppliedCompany exactly as the vendor's Email-to-Case behavior describes.
+describe("F-1b enrichment: case.created carries supplied intake fields + resolved ContactId", () => {
+  it("a requester whose email IS a CRM contact email: full supplied set + ContactId resolved to that contact", () => {
+    const a = app();
+    const events = a.stream.emit(1); // slot 0: case.created for tickets[0]
+    const m = generateManifest(42);
+    const ticket = m.support.tickets[0];
+    const requester = m.support.requesters.find((r) => r.id === ticket.requester_id)!;
+    const contact = m.crm.contacts.find((c) => c.email === requester.email)!;
+    const p = events[0].event.payload as Record<string, unknown>;
+    expect(events[0].event.type).toBe("case.created");
+    expect(p.SuppliedEmail).toBe(requester.email);
+    expect(p.SuppliedName).toBe(requester.name);
+    expect(p.SuppliedCompany).toBe(requester.company_name);
+    expect(p.ContactId).toBe(contact.id);
+  });
+
+  it("a STANDALONE requester (email matches no CRM contact): supplied set present, ContactId explicitly null — resolution is the server's and it failed honestly", () => {
+    const a = app();
+    // Ticket index 12 → requesters[12] (standalone support 1). Its case.created is
+    // emission ordinal 48 (slot 0 of cycle 12).
+    const events = a.stream.emit(49);
+    const created = events[48];
+    expect(created.event.type).toBe("case.created");
+    const p = created.event.payload as Record<string, unknown>;
+    expect(String(p.SuppliedEmail)).toMatch(/standalone/);
+    expect(p.ContactId).toBeNull();
+    expect(p.SuppliedCompany).toBe("DEMO Standalone Support Co 1");
+  });
+
+  it("UPDATE-shaped events stay changed-only: no supplied fields re-sent on comment/field-change/resolution frames", () => {
+    const a = app();
+    const events = a.stream.emit(4); // slots 0..3: created, comment, field_changed, resolved
+    for (const e of events.slice(1)) {
+      const p = e.event.payload as Record<string, unknown>;
+      expect(p.SuppliedEmail).toBeUndefined();
+      expect(p.SuppliedName).toBeUndefined();
+      expect(p.SuppliedCompany).toBeUndefined();
+    }
+  });
+});
