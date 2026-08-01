@@ -219,13 +219,20 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   on a process-lifetime counter rather than on the request~~ *Paid (debt-burn
   B3):* `/simulate` now takes an optional `start_index` (0-based script index
   of the batch's first event), making emission a pure function of the request
-  — identical explicit-index requests emit identically across a server
-  restart (pinned in `mocks/core/test/source-app.test.ts`). The explicit-index
+  — identical explicit-index requests emit the same events **by identity**
+  (seq/id/type/data) across a server restart (pinned in
+  `mocks/core/test/source-app.test.ts`; `occurred_at` and hashes stay
+  wall-clock, so the guarantee is event-identity purity, not byte purity —
+  the pin says exactly this). The explicit-index
   arm was chosen over `/reset` because a reset reintroduces exactly the shared
   mutable state being removed (research §B3). Default no-index behavior is
   byte-identical to before, and the process counter never rewinds below its
   high-water mark, so a shared ledger file keeps the chain verifier's
-  strictly-increasing `seq`. The freshness assertions in demo.sh/chaos.sh
+  strictly-increasing `seq` — a guarantee that is serial-only: a concurrent
+  explicit-index request racing the counter could mint colliding seqs, which
+  the ledger verifier's uniqueness predicate now catches loudly downstream
+  (cold-pass note; the mocks are driven serially everywhere in this repo).
+  The freshness assertions in demo.sh/chaos.sh
   remain as the second line of defense.
 - ~~The backfill poll path still trusts the feed's cursor~~ *Paid (debt-burn
   A9):* the cursor now advances only to the max seq ACTUALLY processed from
@@ -591,6 +598,29 @@ leaves it is gone from the source forever.
   Commented at the site. *Owner: phase-2b close* (no earlier slice owns
   `bus-replay.ts` again; the fix wants A1's per-source containment shape
   applied to the write path without weakening A2's record-before-report rule).
+
+### Deferred minors from the debt-burn cold pass (owners assigned)
+
+- **The bus arm of the gaps-vs-ledger cross-check is structurally vacuous** —
+  for bus-replay, `report.gaps` is built from the same `listGaps` query the
+  reconcile CLI then compares it against, so only the stripefeed arm (whose
+  report carries independently-derived gaps) has real discriminating power.
+  The cross-check is honest for stripefeed and self-consistent-by-construction
+  for the bus; either give the bus arm an independent derivation or narrow the
+  printed claim to the stripefeed arm. *Owner: phase-2b close.*
+- **A gap recorded on a source later removed from the SOURCES registry is
+  listable but unacknowledgeable** — the debt-burn listing fix made such gaps
+  visible (flagged as not-currently-enabled), but `gap-ack --source <removed>`
+  refuses at the `isSource` gate before reaching the ledger, so the loss can
+  be seen and never accepted. The acknowledgement path needs the same
+  record-over-config scoping the listing got. *Owner: phase-2b close, with
+  the other CLI-scoping residue.*
+- **A well-formed but unknown `--tenant` UUID silently PASSes** — reconcile
+  over a tenant that has no rows reports a clean empty run, and `gap-ack
+  --list --tenant <unknown>` lists zero gaps, indistinguishable from a healthy
+  tenant. A tenant with zero ingested rows is more likely a typo than a truth;
+  the CLIs should say "tenant has no recorded state" rather than PASS.
+  *Owner: phase-2b close (same CLI-scoping pass).*
 
 ## Numeric & monetary integrity (added with the numeric-integrity wave)
 
