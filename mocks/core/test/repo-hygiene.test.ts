@@ -3,11 +3,20 @@ import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// Repo-WIDE hygiene. hygiene.test.ts proves what the GENERATORS emit is synthetic; this
-// file backs the README's stronger claim — no real emails or PII-shaped records anywhere
-// in the repo — by scanning every git-tracked text file (docs, specs, journals, configs,
-// scripts, tests included). Cold-review finding: "anywhere" was previously narrated, not
-// enforced.
+// Repo-WIDE hygiene. mocks/crm's hygiene.test.ts proves what the GENERATORS emit is
+// synthetic; this file backs the README's stronger claim — no real emails or PII-shaped
+// records anywhere in the repo — by scanning every git-tracked text file (docs, specs,
+// journals, configs, scripts, tests included). Cold-review finding: "anywhere" was
+// previously narrated, not enforced.
+//
+// HOME (debt-burn B6): this test's scope is the whole repository, so no workspace is a
+// perfectly honest home. It moved here from mocks/crm (one arbitrary mock among eight —
+// scope and home flatly disagreed) to mocks/core, the one workspace every mock already
+// depends on and where the shared synthetic-data machinery (manifest, ledger, faults)
+// lives — the natural owner of "the synthetic-data claim holds everywhere". A dedicated
+// root-level test workspace was considered and rejected: it would add a workspace +
+// package.json for a single file, and `npm test` (--workspaces) runs this file from
+// here just the same.
 
 const root = execSync("git rev-parse --show-toplevel", { encoding: "utf8" }).trim();
 const files = execSync("git ls-files -z", { cwd: root, encoding: "utf8" })

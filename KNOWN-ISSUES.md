@@ -749,8 +749,12 @@ pagination contract; pinned with a 12-deep DLQ in `queue.test.ts`) ·
 three)~~ *Paid (debt-burn A8):* an enabled ledger-feed source with no
 `LEDGER_PATH_<S>` now FAILS the reconcile naming the missing variable
 (fail-closed config validation); the literal value `skip` is the explicit
-opt-out · the repo-wide hygiene test lives inside the CRM mock's workspace, so
-its scope and its home disagree (relocate in 2b) · ~~some log lines lack the
+opt-out · ~~the repo-wide hygiene test lives inside the CRM mock's workspace, so
+its scope and its home disagree (relocate in 2b)~~ *Paid (debt-burn B6):*
+relocated to `mocks/core/test/repo-hygiene.test.ts` — the workspace every
+mock depends on and where the shared synthetic-data machinery lives; the
+honest-home reasoning (and why a root-level test workspace was rejected) is
+in the file's own header · ~~some log lines lack the
 `[source]` prefix~~ *Paid (debt-burn B4):* the skip-tick, round-failed, and
 resume-cursor lines now carry their source (pinned); the remaining
 unprefixed lines are genuinely global-scope (CLI flag errors, whole-queue
