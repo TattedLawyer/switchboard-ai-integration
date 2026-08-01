@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import express from "express";
 import type { Server } from "node:http";
 import { generateManifest } from "@switchboard/mock-core";
-import { createHubcrmApp, createHubStore, type ThinEvent } from "../src/index.js";
+import { createHubcrmApp, createHubStore, OPS_UNTIL_MERGES_COMPLETE, type ThinEvent } from "../src/index.js";
 
 // Task C pair 2 — the HubSpot-STYLE thin-webhook CRM mock's own truth.
 //
@@ -291,7 +291,7 @@ describe("hydration API (fetch-time state; 404 after deletion; 429/5xx injection
 describe("F-1b merge modeling: company.merge thin events + new-survivor semantics", () => {
   it("once both participants of a manifest merge pair exist, the script MERGES them: a thin company.merge event with primaryObjectId, mergedObjectIds, a DISTINCT newObjectId, and numberOfPropertiesMoved", () => {
     const store = createHubStore({ seed: 42 });
-    store.simulate(240); // 22 companies by op 210; the two merges land at the next slot-0 ops
+    store.simulate(OPS_UNTIL_MERGES_COMPLETE); // the named constant IS the derivation — see store.ts
     const merges = store.emittedEvents().filter((e) => e.subscriptionType === "company.merge");
     expect(merges).toHaveLength(2);
     for (const m of merges) {
@@ -310,7 +310,7 @@ describe("F-1b merge modeling: company.merge thin events + new-survivor semantic
 
   it("store end-state is the 22→20 shape: 20 live companies, the two survivors carry hs_merged_object_ids naming BOTH consumed record ids, and every consumed id stops being fetchable (404 class)", () => {
     const store = createHubStore({ seed: 42 });
-    store.simulate(240);
+    store.simulate(OPS_UNTIL_MERGES_COMPLETE);
     const companies = store.list("company");
     expect(companies).toHaveLength(20);
     const manifestIds = companies.map((c) => String(c.properties.hs_manifest_id)).sort();
@@ -332,8 +332,8 @@ describe("F-1b merge modeling: company.merge thin events + new-survivor semantic
   it("determinism: two same-seed stores merge identically (same events, same survivor properties)", () => {
     const a = createHubStore({ seed: 11 });
     const b = createHubStore({ seed: 11 });
-    a.simulate(240);
-    b.simulate(240);
+    a.simulate(OPS_UNTIL_MERGES_COMPLETE);
+    b.simulate(OPS_UNTIL_MERGES_COMPLETE);
     const pick = (s: ReturnType<typeof createHubStore>) =>
       s.emittedEvents().filter((e) => e.subscriptionType === "company.merge")
         .map((e) => ({ p: e.primaryObjectId, m: e.mergedObjectIds, n: e.newObjectId }));

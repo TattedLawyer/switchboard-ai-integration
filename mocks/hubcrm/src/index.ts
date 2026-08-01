@@ -2,6 +2,7 @@
 // other in-process consumers need.
 export {
   createHubStore,
+  OPS_UNTIL_MERGES_COMPLETE,
   type DeliverOptions,
   type DeliveryStats,
   type HubFaultPlan,

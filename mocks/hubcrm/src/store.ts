@@ -100,6 +100,16 @@ export interface HubStore {
 
 const CHANGE_SOURCES = ["CRM_UI", "API", "IMPORT"];
 
+/** The minimum simulate() op count after which the FULL manifest universe has been
+ *  enacted: all 22 companies created (slot-0 ops 0,10,…,210) and BOTH manifest merges
+ *  fired (they take the next two company slots, ops 220 and 230) — the 22→20 shape any
+ *  downstream proof depends on. Derivation, not folklore: 22 creates × 10-op cycle
+ *  = op 210 for the last create, +10 and +20 for the two merge slots, rounded to the
+ *  next full cycle. Fixtures and oracles MUST use this name, never a literal — a
+ *  script-cycle change that moves the merges must move this constant in the same
+ *  commit, and every dependent count follows automatically. */
+export const OPS_UNTIL_MERGES_COMPLETE = 240;
+
 export function createHubStore(opts: HubStoreOptions): HubStore {
   const portalId = opts.portalId ?? 24_000_000 + (opts.seed % 1000);
   const manifest = generateManifest(opts.seed, opts.profile).crm; // the SHARED universe — identities correlate with the 2a mocks at the same (seed, profile)

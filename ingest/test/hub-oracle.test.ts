@@ -4,7 +4,7 @@ import type { Server } from "node:http";
 import express from "express";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
-import { createHubcrmApp, type HubcrmApp } from "../../mocks/hubcrm/src/index.js";
+import { createHubcrmApp, OPS_UNTIL_MERGES_COMPLETE, type HubcrmApp } from "../../mocks/hubcrm/src/index.js";
 
 // Task C pair 3 — the SECOND ORACLE (D7): under chaos, every thin event that reached raw
 // ends in exactly ONE of three states — hydrated snapshot, tombstone (a snapshot-table
@@ -191,7 +191,7 @@ describe("merge-aware reconcile (F-1b: the merged-away are explained, the surviv
   it("a fault-free run past the merge ops reconciles CLEAN: consumed ids are neither extra nor missing but counted mergedAwayRaw; the survivor snapshot carries hs_merged_object_ids", async () => {
     const hub = createHubcrmApp({ seed: 42 });
     const baseUrl = listen(hub.app);
-    hub.store.simulate(240); // 22 creates + both merges land (mock-side pin covers the shape)
+    hub.store.simulate(OPS_UNTIL_MERGES_COMPLETE); // named constant: all creates + both merges enacted
     await deliver(hub);
 
     const c = await connector(baseUrl);
