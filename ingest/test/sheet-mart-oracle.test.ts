@@ -606,6 +606,25 @@ describe("A6 pair 2 — customer_360 sheet columns: own columns, per-source curr
     expect(Number(row.sheet_row_count)).toBe(1);
     expect(row.sheet_amount_cents).toBe("9000");
   });
+
+  // Debt-burn C2 companion (register, owner Task F): the NAMED orphan-domain assertion.
+  // The behavior landed with the burn wave (mart derives a sheets orphan's domain from
+  // its own email; dbt singular test assert_sheet_orphan_domains_derived guards the
+  // model-level invariant); this test pins it BY NAME in the suite that owns the sheets
+  // arm, including the free-email caveat: on the MART the derived domain is a carried
+  // display attribute — it appears even for a free provider, because identity_resolution
+  // (not the mart) is where the blocklist refuses it as MERGE evidence.
+  it("C2 companion — orphan-domain derivation, named: an email-keyed tier-3 orphan carries the domain split from its own address (even a free provider — display attribute, not merge evidence); a row-keyed orphan keeps NULL, never guessed", async () => {
+    await pool.query("insert into tmp_resolution values ('sheets', 'email:pat@gmail.com', 'sheets:email:pat@gmail.com', 3)");
+    await seedSheetFixtureRow(pool, "rk-0010", "email:pat@gmail.com", { clientName: "Pat Doe", company: "Pat Doe Plumbing" });
+    await pool.query("insert into tmp_resolution values ('sheets', 'row:rk-0011', 'sheets:row:rk-0011', 3)");
+    await seedSheetFixtureRow(pool, "rk-0011", "row:rk-0011", { clientName: "Keyless Kay" });
+
+    const emailOrphan = await martRow(pool, "sheets:email:pat@gmail.com");
+    expect(emailOrphan.domain).toBe("gmail.com"); // derived from its OWN email, verbatim
+    const keylessOrphan = await martRow(pool, "sheets:row:rk-0011");
+    expect(keylessOrphan.domain).toBeNull(); // no usable email → NULL kept, never guessed
+  });
 });
 
 // ── A6 pair 2 — the extended singular test's own predicate ───────────────────────────────
