@@ -2,6 +2,14 @@ name: ci
 on:
   push:
   pull_request:
+# B7: `push` + `pull_request` double-runs every PR-branch commit. One concurrency group
+# per workflow+ref lets the newest run supersede its sibling ("only a single job or
+# workflow using the same concurrency group will run at a time" — GitHub docs); the
+# conditional keeps main-branch runs uncancelled, so a push to main never kills a
+# release-relevant run mid-flight (the docs' own caveat on cancel-in-progress).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   suite:
     runs-on: ubuntu-latest
@@ -36,6 +44,16 @@ jobs:
         run: npm test
       - name: seed pipeline fixture for dbt
         run: npx tsx scripts/ci-fixture.ts
+      # B7: pin the interpreter instead of riding whatever python the runner image ships
+      # (bare `pip` changes under your feet on image updates). Version-pinned dbt +
+      # pinned python make the cache key meaningful; with no requirements file,
+      # cache-dependency-path keys the pip cache on this workflow file, which is where
+      # the pinned dbt version lives — the key changes exactly when the pin does.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+          cache-dependency-path: .github/workflows/ci.yml
       - name: dbt build + data tests
         run: |
           pip install dbt-postgres==1.11.0

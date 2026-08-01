@@ -779,8 +779,14 @@ in the file's own header · ~~some log lines lack the
 resume-cursor lines now carry their source (pinned); the remaining
 unprefixed lines are genuinely global-scope (CLI flag errors, whole-queue
 depth counts), not per-source · migration
-001-recreate/003-drop churn at startup · CI installs dbt via bare pip (no
-setup-python pin) and double-runs on PR branches (no concurrency group) ·
+001-recreate/003-drop churn at startup · ~~CI installs dbt via bare pip (no
+setup-python pin) and double-runs on PR branches (no concurrency group)~~
+*Paid (debt-burn B7, pending live-run confirmation on next push):*
+`setup-python@v7` pinned to 3.13 with a pip cache keyed on the workflow file
+(where the pinned dbt version lives), and a `concurrency` group per
+workflow+ref with `cancel-in-progress` conditional off `main` so a push to
+main never cancels a release-relevant run; chaos.yml needs no group — its
+triggers (schedule / dispatch / PR label) have no push+PR double-run pair ·
 agent test files assign `DBT_SCHEMA` at module top-level and share one DB —
 order-dependent by construction, benign today *(audit)* · assorted items
 tracked in review ledgers.
