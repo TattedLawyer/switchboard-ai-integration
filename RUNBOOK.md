@@ -362,7 +362,11 @@ loss stays one row).
 **What to do:**
 
 1. `node --import tsx src/cli/gap-ack.ts --list` — see every recorded gap, its
-   id, cause and bounds.
+   id, cause and bounds. The listing covers ALL recorded gap state for the
+   tenant — a loss on a source no longer in `INGEST_SOURCES` stays listed,
+   flagged as not currently enabled; `--source <s>` narrows. Both this CLI and
+   reconcile take `--tenant <uuid>` for non-default tenants (default-tenant
+   behavior is unchanged without it).
 2. Investigate by cause. `retention` means we fell behind the window: check for
    an ingest outage or a poll interval longer than the window, and widen or fix
    it so it does not recur. `reset` means the source's retained stream was

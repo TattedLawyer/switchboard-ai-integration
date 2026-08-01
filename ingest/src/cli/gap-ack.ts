@@ -18,8 +18,8 @@
 // express that: it acknowledges exactly one id, and refuses without a --by.
 //
 // Usage:
-//   node --import tsx src/cli/gap-ack.ts --list [--source <source>]
-//   node --import tsx src/cli/gap-ack.ts --source <source> --id <n> --by <operator> [--note "..."]
+//   node --import tsx src/cli/gap-ack.ts --list [--source <source>] [--tenant <uuid>]
+//   node --import tsx src/cli/gap-ack.ts --source <source> --id <n> --by <operator> [--note "..."] [--tenant <uuid>]
 
 import { getPool } from "../db.js";
 import { enabledSources, isSource } from "../sources.js";
@@ -34,15 +34,23 @@ const has = (name: string): boolean => process.argv.includes(`--${name}`);
 
 const USAGE =
   "usage:\n" +
-  "  gap-ack --list [--source <source>]\n" +
-  "  gap-ack --source <source> --id <n> --by <operator> [--note \"why this loss is accepted\"]";
+  "  gap-ack --list [--source <source>] [--tenant <uuid>]\n" +
+  "  gap-ack --source <source> --id <n> --by <operator> [--note \"why this loss is accepted\"] [--tenant <uuid>]";
 
 async function main(): Promise<void> {
   const pool = getPool();
-  // Tenancy: the CLIs operate on the default tenant, like every other operator surface in
-  // this repo. A multi-tenant deployment gets a --tenant flag when it gets a multi-tenant
-  // operator story; inventing half of one here would be worse than the explicit limit.
-  const tenantId = DEFAULT_TENANT_ID;
+  // Tenancy (debt-burn A5): --tenant scopes both the listing and the acknowledgement;
+  // the default stays the default tenant, so single-tenant operation is unchanged. The
+  // ledger itself was always tenant-scoped — this flag makes the operator surface able
+  // to say which tenant it means.
+  const tenantArg = arg("tenant");
+  if (has("tenant") && (tenantArg === undefined || tenantArg.startsWith("--"))) {
+    console.error("--tenant requires a tenant id");
+    console.error(USAGE);
+    await pool.end();
+    process.exit(1);
+  }
+  const tenantId = tenantArg ?? DEFAULT_TENANT_ID;
 
   try {
     const source = arg("source");
@@ -54,11 +62,29 @@ async function main(): Promise<void> {
     }
 
     if (has("list") || (!has("id") && !has("by"))) {
-      const sources = source !== undefined ? [source] : enabledSources();
+      // Default scope is ALL recorded gap state for the tenant (debt-burn A5): this is
+      // the listing a reconcile failure points operators at, and a loss recorded on a
+      // source later removed from INGEST_SOURCES must stay visible on it — recorded
+      // state outranks configured scope on a diagnostic surface. `--source` narrows.
+      const enabled = new Set<string>(enabledSources());
+      const sources: string[] =
+        source !== undefined
+          ? [source]
+          : (
+              await pool.query<{ source: string }>(
+                "select distinct source from ingest.gap_ledger where tenant_id = $1 order by source",
+                [tenantId],
+              )
+            ).rows.map((r) => r.source);
       let total = 0;
       for (const s of sources) {
         for (const gap of await listGaps(pool, tenantId, s)) {
-          console.log(formatGapLedgerRow(s, gap));
+          // Disclosure, not noise: a row on a not-currently-enabled source stays listed
+          // and says why this deployment's reconcile runs will not red on it.
+          const flag = enabled.has(s)
+            ? ""
+            : "  [source not currently in INGEST_SOURCES — the recorded loss still stands]";
+          console.log(formatGapLedgerRow(s, gap) + flag);
           total++;
         }
       }

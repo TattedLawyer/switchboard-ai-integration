@@ -1,6 +1,15 @@
 import { getPool } from "../db.js";
-import { enabledSources } from "../sources.js";
-import { connectorFor, formatGapLedgerRow, listGaps } from "../connectors/index.js";
+import { baseUrlFor, enabledSources, type Source } from "../sources.js";
+import {
+  BusReplayConnector,
+  HubHydrateConnector,
+  SheetSnapshotConnector,
+  StripeFeedConnector,
+  connectorFor,
+  formatGapLedgerRow,
+  listGaps,
+  type Connector,
+} from "../connectors/index.js";
 import { gapCrossCheck } from "./gap-crosscheck.js";
 import { DEFAULT_TENANT_ID } from "../ingest-event.js";
 import type { SheetReconcileReport } from "../connectors/sheet-snapshot.js";
@@ -13,19 +22,66 @@ import type { BusReconcileReport } from "../connectors/bus-replay.js";
 // needs the first row_keys to start fix-the-cell triage, not ten thousand lines.
 const STALE_LIST_CAP = 20;
 
+function arg(name: string): string | undefined {
+  const i = process.argv.indexOf(`--${name}`);
+  return i === -1 ? undefined : process.argv[i + 1];
+}
+
+/**
+ * Tenancy (debt-burn A5): with `--tenant`, every tenant-capable connector is constructed
+ * scoped to that tenant (same registry wiring, tenant threaded in). Without the flag the
+ * registry's default construction is used unchanged — the default tenant's behavior is
+ * byte-identical to before the flag existed.
+ */
+function connectorForTenant(source: Source, tenantId: string): Connector {
+  if (tenantId === DEFAULT_TENANT_ID) return connectorFor(source);
+  const kind = connectorFor(source).kind;
+  switch (kind) {
+    case "sheet-snapshot":
+      return new SheetSnapshotConnector({ baseUrl: baseUrlFor(source), tenantId });
+    case "stripe-feed":
+      return new StripeFeedConnector({ baseUrl: baseUrlFor(source), tenantId });
+    case "hub-hydrate":
+      return new HubHydrateConnector({ baseUrl: baseUrlFor(source), tenantId });
+    case "bus-replay":
+      return new BusReplayConnector({ baseUrl: baseUrlFor(source), tenantId });
+    case "ledger-feed":
+      // Unreachable: main() refuses --tenant for ledger-feed sources before this runs.
+      throw new Error(`--tenant is not supported for ledger-feed source ${source}`);
+  }
+}
+
 async function main(): Promise<void> {
   const pool = getPool();
   let reconciledCount = 0;
   let allClean = true;
+  const tenantId = arg("tenant") ?? DEFAULT_TENANT_ID;
 
   try {
+    if (tenantId !== DEFAULT_TENANT_ID) {
+      // Refuse, by name, what would otherwise be a silently WRONG answer: the ledger-feed
+      // paradigm's reconcile compares the source's whole raw lane against a single ledger
+      // file — it is not tenant-scoped, so running it "for tenant X" would quietly answer
+      // for every tenant at once. The other four paradigms are tenant-scoped end to end.
+      const unsupported = enabledSources().filter((s) => connectorFor(s).kind === "ledger-feed");
+      if (unsupported.length > 0) {
+        console.error(
+          `--tenant is not supported for ledger-feed source(s) ${unsupported.join(", ")}: ` +
+            "their ledger-vs-raw reconcile is not tenant-scoped, and a cross-tenant answer dressed as " +
+            "a per-tenant one would be worse than this refusal",
+        );
+        await pool.end();
+        process.exit(1);
+      }
+    }
+
     for (const source of enabledSources()) {
-      const connector = connectorFor(source);
+      const connector = connectorForTenant(source, tenantId);
 
       // Which losses were already on the record BEFORE this run. Taken as ids rather than
       // by comparing timestamps because `detected_at` is the DATABASE clock and this is
       // the app clock; an id-set diff needs no clock at all.
-      const priorGapIds = new Set((await listGaps(pool, DEFAULT_TENANT_ID, source)).map((g) => g.id));
+      const priorGapIds = new Set((await listGaps(pool, tenantId, source)).map((g) => g.id));
 
       const result = await connector.reconcile(pool);
 
@@ -38,7 +94,7 @@ async function main(): Promise<void> {
       // but the disclosure is the point of the ledger: a row nobody prints is a row nobody
       // acts on. A standing loss is a fact about the past; it is not contingent on whether
       // the source answered the phone today.
-      const ledgerGaps = await listGaps(pool, DEFAULT_TENANT_ID, source);
+      const ledgerGaps = await listGaps(pool, tenantId, source);
       const unacknowledged = ledgerGaps.filter((g) => g.acknowledgedAt === null);
       if (ledgerGaps.length > 0) {
         console.error(
@@ -56,10 +112,11 @@ async function main(): Promise<void> {
       }
       if (unacknowledged.length > 0) {
         // A red with no next step is how reconcile gets ignored. Print the exact command.
+        const tenantFlag = tenantId === DEFAULT_TENANT_ID ? "" : ` --tenant ${tenantId}`;
         console.error(
           `[${source}] ${unacknowledged.length} UNACKNOWLEDGED gap(s). No retry can close a gap — once you have ` +
             "accepted the loss, record it:\n" +
-            `  node --import tsx src/cli/gap-ack.ts --source ${source} --id <n> --by <operator> --note "why"`,
+            `  node --import tsx src/cli/gap-ack.ts --source ${source} --id <n> --by <operator> --note "why"${tenantFlag}`,
         );
         // The gate is the ledger's, not the live read's: an unacknowledged permanent loss
         // reds the run even when this source was skipped or unreadable this time.

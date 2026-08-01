@@ -255,12 +255,13 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
     Task B oracle reads it); the CLI now consumes `gaps` (stripefeed AND bus) as
     a cross-check against the ledger rows it prints — agreement printed even at
     zero, disagreement a named red + nonzero exit (`cli/gap-crosscheck.ts`).
-  - `gap-ack --list` without `--source` iterates `enabledSources()`, so a gap
-    recorded against a source not currently in `INGEST_SOURCES` is invisible to
-    the listing that a reconcile failure points operators at. Deferred because
-    it changes *which losses an operator sees*, and belongs in one considered
-    pass with the `--tenant` flag limitation disclosed above — shipping half
-    would leave two inconsistent scoping rules on one tool.
+  - ~~`gap-ack --list` without `--source` iterates `enabledSources()`, so a gap
+    recorded against a source not currently in `INGEST_SOURCES` is invisible~~
+    *Paid (debt-burn A5, in the one considered pass this entry asked for):*
+    `--list` now defaults to ALL recorded gap state for the tenant, rows tagged
+    with their source and not-currently-enabled sources flagged (disclosure,
+    not noise); `--source` narrows; `--tenant` landed on both CLIs in the same
+    pass (see the tenancy entry below).
 - **The door-enumeration comment in `ingest/src/event-schema.ts` is stale.** It
   claims "the invariant is the enumeration, not a count" and then lists the
   webhook, replay, backfill-poll, sheet-snapshot and stripe-feed doors — but
@@ -500,12 +501,15 @@ leaves it is gone from the source forever.
   row per tick. On re-detection the original row is returned untouched: the far
   edge is not refreshed (that would quietly widen a loss that never grew) and
   an acknowledgement is not cleared.
-- **Disclosed limit — tenancy on the operator surfaces.** The reconcile and
-  gap-ack CLIs operate on the default tenant, like every other operator surface
-  in this repo. The ledger itself is fully tenant-scoped (two tenants losing the
-  same vendor cursor get their own rows, and acknowledging across the tenant
-  line is a no-op that says so), but a multi-tenant deployment needs a
-  `--tenant` flag before those CLIs are usable for non-default tenants.
+- ~~Disclosed limit — tenancy on the operator surfaces~~ *Paid (debt-burn A5):*
+  both CLIs now take `--tenant` — gap-ack scopes its listing and its
+  acknowledgement, reconcile constructs every tenant-capable connector scoped
+  to the named tenant and reads/gates that tenant's gap ledger — with the
+  default-tenant behavior unchanged when the flag is absent (pinned with a
+  non-default tenant in `bus-cli.test.ts`). One honest residue: the
+  ledger-feed paradigm's reconcile compares a whole raw lane against one
+  ledger file and is **not** tenant-scoped, so reconcile `--tenant` refuses
+  ledger-feed sources by name rather than answering cross-tenant.
 
 ### Deferred minors from the Task D review (owners assigned)
 
