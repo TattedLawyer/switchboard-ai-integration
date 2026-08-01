@@ -322,3 +322,59 @@ describe("backfill occurred_at gate (the third door)", () => {
     expect(Number(cur.rows[0].last_seq)).toBe(3);
   });
 });
+
+// Sweep item 3 (slice-1 review): catchUp exited its rounds budget with a SILENT
+// `return totalIngested` — a partial drain reported as a finished one, the exact
+// dishonesty the sibling connectors refuse by name ("refusing to report a drain it did
+// not finish"). A9 made the budget MORE reachable: events with no usable seq advance no
+// cursor, so a page of them re-serves forever and used to burn 10,000 quiet rounds
+// before lying. The A4 treatment: the structural shape fails immediately by name; a
+// genuinely deep feed that outlives the budget fails loudly naming the resumable cursor.
+describe("catchUp: the rounds budget is loud, and no-progress is structural (the A4 treatment)", () => {
+  const goodEvent = (id: string, seq: number) => ({
+    event_id: id, event_type: "company.updated", occurred_at: new Date().toISOString(),
+    data: { id: "DEMO-C-0001", name: "Demo", domain: "demo.example.com" }, seq,
+  });
+
+  it("a non-empty round with no cursor progress fails immediately by NAME — never a slow, misdiagnosed budget burn", async () => {
+    // Events with NO seq: every one processes (ingest, then duplicate-absorb on the
+    // re-serve) but contributes no position — the cursor stays put and `after=0`
+    // re-serves the same page forever. Structurally unterminating.
+    const app = express();
+    app.get("/events", (_req, res) => {
+      res.json({
+        events: [{ event_id: "evt-noseq-1", event_type: "company.updated", occurred_at: new Date().toISOString(), data: { id: "DEMO-C-0001" } }],
+        last_seq: 0,
+      });
+    });
+    const srv: Server = app.listen(0);
+    const baseUrl = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+
+    // maxRounds generous on purpose: the structural check must fire LONG before the
+    // budget — a budget-shaped error here would be exactly the misdiagnosis A4 bans.
+    await expect(catchUp(pool, "crm", baseUrl, { maxRounds: 30 })).rejects.toThrow(
+      /crm catchUp made no cursor progress across a non-empty round/,
+    );
+    srv.close();
+  });
+
+  it("budget exhaustion WITH progress is a loud bounded failure naming the resumable cursor — never a silent partial drain", async () => {
+    // A genuinely bottomless feed: every request serves the next seq. Real progress,
+    // no structural fault — only the budget can stop it, and it must say so.
+    const app = express();
+    app.get("/events", (req, res) => {
+      const after = Number(req.query.after ?? 0) || 0;
+      res.json({ events: [goodEvent(`evt-deep-${after + 1}`, after + 1)], last_seq: after + 1 });
+    });
+    const srv: Server = app.listen(0);
+    const baseUrl = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+
+    await expect(catchUp(pool, "crm", baseUrl, { maxRounds: 3 })).rejects.toThrow(
+      /crm catchUp exceeded maxRounds=3 .*refusing to report a drain it did not finish; state is consistent, re-run to resume from cursor 3/,
+    );
+    // The named cursor is REAL persisted state: a re-run resumes from it.
+    const cur = await pool.query("select last_seq from ingest.cursors where source = 'crm'");
+    expect(Number(cur.rows[0].last_seq)).toBe(3);
+    srv.close();
+  });
+});
