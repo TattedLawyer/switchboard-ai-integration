@@ -307,6 +307,65 @@ describe("tenancy — pinned with a NON-DEFAULT tenant (migration 006's floor, t
   });
 });
 
+describe("the cursor-liveness probe: transient failure is NOT a verdict (debt-burn A1)", () => {
+  /** Forward everything to the real mock except CUSTOM subscribes, which fail like a
+   *  network blip. The reconcile DRAIN reads EARLIEST (one batch at batchSize 100), so
+   *  the only CUSTOM request in the run is `replayIdIsServed`'s probe. */
+  function transientProbeProxy(realUrl: string): express.Express {
+    const proxy = express();
+    proxy.get("/subscribe", async (req, res) => {
+      if (String(req.query.replay_preset) === "CUSTOM") {
+        res.status(500).send("transient upstream blip");
+        return;
+      }
+      const qs = new URLSearchParams(req.query as Record<string, string>).toString();
+      const upstream = await fetch(`${realUrl}/subscribe?${qs}`);
+      res.status(upstream.status).type("application/x-ndjson").send(await upstream.text());
+    });
+    return proxy;
+  }
+
+  it("a transient probe failure becomes integrity:{ok:false} for THIS source with its own wording — never a throw, never a gap row", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const realUrl = listen(mock);
+    mock.stream.emit(6);
+    await new BusReplayConnector({ baseUrl: realUrl, batchSize: 100 }).catchUp(pool);
+
+    const c = new BusReplayConnector({ baseUrl: listen(transientProbeProxy(realUrl)), batchSize: 100 });
+    const result = await c.reconcile(pool);
+
+    // The window read succeeded; only the probe failed. The verdict is "this source's
+    // liveness probe failed transiently", not "the cursor is dead".
+    expect(result.integrity.ok).toBe(false);
+    expect(result.integrity.detail).toMatch(/probe/i);
+    expect(result.integrity.detail).toMatch(/transient/i);
+    // Sibling-wording negatives (operator-surface checklist line 5): a transient blip
+    // must not borrow the permanent-loss vocabulary of the corrupted-cursor path.
+    expect(result.integrity.detail).not.toMatch(/PERMANENT|unclosable|retention|reset/i);
+    expect(result.report).toBeUndefined();
+    // The mechanism under pin: a gap row is a PERMANENT-LOSS assertion, and a network
+    // blip seconds after the same host served the whole window is no evidence of one.
+    expect(await listGaps(pool, DEFAULT_TENANT, CASEBUS_SOURCE)).toHaveLength(0);
+  });
+
+  it("the vendor's corrupted-cursor rejection still takes the GAP path — classification absorbs the transport blip, never the definitive verdict", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
+    // Backfill while young; age the cursor out afterwards so reconcile's probe is the
+    // first surface to meet the corrupted rejection.
+    mock.stream.emit(4, { ageS: 71 * 3600 });
+    await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUp(pool);
+    mock.stream.emit(3);
+    mock.stream.advance(2 * 3600);
+
+    const result = await new BusReplayConnector({ baseUrl, batchSize: 100 }).reconcile(pool);
+    expect(result.integrity.ok).toBe(true); // the window itself read clean
+    const gaps = await listGaps(pool, DEFAULT_TENANT, CASEBUS_SOURCE);
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0].cause).toBe("retention");
+  });
+});
+
 describe("fetch discipline: a black-holed bus is a bounded failure, never a wedge", () => {
   it("a server that never answers times out loudly and leaves the cursor intact", async () => {
     const mock = createCasebusApp({ seed: 42 });

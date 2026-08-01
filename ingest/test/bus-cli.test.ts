@@ -50,6 +50,7 @@ function runCli(
   script: "src/cli/backfill.ts" | "src/cli/reconcile.ts" | "src/cli/gap-ack.ts",
   baseUrl: string,
   args: string[] = [],
+  extraEnv: Record<string, string> = {},
 ): Promise<{ code: number; out: string }> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -64,6 +65,7 @@ function runCli(
           INGEST_SOURCES: "casebus",
           CASEBUS_BASE_URL: baseUrl,
           ALLOW_DEV_SECRETS: "1",
+          ...extraEnv,
         },
       },
       (err, stdout, stderr) => {
@@ -297,6 +299,53 @@ describe("the disclosure must survive the incident (cold review I1)", () => {
     expect(res.out).toMatch(/standing \(recorded before this run\)/);
   });
 
+  it("a TRANSIENT probe failure keeps the standing disclosure AND the rest of the run: integrity red for that source only, no fabricated gap row, later sources still processed (debt-burn A1)", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
+    await makeAgeOutGap(mock, baseUrl); // one STANDING recorded loss
+
+    // The incident: the bus serves the whole window fine (EARLIEST), then blips on the
+    // cursor-liveness probe (the run's only CUSTOM subscribe).
+    const express = (await import("express")).default;
+    const proxy = express();
+    proxy.get("/subscribe", async (req, res) => {
+      if (String(req.query.replay_preset) === "CUSTOM") {
+        res.status(500).send("transient upstream blip");
+        return;
+      }
+      const qs = new URLSearchParams(req.query as Record<string, string>).toString();
+      const upstream = await fetch(`${baseUrl}/subscribe?${qs}`);
+      res.status(upstream.status).type("application/x-ndjson").send(await upstream.text());
+    });
+    const proxySrv = proxy.listen(0);
+    servers.push(proxySrv);
+    const proxyUrl = `http://127.0.0.1:${(proxySrv.address() as { port: number }).port}`;
+
+    // A second, later source in the same run: crm with a (valid, empty) ledger — the
+    // probe blip on casebus must not cost crm its reconcile.
+    const res = await runCli("src/cli/reconcile.ts", proxyUrl, [], {
+      INGEST_SOURCES: "casebus,crm",
+      LEDGER_PATH_CRM: "/tmp/burn1-a1-empty-ledger-does-not-exist.jsonl",
+    });
+
+    expect(res.code).toBe(1);
+    // Positive own-wording: the transient classification names itself…
+    expect(res.out).toMatch(/\[casebus\] FAIL:.*probe/i);
+    expect(res.out).toMatch(/transient/i);
+    // …and the standing loss survives the degraded-path exit (checklist line 4): the
+    // disclosure block prints even though this source's live read ended in a red.
+    expect(res.out).toMatch(/PERMANENT DATA LOSS/);
+    expect(res.out).toMatch(/standing \(recorded before this run\)/);
+    expect(res.out).toMatch(/UNACKNOWLEDGED/);
+    expect(res.out).toMatch(/gap-ack/);
+    // Negative sibling-wording: nothing was DETECTED — a blip is not a new loss…
+    expect(res.out).not.toMatch(/detected in this run/);
+    // …and the durable record gained no fabricated row.
+    expect(await listGaps(pool, DEFAULT_TENANT, "casebus")).toHaveLength(1);
+    // Later sources still processed: the throw used to kill the whole run here.
+    expect(res.out).toMatch(/\[crm\] PASS/);
+  });
+
   it("a gap detected DURING the run is labelled as such, so 'standing' means what it says", async () => {
     const mock = createCasebusApp({ seed: 42 });
     const baseUrl = listen(mock);
@@ -310,6 +359,9 @@ describe("the disclosure must survive the incident (cold review I1)", () => {
     const res = await runCli("src/cli/reconcile.ts", baseUrl);
     expect(res.out).toMatch(/detected in this run/);
     expect(res.out).not.toMatch(/standing \(recorded before this run\)/);
+    // Sibling-wording negative (debt-burn A1): the definitive corrupted-cursor verdict
+    // must never dress as the transient-probe classification, or vice versa.
+    expect(res.out).not.toMatch(/transient/i);
   });
 });
 
