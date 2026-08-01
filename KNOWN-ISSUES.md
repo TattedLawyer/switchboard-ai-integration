@@ -154,6 +154,13 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   order is now pinned by its own test. Moving verification into middleware
   ahead of the parser is the stricter design; deferred as low-priority — the
   parser surface is `express.json` with an explicit 100kb limit.
+  *Narrowed (debt-burn B8):* the parser no longer precedes ROUTING — body
+  handling is route-scoped with source validation first, so a request to an
+  unknown `:source` answers 404 with the parser never run (it previously
+  asserted a nonexistent endpoint's opinion of the body: 400/413/415). Only
+  requests addressed to a source that exists reach the parser now, with the
+  pinned 400/413/415 semantics unchanged for them. The parse-before-AUTH
+  half above still stands as stated.
 - **The allowlist gates tool NAMES, not behavior** — rewriting the body of the
   one read-only tool would pass every current test. The database role (above)
   is the backstop that makes this bounded. Full behavioral evaluation and the

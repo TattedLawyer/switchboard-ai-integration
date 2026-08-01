@@ -29,30 +29,35 @@ export function createIngestApp(
   }
 ): express.Express {
   const app = express();
+  // B8: body handling is ROUTE-scoped, attached per POST route below, so routing
+  // decides before body syntax does — a request to an unknown `:source` 404s with the
+  // parser never run (Express's registration-order contract; research §B8). The three
+  // pieces keep their pinned semantics (415/400/413, 2a.3+A5) for routes that exist.
+  //
   // A5: reject non-JSON media types explicitly (415) BEFORE the parser — otherwise
   // express.json() skips the body, req.body is undefined, and the handler dies with a
   // 500 a vendor reads as "server fault, retry me".
-  app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (req.method === "POST" && !req.is("application/json")) {
+  const mediaTypeGate = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!req.is("application/json")) {
       return res.status(415).json({ error: "unsupported media type: send application/json" });
     }
     next();
-  });
+  };
   // Capture the raw request body (before JSON parsing mutates it into an object) so we can
   // verify the HMAC signature against the exact bytes the source signed. The 100kb limit is
   // express's default made explicit — the error mapping below depends on it firing.
-  app.use(
-    express.json({
-      limit: "100kb",
-      verify: (req, _res, buf) => {
-        (req as express.Request & { rawBody?: string }).rawBody = buf.toString("utf8");
-      },
-    }),
-  );
+  const jsonParser = express.json({
+    limit: "100kb",
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: string }).rawBody = buf.toString("utf8");
+    },
+  });
   // Parser error middleware: malformed JSON → 400; oversized body → 413 (A5: RFC 9110
   // attributes both to the CLIENT — a 500 here would tell a well-behaved vendor to
-  // retry a request that can never succeed, burning its retry budget).
-  app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  // retry a request that can never succeed, burning its retry budget). Sits in each
+  // route's stack directly after the parser (a 4-arity handler is error middleware
+  // wherever it is registered).
+  const parserErrors = (err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (err instanceof SyntaxError && "body" in err) {
       return res.status(400).json({ error: "invalid json" });
     }
@@ -60,7 +65,32 @@ export function createIngestApp(
       return res.status(413).json({ error: "payload too large" });
     }
     next(err);
-  });
+  };
+  // B8: the webhook route's FIRST middleware — an unknown source is an absent resource
+  // (404) and body syntax is moot, so this must run before the parser ever allocates
+  // for the body. Moved out of the handler (where it sat below the app-level parser).
+  const validateWebhookSource = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    // Unknown source = unknown path (404), checked BEFORE the signature — an unregistered
+    // route is not an auth failure, and we must not pick a secret for a source we don't know.
+    // (Standalone-middleware typing: params is string | string[]; a repeated param can
+    // only arrive as an array, which is never a valid source — treat it as unknown.)
+    const sourceParam = typeof req.params.source === "string" ? req.params.source : "";
+    if (!isSource(sourceParam)) {
+      return res.status(404).json({ error: "unknown source" });
+    }
+    // A5: sheets is registered (deployment surface: base URL, secret, port) but its raw
+    // lane is CONNECTOR-BORN — every event_id is manufactured from row content, and
+    // deriveState reads the lane back as the connector's own memory. A generic signed
+    // event accepted here would mint a foreign id inside that lane and poison every
+    // later diff. So the generic event door stays closed BY NAME and points at the one
+    // push surface the paradigm actually has (the thin, dataless nudge).
+    if (sourceParam === "sheets") {
+      return res
+        .status(404)
+        .json({ error: "sheets has no event door; its push surface is POST /connectors/sheets/nudge" });
+    }
+    next();
+  };
   // Instance identity, NOT a health check. An open socket proves a process is listening;
   // it does not prove the process is the one the caller just started. That distinction has
   // already cost this repo one red CI run (a leftover mock inherited across steps — see
@@ -75,7 +105,7 @@ export function createIngestApp(
   app.get("/status", (_req, res) => {
     res.json({ service: "ingest", instance_id: process.env.INGEST_INSTANCE_ID ?? null });
   });
-  app.post("/webhooks/:source", async (req, res, next) => {
+  app.post("/webhooks/:source", validateWebhookSource, mediaTypeGate, jsonParser, parserErrors, async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     // Push-path authenticity check: this endpoint receives unsolicited data from the mock
     // sources, so we must verify each request was actually sent by a holder of THAT source's
     // secret (per-source secrets, D3) before trusting it at all. Unauthenticated data is
@@ -85,24 +115,9 @@ export function createIngestApp(
     // (Contrast: the backfill poll path in backfill.ts pulls from a URL we already trust by
     // configuration — it has no equivalent forgery surface, so it is unaffected by this check.)
     try {
-      // Unknown source = unknown path (404), checked BEFORE the signature — an unregistered
-      // route is not an auth failure, and we must not pick a secret for a source we don't know.
-      const sourceParam = req.params.source;
-      if (!isSource(sourceParam)) {
-        return res.status(404).json({ error: "unknown source" });
-      }
-      // A5: sheets is registered (deployment surface: base URL, secret, port) but its raw
-      // lane is CONNECTOR-BORN — every event_id is manufactured from row content, and
-      // deriveState reads the lane back as the connector's own memory. A generic signed
-      // event accepted here would mint a foreign id inside that lane and poison every
-      // later diff. So the generic event door stays closed BY NAME and points at the one
-      // push surface the paradigm actually has (the thin, dataless nudge below).
-      if (sourceParam === "sheets") {
-        return res
-          .status(404)
-          .json({ error: "sheets has no event door; its push surface is POST /connectors/sheets/nudge" });
-      }
-      const source: Source = sourceParam;
+      // B8: source validity was decided by validateWebhookSource before the parser ran;
+      // by here the param is a known, non-sheets source.
+      const source: Source = req.params.source as Source;
       const rawBody = (req as express.Request & { rawBody?: string }).rawBody ?? "";
       const signature = req.header("x-switchboard-signature");
       if (!verifySignature(rawBody, signature, secretForSource(source))) {
@@ -167,7 +182,7 @@ export function createIngestApp(
   // mocks/sheets/src/trigger.ts's honesty ledger), so its only meaning is "read the sheet
   // soon". Same house HMAC scheme and verify path as the event doors (per-source secret,
   // D3) — never a new crypto copy.
-  app.post("/connectors/sheets/nudge", async (req, res, next) => {
+  app.post("/connectors/sheets/nudge", mediaTypeGate, jsonParser, parserErrors, async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     try {
       // Cold review I3: resolve the secret FIRST, and treat "no secret resolvable" as
       // "this deployment never configured sheets" — the route is effectively absent, so
