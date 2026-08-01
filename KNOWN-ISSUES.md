@@ -237,6 +237,29 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   - **Why Task D did not finish it:** neither file was in Task D's permitted
     file set. Re-owned by **Task F**, which already retires the old mock and
     touches this ledger machinery.
+- **Three connector-layer Minors were deliberately deferred at 2b Task D's
+  review, and are recorded here rather than only in a task report** (which is
+  the failure mode the L1-G7 entry above exists to correct). The review
+  endorsed each skip; what follows is the decision, not a rediscovery list.
+  *Owner: phase-2b close.*
+  - `BusReplayConnector.catchUp` has no `has_more`-with-empty-batch structural
+    check, though its own `reconcile` does one screen away. Not a wedge — the
+    `maxRounds` budget already bounds it with a loud failure — but the two
+    halves are asymmetric. Deferred because adding a second termination path to
+    a drain under fix-round pressure is how a bounded loud failure becomes a
+    subtle one; it wants its own RED.
+  - `StripeFeedReconcileReport.gaps` is still populated (from the ledger) but no
+    longer read by the reconcile CLI, which prints ledger rows directly. A
+    report field with no operator surface is the standing checklist inverted.
+    Deferred because removing it is a public shape change to a Task B type that
+    that task's oracle genuinely uses; decide it together with whether ledger
+    rows should replace the field entirely.
+  - `gap-ack --list` without `--source` iterates `enabledSources()`, so a gap
+    recorded against a source not currently in `INGEST_SOURCES` is invisible to
+    the listing that a reconcile failure points operators at. Deferred because
+    it changes *which losses an operator sees*, and belongs in one considered
+    pass with the `--tenant` flag limitation disclosed above — shipping half
+    would leave two inconsistent scoping rules on one tool.
 - **The door-enumeration comment in `ingest/src/event-schema.ts` is stale.** It
   claims "the invariant is the enumeration, not a count" and then lists the
   webhook, replay, backfill-poll, sheet-snapshot and stripe-feed doors — but

@@ -365,10 +365,14 @@ export class StripeFeedConnector implements Connector {
     // event is normal metabolism (ingested, then aged out). Anything the feed no longer
     // serves that is NOT older than that boundary cannot be an age-out — flag it.
     // Timestamp-bearing retained events only: an envelope with a non-numeric `created`
-    // contributes no boundary (see the drain above). Math.min over a NaN returns NaN and
-    // would make every comparison against the boundary false — silently reclassifying
-    // every aged-out raw row as `extra`, i.e. turning one bad vendor timestamp into a
-    // window-wide false anomaly report.
+    // contributes no boundary (see the drain above). Math.min over a NaN returns NaN, and
+    // `occurredMs >= NaN` is FALSE for every row — so EVERY unretained raw row would fall
+    // to the `else` branch below and be counted as normal metabolism. The bucket that
+    // empties is `extra`: one bad vendor timestamp would silently suppress the real
+    // anomaly this reconcile exists to surface — a raw event INSIDE the window that the
+    // feed no longer serves. A false NEGATIVE, which is the direction nobody notices.
+    // (Recorded backwards in the commit that introduced this guard; pinned correctly by
+    // the "TRAP A" test in stripe-feed.test.ts, which fails against the pre-fix code.)
     const retainedTimes = [...retained.values()].filter((s) => !Number.isNaN(s));
     const earliestRetainedS = retainedTimes.length > 0 ? Math.min(...retainedTimes) : null;
     const extra: string[] = [];
