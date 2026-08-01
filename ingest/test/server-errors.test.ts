@@ -93,6 +93,39 @@ describe("ingest error handling — no internals leaked", () => {
     srv.close();
   });
 
+  // B8 (debt-burn): routing decides before body syntax does. A request to a source
+  // that does not exist is a 404 no matter what its body looks like — the resource is
+  // absent, so body syntax is moot (research §B8: source validation runs BEFORE the
+  // route-scoped express.json()). Previously the app-level parser answered 400 first,
+  // telling the caller an unknown endpoint existed but disliked its JSON.
+  it("B8: malformed JSON to an UNKNOWN source is 404, not 400 — the endpoint's absence wins", async () => {
+    const app = createIngestApp(pool);
+    const srv = app.listen(0);
+    const port = (srv.address() as { port: number }).port;
+    const res = await fetch(`http://127.0.0.1:${port}/webhooks/nope`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"broken": ',
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "unknown source" });
+    srv.close();
+  });
+
+  it("B8: an oversized body to an UNKNOWN source is 404, not 413 — routing wins over every parse concern", async () => {
+    const app = createIngestApp(pool);
+    const srv = app.listen(0);
+    const port = (srv.address() as { port: number }).port;
+    const res = await fetch(`http://127.0.0.1:${port}/webhooks/nope`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pad: "x".repeat(110 * 1024) }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "unknown source" });
+    srv.close();
+  });
+
   it("a forced DB failure returns 500 JSON, no stack/path leakage", async () => {
     // Poison the pool so any query throws, forcing the route handler's error path into the
     // terminal error middleware.
