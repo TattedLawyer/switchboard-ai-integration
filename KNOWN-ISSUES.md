@@ -199,11 +199,18 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   question dead-letter handling exists to answer: *has this been tried, and can it safely
   be replayed?* Still open alongside it: nothing alerts on quarantine depth (listed under
   operations below).
-- **`/simulate` has no explicit start index**, so which events a mock emits depends
-  on a process-lifetime counter rather than on the request. The freshness assertion
-  above converts that from a silent wrong-answer into a loud failure, but the
-  dependency remains. *Scheduled: Phase 2b — take a start index (or expose `/reset`)
-  so emission is a pure function of the request.*
+- ~~`/simulate` has no explicit start index, so which events a mock emits depends
+  on a process-lifetime counter rather than on the request~~ *Paid (debt-burn
+  B3):* `/simulate` now takes an optional `start_index` (0-based script index
+  of the batch's first event), making emission a pure function of the request
+  — identical explicit-index requests emit identically across a server
+  restart (pinned in `mocks/core/test/source-app.test.ts`). The explicit-index
+  arm was chosen over `/reset` because a reset reintroduces exactly the shared
+  mutable state being removed (research §B3). Default no-index behavior is
+  byte-identical to before, and the process counter never rewinds below its
+  high-water mark, so a shared ledger file keeps the chain verifier's
+  strictly-increasing `seq`. The freshness assertions in demo.sh/chaos.sh
+  remain as the second line of defense.
 - ~~The backfill poll path still trusts the feed's cursor~~ *Paid (debt-burn
   A9):* the cursor now advances only to the max seq ACTUALLY processed from
   the page (ingested, duplicate, or quarantined — never the feed-supplied
