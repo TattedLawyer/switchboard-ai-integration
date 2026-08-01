@@ -47,6 +47,17 @@ describe("B10: ingest.ingest_journal — the honest name, still the equality cou
     );
     const names = cols.rows.map((r: { column_name: string }) => r.column_name);
     expect(names).not.toContain("processed_at");
+    // Sweep item 5 / migration 012: 011's table rename left the pk constraint/index and
+    // the bigserial sequence carrying the retired name — the catalog must not keep
+    // telling the outbox story either.
+    const catalog = await pool.query(
+      `select
+         (select count(*)::int from pg_constraint where conname = 'ingest_journal_pkey') as new_pkey,
+         (select count(*)::int from pg_constraint where conname = 'outbox_pkey') as old_pkey,
+         (select count(*)::int from pg_class where relname = 'ingest_journal_id_seq' and relkind = 'S') as new_seq,
+         (select count(*)::int from pg_class where relname = 'outbox_id_seq' and relkind = 'S') as old_seq`,
+    );
+    expect(catalog.rows[0]).toEqual({ new_pkey: 1, old_pkey: 0, new_seq: 1, old_seq: 0 });
   });
 
   it("equality basis unchanged: one journal row per accepted event, none for a duplicate", async () => {
