@@ -44,8 +44,9 @@ successful de-duplication. That is closed:
 
 - Uniqueness is now `(tenant_id, source, event_id)` — exactly-once is preserved
   *within* a tenant, and the same id from two businesses becomes two rows.
-- `tenant_id` is present and indexed on `raw.raw_events`, `ingest.outbox`,
-  `ingest.quarantine` and `ingest.cursors`. Cursors are keyed
+- `tenant_id` is present and indexed on `raw.raw_events`, `ingest.ingest_journal`
+  (né `ingest.outbox`, renamed in migration 011), `ingest.quarantine` and
+  `ingest.cursors`. Cursors are keyed
   `(tenant_id, source)`: a shared cursor would let one tenant's progress skip
   another's events permanently.
 - A tenant is **required, never defaulted** — supplying it explicitly-but-empty
@@ -281,12 +282,21 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   door) also missing, now added. The enumeration matches the grep at head:
   seven doors (webhook, quarantine replay, backfill poll, sheet-snapshot,
   stripe-feed, hub-hydrate, bus-replay).
-- **`ingest.outbox` has no consumer** *(audit)* — written in the hot ingest
-  transaction, `processed_at` never set, grows one row per event forever. It
-  serves only as the demo's equality counter; it is *named* for a
-  transactional-outbox pattern the system doesn't implement (durability
-  actually comes from pg-boss). *Scheduled: 2b raw-layer work — either
-  implement the pattern or rename and cap it.*
+- ~~`ingest.outbox` has no consumer *(audit)* — written in the hot ingest
+  transaction, `processed_at` never set, grows one row per event forever,
+  *named* for a transactional-outbox pattern the system doesn't implement~~
+  *Paid (debt-burn B10, rename+cap arm):* the implement arm was eliminated —
+  the pattern's authority (microservices.io) requires a message relay
+  publishing to a broker with consumers, and none of those exists here (dbt
+  reads `raw` directly; durability is pg-boss's), so a relay would publish to
+  nobody. Migration 011 renames the table to what it is —
+  `ingest.ingest_journal`, an in-transaction ingest audit row and the demo's
+  equality counter — drops the never-set `processed_at` (the relay's column),
+  and bounds growth with a 30-day TTL enforced by an on-insert trigger (TTL
+  over a size cap: a row cap would silently shorten the equality window under
+  load; reasoning in the migration). Pinned in `ingest-journal.test.ts`; the
+  migration comment records that a real outbox becomes warranted only when a
+  downstream consumer exists (Phase 3/4).
 - **`reconcile()` is unbounded in memory** *(audit)* — full event-id set and
   full parsed ledger in memory; the headline reliability proof OOMs before
   the documented ledger ceiling bites. Fine at demo scale; listed in

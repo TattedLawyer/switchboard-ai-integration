@@ -56,9 +56,9 @@ $ready || { echo "FAIL: postgres not ready after 60s"; exit 1; }
 echo "2/8 migrate"
 npm run migrate -w ingest
 
-echo "3/8 clean state (raw, ingest.outbox, ingest.quarantine, ledgers, report artifacts)"
+echo "3/8 clean state (raw, ingest.ingest_journal, ingest.quarantine, ledgers, report artifacts)"
 docker compose exec -T postgres psql -U switchboard -c \
-  "truncate table raw.raw_events, ingest.outbox, ingest.quarantine restart identity;" > /dev/null
+  "truncate table raw.raw_events, ingest.ingest_journal, ingest.quarantine restart identity;" > /dev/null
 # Reset the backfill cursors too, otherwise a stale cursor from a prior chaos run would make
 # the mocks' fresh /simulate events (which restart seq at 1) look already-consumed.
 docker compose exec -T postgres psql -U switchboard -c \

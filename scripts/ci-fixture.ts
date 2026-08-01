@@ -30,7 +30,7 @@ const SHEETS = { seed: 7, rowCount: 10, steps: 12, expectedEvents: 22 } as const
 async function main() {
   const pool = getPool();
   await runMigrations(pool);
-  await pool.query("truncate table raw.raw_events, ingest.outbox, ingest.quarantine restart identity");
+  await pool.query("truncate table raw.raw_events, ingest.ingest_journal, ingest.quarantine restart identity");
   await pool.query("delete from ingest.cursors");
   rmSync("out/ci", { recursive: true, force: true });
   mkdirSync("out/ci", { recursive: true });

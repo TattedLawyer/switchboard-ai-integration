@@ -49,7 +49,7 @@ are derived artifacts; the build recreates them.
 ## Proofs (run these before trusting anything)
 
 ```bash
-./scripts/demo.sh    # end-to-end: 288 events, 3 sources → ledger=raw=outbox equality → identity oracle → report
+./scripts/demo.sh    # end-to-end: 288 events, 3 sources → ledger=raw=journal equality → identity oracle → report
 ./scripts/chaos.sh   # 600 events under seeded faults, all 3 sources → zero-loss reconciliation
 ```
 Both are self-cleaning at start and fail loudly with counts on any mismatch.

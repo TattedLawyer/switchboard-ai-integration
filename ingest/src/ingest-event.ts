@@ -47,9 +47,12 @@ export async function ingestEvent(
     );
 
     if (insertResult.rowCount === 1) {
-      // Insert was successful, write outbox row
+      // Journal the accepted event in the same transaction (B10: ingest.ingest_journal,
+      // né ingest.outbox — renamed because no relay/consumer exists to make the outbox
+      // name true; see migration 011). One row per accepted event, none for duplicates:
+      // the demo's equality counter and a cheap audit surface. 30-day TTL via trigger.
       await client.query(
-        "insert into ingest.outbox (tenant_id, source, event_id) values ($1, $2, $3)",
+        "insert into ingest.ingest_journal (tenant_id, source, event_id) values ($1, $2, $3)",
         [tenantId, source, event.event_id],
       );
       await client.query("commit");

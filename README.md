@@ -126,7 +126,7 @@ engineering on data you can inspect freely.
 |---|---|---|
 | Zero lost events under faults | `./scripts/chaos.sh` (600 events, 20% drops / 15% dups / 20% API errors) | at the default seed, 158 of 200 per source arrive by push and backfill recovers exactly the 42 dropped. That split moves with `CHAOS_SEED`; the pass condition does not — the script asserts every source's ledger reconciles exactly against its raw rows (3×), with 0 duplicates, quarantine 0, DLQ 0 |
 | Loss *detection* has teeth | `CHAOS_SKIP_BACKFILL=1 ./scripts/chaos.sh` | correctly FAILS, listing every unrecovered event per source (42 each at the default seed) |
-| End-to-end pipeline equality | `./scripts/demo.sh` (288 events across 3 sources) | ledger = raw = outbox at 288/288/288, report generated |
+| End-to-end pipeline equality | `./scripts/demo.sh` (288 events across 3 sources) | ledger = raw = journal at 288/288/288, report generated |
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |

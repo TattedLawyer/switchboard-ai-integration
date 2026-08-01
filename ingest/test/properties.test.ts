@@ -503,7 +503,7 @@ describe("property 5: random poison/healthy batch partitions — healthy ingest 
             if (!mask.includes(false)) mask[size - 1] = false;
 
             // Clean slate per run (schema exists: createQueue ran above).
-            await pool.query("truncate table raw.raw_events, ingest.outbox restart identity");
+            await pool.query("truncate table raw.raw_events, ingest.ingest_journal restart identity");
             await pool.query("delete from pgboss.job");
             attempts.clear();
 

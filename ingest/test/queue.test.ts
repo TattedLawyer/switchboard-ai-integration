@@ -47,7 +47,7 @@ async function pollUntil(cond: () => Promise<boolean>, timeoutMs: number): Promi
 }
 
 describe("pg-boss queue", () => {
-  it("(happy path) enqueue → worker → raw row + outbox row exist", async () => {
+  it("(happy path) enqueue → worker → raw row + journal row exist", async () => {
     const boss = await createQueue(connectionString);
     try {
       const event = ev("evt-queue-1");
@@ -57,21 +57,21 @@ describe("pg-boss queue", () => {
       // Poll for raw row (bounded 10s)
       const deadline = Date.now() + 10000;
       let rawExists = false;
-      let outboxExists = false;
+      let journalExists = false;
 
       while (Date.now() < deadline) {
         const rawResult = await pool.query(
           "select count(*)::int as n from raw.raw_events where source='crm' and event_id=$1",
           [event.event_id]
         );
-        const outboxResult = await pool.query(
-          "select count(*)::int as n from ingest.outbox where event_id=$1",
+        const journalResult = await pool.query(
+          "select count(*)::int as n from ingest.ingest_journal where event_id=$1",
           [event.event_id]
         );
 
-        if (rawResult.rows[0].n === 1 && outboxResult.rows[0].n === 1) {
+        if (rawResult.rows[0].n === 1 && journalResult.rows[0].n === 1) {
           rawExists = true;
-          outboxExists = true;
+          journalExists = true;
           break;
         }
 
@@ -79,7 +79,7 @@ describe("pg-boss queue", () => {
       }
 
       expect(rawExists).toBe(true);
-      expect(outboxExists).toBe(true);
+      expect(journalExists).toBe(true);
     } finally {
       await boss.stop();
     }
@@ -133,7 +133,7 @@ describe("pg-boss queue", () => {
   it("routes events to per-source queues and DLQs stay isolated", async () => {
     // Tests in this file share one DB (freshTestDb runs once in beforeAll), so start this
     // exact-count assertion from a clean slate: earlier tests already ingested rows.
-    await pool.query("truncate table raw.raw_events, ingest.outbox restart identity");
+    await pool.query("truncate table raw.raw_events, ingest.ingest_journal restart identity");
     const boss = await createQueue(connectionString);
     try {
       // healthy pool; enqueue one billing + one crm event
@@ -157,7 +157,7 @@ describe("pg-boss queue", () => {
   it("fetchDlq reports the source of dead-lettered jobs", async () => {
     // Clean slate: earlier tests in this shared DB left rows in raw and a dead-lettered
     // crm job in the DLQ; clear both so the isolation assertions below are exact.
-    await pool.query("truncate table raw.raw_events, ingest.outbox restart identity");
+    await pool.query("truncate table raw.raw_events, ingest.ingest_journal restart identity");
     await pool.query("delete from pgboss.job");
 
     // poisoned pool (connect rejects) + tiny retry opts, billing event only
@@ -208,7 +208,7 @@ describe("pg-boss queue", () => {
   it("(poison batch isolation) healthy jobs co-batched with a poison job are ingested once and never dead-letter", async () => {
     // Clean slate: earlier tests in this shared DB left ingested rows and DLQ jobs behind;
     // clear both so the exact-membership assertions below hold.
-    await pool.query("truncate table raw.raw_events, ingest.outbox restart identity");
+    await pool.query("truncate table raw.raw_events, ingest.ingest_journal restart identity");
     await pool.query("delete from pgboss.job");
 
     // Tiny retry options so the poison job exhausts retries and dead-letters within the poll window.
@@ -288,7 +288,7 @@ describe("pg-boss queue", () => {
     // Clean slate, as the sibling tests above do in this shared DB. (pgboss.job is
     // cleaned AFTER createQueue: boss.start() is what creates the schema, so this test
     // also runs standalone against a fresh database.)
-    await pool.query("truncate table raw.raw_events, ingest.outbox restart identity");
+    await pool.query("truncate table raw.raw_events, ingest.ingest_journal restart identity");
     const boss = await createQueue(connectionString, { retryLimit: 1, retryDelay: 1, retryBackoff: false });
     await pool.query("delete from pgboss.job");
     try {

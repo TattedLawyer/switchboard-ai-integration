@@ -74,11 +74,11 @@ describe("tenant isolation — two businesses must not collide", () => {
     expect(rows.rows[0].n).toBe(1);
   });
 
-  it("writes exactly one outbox row per accepted event, per tenant — the demo's equality counter must not merge tenants either", async () => {
+  it("writes exactly one journal row per accepted event, per tenant — the demo's equality counter must not merge tenants either", async () => {
     await ingestEvent(pool, "crm", evt("evt-1", "Acme Corp"), { tenantId: TENANT_A });
     await ingestEvent(pool, "crm", evt("evt-1", "Beta Industries"), { tenantId: TENANT_B });
 
-    const out = await pool.query("select tenant_id from ingest.outbox order by tenant_id");
+    const out = await pool.query("select tenant_id from ingest.ingest_journal order by tenant_id");
     expect(out.rowCount).toBe(2);
     expect(out.rows.map((r) => r.tenant_id)).toEqual([TENANT_A, TENANT_B]);
   });

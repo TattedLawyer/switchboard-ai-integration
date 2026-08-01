@@ -16,11 +16,11 @@ const ev = (id: string) => ({ event_id: id, event_type: "company.updated",
   occurred_at: new Date().toISOString(), data: { id: "DEMO-C-0001", name: "DEMO X", domain: "x.example.com" } });
 
 describe("ingestEvent", () => {
-  it("inserts once and writes exactly one outbox row", async () => {
+  it("inserts once and writes exactly one journal row", async () => {
     expect(await ingestEvent(pool, "crm", ev("evt-1"))).toBe("inserted");
     expect(await ingestEvent(pool, "crm", ev("evt-1"))).toBe("duplicate");
     const raw = await pool.query("select count(*)::int as n from raw.raw_events where source='crm' and event_id='evt-1'");
-    const ob = await pool.query("select count(*)::int as n from ingest.outbox where event_id='evt-1'");
+    const ob = await pool.query("select count(*)::int as n from ingest.ingest_journal where event_id='evt-1'");
     expect(raw.rows[0].n).toBe(1);
     expect(ob.rows[0].n).toBe(1);
   });
