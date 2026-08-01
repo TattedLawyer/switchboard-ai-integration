@@ -207,7 +207,15 @@ tier2_free_demoted as (
 tier2 as (
     select source, source_entity_id, min(canonical_id) as canonical_id,
            2 as matched_tier,
-           'domain+name=' || min(norm_domain || '|' || norm_name) as match_evidence
+           -- Corroborating evidence is DISCLOSED, mirroring tier 1's marker shape
+           -- (checklist line 6: records are equally rich across tiers — an auditor of a
+           -- corroborated row sees the corroboration, not a single-tuple-looking string).
+           case when count(distinct (norm_domain, norm_name)) = 1
+                then 'domain+name=' || min(norm_domain || '|' || norm_name)
+                else 'domain+name=' || min(norm_domain || '|' || norm_name)
+                     || ' (+' || (count(distinct (norm_domain, norm_name)) - 1)
+                     || ' more, all one canonical)'
+           end as match_evidence
     from tier2_candidates
     group by source, source_entity_id
     having count(distinct canonical_id) = 1
