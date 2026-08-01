@@ -508,20 +508,13 @@ leaves it is gone from the source forever.
 
 ### Deferred minors from the Task D review (owners assigned)
 
-- **The reconcile integrity probe can throw instead of judging** (owner: **Task
-  E**, first in line). `replayIdIsServed` — the probe that asks the bus whether
-  the stored cursor is still served — sits *outside* reconcile's integrity
-  try/catch, so a transient probe failure (a network blip seconds after the
-  same host served the whole window) throws out of `reconcile()` instead of
-  becoming `integrity: { ok: false }` like every other bus read. Blast radius:
-  the durable-gap disclosure block runs *after* `reconcile()`, so the throw
-  suppresses standing-loss disclosure **for that source and every source after
-  it in the run** — the same disclosure-dies-during-an-incident class this
-  range just fixed, arriving through a different door. It is loud and
-  state-safe (exit 1, nothing half-written, re-run recovers), which is why it
-  waited; the fix needs its own RED because it must distinguish a transient
-  probe failure from the vendor's corrupted-cursor rejection — getting that
-  backwards would file a fabricated permanent-loss row on a network blip.
+- ~~The reconcile integrity probe can throw instead of judging~~ *Paid (debt-burn
+  A1):* `replayIdIsServed` is now classified AWS-SDK-style — only the vendor's
+  documented corrupted-cursor rejection is a verdict (gap path unchanged); any
+  other probe failure is transient transport and becomes
+  `integrity: { ok: false }` for that source only, with its own wording, **no
+  gap row filed**, standing-loss disclosure and later sources intact (pinned
+  both directions in `bus-replay.test.ts` and `bus-cli.test.ts`).
 - **A status frame that omits `stream_id` can bind a new cursor to the old
   stream identity** (`setCursor`'s `coalesce`), which would later mislabel a
   reset as `retention`. Unreachable against this mock, which always sends the

@@ -411,7 +411,30 @@ export class BusReplayConnector implements Connector {
     if (cursor.replayId !== null) {
       // Asked of the BUS, never of raw: raw's copy of a replay id is history (what we
       // once read), not evidence about the source's current window.
-      const stillServed = await this.replayIdIsServed(baseUrl, cursor.replayId, batchSize);
+      //
+      // Transient-vs-permanent classification (debt-burn A1, the AWS SDK retry model):
+      // only the vendor's DEFINITIVE rejection (CorruptedCursorError, keyed on the
+      // documented error code) is a verdict on the cursor — the probe maps it to
+      // stillServed=false and the gap path below. Anything else escaping fetchBatch
+      // (timeout, network TypeError, bounded-429 exhaustion — all already bounded per
+      // attempt) is TRANSPORT failure: it says nothing about the cursor, so it must not
+      // file a gap row (a permanent-loss assertion) and must not throw out of
+      // reconcile() past the CLI's standing-loss disclosure for this source and every
+      // later one. It becomes integrity:{ok:false} for this source only; a re-run
+      // re-probes.
+      let stillServed: boolean;
+      try {
+        stillServed = await this.replayIdIsServed(baseUrl, cursor.replayId, batchSize);
+      } catch (err) {
+        return {
+          integrity: {
+            ok: false,
+            detail:
+              "cursor liveness probe failed — transient bus/transport failure, not a verdict on the " +
+              `stored cursor (no gap recorded; re-run reconcile): ${(err as Error).message}`,
+          },
+        };
+      }
       if (!stillServed) {
         const cause: GapCause =
           cursor.streamId !== null && currentStreamId !== null && currentStreamId !== cursor.streamId

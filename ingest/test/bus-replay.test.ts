@@ -341,7 +341,8 @@ describe("the cursor-liveness probe: transient failure is NOT a verdict (debt-bu
     expect(result.integrity.detail).toMatch(/transient/i);
     // Sibling-wording negatives (operator-surface checklist line 5): a transient blip
     // must not borrow the permanent-loss vocabulary of the corrupted-cursor path.
-    expect(result.integrity.detail).not.toMatch(/PERMANENT|unclosable|retention|reset/i);
+    // (Phrases, not bare words: the echoed URL legitimately contains "replay_preset".)
+    expect(result.integrity.detail).not.toMatch(/PERMANENT DATA LOSS|unclosable|\(retention\)|\(reset\)|no longer valid/i);
     expect(result.report).toBeUndefined();
     // The mechanism under pin: a gap row is a PERMANENT-LOSS assertion, and a network
     // blip seconds after the same host served the whole window is no evidence of one.
