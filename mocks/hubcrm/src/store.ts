@@ -24,6 +24,16 @@ export interface ThinEvent {
   propertyName?: string;
   /** null = the property was CLEARED ("no value now", not garbage). */
   propertyValue?: string | null;
+  /** Merge events only (F-1b; researched field set, verbatim vendor names —
+   *  f2-wire-research.md Q1): the merge winner's INPUT id, the ids merged into it, the
+   *  NEW record created as the result, and the property-move count. `objectId` on a
+   *  merge event is the record the event is about = `newObjectId` (disclosed inference:
+   *  the vendor payload carries objectId but no page states which id it holds on a
+   *  merge; the survivor is the only record that still exists). */
+  primaryObjectId?: number;
+  mergedObjectIds?: number[];
+  newObjectId?: number;
+  numberOfPropertiesMoved?: number;
   changeSource: string;
   attemptNumber: number; // 0 on first delivery; re-deliveries increment
 }
@@ -177,6 +187,60 @@ export function createHubStore(opts: HubStoreOptions): HubStore {
     return emit(`${type}.propertyChange`, rec.objectId, { name, value });
   };
 
+  // ── F-1b merge semantics (f2-wire-research.md Q1) ────────────────────────────────────
+  // "A new unique Record ID is created for the resulting merged record" (HubSpot KB,
+  // verbatim) — the survivor is a NEW record carrying the winner's properties plus
+  // hs_merged_object_ids ("the Record ID values of all records previously merged into
+  // that record"; semicolon-joined, HubSpot's multi-value string convention). BOTH
+  // consumed ids land there — winner input included, since neither input survives under
+  // its own id. GET on a consumed id → gone (404 at the server): undocumented upstream,
+  // modeled conservatively and disclosed (KNOWN-ISSUES fidelity note).
+  const executedMerges = new Set<number>();
+  const companyByManifestId = (mid: string): HubRecord | undefined =>
+    [...store.company.values()].find((r) => String(r.properties.hs_manifest_id) === mid);
+  const mergeCompanies = (primary: HubRecord, merged: HubRecord): ThinEvent => {
+    const newObjectId = mintId();
+    const moved = Object.keys(merged.properties).length;
+    store.company.delete(primary.objectId);
+    store.company.delete(merged.objectId);
+    store.company.set(newObjectId, {
+      objectId: newObjectId,
+      objectType: "company",
+      properties: {
+        ...primary.properties,
+        hs_merged_object_ids: `${primary.objectId};${merged.objectId}`,
+      },
+    });
+    const event: ThinEvent = {
+      eventId: mintId(),
+      subscriptionType: "company.merge",
+      portalId,
+      occurredAt: Date.now(),
+      objectId: newObjectId,
+      primaryObjectId: primary.objectId,
+      mergedObjectIds: [merged.objectId],
+      newObjectId,
+      numberOfPropertiesMoved: moved,
+      changeSource: CHANGE_SOURCES[ops % CHANGE_SOURCES.length],
+      attemptNumber: 0,
+    };
+    emitted.push(event);
+    pendingQueue.push(event);
+    return event;
+  };
+  /** The first unexecuted manifest merge pair whose participants BOTH exist — merges
+   *  fire deterministically at the first slot-0 op after both sides were created. */
+  const pendingMerge = (): { primary: HubRecord; merged: HubRecord; index: number } | null => {
+    for (let i = 0; i < manifest.mergePairs.length; i++) {
+      if (executedMerges.has(i)) continue;
+      const pair = manifest.mergePairs[i];
+      const merged = companyByManifestId(pair.from_id);
+      const primary = companyByManifestId(pair.to_id);
+      if (merged !== undefined && primary !== undefined) return { primary, merged, index: i };
+    }
+    return null;
+  };
+
   /** The 10-op script cycle. Slot 8 creates a deal and slot 9 deletes it — the
    *  creation event's hydration meets a 404 (deleted-before-fetch, the tombstone
    *  scenario) whenever both land in the same delivery run. Slot 7 CLEARS a deal's
@@ -187,9 +251,19 @@ export function createHubStore(opts: HubStoreOptions): HubStore {
     const i = ops++;
     const out: ThinEvent[] = [];
     switch (i % 10) {
-      case 0:
-        out.push(createObject("company"));
+      case 0: {
+        // Merges take the company slot as soon as they are POSSIBLE (both participants
+        // live): deterministic, and they consume the slot the naive recycling would
+        // otherwise use to mint a duplicate of an already-covered manifest company.
+        const due = pendingMerge();
+        if (due !== null) {
+          executedMerges.add(due.index);
+          out.push(mergeCompanies(due.primary, due.merged));
+        } else {
+          out.push(createObject("company"));
+        }
         break;
+      }
       case 1:
         out.push(createObject("contact"));
         break;

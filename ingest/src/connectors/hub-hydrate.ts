@@ -255,6 +255,12 @@ export interface HubReconcileReport extends ReconcileReport {
    *  excluded (already visible in hydrationDlq; double-flagging would make one poison
    *  object a permanent double-red). */
   drifted: string[];
+  /** Objects absent from the store whose absence a MERGE event in raw explains (their id
+   *  appears in a merge event's mergedObjectIds or primaryObjectId — F-1b: neither input
+   *  survives a merge under its own id). Normal metabolism, named separately from
+   *  tombstonedRaw because the operator's follow-up differs: a tombstone means deleted,
+   *  a merged-away id means "look at the survivor carrying hs_merged_object_ids". */
+  mergedAwayRaw: number;
   /** Objects absent from the store WITH a deletion event in raw — normal metabolism. */
   tombstonedRaw: number;
   /** Thin events with no terminal hydration state yet (budget spillover). */
@@ -506,12 +512,27 @@ export class HubHydrateConnector implements Connector {
       deletionSeen: boolean;
     }
     const rawByObject = new Map<string, ObjEvents>();
+    const mergeExplained = new Set<string>();
     for (const row of rawRes.rows) {
       const ref = objectRefOf(row);
       if (ref === null) continue; // un-hydratable shapes live in the DLQ listing
       const key = `${ref.objectType}:${ref.objectId}`;
       const entry = rawByObject.get(key) ?? { latest: null, deletionSeen: false };
       if (row.event_type.endsWith(".deletion")) entry.deletionSeen = true;
+      // Merge events explain the absence of BOTH their input records (F-1b): collect
+      // the consumed ids under this object type so classification below can name them.
+      if (row.event_type.endsWith(".merge")) {
+        const d = row.payload?.data as { primaryObjectId?: unknown; mergedObjectIds?: unknown } | undefined;
+        const consumed: unknown[] = [
+          ...(Array.isArray(d?.mergedObjectIds) ? d.mergedObjectIds : []),
+          ...(d?.primaryObjectId !== undefined ? [d.primaryObjectId] : []),
+        ];
+        for (const c of consumed) {
+          if (typeof c === "number" || (typeof c === "string" && c !== "")) {
+            mergeExplained.add(`${ref.objectType}:${String(c)}`);
+          }
+        }
+      }
       const occurredMs =
         typeof row.payload?.data?.occurredAt === "number"
           ? row.payload.data.occurredAt
@@ -549,6 +570,7 @@ export class HubHydrateConnector implements Connector {
     const drifted: string[] = [];
     const extra: string[] = [];
     let tombstonedRaw = 0;
+    let mergedAwayRaw = 0;
     let hydrationPending = 0;
     for (const row of rawRes.rows) {
       if (!snapByEvent.has(row.event_id) && !dlqIds.has(row.event_id)) hydrationPending++;
@@ -556,6 +578,7 @@ export class HubHydrateConnector implements Connector {
     for (const [key, entry] of rawByObject) {
       if (!storeObjects.has(key)) {
         if (entry.deletionSeen) tombstonedRaw++;
+        else if (mergeExplained.has(key)) mergedAwayRaw++;
         else extra.push(key);
       }
     }
@@ -589,6 +612,7 @@ export class HubHydrateConnector implements Connector {
         extra,
         rawDuplicates: 0, // structurally impossible: uq (tenant_id, source, event_id)
         drifted,
+        mergedAwayRaw,
         tombstonedRaw,
         hydrationPending,
         hydrationDlq: dlqEntries,

@@ -462,6 +462,18 @@ events per request, ordering not guaranteed, 10 retries over 24 hours and then
 the delivery is gone — all research-verified) and the full record must be
 fetched afterwards. Three stated limits of the paradigm itself:
 
+- **Merge-modeling fidelity note (F-1b decision 1).** `company.merge` thin
+  events and new-survivor semantics (a NEW record id carrying
+  `hs_merged_object_ids`; neither input survives under its own id) are
+  research-verified verbatim (`.superpowers/sdd/f2-wire-research.md` Q1). Two
+  points are DISCLOSED INFERENCE, modeled conservatively because no vendor
+  page states them: GET on a consumed record id answers **404** (the vendor
+  documents old-id resolution only for the basic update endpoint), and a merge
+  event's `objectId` carries the **survivor's** id (the payload documents the
+  field but not which id it holds on a merge). Reconcile treats
+  merge-explained absence as metabolism (`mergedAwayRaw`, beside
+  `tombstonedRaw`).
+
 - **A webhook that exhausts its retries is permanently undeliverable, and this
   source has no feed to re-read.** Unlike stripefeed (whose catchUp re-drains a
   window), a lost hubcrm notification cannot be re-pulled: the vendor's events

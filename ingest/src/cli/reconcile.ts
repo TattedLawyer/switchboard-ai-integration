@@ -210,7 +210,7 @@ async function main(): Promise<void> {
       let windowed: { agedOutRaw: number; quarantined: { event_id: string; count: number }[] } | undefined;
       let reportedGaps: readonly ReportedGapLike[] | undefined;
       let hub:
-        | { drifted: string[]; tombstonedRaw: number; hydrationPending: number; hydrationDlq: HydrationDlqEntry[] }
+        | { drifted: string[]; mergedAwayRaw: number; tombstonedRaw: number; hydrationPending: number; hydrationDlq: HydrationDlqEntry[] }
         | undefined;
       switch (connector.kind) {
         case "ledger-feed": {
@@ -248,11 +248,11 @@ async function main(): Promise<void> {
         case "hub-hydrate": {
           const {
             ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates,
-            drifted, tombstonedRaw, hydrationPending, hydrationDlq, ...rest
+            drifted, mergedAwayRaw, tombstonedRaw, hydrationPending, hydrationDlq, ...rest
           } = report as HubReconcileReport;
           rest satisfies Record<string, never>;
           base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates };
-          hub = { drifted, tombstonedRaw, hydrationPending, hydrationDlq };
+          hub = { drifted, mergedAwayRaw, tombstonedRaw, hydrationPending, hydrationDlq };
           break;
         }
       }
@@ -356,6 +356,9 @@ async function main(): Promise<void> {
       // looks in the right place.
       if (hub !== undefined) {
         console.log(`[${source}] tombstoned (deleted with a deletion event in raw — expected metabolism): ${hub.tombstonedRaw}`);
+        // F-1b: as rich as the tombstone line (checklist line 6 — same absent-from-store
+        // condition, different explanation, different operator follow-up).
+        console.log(`[${source}] merged away (consumed by a merge event in raw — survivor carries hs_merged_object_ids): ${hub.mergedAwayRaw}`);
         console.log(`[${source}] drifted (store moved, no webhook told us — latest snapshot differs): ${hub.drifted.length}`);
         for (const key of hub.drifted) console.log(`  - ${key}`);
         console.log(`[${source}] hydration pending (no terminal state yet — the pump continues next run): ${hub.hydrationPending}`);
