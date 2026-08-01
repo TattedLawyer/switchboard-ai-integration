@@ -305,12 +305,22 @@ export class BusReplayConnector implements Connector {
         for (const { frame } of batch.events) {
           const id = frame.event?.id;
           const t = frame.event?.event_time;
-          if (typeof id !== "string" || typeof t !== "string" || Number.isNaN(Date.parse(t))) {
+          if (typeof id !== "string" || id === "") {
+            // No IDENTITY means nothing to reconcile against: this frame cannot be
+            // compared to raw at all, so the window genuinely is unreadable.
             return {
-              integrity: { ok: false, detail: `bus served a malformed event frame: ${JSON.stringify(frame).slice(0, 120)}` },
+              integrity: { ok: false, detail: `bus served an event frame with no id: ${JSON.stringify(frame).slice(0, 120)}` },
             };
           }
-          retained.set(id, Date.parse(t));
+          // An unparseable event_time is NOT an unreadable source (oracle 7 found this
+          // hard-failing): the drain already quarantines such an event and keeps going,
+          // and the quarantine cross-reference below exists exactly so one poisoned
+          // vendor event cannot red every reconcile for the length of the retention
+          // window. The event still COUNTS toward the retained window — it is really
+          // there — it simply contributes no timestamp, so it is excluded from the
+          // aged-out boundary arithmetic rather than corrupting it with NaN.
+          const parsed = typeof t === "string" ? Date.parse(t) : NaN;
+          retained.set(id, parsed);
           if (typeof frame.replay_id === "string") last = frame.replay_id;
         }
         if (last !== null && last === cursorId) {
@@ -367,7 +377,11 @@ export class BusReplayConnector implements Connector {
     }
     missing = [...missing].sort();
 
-    const earliestRetainedMs = retained.size > 0 ? Math.min(...retained.values()) : null;
+    // Timestamp-bearing retained events only: a poisoned event_time contributes no
+    // boundary (see the reconcile drain above). Math.min over a NaN would poison every
+    // aged-out classification silently, which is worse than the poison itself.
+    const retainedTimes = [...retained.values()].filter((ms) => !Number.isNaN(ms));
+    const earliestRetainedMs = retainedTimes.length > 0 ? Math.min(...retainedTimes) : null;
     const extra: string[] = [];
     let agedOutRaw = 0;
     for (const row of rawRes.rows) {

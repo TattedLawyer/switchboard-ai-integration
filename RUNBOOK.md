@@ -8,15 +8,15 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 | Variable | Default | Used by |
 |---|---|---|
 | `DATABASE_URL` | no code default — export it (scripts set it for you) | ingest, agent, CLIs |
-| `WEBHOOK_SECRET_CRM` / `_BILLING` / `_SUPPORT` / `_SHEETS` / `_STRIPEFEED` | **required — fails closed.** No env var means the process throws at boot/first use; there is no silent fallback (the demo values are published in this repo). One secret **per source**, so a leaked secret compromises one source, not all. `_SHEETS` guards only the nudge door (see Sheets source operations); `_STRIPEFEED` guards a door the pull-only paradigm never uses (see Stripefeed source operations); each is asserted at boot only when its source is in `INGEST_SOURCES` | mock signing, ingest verification |
+| `WEBHOOK_SECRET_CRM` / `_BILLING` / `_SUPPORT` / `_SHEETS` / `_STRIPEFEED` / `_HUBCRM` / `_CASEBUS` | **required — fails closed.** No env var means the process throws at boot/first use; there is no silent fallback (the demo values are published in this repo). One secret **per source**, so a leaked secret compromises one source, not all. `_SHEETS` guards only the nudge door (see Sheets source operations); `_STRIPEFEED` and `_CASEBUS` each guard a door their pull-only paradigms never use (see those sources' operations sections); `_HUBCRM` is genuinely load-bearing — that source really does push signed batches; each is asserted at boot only when its source is in `INGEST_SOURCES` | mock signing, ingest verification |
 | `LEDGER_HMAC_KEY` | **required — fails closed** (same rule as webhook secrets) | ledger writers (mocks), reconcile chain verification |
 | `ALLOW_DEV_SECRETS` | unset. `1` opts in to the published demo secrets (`demo-secret-<source>`, `demo-ledger-key`) — local demo/test use ONLY; demo.sh/chaos.sh and the vitest configs set it. Never set it in a real deployment | everything above |
 | `AGENT_DATABASE_URL` | derived: `DATABASE_URL` with user/password swapped to `switchboard_agent` (dev password `switchboard_agent`; override with `AGENT_DB_PASSWORD`). The agent/report pool runs as this **database-enforced read-only role** — set explicitly in production | agent report/MCP pool |
 | `INGEST_INSTANCE_ID` | unset → `/status` reports `instance_id: null` and nothing checks it. demo.sh/chaos.sh mint one per run and refuse to proceed unless `:4002/status` echoes it back, proving they are driving the ingest they just started and not one stranded by an earlier run | ingest `/status`, demo.sh, chaos.sh |
 | `LEDGER_PATH` | no code default — export it (scripts set it for you) | each mock process (its own ledger file) |
 | `LEDGER_PATH_CRM` / `_BILLING` / `_SUPPORT` | unset → that source is skipped by reconcile | reconcile CLI (per-source ledger lookup) |
-| `INGEST_SOURCES` | `crm,billing,support` — `sheets` and `stripefeed` are registered but **opt-in** (neither speaks the `/events` shape the default surfaces poll; add them explicitly for catch-up/reconcile runs) | which sources ingest polls/reconciles (scripts pin it explicitly) |
-| `CRM_BASE_URL` / `BILLING_BASE_URL` / `SUPPORT_BASE_URL` / `SHEETS_BASE_URL` / `STRIPEFEED_BASE_URL` | `http://localhost:4001` / `4003` / `4004` / `4005` / `4006` | backfill CLI (sheets: the snapshot API; stripefeed: the `/v1/events` cursor feed) |
+| `INGEST_SOURCES` | `crm,billing,support` — `sheets`, `stripefeed`, `hubcrm` and `casebus` are registered but **opt-in** (neither speaks the `/events` shape the default surfaces poll; add them explicitly for catch-up/reconcile runs) | which sources ingest polls/reconciles (scripts pin it explicitly) |
+| `CRM_BASE_URL` / `BILLING_BASE_URL` / `SUPPORT_BASE_URL` / `SHEETS_BASE_URL` / `STRIPEFEED_BASE_URL` / `HUBCRM_BASE_URL` / `CASEBUS_BASE_URL` | `http://localhost:4001` / `4003` / `4004` / `4005` / `4006` / `4007` / `4008` | backfill CLI (sheets: the snapshot API; stripefeed: the `/v1/events` cursor feed; hubcrm: the object store; casebus: the `/subscribe` event stream) |
 | `INGEST_ROLE` | `all` (`receiver` \| `worker` \| `all`) | ingest main |
 | `CHAOS_SEED` | `7` | chaos.sh fault-plan seed (CI feeds it as a workflow input; reproduce a red run by re-entering its seed) |
 | `ANTHROPIC_API_KEY` | unset → deterministic report (risk table + watch list; a one-line notice replaces the AI narrative) | agent report |
@@ -213,10 +213,9 @@ Operational notes:
   nonzero** — a gap is never a PASS-silently condition. Backfill itself still
   exits 0 on a fallback run (the drain succeeded; a nonzero would teach cron to
   retry a loss no retry can close) — reconcile is the gate. An
-  acknowledged-gap workflow (so a known, accepted loss stops redding runs) is
-  register follow-up shared with the durable-gap-ledger item; until that
-  ledger lands, gap detection is per-process (KNOWN-ISSUES), so a fresh
-  process after the fallback cannot produce a permanent red.
+  gap is recorded in the **durable gap ledger** (`ingest.gap_ledger`, Task D),
+  so it survives the process that found it, and reconcile fails until an
+  operator acknowledges it — see *Admitted permanent losses* below.
 - **Reading a stripefeed reconcile report**: `retained window` = events the
   feed retains *right now* (its 30-day ledger-equivalent), `raw` = everything
   ever ingested, `aged out of window` = raw rows older than the retained
@@ -287,6 +286,89 @@ Operational notes:
 - Enabling hubcrm makes `WEBHOOK_SECRET_HUBCRM` a boot requirement; the mock
   signs its batches with the same house per-source HMAC scheme (signature over
   the whole request body — the batch is the wire unit).
+
+## Support event-bus source (casebus) — subscribe/replay
+
+The casebus source is the event-bus SUBSCRIBE/REPLAY paradigm: **pull-only**
+(a subscriber, not a receiver), registered but **opt-in**. It lands alongside
+the 2a `support` mock; nothing in that mock changed.
+
+```bash
+PORT=4008 npm run start -w mocks/casebus              # the bus (72h window, seeded clock)
+INGEST_SOURCES=casebus npm run backfill  -w ingest    # subscribe from the stored replay id
+INGEST_SOURCES=casebus npm run reconcile -w ingest    # full retained-window drain vs raw (read-only)
+```
+
+- **The cursor is a replay id, not a number.** It lives in
+  `ingest.cursors.last_event_id` (the opaque-cursor column migration 008 added
+  for stripefeed); `last_seq` stays 0 and means nothing here. Replay ids are
+  opaque and deliberately non-contiguous — never do arithmetic on one, and do
+  not expect them to be comparable across a reset.
+- **`stream_id` on the cursor row is the reset detector.** The bus answers the
+  same error code whether a replay id aged out or was reset away, so the
+  connector compares the stream identity it stored against the one the recovery
+  subscription reports. If you are debugging a gap's cause, `GET /status` on the
+  mock and `select stream_id from ingest.cursors where source = 'casebus'` are
+  the two values that decide it.
+- **Duplicates on the backfill log are normal.** At-least-once delivery means
+  `N duplicate(s) absorbed by idempotent ingest` is the healthy steady state,
+  not an incident.
+- **Reading a casebus reconcile report**: `retained window` = events the bus
+  retains *right now* (its 72h ledger-equivalent), `raw` = everything ever
+  ingested, `aged out of window` = raw rows older than the retained window
+  (expected metabolism), `extra` = raw rows *inside* the window the bus no
+  longer serves (a real anomaly), `missing` = retained but never ingested AND
+  not quarantined, `quarantined` = retained events deliberately diverted (named
+  with counts; not counted as missing, not a FAIL by itself). The integrity line
+  reads `event stream integrity: ok …` — there is no ledger file and no hash
+  chain here, and the CLI says what it actually verified.
+- Enabling casebus makes `WEBHOOK_SECRET_CASEBUS` a boot requirement like every
+  registered source, even though the paradigm never uses its generic webhook
+  door — an armed door with a real secret, not a silent hole.
+
+## Admitted permanent losses — the gap ledger and how to answer one
+
+Two sources can lose data permanently by the design of the vendor paradigm they
+model: stripefeed (30-day feed retention) and casebus (72h bus window, plus
+stream resets). Both record every loss in `ingest.gap_ledger` with cause,
+bounds, and detection time.
+
+**Symptom:** reconcile exits nonzero and prints, on stderr,
+
+```
+[casebus] PERMANENT DATA LOSS — unclosable gap (retention): events after … [gap #3, detected …, UNACKNOWLEDGED]
+[casebus] 1 UNACKNOWLEDGED gap(s). No retry can close a gap — once you have accepted the loss, record it:
+  node --import tsx src/cli/gap-ack.ts --source casebus --id <n> --by <operator> --note "why"
+```
+
+**What it means:** events existed at the source, were never ingested, and the
+source no longer serves them. **No retry closes this.** Re-running backfill will
+not recover them; it will only re-detect the same gap (which is idempotent — one
+loss stays one row).
+
+**What to do:**
+
+1. `node --import tsx src/cli/gap-ack.ts --list` — see every recorded gap, its
+   id, cause and bounds.
+2. Investigate by cause. `retention` means we fell behind the window: check for
+   an ingest outage or a poll interval longer than the window, and widen or fix
+   it so it does not recur. `reset` means the source's retained stream was
+   replaced (the vendor documents this for an org moved to a new instance):
+   confirm with the source owner; nothing on our side caused it.
+3. If the lost range matters, recover it from the source's own system of record
+   out of band — the bus cannot re-serve it.
+4. Record the decision:
+   ```bash
+   node --import tsx src/cli/gap-ack.ts --source casebus --id 3 \
+     --by "your-name" --note "72h window closed during the 2026-07-30 outage; loss accepted"
+   ```
+
+After that, reconcile PASSES again and prints the gap on every run as a standing
+disclosed condition. **Acknowledging is not fixing.** It records that a named
+human saw the loss and accepted it. A *new* gap reds the run again.
+
+`--by` is required: an anonymous acknowledgement of permanent data loss is
+refused. Both CLIs operate on the default tenant (see KNOWN-ISSUES).
 
 ## Backup and restore
 

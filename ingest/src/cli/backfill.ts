@@ -41,7 +41,16 @@ async function main(): Promise<void> {
             );
           }
         } else {
-          console.log(`backfill[${source}]: ingested ${report.ingested} event(s)${quarantineNote} from ${baseUrl}`);
+          // Task D standing checklist: `duplicates` is printed whenever there are any.
+          // For the subscribe/replay paradigm at-least-once delivery makes redeliveries
+          // ROUTINE, not exceptional — and a source that redelivers everything looks
+          // exactly like a source that ingests nothing unless the absorbed count is on
+          // the log. Suppressed at zero so the other paradigms' lines are unchanged.
+          const duplicateNote =
+            report.duplicates > 0 ? `, ${report.duplicates} duplicate(s) absorbed by idempotent ingest` : "";
+          console.log(
+            `backfill[${source}]: ingested ${report.ingested} event(s)${duplicateNote}${quarantineNote} from ${baseUrl}`,
+          );
         }
         // Loud, on stderr, one shared phrasing (grep/alert target). Deliberate
         // semantics: the exit code stays 0 — the drain itself SUCCEEDED and forward

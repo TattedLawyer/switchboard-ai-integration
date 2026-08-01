@@ -1,9 +1,11 @@
 import { getPool } from "../db.js";
 import { enabledSources } from "../sources.js";
-import { connectorFor, formatUnclosableGap } from "../connectors/index.js";
+import { connectorFor, formatGapLedgerRow, formatUnclosableGap, listGaps } from "../connectors/index.js";
+import { DEFAULT_TENANT_ID } from "../ingest-event.js";
 import type { SheetReconcileReport } from "../connectors/sheet-snapshot.js";
 import type { StripeFeedReconcileReport } from "../connectors/stripe-feed.js";
 import type { HubReconcileReport } from "../connectors/hub-hydrate.js";
+import type { BusReconcileReport } from "../connectors/bus-replay.js";
 
 // Bounded listing for the stale bucket: unlike missing/extra (which converge toward
 // empty on a healthy source), stale can be O(sheet) after a bulk edit — an operator
@@ -42,6 +44,14 @@ async function main(): Promise<void> {
         console.log(
           `[${source}] feed window integrity: ok (retained window fully drained, envelopes well-formed, feed advancing)`,
         );
+      } else if (connector.kind === "bus-replay") {
+        // Task D standing checklist: the FIFTH arm's honest line. A bus has no ledger
+        // file and no hash chain — what reconcile ACTUALLY verified is that the whole
+        // retained window was drained through to has_more=false, every frame carried an
+        // identity, and the subscription kept advancing.
+        console.log(
+          `[${source}] event stream integrity: ok (retained window fully drained, every frame identified, subscription advancing)`,
+        );
       } else if (connector.kind === "hub-hydrate") {
         // Task C standing checklist: the fourth paradigm's honest line — an object
         // store has no ledger file and no hash chain; what reconcile ACTUALLY verified
@@ -67,6 +77,8 @@ async function main(): Promise<void> {
       if (connector.kind === "stripe-feed") {
         // The number is a 30-day WINDOW, not a ledger file — label it as what it is.
         console.log(`[${source}] retained window: ${report.ledger} event(s) (the feed's 30-day ledger-equivalent)`);
+      } else if (connector.kind === "bus-replay") {
+        console.log(`[${source}] retained window: ${report.ledger} event(s) (the bus's 72h ledger-equivalent)`);
       } else if (hub !== undefined) {
         console.log(`[${source}] object store: ${report.ledger} live object(s) (the paradigm's ledger-equivalent)`);
       } else {
@@ -137,14 +149,42 @@ async function main(): Promise<void> {
         for (const d of hub.hydrationDlq) console.log(`  - ${d.event_id} (${d.object_type}:${d.object_id}) ${d.reason}`);
       }
 
-      const sf = "gaps" in report ? (report as StripeFeedReconcileReport) : undefined;
-      if (sf !== undefined) {
-        console.log(`[${source}] aged out of window (in raw, ingested before expiry — expected): ${sf.agedOutRaw}`);
+      // The two WINDOW-BOUNDED paradigms (stripefeed's 30-day feed, casebus's 72h bus)
+      // report the same extra buckets, so they print through one branch: `agedOutRaw` is
+      // the window's normal metabolism (context, never gated) and `quarantined` is
+      // retained-but-diverted — preserved, replayable, and deliberately not a failure by
+      // itself, because one poisoned vendor event must not red every reconcile for the
+      // length of the window.
+      const windowed =
+        connector.kind === "stripe-feed" || connector.kind === "bus-replay"
+          ? (report as StripeFeedReconcileReport | BusReconcileReport)
+          : undefined;
+      if (windowed !== undefined) {
+        console.log(`[${source}] aged out of window (in raw, ingested before expiry — expected): ${windowed.agedOutRaw}`);
         console.log(
-          `[${source}] quarantined (retained in feed, preserved in ingest.quarantine — not counted as missing): ${sf.quarantined.length}`,
+          `[${source}] quarantined (retained at the source, preserved in ingest.quarantine — not counted as missing): ${windowed.quarantined.length}`,
         );
-        for (const q of sf.quarantined) console.log(`  - ${q.event_id} (${q.count} quarantine row(s))`);
-        for (const gap of sf.gaps) console.error(formatUnclosableGap(source, gap));
+        for (const q of windowed.quarantined) console.log(`  - ${q.event_id} (${q.count} quarantine row(s))`);
+      }
+
+      // ── the durable gap ledger (Task D) ────────────────────────────────────────────
+      // Read as STATE, from the table, for EVERY source — not from whatever this process
+      // happened to detect. That is the whole point of migration 010: before it, whether
+      // a permanent loss reddened reconcile depended on which process ran the fallback.
+      // Reading here rather than threading it through each report also means a future
+      // loss-bearing paradigm is covered by this surface the day it writes a gap row.
+      const ledgerGaps = await listGaps(pool, DEFAULT_TENANT_ID, source);
+      const unacknowledged = ledgerGaps.filter((g) => g.acknowledgedAt === null);
+      // Every gap is printed on the loud channel, acknowledged or not: acknowledging a
+      // loss records that a human accepted it, it does not make it stop being true.
+      for (const gap of ledgerGaps) console.error(formatGapLedgerRow(source, gap));
+      if (unacknowledged.length > 0) {
+        // A red with no next step is how reconcile gets ignored. Print the exact command.
+        console.error(
+          `[${source}] ${unacknowledged.length} UNACKNOWLEDGED gap(s). No retry can close a gap — once you have ` +
+            "accepted the loss, record it:\n" +
+            `  node --import tsx src/cli/gap-ack.ts --source ${source} --id <n> --by <operator> --note "why"`,
+        );
       }
 
       const clean =
@@ -152,17 +192,26 @@ async function main(): Promise<void> {
         report.extra.length === 0 &&
         report.rawDuplicates === 0 &&
         (stale?.length ?? 0) === 0 &&
-        (sf?.gaps.length ?? 0) === 0 &&
+        unacknowledged.length === 0 &&
         (hub?.drifted.length ?? 0) === 0 &&
         (hub?.hydrationPending ?? 0) === 0;
       if (clean) {
+        // An acknowledged gap is a STANDING DISCLOSED CONDITION, not a clean bill of
+        // health — so a PASS that has one says so on the same line.
+        const ackNote =
+          ledgerGaps.length > 0
+            ? ` (with ${ledgerGaps.length} acknowledged permanent gap(s) standing — see above)`
+            : "";
         if (hub !== undefined) {
-          console.log(`[${source}] PASS: store, raw thin events, and hydrated snapshots agree; nothing pending`);
+          console.log(`[${source}] PASS: store, raw thin events, and hydrated snapshots agree; nothing pending${ackNote}`);
         } else {
-          console.log(`[${source}] PASS: raw matches ledger exactly, no duplicates`);
+          console.log(`[${source}] PASS: raw matches ledger exactly, no duplicates${ackNote}`);
         }
-      } else if ((sf?.gaps.length ?? 0) > 0) {
-        console.log(`[${source}] FAIL: unclosable gap(s) reported — permanent data loss at the retention boundary`);
+      } else if (unacknowledged.length > 0) {
+        console.log(
+          `[${source}] FAIL: ${unacknowledged.length} unacknowledged unclosable gap(s) reported — ` +
+            "permanent data loss admitted at this source's boundary",
+        );
         allClean = false;
       } else {
         console.log(`[${source}] FAIL: reconciliation found discrepancies`);

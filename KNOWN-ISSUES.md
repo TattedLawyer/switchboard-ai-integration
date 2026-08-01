@@ -332,13 +332,12 @@ second admitted loss class, reported with bounds rather than papered over.
   `created` — via `catchUpWithReport` and the reconcile report (`gaps`,
   `cause: "retention"`). A backfill target older than 30 days is the same
   story: the feed cannot serve it, and no amount of retrying changes that.
-- **Gap reports are not yet durable across processes.** A gap is re-derivable
-  from live state only while the aged-out cursor still points at it; once the
-  fallback advances the cursor, the loss is historical and only the detecting
-  *instance* remembers it (surfaced in that process's reconcile). A
-  catchUp-then-exit process followed by a fresh reconcile process will not
-  re-report it. The durable gap ledger is register-owned follow-up, shared
-  with the bus task's identical need (its 72-hour window has the same shape).
+- **Gap reports ARE durable (resolved in 2b Task D).** They used to live only in
+  the detecting process's memory, which made reconcile-as-gate timing-dependent.
+  Migration 010 added `ingest.gap_ledger`; both loss-bearing connectors write it,
+  and reconcile reports from the table. A catchUp-then-exit process followed by a
+  fresh reconcile process now re-reports the loss. See the casebus section below
+  for the acknowledgement workflow that governs both sources.
 - **Aged-out raw rows are metabolism, not anomalies.** Reconcile counts raw
   events older than the feed's earliest retained event as `agedOutRaw`
   (ingested, then aged out — the point of ingestion) and reserves `extra` for
@@ -388,6 +387,73 @@ fetched afterwards. Three stated limits of the paradigm itself:
   that the DLQ GROWS until an operator clears it, which is deliberate: depth
   is the documented watch surface, and a dead letter that evaporates is a
   silent return to limbo.
+
+## Support event-bus source (casebus) — the 72-hour window and the stream reset (2b Task D)
+
+The event-bus paradigm is a stream you **subscribe** to. It retains events for
+**72 hours** (research-verified against the vendor's durability docs; the mock
+models it with a seeded clock), and that window is a *stated data-loss boundary
+of the paradigm itself*. It is the only source here where falling behind is
+unrecoverable by construction: a cursor feed can be re-read from its start, a
+sheet re-snapshotted, an object store re-listed — a bus has a window, and what
+leaves it is gone from the source forever.
+
+- **Cursor invalidation has TWO causes and the vendor tells you neither.** A
+  stored replay id can die by aging out of the 72h window, or because "the
+  stream of retained events can be reset if the org is moved to a new instance"
+  — which can strike a cursor of any age, including one seconds old. The vendor
+  publishes ONE error code (`…fetch.replayid.corrupted`) covering both, so the
+  connector derives the cause **structurally**: it stores the stream identity
+  alongside the cursor (`ingest.cursors.stream_id`, migration 010) and compares
+  it at invalidation time. Changed identity ⇒ `reset`; unchanged ⇒ `retention`.
+  An **unknown** prior identity (a cursor written by an older build) also yields
+  `retention` — the conservative claim, since a reset we cannot evidence would
+  be a fabricated diagnosis. Disclosed limit: an org that moves instances and
+  keeps the same stream identity would be misreported as `retention`. The
+  bounds and the loss itself are unaffected; only the cause label is.
+- **Recovery is EARLIEST by default, and that is a deliberate loss-minimizing
+  choice.** LATEST would abandon everything still retained but not yet
+  ingested, converting an already-permanent bounded loss into a larger one.
+  EARLIEST re-reads the retained window (duplicates, which at-least-once
+  delivery produces routinely and idempotent ingest absorbs) and yields a
+  knowable far edge for the gap. A deployment can configure LATEST; when it
+  does, the gap honestly reports a NULL far edge, because "everything up to
+  now" has no near bound.
+- **At-least-once delivery means duplicates are normal, not faults.** The same
+  event arrives more than once, sometimes under the same replay id. It is
+  absorbed by `(tenant, source, event_id)` and **counted** in the catch-up
+  report and on the backfill log — a redelivery that vanished from the numbers
+  would be indistinguishable from a bug.
+
+### The durable gap ledger and the acknowledgement workflow (both loss-bearing sources)
+
+`ingest.gap_ledger` (migration 010) records every admitted permanent loss for
+**both** stripefeed and casebus: cause, bounds, detection time, acknowledgement.
+
+- **A gap is never closable.** No retry recovers it, so reconcile cannot simply
+  fail forever on it — a permanent red is a red people learn to skip. The
+  landed semantics: reconcile **FAILS while a gap is unacknowledged** and
+  **PASSES once an operator acknowledges it**, after which the gap is still
+  printed on every reconcile as a standing disclosed condition. Acknowledging
+  is not closing, hiding, or resolving; it records that a named human saw the
+  loss and accepted it. A *new* gap after an acknowledgement reds the run
+  again — acknowledging one loss never blanket-silences the next.
+- **The operator path is a CLI**, `src/cli/gap-ack.ts` (`--list`, or
+  `--source … --id … --by … --note …`), not documented SQL: the act needs an
+  operator identity, `acknowledged_by` should not be whatever database role a
+  psql session used, and a documented UPDATE invites a WHERE-clause slip that
+  acknowledges every open gap at once. The tool cannot express that.
+- **One loss is one row**, keyed `(tenant, source, cause, from_event_id)`, so a
+  once-a-minute backfill loop re-detecting the same loss does not manufacture a
+  row per tick. On re-detection the original row is returned untouched: the far
+  edge is not refreshed (that would quietly widen a loss that never grew) and
+  an acknowledgement is not cleared.
+- **Disclosed limit — tenancy on the operator surfaces.** The reconcile and
+  gap-ack CLIs operate on the default tenant, like every other operator surface
+  in this repo. The ledger itself is fully tenant-scoped (two tenants losing the
+  same vendor cursor get their own rows, and acknowledging across the tenant
+  line is a no-op that says so), but a multi-tenant deployment needs a
+  `--tenant` flag before those CLIs are usable for non-default tenants.
 
 ## Numeric & monetary integrity (added with the numeric-integrity wave)
 
