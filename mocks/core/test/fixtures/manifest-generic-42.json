@@ -1,0 +1,1659 @@
+{
+  "crm": {
+    "companies": [
+      {
+        "id": "DEMO-C-0001",
+        "name": "DEMO Logistics Group 1",
+        "domain": "logistics-1.example.com",
+        "owner_email": "owner.logistics-1@example.com"
+      },
+      {
+        "id": "DEMO-C-0002",
+        "name": "DEMO Manufacturing Group 2",
+        "domain": "manufacturing-2.example.com",
+        "owner_email": "owner.manufacturing-2@example.com"
+      },
+      {
+        "id": "DEMO-C-0003",
+        "name": "DEMO Retail Group 3",
+        "domain": "retail-3.example.com",
+        "owner_email": "owner.retail-3@example.com"
+      },
+      {
+        "id": "DEMO-C-0004",
+        "name": "DEMO Consulting Group 4",
+        "domain": "consulting-4.example.com",
+        "owner_email": "owner.consulting-4@example.com"
+      },
+      {
+        "id": "DEMO-C-0005",
+        "name": "DEMO Media Group 5",
+        "domain": "media-5.example.com",
+        "owner_email": "owner.media-5@example.com"
+      },
+      {
+        "id": "DEMO-C-0006",
+        "name": "DEMO Freight Group 6",
+        "domain": "freight-6.example.com",
+        "owner_email": "owner.freight-6@example.com"
+      },
+      {
+        "id": "DEMO-C-0007",
+        "name": "DEMO Staffing Group 7",
+        "domain": "staffing-7.example.com",
+        "owner_email": "owner.staffing-7@example.com"
+      },
+      {
+        "id": "DEMO-C-0008",
+        "name": "DEMO Catering Group 8",
+        "domain": "catering-8.example.com",
+        "owner_email": "owner.catering-8@example.com"
+      },
+      {
+        "id": "DEMO-C-0009",
+        "name": "DEMO Printing Group 9",
+        "domain": "printing-9.example.com",
+        "owner_email": "owner.printing-9@example.com"
+      },
+      {
+        "id": "DEMO-C-0010",
+        "name": "DEMO Security Group 10",
+        "domain": "security-10.example.com",
+        "owner_email": "owner.security-10@example.com"
+      },
+      {
+        "id": "DEMO-C-0011",
+        "name": "DEMO Logistics Group 11",
+        "domain": "logistics-11.example.com",
+        "owner_email": "owner.logistics-11@example.com"
+      },
+      {
+        "id": "DEMO-C-0012",
+        "name": "DEMO Manufacturing Group 12",
+        "domain": "manufacturing-12.example.com",
+        "owner_email": "owner.manufacturing-12@example.com"
+      },
+      {
+        "id": "DEMO-C-0013",
+        "name": "DEMO Retail Group 13",
+        "domain": "retail-13.example.com",
+        "owner_email": "owner.retail-13@example.com"
+      },
+      {
+        "id": "DEMO-C-0014",
+        "name": "DEMO Consulting Group 14",
+        "domain": "consulting-14.example.com",
+        "owner_email": "owner.consulting-14@example.com"
+      },
+      {
+        "id": "DEMO-C-0015",
+        "name": "DEMO Media Group 15",
+        "domain": "media-15.example.com",
+        "owner_email": "owner.media-15@example.com"
+      },
+      {
+        "id": "DEMO-C-0016",
+        "name": "DEMO Freight Group 16",
+        "domain": "freight-16.example.com",
+        "owner_email": "owner.freight-16@example.com"
+      },
+      {
+        "id": "DEMO-C-0017",
+        "name": "DEMO Staffing Group 17",
+        "domain": "staffing-17.example.com",
+        "owner_email": "owner.staffing-17@example.com"
+      },
+      {
+        "id": "DEMO-C-0018",
+        "name": "DEMO Catering Group 18",
+        "domain": "catering-18.example.com",
+        "owner_email": "owner.catering-18@example.com"
+      },
+      {
+        "id": "DEMO-C-0019",
+        "name": "DEMO Printing Group 19",
+        "domain": "printing-19.example.com",
+        "owner_email": "owner.printing-19@example.com"
+      },
+      {
+        "id": "DEMO-C-0020",
+        "name": "DEMO Security Group 20",
+        "domain": "security-20.example.com",
+        "owner_email": "owner.security-20@example.com"
+      },
+      {
+        "id": "DEMO-C-0021",
+        "name": "DEMO Logistics Group 1 Inc",
+        "domain": "logistics-1.example.com",
+        "owner_email": "owner.logistics-1b@example.com"
+      },
+      {
+        "id": "DEMO-C-0022",
+        "name": "DEMO Manufacturing Group 2",
+        "domain": "manufacturing-2.example.com",
+        "owner_email": "owner.manufacturing-2b@example.com"
+      }
+    ],
+    "contacts": [
+      {
+        "id": "DEMO-P-0001",
+        "company_id": "DEMO-C-0001",
+        "name": "DEMO Contact 1",
+        "email": "contact1.logistics-1@example.com"
+      },
+      {
+        "id": "DEMO-P-0002",
+        "company_id": "DEMO-C-0001",
+        "name": "DEMO Contact 2",
+        "email": "contact2.logistics-1@example.com"
+      },
+      {
+        "id": "DEMO-P-0003",
+        "company_id": "DEMO-C-0002",
+        "name": "DEMO Contact 3",
+        "email": "contact1.manufacturing-2@example.com"
+      },
+      {
+        "id": "DEMO-P-0004",
+        "company_id": "DEMO-C-0002",
+        "name": "DEMO Contact 4",
+        "email": "contact2.manufacturing-2@example.com"
+      },
+      {
+        "id": "DEMO-P-0005",
+        "company_id": "DEMO-C-0003",
+        "name": "DEMO Contact 5",
+        "email": "contact1.retail-3@example.com"
+      },
+      {
+        "id": "DEMO-P-0006",
+        "company_id": "DEMO-C-0003",
+        "name": "DEMO Contact 6",
+        "email": "contact2.retail-3@example.com"
+      },
+      {
+        "id": "DEMO-P-0007",
+        "company_id": "DEMO-C-0004",
+        "name": "DEMO Contact 7",
+        "email": "contact1.consulting-4@example.com"
+      },
+      {
+        "id": "DEMO-P-0008",
+        "company_id": "DEMO-C-0004",
+        "name": "DEMO Contact 8",
+        "email": "contact2.consulting-4@example.com"
+      },
+      {
+        "id": "DEMO-P-0009",
+        "company_id": "DEMO-C-0005",
+        "name": "DEMO Contact 9",
+        "email": "contact1.media-5@example.com"
+      },
+      {
+        "id": "DEMO-P-0010",
+        "company_id": "DEMO-C-0005",
+        "name": "DEMO Contact 10",
+        "email": "contact2.media-5@example.com"
+      },
+      {
+        "id": "DEMO-P-0011",
+        "company_id": "DEMO-C-0006",
+        "name": "DEMO Contact 11",
+        "email": "contact1.freight-6@example.com"
+      },
+      {
+        "id": "DEMO-P-0012",
+        "company_id": "DEMO-C-0006",
+        "name": "DEMO Contact 12",
+        "email": "contact2.freight-6@example.com"
+      },
+      {
+        "id": "DEMO-P-0013",
+        "company_id": "DEMO-C-0007",
+        "name": "DEMO Contact 13",
+        "email": "contact1.staffing-7@example.com"
+      },
+      {
+        "id": "DEMO-P-0014",
+        "company_id": "DEMO-C-0007",
+        "name": "DEMO Contact 14",
+        "email": "contact2.staffing-7@example.com"
+      },
+      {
+        "id": "DEMO-P-0015",
+        "company_id": "DEMO-C-0008",
+        "name": "DEMO Contact 15",
+        "email": "contact1.catering-8@example.com"
+      },
+      {
+        "id": "DEMO-P-0016",
+        "company_id": "DEMO-C-0008",
+        "name": "DEMO Contact 16",
+        "email": "contact2.catering-8@example.com"
+      },
+      {
+        "id": "DEMO-P-0017",
+        "company_id": "DEMO-C-0009",
+        "name": "DEMO Contact 17",
+        "email": "contact1.printing-9@example.com"
+      },
+      {
+        "id": "DEMO-P-0018",
+        "company_id": "DEMO-C-0009",
+        "name": "DEMO Contact 18",
+        "email": "contact2.printing-9@example.com"
+      },
+      {
+        "id": "DEMO-P-0019",
+        "company_id": "DEMO-C-0010",
+        "name": "DEMO Contact 19",
+        "email": "contact1.security-10@example.com"
+      },
+      {
+        "id": "DEMO-P-0020",
+        "company_id": "DEMO-C-0010",
+        "name": "DEMO Contact 20",
+        "email": "contact2.security-10@example.com"
+      },
+      {
+        "id": "DEMO-P-0021",
+        "company_id": "DEMO-C-0011",
+        "name": "DEMO Contact 21",
+        "email": "contact1.logistics-11@example.com"
+      },
+      {
+        "id": "DEMO-P-0022",
+        "company_id": "DEMO-C-0011",
+        "name": "DEMO Contact 22",
+        "email": "contact2.logistics-11@example.com"
+      },
+      {
+        "id": "DEMO-P-0023",
+        "company_id": "DEMO-C-0012",
+        "name": "DEMO Contact 23",
+        "email": "contact1.manufacturing-12@example.com"
+      },
+      {
+        "id": "DEMO-P-0024",
+        "company_id": "DEMO-C-0012",
+        "name": "DEMO Contact 24",
+        "email": "contact2.manufacturing-12@example.com"
+      },
+      {
+        "id": "DEMO-P-0025",
+        "company_id": "DEMO-C-0013",
+        "name": "DEMO Contact 25",
+        "email": "contact1.retail-13@example.com"
+      },
+      {
+        "id": "DEMO-P-0026",
+        "company_id": "DEMO-C-0013",
+        "name": "DEMO Contact 26",
+        "email": "contact2.retail-13@example.com"
+      },
+      {
+        "id": "DEMO-P-0027",
+        "company_id": "DEMO-C-0014",
+        "name": "DEMO Contact 27",
+        "email": "contact1.consulting-14@example.com"
+      },
+      {
+        "id": "DEMO-P-0028",
+        "company_id": "DEMO-C-0014",
+        "name": "DEMO Contact 28",
+        "email": "contact2.consulting-14@example.com"
+      },
+      {
+        "id": "DEMO-P-0029",
+        "company_id": "DEMO-C-0015",
+        "name": "DEMO Contact 29",
+        "email": "contact1.media-15@example.com"
+      },
+      {
+        "id": "DEMO-P-0030",
+        "company_id": "DEMO-C-0015",
+        "name": "DEMO Contact 30",
+        "email": "contact2.media-15@example.com"
+      },
+      {
+        "id": "DEMO-P-0031",
+        "company_id": "DEMO-C-0016",
+        "name": "DEMO Contact 31",
+        "email": "contact1.freight-16@example.com"
+      },
+      {
+        "id": "DEMO-P-0032",
+        "company_id": "DEMO-C-0016",
+        "name": "DEMO Contact 32",
+        "email": "contact2.freight-16@example.com"
+      },
+      {
+        "id": "DEMO-P-0033",
+        "company_id": "DEMO-C-0017",
+        "name": "DEMO Contact 33",
+        "email": "contact1.staffing-17@example.com"
+      },
+      {
+        "id": "DEMO-P-0034",
+        "company_id": "DEMO-C-0017",
+        "name": "DEMO Contact 34",
+        "email": "contact2.staffing-17@example.com"
+      },
+      {
+        "id": "DEMO-P-0035",
+        "company_id": "DEMO-C-0018",
+        "name": "DEMO Contact 35",
+        "email": "contact1.catering-18@example.com"
+      },
+      {
+        "id": "DEMO-P-0036",
+        "company_id": "DEMO-C-0018",
+        "name": "DEMO Contact 36",
+        "email": "contact2.catering-18@example.com"
+      },
+      {
+        "id": "DEMO-P-0037",
+        "company_id": "DEMO-C-0019",
+        "name": "DEMO Contact 37",
+        "email": "contact1.printing-19@example.com"
+      },
+      {
+        "id": "DEMO-P-0038",
+        "company_id": "DEMO-C-0019",
+        "name": "DEMO Contact 38",
+        "email": "contact2.printing-19@example.com"
+      },
+      {
+        "id": "DEMO-P-0039",
+        "company_id": "DEMO-C-0020",
+        "name": "DEMO Contact 39",
+        "email": "contact1.security-20@example.com"
+      },
+      {
+        "id": "DEMO-P-0040",
+        "company_id": "DEMO-C-0020",
+        "name": "DEMO Contact 40",
+        "email": "contact2.security-20@example.com"
+      }
+    ],
+    "deals": [
+      {
+        "id": "DEMO-D-0001",
+        "company_id": "DEMO-C-0013",
+        "name": "DEMO Deal 1",
+        "amount_cents": 2291452,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0002",
+        "company_id": "DEMO-C-0014",
+        "name": "DEMO Deal 2",
+        "amount_cents": 924069,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0003",
+        "company_id": "DEMO-C-0006",
+        "name": "DEMO Deal 3",
+        "amount_cents": 3173723,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0004",
+        "company_id": "DEMO-C-0010",
+        "name": "DEMO Deal 4",
+        "amount_cents": 1299618,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0005",
+        "company_id": "DEMO-C-0015",
+        "name": "DEMO Deal 5",
+        "amount_cents": 1585007,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0006",
+        "company_id": "DEMO-C-0011",
+        "name": "DEMO Deal 6",
+        "amount_cents": 3483060,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0007",
+        "company_id": "DEMO-C-0001",
+        "name": "DEMO Deal 7",
+        "amount_cents": 2403909,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0008",
+        "company_id": "DEMO-C-0002",
+        "name": "DEMO Deal 8",
+        "amount_cents": 3011619,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0009",
+        "company_id": "DEMO-C-0006",
+        "name": "DEMO Deal 9",
+        "amount_cents": 358906,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0010",
+        "company_id": "DEMO-C-0016",
+        "name": "DEMO Deal 10",
+        "amount_cents": 2701678,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0011",
+        "company_id": "DEMO-C-0004",
+        "name": "DEMO Deal 11",
+        "amount_cents": 4263440,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0012",
+        "company_id": "DEMO-C-0017",
+        "name": "DEMO Deal 12",
+        "amount_cents": 1647308,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0013",
+        "company_id": "DEMO-C-0001",
+        "name": "DEMO Deal 13",
+        "amount_cents": 306963,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0014",
+        "company_id": "DEMO-C-0012",
+        "name": "DEMO Deal 14",
+        "amount_cents": 1275873,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0015",
+        "company_id": "DEMO-C-0005",
+        "name": "DEMO Deal 15",
+        "amount_cents": 1568148,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0016",
+        "company_id": "DEMO-C-0018",
+        "name": "DEMO Deal 16",
+        "amount_cents": 2589981,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0017",
+        "company_id": "DEMO-C-0006",
+        "name": "DEMO Deal 17",
+        "amount_cents": 1514958,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0018",
+        "company_id": "DEMO-C-0014",
+        "name": "DEMO Deal 18",
+        "amount_cents": 3453844,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0019",
+        "company_id": "DEMO-C-0019",
+        "name": "DEMO Deal 19",
+        "amount_cents": 489840,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0020",
+        "company_id": "DEMO-C-0009",
+        "name": "DEMO Deal 20",
+        "amount_cents": 4761472,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0021",
+        "company_id": "DEMO-C-0003",
+        "name": "DEMO Deal 21",
+        "amount_cents": 129214,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0022",
+        "company_id": "DEMO-C-0010",
+        "name": "DEMO Deal 22",
+        "amount_cents": 3109610,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0023",
+        "company_id": "DEMO-C-0002",
+        "name": "DEMO Deal 23",
+        "amount_cents": 3647990,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0024",
+        "company_id": "DEMO-C-0006",
+        "name": "DEMO Deal 24",
+        "amount_cents": 3582926,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0025",
+        "company_id": "DEMO-C-0011",
+        "name": "DEMO Deal 25",
+        "amount_cents": 4159458,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0026",
+        "company_id": "DEMO-C-0020",
+        "name": "DEMO Deal 26",
+        "amount_cents": 2864001,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0027",
+        "company_id": "DEMO-C-0009",
+        "name": "DEMO Deal 27",
+        "amount_cents": 2942265,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0028",
+        "company_id": "DEMO-C-0012",
+        "name": "DEMO Deal 28",
+        "amount_cents": 1664788,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0029",
+        "company_id": "DEMO-C-0006",
+        "name": "DEMO Deal 29",
+        "amount_cents": 2298813,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0030",
+        "company_id": "DEMO-C-0014",
+        "name": "DEMO Deal 30",
+        "amount_cents": 5020057,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0031",
+        "company_id": "DEMO-C-0009",
+        "name": "DEMO Deal 31",
+        "amount_cents": 2776065,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0032",
+        "company_id": "DEMO-C-0003",
+        "name": "DEMO Deal 32",
+        "amount_cents": 3533607,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0033",
+        "company_id": "DEMO-C-0016",
+        "name": "DEMO Deal 33",
+        "amount_cents": 4573877,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0034",
+        "company_id": "DEMO-C-0010",
+        "name": "DEMO Deal 34",
+        "amount_cents": 4159754,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0035",
+        "company_id": "DEMO-C-0020",
+        "name": "DEMO Deal 35",
+        "amount_cents": 941974,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0036",
+        "company_id": "DEMO-C-0014",
+        "name": "DEMO Deal 36",
+        "amount_cents": 1165910,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0037",
+        "company_id": "DEMO-C-0004",
+        "name": "DEMO Deal 37",
+        "amount_cents": 3323331,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0038",
+        "company_id": "DEMO-C-0005",
+        "name": "DEMO Deal 38",
+        "amount_cents": 3194516,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0039",
+        "company_id": "DEMO-C-0007",
+        "name": "DEMO Deal 39",
+        "amount_cents": 4012136,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0040",
+        "company_id": "DEMO-C-0003",
+        "name": "DEMO Deal 40",
+        "amount_cents": 4368510,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0041",
+        "company_id": "DEMO-C-0001",
+        "name": "DEMO Deal 41",
+        "amount_cents": 3737112,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0042",
+        "company_id": "DEMO-C-0018",
+        "name": "DEMO Deal 42",
+        "amount_cents": 4590822,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0043",
+        "company_id": "DEMO-C-0013",
+        "name": "DEMO Deal 43",
+        "amount_cents": 2496212,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0044",
+        "company_id": "DEMO-C-0001",
+        "name": "DEMO Deal 44",
+        "amount_cents": 3577758,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0045",
+        "company_id": "DEMO-C-0006",
+        "name": "DEMO Deal 45",
+        "amount_cents": 1427423,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0046",
+        "company_id": "DEMO-C-0001",
+        "name": "DEMO Deal 46",
+        "amount_cents": 1154477,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0047",
+        "company_id": "DEMO-C-0012",
+        "name": "DEMO Deal 47",
+        "amount_cents": 4992821,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0048",
+        "company_id": "DEMO-C-0004",
+        "name": "DEMO Deal 48",
+        "amount_cents": 2854820,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0049",
+        "company_id": "DEMO-C-0008",
+        "name": "DEMO Deal 49",
+        "amount_cents": 2222054,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0050",
+        "company_id": "DEMO-C-0014",
+        "name": "DEMO Deal 50",
+        "amount_cents": 2042567,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0051",
+        "company_id": "DEMO-C-0018",
+        "name": "DEMO Deal 51",
+        "amount_cents": 1686583,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0052",
+        "company_id": "DEMO-C-0013",
+        "name": "DEMO Deal 52",
+        "amount_cents": 2781810,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0053",
+        "company_id": "DEMO-C-0005",
+        "name": "DEMO Deal 53",
+        "amount_cents": 1676828,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0054",
+        "company_id": "DEMO-C-0007",
+        "name": "DEMO Deal 54",
+        "amount_cents": 3396478,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0055",
+        "company_id": "DEMO-C-0004",
+        "name": "DEMO Deal 55",
+        "amount_cents": 3524930,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0056",
+        "company_id": "DEMO-C-0003",
+        "name": "DEMO Deal 56",
+        "amount_cents": 1618974,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0057",
+        "company_id": "DEMO-C-0021",
+        "name": "DEMO Deal 57",
+        "amount_cents": 2937679,
+        "status": "open",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0058",
+        "company_id": "DEMO-C-0022",
+        "name": "DEMO Deal 58",
+        "amount_cents": 2457670,
+        "status": "won",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0059",
+        "company_id": "DEMO-C-0021",
+        "name": "DEMO Deal 59",
+        "amount_cents": 3610249,
+        "status": "lost",
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-D-0060",
+        "company_id": "DEMO-C-0022",
+        "name": "DEMO Deal 60",
+        "amount_cents": 4108497,
+        "status": "won",
+        "currency": "USD"
+      }
+    ],
+    "mergePairs": [
+      {
+        "from_id": "DEMO-C-0021",
+        "to_id": "DEMO-C-0001"
+      },
+      {
+        "from_id": "DEMO-C-0022",
+        "to_id": "DEMO-C-0002"
+      }
+    ]
+  },
+  "billing": {
+    "customers": [
+      {
+        "id": "DEMO-B-0001",
+        "name": "DEMO Logistics Group 1",
+        "domain": "logistics-1.example.com",
+        "email": "contact1.logistics-1@example.com"
+      },
+      {
+        "id": "DEMO-B-0002",
+        "name": "DEMO Manufacturing Group 2",
+        "domain": "manufacturing-2.example.com",
+        "email": "contact1.manufacturing-2@example.com"
+      },
+      {
+        "id": "DEMO-B-0003",
+        "name": "DEMO Retail Group 3",
+        "domain": "retail-3.example.com",
+        "email": "contact1.retail-3@example.com"
+      },
+      {
+        "id": "DEMO-B-0004",
+        "name": "DEMO Consulting Group 4",
+        "domain": "consulting-4.example.com",
+        "email": "contact1.consulting-4@example.com"
+      },
+      {
+        "id": "DEMO-B-0005",
+        "name": "DEMO Media Group 5",
+        "domain": "media-5.example.com",
+        "email": "contact1.media-5@example.com"
+      },
+      {
+        "id": "DEMO-B-0006",
+        "name": "DEMO Freight Group 6",
+        "domain": "freight-6.example.com",
+        "email": "contact1.freight-6@example.com"
+      },
+      {
+        "id": "DEMO-B-0007",
+        "name": "DEMO Staffing Group 7",
+        "domain": "staffing-7.example.com",
+        "email": "contact1.staffing-7@example.com"
+      },
+      {
+        "id": "DEMO-B-0008",
+        "name": "DEMO Catering Group 8",
+        "domain": "catering-8.example.com",
+        "email": "contact1.catering-8@example.com"
+      },
+      {
+        "id": "DEMO-B-0009",
+        "name": "DEMO Printing Group 9",
+        "domain": "printing-9.example.com",
+        "email": "contact1.printing-9@example.com"
+      },
+      {
+        "id": "DEMO-B-0010",
+        "name": "DEMO Security Group 10",
+        "domain": "security-10.example.com",
+        "email": "contact1.security-10@example.com"
+      },
+      {
+        "id": "DEMO-B-0011",
+        "name": "DEMO Logistics Group 11 Inc",
+        "domain": "logistics-11.example.com",
+        "email": "billing.media-11@example.com"
+      },
+      {
+        "id": "DEMO-B-0012",
+        "name": "DEMO MANUFACTURING GROUP 12",
+        "domain": "WWW.manufacturing-12.example.com",
+        "email": "billing.freight-12@example.com"
+      },
+      {
+        "id": "DEMO-B-0013",
+        "name": "DEMO Retail Group 13",
+        "domain": "retail-13.example.com",
+        "email": "billing.staffing-13@example.com"
+      },
+      {
+        "id": "DEMO-B-0014",
+        "name": "DEMO Consulting Group 14",
+        "domain": "catering-14b.example.com",
+        "email": "billing.catering-14b@example.com"
+      },
+      {
+        "id": "DEMO-B-0015",
+        "name": "DEMO Standalone Billing Co 1",
+        "domain": "standalone-billing-1.example.com",
+        "email": "billing.standalone1@example.com"
+      },
+      {
+        "id": "DEMO-B-0016",
+        "name": "DEMO Standalone Billing Co 2",
+        "domain": "standalone-billing-2.example.com",
+        "email": "billing.standalone2@example.com"
+      }
+    ],
+    "invoices": [
+      {
+        "id": "DEMO-I-0001",
+        "customer_id": "DEMO-B-0001",
+        "amount_cents": 2009622,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0002",
+        "customer_id": "DEMO-B-0002",
+        "amount_cents": 562804,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0003",
+        "customer_id": "DEMO-B-0003",
+        "amount_cents": 1068831,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0004",
+        "customer_id": "DEMO-B-0004",
+        "amount_cents": 128224,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0005",
+        "customer_id": "DEMO-B-0005",
+        "amount_cents": 136703,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0006",
+        "customer_id": "DEMO-B-0006",
+        "amount_cents": 1498833,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0007",
+        "customer_id": "DEMO-B-0007",
+        "amount_cents": 97143,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0008",
+        "customer_id": "DEMO-B-0008",
+        "amount_cents": 134055,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0009",
+        "customer_id": "DEMO-B-0009",
+        "amount_cents": 1769263,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0010",
+        "customer_id": "DEMO-B-0010",
+        "amount_cents": 389716,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0011",
+        "customer_id": "DEMO-B-0011",
+        "amount_cents": 529092,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0012",
+        "customer_id": "DEMO-B-0012",
+        "amount_cents": 1716245,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0013",
+        "customer_id": "DEMO-B-0013",
+        "amount_cents": 1879959,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0014",
+        "customer_id": "DEMO-B-0014",
+        "amount_cents": 123732,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0015",
+        "customer_id": "DEMO-B-0015",
+        "amount_cents": 922381,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0016",
+        "customer_id": "DEMO-B-0016",
+        "amount_cents": 554905,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0017",
+        "customer_id": "DEMO-B-0001",
+        "amount_cents": 735089,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0018",
+        "customer_id": "DEMO-B-0002",
+        "amount_cents": 1395608,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0019",
+        "customer_id": "DEMO-B-0003",
+        "amount_cents": 1409634,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0020",
+        "customer_id": "DEMO-B-0004",
+        "amount_cents": 1880932,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0021",
+        "customer_id": "DEMO-B-0005",
+        "amount_cents": 487261,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0022",
+        "customer_id": "DEMO-B-0006",
+        "amount_cents": 124990,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0023",
+        "customer_id": "DEMO-B-0007",
+        "amount_cents": 1879886,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0024",
+        "customer_id": "DEMO-B-0008",
+        "amount_cents": 786127,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0025",
+        "customer_id": "DEMO-B-0009",
+        "amount_cents": 1269656,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0026",
+        "customer_id": "DEMO-B-0010",
+        "amount_cents": 858144,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0027",
+        "customer_id": "DEMO-B-0011",
+        "amount_cents": 1648351,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0028",
+        "customer_id": "DEMO-B-0012",
+        "amount_cents": 1362133,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0029",
+        "customer_id": "DEMO-B-0013",
+        "amount_cents": 1253621,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0030",
+        "customer_id": "DEMO-B-0014",
+        "amount_cents": 1995411,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0031",
+        "customer_id": "DEMO-B-0015",
+        "amount_cents": 511688,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0032",
+        "customer_id": "DEMO-B-0016",
+        "amount_cents": 1187487,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0033",
+        "customer_id": "DEMO-B-0001",
+        "amount_cents": 468820,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0034",
+        "customer_id": "DEMO-B-0002",
+        "amount_cents": 36449,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0035",
+        "customer_id": "DEMO-B-0003",
+        "amount_cents": 1661760,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0036",
+        "customer_id": "DEMO-B-0004",
+        "amount_cents": 1715742,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0037",
+        "customer_id": "DEMO-B-0005",
+        "amount_cents": 1035283,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0038",
+        "customer_id": "DEMO-B-0006",
+        "amount_cents": 1823316,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0039",
+        "customer_id": "DEMO-B-0007",
+        "amount_cents": 1531039,
+        "currency": "USD"
+      },
+      {
+        "id": "DEMO-I-0040",
+        "customer_id": "DEMO-B-0008",
+        "amount_cents": 1595782,
+        "currency": "USD"
+      }
+    ]
+  },
+  "support": {
+    "requesters": [
+      {
+        "id": "DEMO-S-0001",
+        "name": "DEMO Requester 1",
+        "email": "contact1.freight-6@example.com",
+        "company_name": "DEMO Freight Group 6",
+        "domain": "freight-6.example.com"
+      },
+      {
+        "id": "DEMO-S-0002",
+        "name": "DEMO Requester 2",
+        "email": "contact1.staffing-7@example.com",
+        "company_name": "DEMO Staffing Group 7",
+        "domain": "staffing-7.example.com"
+      },
+      {
+        "id": "DEMO-S-0003",
+        "name": "DEMO Requester 3",
+        "email": "contact1.catering-8@example.com",
+        "company_name": "DEMO Catering Group 8",
+        "domain": "catering-8.example.com"
+      },
+      {
+        "id": "DEMO-S-0004",
+        "name": "DEMO Requester 4",
+        "email": "contact1.printing-9@example.com",
+        "company_name": "DEMO Printing Group 9",
+        "domain": "printing-9.example.com"
+      },
+      {
+        "id": "DEMO-S-0005",
+        "name": "DEMO Requester 5",
+        "email": "contact1.security-10@example.com",
+        "company_name": "DEMO Security Group 10",
+        "domain": "security-10.example.com"
+      },
+      {
+        "id": "DEMO-S-0006",
+        "name": "DEMO Requester 6",
+        "email": "contact1.logistics-11@example.com",
+        "company_name": "DEMO Logistics Group 11",
+        "domain": "logistics-11.example.com"
+      },
+      {
+        "id": "DEMO-S-0007",
+        "name": "DEMO Requester 7",
+        "email": "contact1.manufacturing-12@example.com",
+        "company_name": "DEMO Manufacturing Group 12",
+        "domain": "manufacturing-12.example.com"
+      },
+      {
+        "id": "DEMO-S-0008",
+        "name": "DEMO Requester 8",
+        "email": "contact1.retail-13@example.com",
+        "company_name": "DEMO Retail Group 13",
+        "domain": "retail-13.example.com"
+      },
+      {
+        "id": "DEMO-S-0009",
+        "name": "DEMO Requester 9",
+        "email": "contact1.consulting-14@example.com",
+        "company_name": "DEMO Consulting Group 14",
+        "domain": "consulting-14.example.com"
+      },
+      {
+        "id": "DEMO-S-0010",
+        "name": "DEMO Requester 10",
+        "email": "help.security-15@example.com",
+        "company_name": "DEMO Media Group 15 LLC",
+        "domain": "media-15.example.com"
+      },
+      {
+        "id": "DEMO-S-0011",
+        "name": "DEMO Requester 11",
+        "email": "help.freight-16@example.com",
+        "company_name": "DEMO Freight Group 16",
+        "domain": "www.freight-16.example.com"
+      },
+      {
+        "id": "DEMO-S-0012",
+        "name": "DEMO Requester 12",
+        "email": "help.printing-17b@example.com",
+        "company_name": "DEMO Totally Different Name",
+        "domain": "staffing-17.example.com"
+      },
+      {
+        "id": "DEMO-S-0013",
+        "name": "DEMO Requester 13",
+        "email": "help.standalone1@example.com",
+        "company_name": "DEMO Standalone Support Co 1",
+        "domain": "standalone-support-1.example.com"
+      },
+      {
+        "id": "DEMO-S-0014",
+        "name": "DEMO Requester 14",
+        "email": "help.standalone2@example.com",
+        "company_name": "DEMO Standalone Support Co 2",
+        "domain": "standalone-support-2.example.com"
+      }
+    ],
+    "tickets": [
+      {
+        "id": "DEMO-T-0001",
+        "requester_id": "DEMO-S-0001",
+        "subject": "DEMO Ticket 1",
+        "priority": "high",
+        "created_at": "2026-07-01T00:00:00.000Z",
+        "sla_due_at": "2026-07-02T00:00:00.000Z",
+        "solved_at": "2026-07-01T00:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0002",
+        "requester_id": "DEMO-S-0002",
+        "subject": "DEMO Ticket 2",
+        "priority": "normal",
+        "created_at": "2026-07-01T01:00:00.000Z",
+        "sla_due_at": "2026-07-04T01:00:00.000Z",
+        "solved_at": "2026-07-01T21:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0003",
+        "requester_id": "DEMO-S-0003",
+        "subject": "DEMO Ticket 3",
+        "priority": "normal",
+        "created_at": "2026-07-01T02:00:00.000Z",
+        "sla_due_at": "2026-07-04T02:00:00.000Z",
+        "solved_at": "2026-07-02T18:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0004",
+        "requester_id": "DEMO-S-0004",
+        "subject": "DEMO Ticket 4",
+        "priority": "high",
+        "created_at": "2026-07-01T03:00:00.000Z",
+        "sla_due_at": "2026-07-02T03:00:00.000Z",
+        "solved_at": "2026-07-03T15:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0005",
+        "requester_id": "DEMO-S-0005",
+        "subject": "DEMO Ticket 5",
+        "priority": "normal",
+        "created_at": "2026-07-01T04:00:00.000Z",
+        "sla_due_at": "2026-07-04T04:00:00.000Z",
+        "solved_at": "2026-07-04T12:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0006",
+        "requester_id": "DEMO-S-0006",
+        "subject": "DEMO Ticket 6",
+        "priority": "normal",
+        "created_at": "2026-07-01T05:00:00.000Z",
+        "sla_due_at": "2026-07-04T05:00:00.000Z",
+        "solved_at": "2026-07-01T05:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0007",
+        "requester_id": "DEMO-S-0007",
+        "subject": "DEMO Ticket 7",
+        "priority": "high",
+        "created_at": "2026-07-01T06:00:00.000Z",
+        "sla_due_at": "2026-07-02T06:00:00.000Z",
+        "solved_at": "2026-07-02T02:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0008",
+        "requester_id": "DEMO-S-0008",
+        "subject": "DEMO Ticket 8",
+        "priority": "normal",
+        "created_at": "2026-07-01T07:00:00.000Z",
+        "sla_due_at": "2026-07-04T07:00:00.000Z",
+        "solved_at": "2026-07-02T23:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0009",
+        "requester_id": "DEMO-S-0009",
+        "subject": "DEMO Ticket 9",
+        "priority": "normal",
+        "created_at": "2026-07-01T08:00:00.000Z",
+        "sla_due_at": "2026-07-04T08:00:00.000Z",
+        "solved_at": "2026-07-03T20:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0010",
+        "requester_id": "DEMO-S-0010",
+        "subject": "DEMO Ticket 10",
+        "priority": "high",
+        "created_at": "2026-07-01T09:00:00.000Z",
+        "sla_due_at": "2026-07-02T09:00:00.000Z",
+        "solved_at": "2026-07-04T17:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0011",
+        "requester_id": "DEMO-S-0011",
+        "subject": "DEMO Ticket 11",
+        "priority": "normal",
+        "created_at": "2026-07-01T10:00:00.000Z",
+        "sla_due_at": "2026-07-04T10:00:00.000Z",
+        "solved_at": "2026-07-01T10:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0012",
+        "requester_id": "DEMO-S-0012",
+        "subject": "DEMO Ticket 12",
+        "priority": "normal",
+        "created_at": "2026-07-01T11:00:00.000Z",
+        "sla_due_at": "2026-07-04T11:00:00.000Z",
+        "solved_at": "2026-07-02T07:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0013",
+        "requester_id": "DEMO-S-0013",
+        "subject": "DEMO Ticket 13",
+        "priority": "high",
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "sla_due_at": "2026-07-02T12:00:00.000Z",
+        "solved_at": "2026-07-03T04:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0014",
+        "requester_id": "DEMO-S-0014",
+        "subject": "DEMO Ticket 14",
+        "priority": "normal",
+        "created_at": "2026-07-01T13:00:00.000Z",
+        "sla_due_at": "2026-07-04T13:00:00.000Z",
+        "solved_at": "2026-07-04T01:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0015",
+        "requester_id": "DEMO-S-0001",
+        "subject": "DEMO Ticket 15",
+        "priority": "normal",
+        "created_at": "2026-07-01T14:00:00.000Z",
+        "sla_due_at": "2026-07-04T14:00:00.000Z",
+        "solved_at": "2026-07-04T22:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0016",
+        "requester_id": "DEMO-S-0002",
+        "subject": "DEMO Ticket 16",
+        "priority": "high",
+        "created_at": "2026-07-01T15:00:00.000Z",
+        "sla_due_at": "2026-07-02T15:00:00.000Z",
+        "solved_at": "2026-07-01T15:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0017",
+        "requester_id": "DEMO-S-0003",
+        "subject": "DEMO Ticket 17",
+        "priority": "normal",
+        "created_at": "2026-07-01T16:00:00.000Z",
+        "sla_due_at": "2026-07-04T16:00:00.000Z",
+        "solved_at": "2026-07-02T12:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0018",
+        "requester_id": "DEMO-S-0004",
+        "subject": "DEMO Ticket 18",
+        "priority": "normal",
+        "created_at": "2026-07-01T17:00:00.000Z",
+        "sla_due_at": "2026-07-04T17:00:00.000Z",
+        "solved_at": "2026-07-03T09:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0019",
+        "requester_id": "DEMO-S-0005",
+        "subject": "DEMO Ticket 19",
+        "priority": "high",
+        "created_at": "2026-07-01T18:00:00.000Z",
+        "sla_due_at": "2026-07-02T18:00:00.000Z",
+        "solved_at": "2026-07-04T06:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0020",
+        "requester_id": "DEMO-S-0006",
+        "subject": "DEMO Ticket 20",
+        "priority": "normal",
+        "created_at": "2026-07-01T19:00:00.000Z",
+        "sla_due_at": "2026-07-04T19:00:00.000Z",
+        "solved_at": "2026-07-05T03:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0021",
+        "requester_id": "DEMO-S-0007",
+        "subject": "DEMO Ticket 21",
+        "priority": "normal",
+        "created_at": "2026-07-01T20:00:00.000Z",
+        "sla_due_at": "2026-07-04T20:00:00.000Z",
+        "solved_at": "2026-07-01T20:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0022",
+        "requester_id": "DEMO-S-0008",
+        "subject": "DEMO Ticket 22",
+        "priority": "high",
+        "created_at": "2026-07-01T21:00:00.000Z",
+        "sla_due_at": "2026-07-02T21:00:00.000Z",
+        "solved_at": "2026-07-02T17:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0023",
+        "requester_id": "DEMO-S-0009",
+        "subject": "DEMO Ticket 23",
+        "priority": "normal",
+        "created_at": "2026-07-01T22:00:00.000Z",
+        "sla_due_at": "2026-07-04T22:00:00.000Z",
+        "solved_at": "2026-07-03T14:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0024",
+        "requester_id": "DEMO-S-0010",
+        "subject": "DEMO Ticket 24",
+        "priority": "normal",
+        "created_at": "2026-07-01T23:00:00.000Z",
+        "sla_due_at": "2026-07-04T23:00:00.000Z",
+        "solved_at": "2026-07-04T11:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0025",
+        "requester_id": "DEMO-S-0011",
+        "subject": "DEMO Ticket 25",
+        "priority": "high",
+        "created_at": "2026-07-02T00:00:00.000Z",
+        "sla_due_at": "2026-07-03T00:00:00.000Z",
+        "solved_at": "2026-07-05T08:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0026",
+        "requester_id": "DEMO-S-0012",
+        "subject": "DEMO Ticket 26",
+        "priority": "normal",
+        "created_at": "2026-07-02T01:00:00.000Z",
+        "sla_due_at": "2026-07-05T01:00:00.000Z",
+        "solved_at": "2026-07-02T01:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0027",
+        "requester_id": "DEMO-S-0013",
+        "subject": "DEMO Ticket 27",
+        "priority": "normal",
+        "created_at": "2026-07-02T02:00:00.000Z",
+        "sla_due_at": "2026-07-05T02:00:00.000Z",
+        "solved_at": "2026-07-02T22:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0028",
+        "requester_id": "DEMO-S-0014",
+        "subject": "DEMO Ticket 28",
+        "priority": "high",
+        "created_at": "2026-07-02T03:00:00.000Z",
+        "sla_due_at": "2026-07-03T03:00:00.000Z",
+        "solved_at": "2026-07-03T19:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0029",
+        "requester_id": "DEMO-S-0001",
+        "subject": "DEMO Ticket 29",
+        "priority": "normal",
+        "created_at": "2026-07-02T04:00:00.000Z",
+        "sla_due_at": "2026-07-05T04:00:00.000Z",
+        "solved_at": "2026-07-04T16:00:00.000Z"
+      },
+      {
+        "id": "DEMO-T-0030",
+        "requester_id": "DEMO-S-0002",
+        "subject": "DEMO Ticket 30",
+        "priority": "normal",
+        "created_at": "2026-07-02T05:00:00.000Z",
+        "sla_due_at": "2026-07-05T05:00:00.000Z",
+        "solved_at": "2026-07-05T13:00:00.000Z"
+      }
+    ]
+  },
+  "expectations": {
+    "canonicalCompanyCount": 20,
+    "tier1": {
+      "billing": [
+        "DEMO-B-0001",
+        "DEMO-B-0002",
+        "DEMO-B-0003",
+        "DEMO-B-0004",
+        "DEMO-B-0005",
+        "DEMO-B-0006",
+        "DEMO-B-0007",
+        "DEMO-B-0008",
+        "DEMO-B-0009",
+        "DEMO-B-0010"
+      ],
+      "support": [
+        "DEMO-S-0001",
+        "DEMO-S-0002",
+        "DEMO-S-0003",
+        "DEMO-S-0004",
+        "DEMO-S-0005",
+        "DEMO-S-0006",
+        "DEMO-S-0007",
+        "DEMO-S-0008",
+        "DEMO-S-0009"
+      ]
+    },
+    "tier2": {
+      "billing": [
+        "DEMO-B-0011",
+        "DEMO-B-0012",
+        "DEMO-B-0013"
+      ],
+      "support": [
+        "DEMO-S-0010",
+        "DEMO-S-0011"
+      ]
+    },
+    "manualReview": {
+      "billing": [
+        "DEMO-B-0014",
+        "DEMO-B-0015",
+        "DEMO-B-0016"
+      ],
+      "support": [
+        "DEMO-S-0012",
+        "DEMO-S-0013",
+        "DEMO-S-0014"
+      ]
+    },
+    "mergePairs": [
+      {
+        "from_id": "DEMO-C-0021",
+        "to_id": "DEMO-C-0001"
+      },
+      {
+        "from_id": "DEMO-C-0022",
+        "to_id": "DEMO-C-0002"
+      }
+    ],
+    "crossSystemCompanyIds": [
+      "DEMO-C-0006",
+      "DEMO-C-0007",
+      "DEMO-C-0008",
+      "DEMO-C-0009",
+      "DEMO-C-0010",
+      "DEMO-C-0011",
+      "DEMO-C-0012",
+      "DEMO-C-0013"
+    ]
+  }
+}
