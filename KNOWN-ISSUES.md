@@ -506,6 +506,33 @@ leaves it is gone from the source forever.
   line is a no-op that says so), but a multi-tenant deployment needs a
   `--tenant` flag before those CLIs are usable for non-default tenants.
 
+### Deferred minors from the Task D review (owners assigned)
+
+- **The reconcile integrity probe can throw instead of judging** (owner: **Task
+  E**, first in line). `replayIdIsServed` — the probe that asks the bus whether
+  the stored cursor is still served — sits *outside* reconcile's integrity
+  try/catch, so a transient probe failure (a network blip seconds after the
+  same host served the whole window) throws out of `reconcile()` instead of
+  becoming `integrity: { ok: false }` like every other bus read. Blast radius:
+  the durable-gap disclosure block runs *after* `reconcile()`, so the throw
+  suppresses standing-loss disclosure **for that source and every source after
+  it in the run** — the same disclosure-dies-during-an-incident class this
+  range just fixed, arriving through a different door. It is loud and
+  state-safe (exit 1, nothing half-written, re-run recovers), which is why it
+  waited; the fix needs its own RED because it must distinguish a transient
+  probe failure from the vendor's corrupted-cursor rejection — getting that
+  backwards would file a fabricated permanent-loss row on a network blip.
+- **A status frame that omits `stream_id` can bind a new cursor to the old
+  stream identity** (`setCursor`'s `coalesce`), which would later mislabel a
+  reset as `retention`. Unreachable against this mock, which always sends the
+  field; the honest fix needs a mock knob that omits it plus its own RED, not
+  a defensive coalesce swap. Owner: Task F (mock/fixture rework).
+- **A ledger-insert failure in the corrupted-cursor path now fails the
+  backfill** (the awaited `recordGap`), where before the run made forward
+  progress and exited 0. Loud-over-silent is the house bias, but it is an
+  unremarked change to a shipped connector's failure mode with no test naming
+  it. Owner: Task F, alongside the fault-injection fixtures it needs.
+
 ## Numeric & monetary integrity (added with the numeric-integrity wave)
 
 - **The ingest contract cannot help rows that never pass a door.** The numeric contract

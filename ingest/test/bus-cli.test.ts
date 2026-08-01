@@ -300,7 +300,8 @@ describe("the disclosure must survive the incident (cold review I1)", () => {
   it("a gap detected DURING the run is labelled as such, so 'standing' means what it says", async () => {
     const mock = createCasebusApp({ seed: 42 });
     const baseUrl = listen(mock);
-    // No backfill at all: reconcile itself is the first surface to see the dead cursor.
+    // Backfill runs while the cursor is still young; the age-out happens after it, so
+    // reconcile is the first surface to see the dead cursor.
     mock.stream.emit(4, { ageS: 70 * 3600 });
     await runCli("src/cli/backfill.ts", baseUrl);
     mock.stream.emit(5);
