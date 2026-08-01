@@ -148,7 +148,12 @@ describe.each(PROFILES.map((p) => [p] as const))("profile %s", (profile) => {
     const blob = JSON.stringify(m);
     const emails = blob.match(/[\w.+-]+@[\w.-]+/g) ?? [];
     expect(emails.length).toBeGreaterThan(0);
-    expect(emails.filter((e) => !e.toLowerCase().endsWith("@example.com"))).toEqual([]);
+    // The wall's stated rule, as a predicate: *.example.com — the apex OR any subdomain
+    // of the IANA-reserved example.com (RFC 2606: can never be a real mailbox host).
+    // Widened from a bare `@example.com` suffix in F-1c, when the domain-evidence
+    // requesters' emails moved to help@<company>.example.com hosts (wire-evidence pin);
+    // the domain-side rule below always allowed those hosts.
+    expect(emails.filter((e) => !/@([a-z0-9-]+\.)*example\.com$/.test(e.toLowerCase()))).toEqual([]);
     expect(blob).not.toMatch(/\b\d{3}-\d{2}-\d{4}\b/);
     expect(blob).not.toMatch(/\b\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}\b/);
     for (const c of m.crm.companies) expect(c.domain).toMatch(/^[a-z0-9-]+\.example\.com$/);

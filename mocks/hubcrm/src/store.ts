@@ -286,10 +286,14 @@ export function createHubStore(opts: HubStoreOptions): HubStore {
         break;
       }
       case 4: {
+        // F-1c: the mutation slot exercises the propertyChange/hydration machinery on a
+        // NON-identity property. The warehouse stages from this store, and company name/
+        // domain/owner_email are tier-2 evidence — a default script that rewrites them
+        // silently destroys the identity proof (pinned: identity-evidence invariance in
+        // server.test.ts). Evidence-destroying mutations belong to bespoke test stores.
         const c = target("company");
         if (c) {
-          const base = String(c.properties.name).split(" Rev ")[0];
-          out.push(change("company", c, "name", `${base} Rev ${++revs}`));
+          out.push(change("company", c, "description", `DEMO company description rev ${++revs}`));
         } else out.push(createObject("company"));
         break;
       }
@@ -299,10 +303,12 @@ export function createHubStore(opts: HubStoreOptions): HubStore {
         break;
       }
       case 6: {
+        // F-1c: same rule as slot 4 — contact email is TIER-1 evidence; the slot mutates
+        // a working-data property instead (deterministic value, still one property per
+        // event, still sparse).
         const c = target("contact");
         if (c) {
-          const addr = String(c.properties.email);
-          out.push(change("contact", c, "email", addr.replace(/^/, `r${(i % 97)}.`)));
+          out.push(change("contact", c, "phone", `+1-555-${String(1000 + ((i % 97) * 7)).padStart(4, "0")}`));
         } else out.push(createObject("contact"));
         break;
       }

@@ -71,9 +71,11 @@ type ProfileContent = {
    *  matches NOTHING (profiles must keep it off every company domain). */
   nearMissBillingDomain: string;
   nearMissBillingEmail: string;
-  /** S-0010..S-0011 (support tier 2) and S-0012 (support near-miss) flavor emails. */
-  tier2SupportEmails: [string, string];
-  nearMissSupportEmail: string;
+  // F-1c: the SUPPORT-side flavor emails (former tier2SupportEmails /
+  // nearMissSupportEmail) are gone from profile content: a faithful Case wire carries
+  // only the supplied-* intake fields, so a domain-evidence requester's email must BE
+  // its domain evidence — that is STRUCTURE (shared construction below, pinned by
+  // wire-evidence.test.ts), not per-profile color.
 };
 
 const at = <T>(xs: readonly T[], n: number): T => xs[n % xs.length];
@@ -93,8 +95,6 @@ const PROFILE_CONTENT: Record<Profile, ProfileContent> = {
     tier2BillingEmails: ["billing.media-11@example.com", "billing.freight-12@example.com", "billing.staffing-13@example.com"],
     nearMissBillingDomain: "catering-14b.example.com",
     nearMissBillingEmail: "billing.catering-14b@example.com",
-    tier2SupportEmails: ["help.security-15@example.com", "help.freight-16@example.com"],
-    nearMissSupportEmail: "help.printing-17b@example.com",
   },
   // Trades & field services: job-shaped deals in the hundreds-to-thousands, service
   // calls as tickets.
@@ -115,8 +115,6 @@ const PROFILE_CONTENT: Record<Profile, ProfileContent> = {
     tier2BillingEmails: ["billing.rooter-11@example.com", "billing.pipeworks-12@example.com", "billing.septic-13@example.com"],
     nearMissBillingDomain: "drainworks-14b.example.com",
     nearMissBillingEmail: "billing.drainworks-14b@example.com",
-    tier2SupportEmails: ["help.fixture-15@example.com", "help.waterline-16@example.com"],
-    nearMissSupportEmail: "help.hydrojet-17b@example.com",
   },
   // Software/SaaS: subscription-shaped deals (ARR bands), product tickets.
   // Sector words are INVENTED tokens, each individually web-vetted (Task E fix round,
@@ -140,8 +138,6 @@ const PROFILE_CONTENT: Record<Profile, ProfileContent> = {
     tier2BillingEmails: ["billing.cloudbriar-11@example.com", "billing.devburrow-12@example.com", "billing.queryhollow-13@example.com"],
     nearMissBillingDomain: "datawren-14b.example.com",
     nearMissBillingEmail: "billing.datawren-14b@example.com",
-    tier2SupportEmails: ["help.logthistle-15@example.com", "help.apibloom-16@example.com"],
-    nearMissSupportEmail: "help.netgorse-17b@example.com",
   },
   // Real estate as a VERTICAL, generic vertical language only — listings, closings,
   // commissions, escrow, inspections (2b-D5 wall: nothing sourced from any real
@@ -167,8 +163,6 @@ const PROFILE_CONTENT: Record<Profile, ProfileContent> = {
     tier2BillingEmails: ["billing.harborview-11@example.com", "billing.lakeside-12@example.com", "billing.uptown-13@example.com"],
     nearMissBillingDomain: "summit-14b.example.com",
     nearMissBillingEmail: "billing.summit-14b@example.com",
-    tier2SupportEmails: ["help.highland-15@example.com", "help.coastal-16@example.com"],
-    nearMissSupportEmail: "help.riverbend-17b@example.com",
   },
 };
 
@@ -274,11 +268,21 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
       id: sId(i + 1), name: P.requesterName(i + 1), email: contacts[(i + 5) * 2].email,
       company_name: c.name, domain: c.domain,
     })),
-    { id: sId(10), name: P.requesterName(10), email: P.tier2SupportEmails[0], company_name: `${base[14].name} LLC`, domain: base[14].domain },
-    { id: sId(11), name: P.requesterName(11), email: P.tier2SupportEmails[1], company_name: base[15].name, domain: `www.${base[15].domain}` },
-    { id: sId(12), name: P.requesterName(12), email: P.nearMissSupportEmail, company_name: "DEMO Totally Different Name", domain: base[16].domain },
-    { id: sId(13), name: P.requesterName(13), email: "help.standalone1@example.com", company_name: "DEMO Standalone Support Co 1", domain: "standalone-support-1.example.com" },
-    { id: sId(14), name: P.requesterName(14), email: "help.standalone2@example.com", company_name: "DEMO Standalone Support Co 2", domain: "standalone-support-2.example.com" },
+    // F-1c (SPEC CHANGE, deliberate — moves the generic byte-wall fixture with it): the
+    // domain-evidence requesters' emails are STRUCTURE, derived from the very domain
+    // that is their evidence, because the faithful Case wire carries only the
+    // supplied-* intake fields — staging derives the entity's domain from
+    // SuppliedEmail, so the email must BE the evidence (wire-evidence.test.ts pins
+    // this per profile). S-0011 keeps its `www.` normalization variant on the DOMAIN
+    // field (the 2a wire's business); its email carries the bare domain — an email
+    // host never wears `www.`, and the SQL side normalizes both to the same key.
+    { id: sId(10), name: P.requesterName(10), email: `help@${base[14].domain}`, company_name: `${base[14].name} LLC`, domain: base[14].domain },
+    { id: sId(11), name: P.requesterName(11), email: `help@${base[15].domain}`, company_name: base[15].name, domain: `www.${base[15].domain}` },
+    // Near-miss semantics preserved on the wire: the email's domain matches C-0017,
+    // the company name matches nothing — domain-without-name stays manual review.
+    { id: sId(12), name: P.requesterName(12), email: `help@${base[16].domain}`, company_name: "DEMO Totally Different Name", domain: base[16].domain },
+    { id: sId(13), name: P.requesterName(13), email: "help@standalone-support-1.example.com", company_name: "DEMO Standalone Support Co 1", domain: "standalone-support-1.example.com" },
+    { id: sId(14), name: P.requesterName(14), email: "help@standalone-support-2.example.com", company_name: "DEMO Standalone Support Co 2", domain: "standalone-support-2.example.com" },
   ];
   const BASE_T = Date.parse("2026-07-01T00:00:00.000Z");
   const iso = (ms: number) => new Date(ms).toISOString();

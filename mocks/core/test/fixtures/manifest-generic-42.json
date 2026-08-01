@@ -1279,35 +1279,35 @@
       {
         "id": "DEMO-S-0010",
         "name": "DEMO Requester 10",
-        "email": "help.security-15@example.com",
+        "email": "help@media-15.example.com",
         "company_name": "DEMO Media Group 15 LLC",
         "domain": "media-15.example.com"
       },
       {
         "id": "DEMO-S-0011",
         "name": "DEMO Requester 11",
-        "email": "help.freight-16@example.com",
+        "email": "help@freight-16.example.com",
         "company_name": "DEMO Freight Group 16",
         "domain": "www.freight-16.example.com"
       },
       {
         "id": "DEMO-S-0012",
         "name": "DEMO Requester 12",
-        "email": "help.printing-17b@example.com",
+        "email": "help@staffing-17.example.com",
         "company_name": "DEMO Totally Different Name",
         "domain": "staffing-17.example.com"
       },
       {
         "id": "DEMO-S-0013",
         "name": "DEMO Requester 13",
-        "email": "help.standalone1@example.com",
+        "email": "help@standalone-support-1.example.com",
         "company_name": "DEMO Standalone Support Co 1",
         "domain": "standalone-support-1.example.com"
       },
       {
         "id": "DEMO-S-0014",
         "name": "DEMO Requester 14",
-        "email": "help.standalone2@example.com",
+        "email": "help@standalone-support-2.example.com",
         "company_name": "DEMO Standalone Support Co 2",
         "domain": "standalone-support-2.example.com"
       }

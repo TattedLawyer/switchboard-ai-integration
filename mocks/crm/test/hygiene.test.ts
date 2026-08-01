@@ -13,7 +13,10 @@ describe.each(blobs)("fixture hygiene (%s)", (_label, blob) => {
   it("uses only example.com emails", () => {
     const emails = blob.match(/[\w.+-]+@[\w.-]+/g) ?? [];
     expect(emails.length).toBeGreaterThan(0);
-    expect(emails.every((e) => e.toLowerCase().endsWith("@example.com"))).toBe(true);
+    // *.example.com — apex or subdomain of the RFC 2606 reserved name (see the same
+    // predicate in mocks/core/test/profiles.test.ts; widened in F-1c with the
+    // domain-evidence requester emails).
+    expect(emails.every((e) => /@([a-z0-9-]+\.)*example\.com$/.test(e.toLowerCase()))).toBe(true);
   });
   it("contains no SSN- or US-phone-shaped strings", () => {
     expect(blob).not.toMatch(/\b\d{3}-\d{2}-\d{4}\b/);
