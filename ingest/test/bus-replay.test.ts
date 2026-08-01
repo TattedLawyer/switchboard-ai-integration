@@ -118,6 +118,21 @@ describe("the drain: subscribe, consume, persist a cursor that is OURS", () => {
     expect((await rawIds(pool)).length).toBe(13);
   });
 
+  it("has_more with an EMPTY batch and no cursor progress fails immediately by NAME — never a slow, misdiagnosed maxRounds exhaustion (debt-burn A4)", async () => {
+    // The structural check reconcile has had since Task D, one screen away: an empty
+    // batch carrying has_more:true gives the loop nothing to advance on — it is
+    // unterminating by construction, and maxRounds would convert it into a slow failure
+    // blamed on depth. catchUp must name the wedge on the round that shows it.
+    const app = express();
+    app.get("/subscribe", (_req, res) => {
+      res
+        .type("application/x-ndjson")
+        .send(JSON.stringify({ status: { code: "OK", stream_id: "s", has_more: true, latest_replay_id: null } }) + "\n");
+    });
+    const c = new BusReplayConnector({ baseUrl: listen(app), batchSize: 10 });
+    await expect(c.catchUpWithReport(pool, { maxRounds: 50 })).rejects.toThrow(/has_more with an empty batch/);
+  });
+
   it("has_more is the ONLY termination signal, and an unbounded stream is a LOUD bounded failure, not a wedge", async () => {
     // A server that always says has_more with a never-advancing cursor: the drain must
     // refuse to report a completion it did not reach.
