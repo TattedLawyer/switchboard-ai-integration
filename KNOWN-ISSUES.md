@@ -242,12 +242,13 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   the failure mode the L1-G7 entry above exists to correct). The review
   endorsed each skip; what follows is the decision, not a rediscovery list.
   *Owner: phase-2b close.*
-  - `BusReplayConnector.catchUp` has no `has_more`-with-empty-batch structural
-    check, though its own `reconcile` does one screen away. Not a wedge — the
-    `maxRounds` budget already bounds it with a loud failure — but the two
-    halves are asymmetric. Deferred because adding a second termination path to
-    a drain under fix-round pressure is how a bounded loud failure becomes a
-    subtle one; it wants its own RED.
+  - ~~`BusReplayConnector.catchUp` has no `has_more`-with-empty-batch structural
+    check, though its own `reconcile` does one screen away~~ *Paid (debt-burn
+    A4, with its own RED as demanded):* catchUp now fails immediately and by
+    name on an empty batch carrying `has_more:true` (no cursor progress ⇒
+    structurally unterminating), instead of spinning to a `maxRounds`
+    exhaustion misdiagnosed as depth; the maxRounds pin itself now runs against
+    an honestly-deep stream.
   - ~~`StripeFeedReconcileReport.gaps` is still populated (from the ledger) but no
     longer read by the reconcile CLI~~ *Paid (debt-burn A3):* the remove arm was
     eliminated (AIP-180 — removing a public field is a breaking change, and the

@@ -271,6 +271,17 @@ export class BusReplayConnector implements Connector {
       }
 
       if (!batch.hasMore) return report;
+      if (batch.events.length === 0) {
+        // The structural check reconcile has had since Task D, one screen down: an empty
+        // batch carrying has_more:true gives this loop nothing to advance on — it is
+        // unterminating by construction. maxRounds would still bound it, but as a slow
+        // failure misdiagnosed as depth; name the wedge on the round that shows it
+        // (debt-burn A4). Cursor state is untouched — re-run once the bus behaves.
+        throw new Error(
+          "casebus catchUp: bus reports has_more with an empty batch and no cursor progress — " +
+            "structurally unterminating subscription; refusing to spin to maxRounds",
+        );
+      }
     }
   }
 

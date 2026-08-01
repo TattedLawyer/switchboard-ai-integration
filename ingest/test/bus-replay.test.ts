@@ -134,11 +134,26 @@ describe("the drain: subscribe, consume, persist a cursor that is OURS", () => {
   });
 
   it("has_more is the ONLY termination signal, and an unbounded stream is a LOUD bounded failure, not a wedge", async () => {
-    // A server that always says has_more with a never-advancing cursor: the drain must
-    // refuse to report a completion it did not reach.
+    // A server that always says has_more, each batch carrying a FRESH event so the
+    // cursor genuinely advances every round (since A4, an empty batch fails by name
+    // instead — this pin is about the depth budget, so the stream must be honest-deep).
+    // The drain must refuse to report a completion it did not reach.
+    let n = 0;
     const app = express();
     app.get("/subscribe", (_req, res) => {
-      res.type("application/x-ndjson").send(JSON.stringify({ status: { code: "OK", stream_id: "s", has_more: true, latest_replay_id: null } }) + "\n");
+      n++;
+      const frame = {
+        replay_id: `rpl_${n * 7}`,
+        event: { id: `evt-deep-${n}`, type: "support.ticket.updated", event_time: new Date().toISOString(), payload: {} },
+      };
+      res
+        .type("application/x-ndjson")
+        .send(
+          JSON.stringify(frame) +
+            "\n" +
+            JSON.stringify({ status: { code: "OK", stream_id: "s", has_more: true, latest_replay_id: null } }) +
+            "\n",
+        );
     });
     const c = new BusReplayConnector({ baseUrl: listen(app), batchSize: 10 });
     await expect(c.catchUpWithReport(pool, { maxRounds: 5 })).rejects.toThrow(/maxRounds/);
