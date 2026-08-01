@@ -152,6 +152,61 @@ describe("backfill", () => {
   });
 });
 
+// Debt-burn A9 — the poll path's two audit findings, highest stakes in the wave: the
+// cursor advanced to a FEED-SUPPLIED last_seq (a feed that overstates it permanently and
+// silently skips the gap — unbounded data loss with no trace), and the fetch had no
+// timeout (a black-holed feed wedged the loop; every sibling connector has carried
+// per-attempt AbortSignal.timeout since L1-G4).
+describe("the cursor is OURS on the poll path too (debt-burn A9)", () => {
+  const goodEvent = (id: string, seq: number) => ({
+    event_id: id, event_type: "company.updated", occurred_at: new Date().toISOString(),
+    data: { id: "DEMO-C-0001", name: "Demo", domain: "demo.example.com" }, seq,
+  });
+
+  it("a feed that OVERSTATES last_seq cannot bury the gap: the cursor advances only to the max seq actually processed, and the next polls recover the rest", async () => {
+    // The lie: the first page carries seqs 1..3 but claims last_seq=13. The truth
+    // (4..13) is only ever served when asked `after=3` — so trusting the claim makes
+    // ten events permanently unreachable, silently.
+    const all = Array.from({ length: 13 }, (_, i) => goodEvent(`evt-a9-${String(i + 1).padStart(2, "0")}`, i + 1));
+    const app = express();
+    app.get("/events", (req, res) => {
+      const after = Number(req.query.after);
+      const events = after === 0 ? all.slice(0, 3) : all.filter((e) => e.seq > after);
+      res.json({ events, last_seq: 13 });
+    });
+    const srv: Server = app.listen(0);
+    const baseUrl = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+
+    const first = await pollOnce(pool, "crm", baseUrl);
+    expect(first.ingested).toBe(3);
+    // The mechanism under pin: the persisted position is the max seq this process
+    // VERIFIED — processed from the page — never the feed's own claim about itself.
+    const cur = await pool.query("select last_seq from ingest.cursors where source = 'crm'");
+    expect(Number(cur.rows[0].last_seq)).toBe(3);
+    expect(first.last_seq).toBe(3);
+
+    // And because the cursor told the truth, the drain recovers everything.
+    await catchUp(pool, "crm", baseUrl);
+    const raw = await pool.query("select count(*)::int as n from raw.raw_events where source = 'crm'");
+    expect(raw.rows[0].n).toBe(13);
+    srv.close();
+  });
+
+  it("a black-holed feed is a bounded loud failure, never a wedge: per-attempt timeout with the cursor untouched (the sibling connectors' L1-G4 shape)", async () => {
+    const app = express();
+    app.get("/events", () => {
+      /* never responds */
+    });
+    const srv: Server = app.listen(0);
+    const baseUrl = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+
+    await expect(pollOnce(pool, "crm", baseUrl, { timeoutMs: 300 })).rejects.toThrow(/timed out after 300ms/);
+    const cur = await pool.query("select last_seq from ingest.cursors where source = 'crm'");
+    expect(cur.rowCount).toBe(0);
+    srv.close();
+  });
+});
+
 // The poll path is a THIRD door into raw.raw_events, alongside the webhook and the quarantine
 // replay. Two load-bearing comments assert there are only two and that both are gated:
 // quarantine.ts calls its predicate "the single definition used by BOTH doors into raw", and
