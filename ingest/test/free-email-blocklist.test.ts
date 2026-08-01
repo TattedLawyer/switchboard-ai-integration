@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
@@ -27,10 +30,11 @@ import { loadModel } from "./helpers/load-model.js";
 // a specific mailbox is identity evidence regardless of its provider — only the DOMAIN
 // half of domain+name is meaningless on a free provider.
 //
-// The list itself is a dbt seed (warehouse/seeds/free_email_domains.csv): curated major
-// providers, documented as curated-not-exhaustive with the vendored-list upgrade path.
-// These tests run the REAL model text (loadModel; ref('free_email_domains') → fixture
-// table), so the tests pin the mechanism against any list content.
+// The list itself is a dbt seed (warehouse/seeds/free_email_domains.csv), VENDORED from
+// the free-email-domains npm package (F-1; MIT, NOTICE line, exact-pinned; regenerate
+// via scripts/generate-free-email-seed.ts). The mechanism tests below run the REAL
+// model text against fixture lists (list-agnostic); the seed-content and real-list
+// demotion pins at the bottom guard the committed CSV itself.
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -163,5 +167,55 @@ describe("free-email blocklist: tier-2 matches on free-provider domains demote t
     expect(rows).toHaveLength(1);
     expect(rows[0].matched_tier).toBe(1);
     expect(rows[0].resolved_entity_id).toBe("C-1");
+  });
+});
+
+// ── F-1 (F-core review Minor 1): the SEED'S CONTENT is pinned, and the demotion runs
+// against the REAL committed list — closing the two vacuities the review named (a
+// typo'd provider would previously have passed every test in the tree, and no test
+// exercised the demotion through the real seed content). ──────────────────────────────
+
+const SEED_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../warehouse/seeds/free_email_domains.csv",
+);
+const seedDomains = (): string[] => {
+  const [header, ...rows] = readFileSync(SEED_PATH, "utf8").trim().split("\n");
+  expect(header).toBe("domain");
+  return rows;
+};
+
+describe("the committed seed's CONTENT (vendored from free-email-domains, MIT — see NOTICE)", () => {
+  it("carries the canonical providers a typo would silently lose: gmail.com, yahoo.com, hotmail.com, outlook.com, aol.com", () => {
+    const domains = new Set(seedDomains());
+    for (const sentinel of ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com"]) {
+      expect(domains.has(sentinel), `seed must contain ${sentinel}`).toBe(true);
+    }
+  });
+
+  it("is well-formed: lowercase domain-shaped entries, deduplicated, sorted, and NOTHING example-shaped (the synthetic corporate universe must never demote)", () => {
+    const rows = seedDomains();
+    expect(rows.length).toBeGreaterThan(1000); // vendored list, not the 48-row curation
+    expect(rows).toEqual([...new Set(rows)].sort());
+    for (const d of rows) expect(d).toMatch(/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/);
+    expect(rows.filter((d) => d === "example.com" || d.endsWith(".example.com"))).toEqual([]);
+  });
+});
+
+describe("demotion through the REAL committed list (no fixture stand-in)", () => {
+  it("a gmail.com-domiciled tier-2 candidate lands in manual review with the provider named — through the seed content dbt actually loads", async () => {
+    const values = seedDomains().map((d) => `('${d.replace(/'/g, "''")}')`).join(",");
+    await pool.query(`truncate tmp_free_domains`);
+    await pool.query(`insert into tmp_free_domains values ${values}`);
+    await pool.query(`
+      insert into tmp_ir_companies values ('C-1', 'Smith Plumbing', 'gmail.com', 'C-1');
+      insert into tmp_support_tickets values
+        ('R-9', null, 'gmail.com', 'Smith Plumbing LLC');
+    `);
+    const rows = await resolve("support", "R-9");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].matched_tier).toBe(3);
+    expect(String(rows[0].match_evidence)).toMatch(/free-email domain=gmail\.com/);
+    expect(String(rows[0].match_evidence)).toMatch(/manual review/);
   });
 });

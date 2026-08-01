@@ -116,11 +116,15 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   tier-1 evidence stays provider-blind. The sheets arm's orphan-derived
   domains run through the same gate. The normalizer legal-name variants
   (trailing comma, `Co`/`PLLC`, `&`/`and`, double spaces) are fixed in the
-  shared normalizer pair, vector-pinned. **Remaining disclosed limit:** the
-  shipped list is a curated set of major providers — a production deployment
-  should vendor a maintained exhaustive list (e.g. Kikobeats/free-email-domains
-  or willwhite/freemail `free.txt`) into the seed; the mechanism is
-  list-agnostic and test-pinned against fixture lists.
+  shared normalizer pair, vector-pinned. *(F-1)* The list is now VENDORED —
+  13k+ domains from the exact-pinned `free-email-domains` npm package (MIT,
+  NOTICE) via a committed generator (`scripts/generate-free-email-seed.ts`)
+  that validates shape and refuses example-universe entries; the committed
+  CSV's content is pinned (canonical-provider sentinels, well-formedness) and
+  the demotion is exercised through the REAL list, closing the F-core
+  review's vacuity finding. Upstream includes disposable/webmail hosts —
+  deliberately kept: neither category identifies a company, and a listed-
+  domain match demotes to a human, never drops data.
 - ~~A merge event targeting a nonexistent company mints a phantom canonical~~
   *Paid (2a.2):* `assert_canonical_targets_exist` dbt test + unit test proving
   the detection fires.

@@ -13,3 +13,10 @@ All business data in this repository is synthetic. The companies, contacts,
 deals, invoices, and support tickets are generated from a seeded manifest and do
 not describe any real person or organization; this is enforced by an automated
 repository hygiene test.
+
+Third-party data:
+
+The free-email provider domain list (warehouse/seeds/free_email_domains.csv)
+is generated from the "free-email-domains" npm package,
+Copyright (c) Kiko Beats (https://github.com/Kikobeats/free-email-domains),
+licensed under the MIT License.

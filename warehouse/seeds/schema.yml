@@ -11,13 +11,18 @@ seeds:
       (knowledge.hubspot.com/object-settings/automatically-create-and-associate-companies-with-contacts),
       and its forms product maintains a blocked-domain list for the same providers
       (knowledge.hubspot.com/forms/what-domains-are-blocked-when-using-the-forms-email-domains-to-block-feature).
-      This seed is a CURATED list of major consumer providers, deliberately not
-      exhaustive: a production deployment should vendor a maintained exhaustive list
-      (github.com/Kikobeats/free-email-domains or github.com/willwhite/freemail's
-      free.txt — free providers, not the separate disposable-domain category) into this
-      seed. The MECHANISM is what the tests pin (ingest/test/free-email-blocklist.test.ts
-      runs the real model text against fixture lists); the list content is swappable.
-      Domains are stored lowercase and compared against the model's normalized domain.
+      This seed is VENDORED from the free-email-domains npm package (HubSpot-derived;
+      MIT, exact-pinned in package.json, attribution in NOTICE) via
+      scripts/generate-free-email-seed.ts — regenerate and commit the diff on a
+      deliberate version bump, never at build time (warehouse inputs stay reviewable
+      tree state). The upstream list includes free providers AND disposable/webmail
+      hosts; both are correct here — the seed answers "does this domain identify a
+      company?", and for either category it does not. A match on a listed domain
+      demotes to manual review (conservative: a human decides; nothing is dropped).
+      Content is pinned by sentinel + well-formedness + real-list demotion tests in
+      ingest/test/free-email-blocklist.test.ts; the generator refuses malformed or
+      example-universe entries. Domains are stored lowercase and compared against the
+      model's normalized domain.
     columns:
       - name: domain
         data_tests: [not_null, unique]
