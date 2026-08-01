@@ -134,6 +134,32 @@ describe("L2-G3 straddle: one entity, two clean evidence tuples, two canonicals"
   );
 });
 
+// The THIRD FACE of the defect, now contractual (F-1; design settled by the F-core
+// review's N2 probe): a clean email group must not OUTRANK an ambiguity flag. Pre-fix,
+// the clean group's tier-1 row beat the ambiguous group's tier-3 row in the final
+// DISTINCT ON — a silent resolve on evidence the entity's own record contradicted.
+// Per-entity grouping makes ANY cross-canonical spread demote, clean groups included.
+describe("L2-G3 third face: clean evidence beside an ambiguity flag demotes — never outranks it", () => {
+  it("an entity with one CLEAN email group and one AMBIGUOUS email group lands in manual review, flagged — the clean group does not win by tier order", async () => {
+    await seedCompanies();
+    await pool.query(`
+      insert into tmp_ir_crm_emails values
+        ('clean@acme.example.com',  'C-1'),
+        ('shared@agency.example.com', 'C-1'),
+        ('shared@agency.example.com', 'C-2');
+      insert into tmp_support_tickets values
+        ('R-5', 'clean@acme.example.com',    'nowhere.example.com',   'Unrelated Name'),
+        ('R-5', 'shared@agency.example.com', 'elsewhere.example.com', 'Other Name');
+    `);
+    const rows = (await pool.query(RESOLUTION_SQL)).rows.filter(
+      (r) => r.source === "support" && r.source_entity_id === "R-5",
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].matched_tier).toBe(3);
+    expect(String(rows[0].match_evidence)).toMatch(/ambiguous/);
+  });
+});
+
 // The other direction — the fix's blast radius. Per-entity grouping must not OVER-fire:
 // multiple evidence tuples that AGREE on one canonical are corroboration, not conflict,
 // and demoting them would trade a silent guess for a silent refusal. These are green
@@ -157,6 +183,11 @@ describe("L2-G3 fix boundary: multi-tuple evidence that AGREES on one canonical 
     expect(rows[0].matched_tier).toBe(2);
     expect(rows[0].resolved_entity_id).toBe("C-1");
     expect(String(rows[0].match_evidence)).not.toMatch(/ambiguous/);
+    // F-core review Minor 2 (checklist line 6 — records from corroborating evidence are
+    // equally rich across tiers): tier 2's agreeing multi-tuple case carries the same
+    // "+N more" marker shape tier 1's multi-email case does, so an auditor SEES the
+    // corroboration instead of a single-tuple-looking row.
+    expect(String(rows[0].match_evidence)).toMatch(/\(\+1 more, all one canonical\)/);
   });
 
   it("two DIFFERENT emails across tickets both mapping to ONE canonical resolve at tier 1, unflagged, deterministically", async () => {
