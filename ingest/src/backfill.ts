@@ -39,13 +39,25 @@ export async function pollOnce(
   pool: pg.Pool,
   source: string,
   baseUrl: string,
-  opts?: { limit?: number; tenantId?: string },
+  opts?: { limit?: number; tenantId?: string; timeoutMs?: number },
 ): Promise<{ ingested: number; duplicates: number; quarantined: number; last_seq: number }> {
   const tenantId = opts?.tenantId ?? DEFAULT_TENANT_ID;
   const cursor = await getCursor(pool, source, tenantId);
   const limit = opts?.limit ?? 50;
+  const timeoutMs = opts?.timeoutMs ?? 5000;
   const url = `${baseUrl}/events?after=${cursor}&limit=${limit}`;
-  const res = await fetch(url);
+  // Per-attempt AbortSignal.timeout (debt-burn A9): the register L1-G4 discipline every
+  // sibling connector already carries — a black-holed feed is a bounded loud failure,
+  // never a wedge. catchUp's bounded-retry loop treats the throw like any other.
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err) {
+    if ((err as Error).name === "TimeoutError") {
+      throw new Error(`${source} feed read timed out after ${timeoutMs}ms: GET ${url}`);
+    }
+    throw new Error(`${source} feed read failed: GET ${url}: ${(err as Error).message}`);
+  }
   if (!res.ok) {
     throw new Error(`GET /events failed with status ${res.status}`);
   }
@@ -58,6 +70,11 @@ export async function pollOnce(
   let ingested = 0;
   let duplicates = 0;
   let quarantined = 0;
+  // The cursor is OURS (debt-burn A9, discipline 1 of the connector paradigms): it may
+  // only ever name a position this process VERIFIED by processing the event that holds
+  // it. `page.last_seq` is the feed's claim about itself — a feed that overstates it
+  // would make the cursor skip events it never served, silently and permanently.
+  let maxProcessedSeq: number | null = null;
   for (const event of page.events) {
     // Strip ledger transport metadata (seq, prev_hash, hash) so poll-path stored payloads
     // match push-path payloads byte-for-byte — those fields describe the ledger's own
@@ -66,6 +83,11 @@ export async function pollOnce(
       prev_hash?: string;
       hash?: string;
     };
+    // Every branch below PROCESSES this event (ingest, duplicate-absorb, or quarantine-
+    // and-preserve), so its seq is a verified position whichever way it lands.
+    if (typeof seq === "number" && Number.isFinite(seq) && (maxProcessedSeq === null || seq > maxProcessedSeq)) {
+      maxProcessedSeq = seq;
+    }
     // Same gate as the webhook door. ingestEvent validates nothing, so without this a feed
     // could put a value in raw that throws the staging (occurred_at)::timestamptz cast — which
     // fails the whole dbt build, not just one row — or a well-formed but absurd timestamp that
@@ -101,12 +123,19 @@ export async function pollOnce(
     else duplicates++;
   }
 
-  // Only advance the cursor once every event in the page has been ingested.
-  if (page.events.length > 0) {
-    await setCursor(pool, source, page.last_seq, tenantId);
+  // Advance only after the WHOLE page is processed, and only to the max seq of events
+  // actually processed from it — ingested, duplicate, or quarantined alike (a
+  // quarantined event is processed and preserved; not counting it would wedge the loop
+  // on one poisoned event forever, the same rule the bus connector states at its
+  // cursor). An event without a numeric seq contributes no position — conservative:
+  // better to re-poll a page than to guess one. Monotonic guard: a feed that re-serves
+  // old events must never REWIND the cursor either.
+  const nextCursor = maxProcessedSeq !== null && maxProcessedSeq > cursor ? maxProcessedSeq : cursor;
+  if (nextCursor !== cursor) {
+    await setCursor(pool, source, nextCursor, tenantId);
   }
 
-  return { ingested, duplicates, quarantined, last_seq: page.events.length > 0 ? page.last_seq : cursor };
+  return { ingested, duplicates, quarantined, last_seq: nextCursor };
 }
 
 export async function catchUp(

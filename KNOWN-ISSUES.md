@@ -204,15 +204,14 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   above converts that from a silent wrong-answer into a loud failure, but the
   dependency remains. *Scheduled: Phase 2b — take a start index (or expose `/reset`)
   so emission is a pure function of the request.*
-- **The backfill poll path still trusts the feed's cursor.** Schema validation
-  is now in place — the poll path runs the same `eventSchema` gate as the
-  webhook door and quarantines what fails, closing the third unguarded entry
-  into `raw` that an audit found here. What remains: no fetch timeout, and —
-  worse than the cursor *regression* previously listed here — the cursor
-  advances to a **feed-supplied** `last_seq` rather than the max actually
-  ingested, so a feed that overstates it permanently skips the gap: silent,
-  unbounded data loss on the poll path *(audit)*. *Scheduled: Phase 2b
-  connector work, where the poll path is the subject.*
+- ~~The backfill poll path still trusts the feed's cursor~~ *Paid (debt-burn
+  A9):* the cursor now advances only to the max seq ACTUALLY processed from
+  the page (ingested, duplicate, or quarantined — never the feed-supplied
+  `last_seq`, with a monotonic no-rewind guard), so an overstating feed's gap
+  is re-polled instead of silently skipped; and the fetch carries the sibling
+  connectors' per-attempt `AbortSignal.timeout` (L1-G4), so a black-holed feed
+  is a bounded named failure with the cursor untouched. Pinned in
+  `backfill.test.ts` (lying feed recovered in full; 300ms bounded timeout).
 - ~~The ledger hash chain doesn't enforce `seq` monotonicity or event-id
   uniqueness~~ — a restarted mock forks the logical stream and still verifies.
   *Paid in full (debt-burn A6, to the Task D report's spec):* both
