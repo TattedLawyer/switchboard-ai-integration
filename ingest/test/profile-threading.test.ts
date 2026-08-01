@@ -91,3 +91,68 @@ describe("profile threading — the seam is opts.profile, exactly like opts.seed
     }
   });
 });
+
+// ── F-1 (KNOWN-ISSUES, Task E review I3): the FOUR 2b mocks join the same seam ──────────
+//
+// The break this closes is real, not stylistic: cross-system identity correlation is
+// DOMAIN-based and domains are profile-derived, so a mixed-profile stack (2a mocks on a
+// vertical, 2b mocks hardcoding generic) falsifies hubcrm's "SHARED universe" premise
+// and collapses tier-2 matching. Each pin drives a 2b mock's own construction surface
+// with a profile and asserts the emitted universe IS that profile's manifest — and each
+// mock REFUSES an unknown profile at construction, naming the valid set (the same
+// operator-surface refusal generateManifest provides the 2a mocks), instead of the
+// pre-fix behavior: silently ignoring the option and serving generic.
+import { createHubStore } from "../../mocks/hubcrm/src/store.js";
+import { createFeed } from "../../mocks/stripefeed/src/feed.js";
+import { createStream } from "../../mocks/casebus/src/stream.js";
+import { createRowSource, COL } from "../../mocks/sheets/src/index.js";
+
+describe("profile threading — the 2b mocks (hubcrm, stripefeed, casebus, sheets)", () => {
+  it("hubcrm: a profiled store creates companies from THAT profile's manifest, correlating with the 2a universe at the same seed", () => {
+    const store = createHubStore({ seed: 42, profile: "plumbing" } as never);
+    store.simulate(1); // slot 0 creates manifest.companies[0]
+    const created = store.list("company")[0];
+    const expected = generateManifest(42, "plumbing").crm.companies[0];
+    expect(created.properties.name).toBe(expected.name);
+    expect(created.properties.domain).toBe(expected.domain);
+    expect(String(created.properties.name)).toMatch(/Plumbing/);
+  });
+
+  it("stripefeed: a profiled feed emits THAT profile's customers", () => {
+    const feed = createFeed({ seed: 42, profile: "saas" } as never);
+    const [ev] = feed.emit(1); // slot 0: customer.created for billing.customers[0]
+    expect(ev.type).toBe("customer.created");
+    expect((ev.data.object as { name: string }).name).toBe(
+      generateManifest(42, "saas").billing.customers[0].name,
+    );
+  });
+
+  it("casebus: a profiled stream emits THAT profile's tickets", () => {
+    const stream = createStream({ seed: 42, profile: "realestate" } as never);
+    const [ev] = stream.emit(1); // slot 0: case.created for support.tickets[0]
+    expect(ev.event.payload.subject).toBe(
+      generateManifest(42, "realestate").support.tickets[0].subject,
+    );
+  });
+
+  it("sheets: a profiled row source draws people and companies from THAT profile's universe", () => {
+    const cells = (createRowSource as unknown as (s: number, p?: string) => { next(): string[] })(
+      7,
+      "plumbing",
+    ).next();
+    const m = generateManifest(42, "plumbing").crm;
+    const companyNames = new Set(m.companies.map((c) => c.name));
+    const contactEmails = new Set(m.contacts.map((c) => c.email));
+    expect(companyNames.has(cells[COL.company])).toBe(true);
+    expect(contactEmails.has(cells[COL.email])).toBe(true);
+  });
+
+  it("every 2b construction surface REFUSES an unknown profile by name — never a silent generic", () => {
+    expect(() => createHubStore({ seed: 42, profile: "logistics" } as never)).toThrow(/valid profiles/);
+    expect(() => createFeed({ seed: 42, profile: "logistics" } as never)).toThrow(/valid profiles/);
+    expect(() => createStream({ seed: 42, profile: "logistics" } as never)).toThrow(/valid profiles/);
+    expect(() =>
+      (createRowSource as unknown as (s: number, p?: string) => unknown)(7, "logistics"),
+    ).toThrow(/valid profiles/);
+  });
+});
