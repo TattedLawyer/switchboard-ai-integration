@@ -97,7 +97,14 @@ const pad = (n: number) => String(n).padStart(4, "0");
 
 export function createStream(opts: StreamOptions): StreamState {
   const retentionS = (opts.retentionHours ?? 72) * 3600;
-  const { tickets, requesters } = generateManifest(opts.seed, opts.profile).support;
+  const manifest = generateManifest(opts.seed, opts.profile);
+  const { tickets, requesters } = manifest.support;
+  // F-1b decision 2 (f2-wire-research.md Q2, primary-verified): the vendor resolves the
+  // sender to a Contact SERVER-SIDE — a unique indexed-email match populates ContactId;
+  // no match (or ambiguity) leaves it null while the supplied intake fields keep the
+  // sender's raw identity on the case. The manifest's CRM contacts are that org-side
+  // index here.
+  const contactIdByEmail = new Map(manifest.crm.contacts.map((c) => [c.email, c.id]));
 
   // Three independent seeded streams so no draw perturbs another.
   const idRand = prng(opts.seed ^ 0x5bf03635);
@@ -151,9 +158,23 @@ export function createStream(opts: StreamOptions): StreamState {
     const base = { case_id: ticket.id, requester_id: requester.id };
     switch (i % 4) {
       case 0:
+        // CREATE carries the FULL intake state (f2-wire-research.md: "the event message
+        // body includes all record and system fields"): the supplied-* web/email-to-case
+        // fields verbatim plus the nullable resolved ContactId. UPDATE-shaped frames
+        // below stay changed-only — supplied fields are never re-sent (CDC: unchanged
+        // fields are empty; the changed set is what a frame carries).
         return {
           type: "case.created",
-          payload: { ...base, subject: ticket.subject, priority: ticket.priority, origin: "email" },
+          payload: {
+            ...base,
+            subject: ticket.subject,
+            priority: ticket.priority,
+            origin: "email",
+            SuppliedEmail: requester.email,
+            SuppliedName: requester.name,
+            SuppliedCompany: requester.company_name,
+            ContactId: contactIdByEmail.get(requester.email) ?? null,
+          },
         };
       case 1:
         return {
