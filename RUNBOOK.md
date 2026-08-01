@@ -66,9 +66,9 @@ identity layer and `customer_360` against the seed manifest's planned match matr
 - **Poisoned/failed jobs:** each source has its own DLQ (`ingest-<source>-dlq`).
   `npm run replay -w ingest -- --list` prints total depth and per-job
   `source=... event_id=...` lines across all source DLQs;
-  `npm run replay -w ingest` re-ingests (idempotent) and consumes. Processes up
-  to 10 jobs per invocation (aggregated across all source DLQs) — repeat for
-  deeper queues.
+  `npm run replay -w ingest` re-ingests (idempotent) and consumes. Both drain
+  the FULL queue in one invocation (aggregated across all source DLQs) — the
+  depth printed is the whole queue, never a capped page.
 - **Malformed payloads:** rows sit in `ingest.quarantine` with reasons and their
   `source`. Operator CLI (2a.3): `npm run quarantine -w ingest -- --list` shows
   pending rows; `npm run quarantine -w ingest -- --replay <id>` replays one;

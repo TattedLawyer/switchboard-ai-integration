@@ -712,9 +712,9 @@ and none is started. Effort classes are estimates by the maintainer.
 
 ## Cosmetic / low
 
-`fetchDlq`/`replayDlq` cap at 10 per invocation — the CLI prints "repeat for
-deeper queues", but an operator who doesn't reads a false "done" on an 11+
-DLQ (upgraded wording from "display cap"; fix: loop-until-empty in 2b) ·
+~~`fetchDlq`/`replayDlq` cap at 10 per invocation~~ *Paid (debt-burn A7):*
+both drain the full queue in one invocation (drain-by-default per the AWS-CLI
+pagination contract; pinned with a 12-deep DLQ in `queue.test.ts`) ·
 reconcile skips a source whose ledger-path env var is unset (scripts pin all
 three) · the repo-wide hygiene test lives inside the CRM mock's workspace, so
 its scope and its home disagree (relocate in 2b) · some log lines lack the

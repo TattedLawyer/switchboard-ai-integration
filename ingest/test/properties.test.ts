@@ -517,7 +517,7 @@ describe("property 5: random poison/healthy batch partitions — healthy ingest 
 
             // Wait until every poison job dead-lettered and every healthy event is ingested.
             await pollUntil(async () => {
-              const dlqIds = new Set((await fetchDlq(boss, 20)).map((j) => j.data.event_id));
+              const dlqIds = new Set((await fetchDlq(boss)).map((j) => j.data.event_id));
               if (![...poisonIds].every((id) => dlqIds.has(id))) return false;
               const n = await pool.query("select count(*)::int as n from raw.raw_events");
               return n.rows[0].n === healthyIds.length;
@@ -534,7 +534,7 @@ describe("property 5: random poison/healthy batch partitions — healthy ingest 
             for (const id of poisonIds) expect(attempts.get(id)).toBe(2);
 
             // ...and the DLQ holds EXACTLY the poison ids, all under the crm queue.
-            const dlqJobs = await fetchDlq(boss, 20);
+            const dlqJobs = await fetchDlq(boss);
             expect(dlqJobs.map((j) => j.data.event_id).sort()).toEqual([...poisonIds].sort());
             expect(dlqJobs.every((j) => j.source === "crm")).toBe(true);
 

@@ -166,10 +166,14 @@ export async function startWorker(
 }
 
 export async function fetchDlq(
-  boss: PgBoss,
-  limit: number = 10
+  boss: PgBoss
 ): Promise<{ source: Source; id: string; data: SourceEvent; rawBody: string | null }[]> {
-  // Aggregate pending jobs across every source's DLQ, tagging each with its source.
+  // Aggregate ALL pending jobs across every source's DLQ, tagging each with its source.
+  // Drain-by-default (debt-burn A7, the AWS-CLI pagination contract): exhaustive
+  // retrieval is the default and truncation must never be silent — the old 10-cap made
+  // an 11+ queue list as 10 with no marker, so an operator read a false "done".
+  // findJobs carries no internal limit (verified in pg-boss v12: plans.findJobs emits
+  // no LIMIT clause), so this is the complete pending set.
   // Note: In pg-boss, a DLQ is just another queue, so we query each directly.
   // Jobs are unwrapped from the IngestJob envelope so callers keep seeing the event as
   // `data` (the CLI prints event_id/event_type from it); the wire bytes ride alongside.
@@ -189,7 +193,7 @@ export async function fetchDlq(
       }
     }
   }
-  return aggregated.slice(0, limit);
+  return aggregated;
 }
 
 export async function replayDlq(
