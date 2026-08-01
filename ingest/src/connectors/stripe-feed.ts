@@ -276,18 +276,36 @@ export class StripeFeedConnector implements Connector {
         const page = await this.fetchPage(baseUrl, cursor, this.opts.pageLimit ?? 100);
         let deepest: { created: number; id: string } | null = null;
         for (const e of page.data) {
-          if (typeof e.id !== "string" || typeof e.created !== "number") {
+          if (typeof e.id !== "string" || e.id === "") {
+            // A missing IDENTITY is genuinely fatal: this envelope cannot be compared
+            // against raw at all, so the window really is unreadable.
             return {
-              integrity: { ok: false, detail: `feed served a malformed envelope: ${JSON.stringify(e).slice(0, 120)}` },
+              integrity: { ok: false, detail: `feed served an envelope with no id: ${JSON.stringify(e).slice(0, 120)}` },
             };
           }
-          retained.set(e.id, e.created);
+          // A non-numeric `created` is bad DATA, not an unreadable source (Task D review
+          // addendum; the bus oracle found this same shape on a 72h window, and here it
+          // was blinding a THIRTY-DAY one). The drain already treats such an envelope as
+          // bad data — occurred_at fails the schema gate, it is quarantined, its page
+          // siblings land — and the quarantine cross-reference below exists precisely so
+          // one poisoned vendor event cannot red a month of reconciles. So: the event
+          // COUNTS toward the retained window (it really is there), contributes NO
+          // timestamp, and is excluded from the aged-out boundary arithmetic rather than
+          // corrupting it — the `Number.isNaN` guards downstream already handle NaN.
+          const createdS = typeof e.created === "number" ? e.created : NaN;
+          retained.set(e.id, createdS);
+          // Cursor selection is order-blind on (created, id), so a timestamp-less
+          // envelope must never win it: NaN comparisons are all false, which would make
+          // the choice depend on arrival order. It is skipped as a candidate — the page
+          // still advances on its well-formed siblings, and if a page had NOTHING else,
+          // `deepest` stays null and the rounds budget bounds the drain loudly.
+          if (Number.isNaN(createdS)) continue;
           if (
             deepest === null ||
-            e.created > deepest.created ||
-            (e.created === deepest.created && e.id > deepest.id)
+            createdS > deepest.created ||
+            (createdS === deepest.created && e.id > deepest.id)
           ) {
-            deepest = { created: e.created, id: e.id };
+            deepest = { created: createdS, id: e.id };
           }
         }
         if (deepest !== null && deepest.id === cursor) {
@@ -346,7 +364,13 @@ export class StripeFeedConnector implements Connector {
     // The retention boundary in time: anything in raw older than the earliest retained
     // event is normal metabolism (ingested, then aged out). Anything the feed no longer
     // serves that is NOT older than that boundary cannot be an age-out — flag it.
-    const earliestRetainedS = retained.size > 0 ? Math.min(...retained.values()) : null;
+    // Timestamp-bearing retained events only: an envelope with a non-numeric `created`
+    // contributes no boundary (see the drain above). Math.min over a NaN returns NaN and
+    // would make every comparison against the boundary false — silently reclassifying
+    // every aged-out raw row as `extra`, i.e. turning one bad vendor timestamp into a
+    // window-wide false anomaly report.
+    const retainedTimes = [...retained.values()].filter((s) => !Number.isNaN(s));
+    const earliestRetainedS = retainedTimes.length > 0 ? Math.min(...retainedTimes) : null;
     const extra: string[] = [];
     let agedOutRaw = 0;
     for (const row of rawRes.rows) {
