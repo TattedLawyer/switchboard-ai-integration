@@ -10,11 +10,12 @@ import {
   listGaps,
   type Connector,
 } from "../connectors/index.js";
-import { gapCrossCheck } from "./gap-crosscheck.js";
+import { gapCrossCheck, type ReportedGapLike } from "./gap-crosscheck.js";
 import { DEFAULT_TENANT_ID } from "../ingest-event.js";
+import type { ReconcileReport } from "../reconcile.js";
 import type { SheetReconcileReport } from "../connectors/sheet-snapshot.js";
 import type { StripeFeedReconcileReport } from "../connectors/stripe-feed.js";
-import type { HubReconcileReport } from "../connectors/hub-hydrate.js";
+import type { HubReconcileReport, HydrationDlqEntry } from "../connectors/hub-hydrate.js";
 import type { BusReconcileReport } from "../connectors/bus-replay.js";
 
 // Bounded listing for the stale bucket: unlike missing/extra (which converge toward
@@ -188,16 +189,83 @@ async function main(): Promise<void> {
       const report = result.report!;
       reconciledCount++;
 
+      // ── Exhaustive-consumption contract (docs/operator-surface-checklist.md line 1,
+      // compile-time) ─────────────────────────────────────────────────────────────────
+      // "Every field a connector's report can carry is consumed and printed by both CLIs
+      // and the service log, or explicitly discarded with a comment naming why." Here that
+      // sentence is compiled: every paradigm's report shape is fully rest-destructured,
+      // and the remainder is typed EMPTY — a field added to any report shape without a
+      // decided operator surface is a compile error in this CLI before any test, matrix,
+      // or reviewer is involved (the Task B `gaps` / A-slice `stale` escape class,
+      // mechanized). Everything printed below reads ONLY these destructured bindings; a
+      // field that is deliberately not printed must be discarded here with a comment
+      // naming why. The `as` casts are the same kind-narrowing the producers guarantee:
+      // each connector's reconcile() returns its own report shape for its own kind.
+      type BaseBuckets = Pick<
+        ReconcileReport,
+        "ledger" | "raw" | "missing" | "extra" | "rawDuplicates" | "ledgerDuplicates"
+      >;
+      let base: BaseBuckets;
+      let stale: string[] | undefined;
+      let windowed: { agedOutRaw: number; quarantined: { event_id: string; count: number }[] } | undefined;
+      let reportedGaps: readonly ReportedGapLike[] | undefined;
+      let hub:
+        | { drifted: string[]; tombstonedRaw: number; hydrationPending: number; hydrationDlq: HydrationDlqEntry[] }
+        | undefined;
+      switch (connector.kind) {
+        case "ledger-feed": {
+          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, ...rest } = report;
+          rest satisfies Record<string, never>;
+          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates };
+          break;
+        }
+        case "sheet-snapshot": {
+          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, stale: sheetStale, ...rest } =
+            report as SheetReconcileReport;
+          rest satisfies Record<string, never>;
+          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates };
+          stale = sheetStale;
+          break;
+        }
+        case "stripe-feed": {
+          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, agedOutRaw, quarantined, gaps, ...rest } =
+            report as StripeFeedReconcileReport;
+          rest satisfies Record<string, never>;
+          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates };
+          windowed = { agedOutRaw, quarantined };
+          reportedGaps = gaps;
+          break;
+        }
+        case "bus-replay": {
+          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, agedOutRaw, quarantined, gaps, ...rest } =
+            report as BusReconcileReport;
+          rest satisfies Record<string, never>;
+          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates };
+          windowed = { agedOutRaw, quarantined };
+          reportedGaps = gaps;
+          break;
+        }
+        case "hub-hydrate": {
+          const {
+            ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates,
+            drifted, tombstonedRaw, hydrationPending, hydrationDlq, ...rest
+          } = report as HubReconcileReport;
+          rest satisfies Record<string, never>;
+          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates };
+          hub = { drifted, tombstonedRaw, hydrationPending, hydrationDlq };
+          break;
+        }
+      }
+
       // Debt-burn A3: the loss-bearing paradigms' reports carry their own `gaps`
       // accounting, and it is CONSUMED here as a cross-check against the ledger rows
       // printed above — the two surfaces must agree or the run reds naming the drift.
       // (This un-inverts the standing operator-surface checklist for the field:
-      // produced ⇒ read on a shipped surface, and agreement is printed even at zero.)
+      // produced ⇒ read on a shipped surface, and agreement is printed even at zero.
+      // KNOWN-ISSUES' deferred minor stands unchanged: the bus arm remains structurally
+      // vacuous — its report gaps come from the same listGaps read — and phase-close
+      // owns that; the destructure above changes where the field is READ, not its value.)
       let gapCrossCheckOk = true;
-      const reportedGaps =
-        connector.kind === "stripe-feed" || connector.kind === "bus-replay"
-          ? (report as StripeFeedReconcileReport | BusReconcileReport).gaps
-          : undefined;
       if (reportedGaps !== undefined) {
         const check = gapCrossCheck(reportedGaps, ledgerGaps);
         if (check.ok) {
@@ -214,46 +282,44 @@ async function main(): Promise<void> {
 
       // Task C: hub-shaped reports reconcile OBJECTS against the vendor store, not
       // event ids against a ledger — label every count as what it actually is.
-      const hub = connector.kind === "hub-hydrate" && "drifted" in report ? (report as HubReconcileReport) : undefined;
-
       if (connector.kind === "stripe-feed") {
         // The number is a 30-day WINDOW, not a ledger file — label it as what it is.
-        console.log(`[${source}] retained window: ${report.ledger} event(s) (the feed's 30-day ledger-equivalent)`);
+        console.log(`[${source}] retained window: ${base.ledger} event(s) (the feed's 30-day ledger-equivalent)`);
       } else if (connector.kind === "bus-replay") {
-        console.log(`[${source}] retained window: ${report.ledger} event(s) (the bus's 72h ledger-equivalent)`);
+        console.log(`[${source}] retained window: ${base.ledger} event(s) (the bus's 72h ledger-equivalent)`);
       } else if (hub !== undefined) {
-        console.log(`[${source}] object store: ${report.ledger} live object(s) (the paradigm's ledger-equivalent)`);
+        console.log(`[${source}] object store: ${base.ledger} live object(s) (the paradigm's ledger-equivalent)`);
       } else {
-        console.log(`[${source}] ledger: ${report.ledger} distinct event_id(s)`);
+        console.log(`[${source}] ledger: ${base.ledger} distinct event_id(s)`);
       }
       if (hub !== undefined) {
-        console.log(`[${source}] raw:    ${report.raw} thin event(s)`);
+        console.log(`[${source}] raw:    ${base.raw} thin event(s)`);
       } else {
-        console.log(`[${source}] raw:    ${report.raw} distinct event_id(s)`);
+        console.log(`[${source}] raw:    ${base.raw} distinct event_id(s)`);
       }
-      console.log(`[${source}] raw duplicates: ${report.rawDuplicates}`);
-      if (report.ledgerDuplicates !== undefined) {
+      console.log(`[${source}] raw duplicates: ${base.rawDuplicates}`);
+      if (base.ledgerDuplicates !== undefined) {
         // Debt-burn A6 (operator-surface rule: a produced field is printed). Nonzero is
         // unreachable on this path today — the chain verifier rejects duplicate ids
         // before reconcile runs — printed anyway so the count comparison's honesty is
         // visible, and gated below as defense in depth.
-        console.log(`[${source}] ledger duplicates (same event_id appended more than once — writer bug): ${report.ledgerDuplicates}`);
+        console.log(`[${source}] ledger duplicates (same event_id appended more than once — writer bug): ${base.ledgerDuplicates}`);
       }
       if (hub !== undefined) {
-        console.log(`[${source}] missing (in the object store, never seen in raw — lost webhooks): ${report.missing.length}`);
+        console.log(`[${source}] missing (in the object store, never seen in raw — lost webhooks): ${base.missing.length}`);
       } else {
-        console.log(`[${source}] missing (in ledger, not in raw): ${report.missing.length}`);
+        console.log(`[${source}] missing (in ledger, not in raw): ${base.missing.length}`);
       }
-      if (report.missing.length > 0) {
-        for (const id of report.missing) console.log(`  - ${id}`);
+      if (base.missing.length > 0) {
+        for (const id of base.missing) console.log(`  - ${id}`);
       }
       if (hub !== undefined) {
-        console.log(`[${source}] extra (in raw, absent from the store, no deletion event to explain it): ${report.extra.length}`);
+        console.log(`[${source}] extra (in raw, absent from the store, no deletion event to explain it): ${base.extra.length}`);
       } else {
-        console.log(`[${source}] extra (in raw, not in ledger): ${report.extra.length}`);
+        console.log(`[${source}] extra (in raw, not in ledger): ${base.extra.length}`);
       }
-      if (report.extra.length > 0) {
-        for (const id of report.extra) console.log(`  - ${id}`);
+      if (base.extra.length > 0) {
+        for (const id of base.extra) console.log(`  - ${id}`);
       }
 
       // Cold review I1: sheet-shaped reports carry a fourth bucket the ledger paradigm
@@ -261,7 +327,6 @@ async function main(): Promise<void> {
       // snapshot paradigm's EVERYDAY drift (a human edits a cell after a clean ingest;
       // quarantined-current rows live here too). Ignoring it made a drifted sheet print
       // PASS. It is surfaced (bounded) and folded into the pass/fail decision below.
-      const stale = "stale" in report ? (report as SheetReconcileReport).stale : undefined;
       if (stale !== undefined) {
         console.log(`[${source}] stale (present on both sides, content differs): ${stale.length}`);
         for (const rowKey of stale.slice(0, STALE_LIST_CAP)) console.log(`  - ${rowKey}`);
@@ -304,10 +369,6 @@ async function main(): Promise<void> {
       // retained-but-diverted — preserved, replayable, and deliberately not a failure by
       // itself, because one poisoned vendor event must not red every reconcile for the
       // length of the window.
-      const windowed =
-        connector.kind === "stripe-feed" || connector.kind === "bus-replay"
-          ? (report as StripeFeedReconcileReport | BusReconcileReport)
-          : undefined;
       if (windowed !== undefined) {
         console.log(`[${source}] aged out of window (in raw, ingested before expiry — expected): ${windowed.agedOutRaw}`);
         console.log(
@@ -321,14 +382,14 @@ async function main(): Promise<void> {
       // what gates below; it is deliberately NOT re-read here, so the line an operator saw
       // and the verdict they get cannot disagree.
       const clean =
-        report.missing.length === 0 &&
-        report.extra.length === 0 &&
-        report.rawDuplicates === 0 &&
+        base.missing.length === 0 &&
+        base.extra.length === 0 &&
+        base.rawDuplicates === 0 &&
         (stale?.length ?? 0) === 0 &&
         unacknowledged.length === 0 &&
         (hub?.drifted.length ?? 0) === 0 &&
         (hub?.hydrationPending ?? 0) === 0 &&
-        (report.ledgerDuplicates ?? 0) === 0 &&
+        (base.ledgerDuplicates ?? 0) === 0 &&
         gapCrossCheckOk;
       if (clean) {
         // An acknowledged gap is a STANDING DISCLOSED CONDITION, not a clean bill of

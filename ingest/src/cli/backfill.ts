@@ -16,27 +16,39 @@ async function main(): Promise<void> {
       // number-only path printed "ingested 6 event(s)" over a permanent 8-event loss.
       const reporter = catchUpReporter(connector);
       if (reporter) {
-        const report = await reporter.catchUpWithReport(pool);
-        const quarantineNote = report.quarantined > 0 ? `, quarantined ${report.quarantined}` : "";
-        if (report.hydrated !== undefined) {
+        // ── Exhaustive-consumption contract (docs/operator-surface-checklist.md line 1,
+        // compile-time) ─────────────────────────────────────────────────────────────────
+        // Every field CatchUpReport can carry is rest-destructured here and the remainder
+        // typed EMPTY, so a report field added without a decided operator surface is a
+        // compile error in this CLI — before any test or reviewer. The printing below
+        // reads ONLY these bindings; a deliberately-unprinted field must be discarded
+        // here with a comment naming why.
+        const {
+          ingested, duplicates, quarantined, gaps, degradations,
+          hydrated, tombstoned, hydrationDlq, hydrationPending,
+          ...rest
+        } = await reporter.catchUpWithReport(pool);
+        rest satisfies Record<string, never>;
+        const quarantineNote = quarantined > 0 ? `, quarantined ${quarantined}` : "";
+        if (hydrated !== undefined) {
           // Hydration paradigm (Task C standing checklist): this connector's catchUp is
           // a hydration PUMP — thin events arrive by webhook push, so an "ingested 0"
           // line here would be a number-only truth hiding the actual work and the
           // actual failures. Print what the run really did.
           console.log(
-            `backfill[${source}]: hydrated ${report.hydrated} snapshot(s), ` +
-              `${report.tombstoned ?? 0} tombstone(s) (thin events arrive by webhook push; ` +
+            `backfill[${source}]: hydrated ${hydrated} snapshot(s), ` +
+              `${tombstoned ?? 0} tombstone(s) (thin events arrive by webhook push; ` +
               `catchUp is the hydration pump)${quarantineNote} from ${baseUrl}`,
           );
-          if ((report.hydrationDlq ?? 0) > 0) {
+          if ((hydrationDlq ?? 0) > 0) {
             console.error(
-              `[${source}] HYDRATION DLQ: ${report.hydrationDlq} event(s) dead-lettered this run — ` +
+              `[${source}] HYDRATION DLQ: ${hydrationDlq} event(s) dead-lettered this run — ` +
                 "terminal, preserved, listed by reconcile; replay is an operator act (RUNBOOK)",
             );
           }
-          if ((report.hydrationPending ?? 0) > 0) {
+          if ((hydrationPending ?? 0) > 0) {
             console.log(
-              `backfill[${source}]: ${report.hydrationPending} event(s) still pending hydration ` +
+              `backfill[${source}]: ${hydrationPending} event(s) still pending hydration ` +
                 "(rate budget reached) — the next run continues",
             );
           }
@@ -47,17 +59,17 @@ async function main(): Promise<void> {
           // exactly like a source that ingests nothing unless the absorbed count is on
           // the log. Suppressed at zero so the other paradigms' lines are unchanged.
           const duplicateNote =
-            report.duplicates > 0 ? `, ${report.duplicates} duplicate(s) absorbed by idempotent ingest` : "";
+            duplicates > 0 ? `, ${duplicates} duplicate(s) absorbed by idempotent ingest` : "";
           console.log(
-            `backfill[${source}]: ingested ${report.ingested} event(s)${duplicateNote}${quarantineNote} from ${baseUrl}`,
+            `backfill[${source}]: ingested ${ingested} event(s)${duplicateNote}${quarantineNote} from ${baseUrl}`,
           );
         }
         // Loud, on stderr, one shared phrasing (grep/alert target). Deliberate
         // semantics: the exit code stays 0 — the drain itself SUCCEEDED and forward
         // progress is real; reconcile is the gate that turns a gap into a red. A
         // nonzero here would teach cron to retry a loss no retry can close.
-        for (const gap of report.gaps ?? []) console.error(formatUnclosableGap(source, gap));
-        for (const note of report.degradations ?? []) console.error(`backfill[${source}] degradation: ${note}`);
+        for (const gap of gaps ?? []) console.error(formatUnclosableGap(source, gap));
+        for (const note of degradations ?? []) console.error(`backfill[${source}] degradation: ${note}`);
       } else {
         const ingested = await connector.catchUp(pool);
         console.log(`backfill[${source}]: ingested ${ingested} event(s) from ${baseUrl}`);
