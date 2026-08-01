@@ -150,8 +150,27 @@ export async function catchUp(
   let consecutiveEmpty = 0;
   let consecutiveFailures = 0;
   let rounds = 0;
+  // Sweep item 3 (the A4 treatment, ported to the poll paradigm): the budget used to
+  // expire into a SILENT `return` — a partial drain reported as a finished one, the
+  // exact dishonesty the sibling connectors refuse by name. And the commonest way to
+  // reach it is structural, not depth: a non-empty page whose events carry no usable
+  // seq (or a feed ignoring `after`) advances no cursor, so the same page re-serves
+  // forever. Track the cursor across rounds: two consecutive non-empty rounds at the
+  // same cursor can only repeat — fail immediately by name, never burn the budget
+  // toward a misdiagnosed "deep feed".
+  let prevCursor: number | null = null;
 
-  while (consecutiveEmpty < 2 && rounds < maxRounds) {
+  while (consecutiveEmpty < 2) {
+    if (rounds >= maxRounds) {
+      // Genuine depth (real cursor progress every round, feed still serving): a loud
+      // bounded failure in the sibling connectors' wording, naming the PERSISTED
+      // cursor a re-run resumes from. Cursor state is consistent — pollOnce advanced
+      // it after every fully-processed page.
+      throw new Error(
+        `${source} catchUp exceeded maxRounds=${maxRounds} with the feed still serving events — ` +
+          `refusing to report a drain it did not finish; state is consistent, re-run to resume from cursor ${prevCursor ?? 0}`,
+      );
+    }
     rounds++;
     let result: { ingested: number; duplicates: number; quarantined: number; last_seq: number };
     try {
@@ -171,6 +190,14 @@ export async function catchUp(
     // A page of nothing but quarantined events is NOT empty: treating it as empty would let
     // two such pages stop catchUp early and strand valid events further down the feed.
     const pageEmpty = result.ingested === 0 && result.duplicates === 0 && result.quarantined === 0;
+    if (!pageEmpty && prevCursor !== null && result.last_seq === prevCursor) {
+      throw new Error(
+        `${source} catchUp made no cursor progress across a non-empty round (cursor ${result.last_seq}) — ` +
+          "the feed re-serves the same page (events with no usable seq, or a feed ignoring `after`); " +
+          "structurally unterminating, refusing to spin the budget down",
+      );
+    }
+    prevCursor = result.last_seq;
     if (pageEmpty) {
       consecutiveEmpty++;
     } else {
