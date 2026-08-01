@@ -125,6 +125,9 @@ describe("C1 — the reviewer's reproduction, inverted: permanent loss is LOUD o
     expect(res.out).toMatch(/unclosable gap/i);
     expect(res.out).toContain(cursorId);
     expect(res.out).toMatch(/aged out of window[^:]*: 8/); // agedOutRaw printed, expected-not-flagged
+    // Debt-burn A3: `StripeFeedReconcileReport.gaps` is consumed by the CLI as a
+    // cross-check against the printed ledger rows — no longer a field with no surface.
+    expect(res.out).toMatch(/gap cross-check: report agrees with the durable gap ledger \(1 gap\(s\)\)/);
     expect(res.out).toMatch(/FAIL/);
     // Deliberate gate semantics (disclosed): a gap is never a PASS-silently condition —
     // exit nonzero the first time it appears. The acknowledged-gap workflow (so a known,

@@ -182,6 +182,9 @@ describe("reconcile CLI — paradigm-honest integrity, every bucket printed, and
     expect(res.out).toMatch(/retained window: 20 event\(s\)/);
     expect(res.out).toMatch(/72h ledger-equivalent/);
     expect(res.out).toMatch(/aged out of window/);
+    // Debt-burn A3: the report's `gaps` field is CONSUMED — cross-checked against the
+    // ledger rows the CLI prints — and says so even at zero, so agreement is visible.
+    expect(res.out).toMatch(/gap cross-check: report agrees with the durable gap ledger \(0 gap\(s\)\)/);
     expect(res.out).toMatch(/PASS/);
     expect(res.code).toBe(0);
   });
@@ -200,6 +203,9 @@ describe("reconcile CLI — paradigm-honest integrity, every bucket printed, and
     // The operator is TOLD how to answer it — a red with no next step is how reconcile
     // gets ignored.
     expect(res.out).toMatch(/gap-ack/);
+    // Debt-burn A3: on a gap-bearing run the consumed report field must agree with the
+    // printed ledger rows — the cross-check line proves the field is read, not decorative.
+    expect(res.out).toMatch(/gap cross-check: report agrees with the durable gap ledger \(1 gap\(s\)\)/);
   });
 
   it("once acknowledged the SAME gap is still printed, still listed, and no longer reds the run — a standing disclosed condition, not a permanent red", async () => {
