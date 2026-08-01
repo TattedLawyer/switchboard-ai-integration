@@ -319,12 +319,21 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   one bad payload into a sustained retry storm.)
 - **Nothing alerts on quarantine depth** — the CLI makes it *visible*
   (`--list`), but nothing pages. *Scheduled: Phase 4 monitoring.*
-- **No migration tracking table** — every start re-runs all migration files;
-  correctness depends on each being hand-proven idempotent (they are, with
-  tests). Migration 003 executes `drop table ... cascade` on every run —
-  concurrent boots of two replicas are a real hazard, not cosmetic churn.
-  *Scheduled: Phase 2b (tracking table + advisory lock, with the documented
-  PgBouncer caveat on advisory locks).*
+- ~~No migration tracking table — every start re-runs all migration files~~
+  *Struck as stale (debt-burn B11/V2) — the tracking half was already paid and
+  this entry contradicted the "What production would require" §3, which
+  records it as paid:* `ingest.schema_migrations` exists with per-file sha256
+  checksums (`migrate.ts:41-47` DDL, `:53-55` hashing), an applied-unchanged
+  file is skipped (`:69`), a changed applied file **throws** naming the file
+  (`:59-68` — refuse-on-drift), and a file is recorded only after success
+  (`:72-79`), so a mid-file failure retries instead of being assumed done.
+  **Narrowed entry — the half that is NOT paid:** migrations take no advisory
+  lock, so concurrent boots of two replicas can still race `runMigrations`;
+  migration 003's `drop table … cascade` makes that a real hazard on any
+  database where 003 is not yet recorded (fresh environments), not cosmetic
+  churn. *Owner: phase-2b close (advisory lock, with the documented PgBouncer
+  caveat — transaction-pooling breaks session advisory locks, so the
+  mechanism needs its own researched RED, not a drive-by).*
 - ~~Env parsing foot-guns *(audit)* — `PORT`/`BACKFILL_INTERVAL_MS` go
   through bare `Number()` (a typo yields `NaN`, and `setInterval(fn, NaN)`
   fires every ~1ms), and an unrecognized `INGEST_ROLE` silently means "do
