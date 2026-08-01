@@ -1,5 +1,11 @@
 export { prng } from "./prng.js";
 export {
+  NORMALIZATION_VECTORS,
+  normalizeCompanyName,
+  normalizeDomain,
+  type NormalizationVector,
+} from "./normalize.js";
+export {
   generateManifest,
   PROFILES,
   type Profile,
