@@ -27,7 +27,24 @@ norm_companies as (
     select
         canonical_id,
         lower(regexp_replace(domain, '^www\.', '', 'i')) as norm_domain,
-        regexp_replace(lower(trim(name)), '\s+(inc|llc|ltd|corp)\.?$', '') as norm_name
+        -- Pinned normalization (Task F) — the SQL half of the TS↔SQL pair
+        -- (mocks/core/src/normalize.ts normalizeCompanyName; change both or neither —
+        -- ingest/test/normalizer-vectors.test.ts reds on drift, and verify-identity.ts
+        -- makes the pair CI-load-bearing). Order: NFC → NBSP→space + zero-width deleted
+        -- → lower → '&'→' and ' → collapse whitespace → trim → strip ONE trailing legal
+        -- suffix (inc|llc|ltd|corp|co|pllc, optional leading comma / trailing period;
+        -- single-strip on purpose, the idempotence caveat stands) → strip trailing
+        -- commas/periods/spaces. The tier2_candidates join carries the identical
+        -- expression over se.name — the per-vector tier-2 end-to-end test is the
+        -- functional drift pin between the two copies.
+        btrim(regexp_replace(regexp_replace(
+            btrim(regexp_replace(
+                replace(lower(translate(normalize(name, NFC),
+                                        E'\u00A0\u200B\u200C\u200D\uFEFF', ' ')),
+                        '&', ' and '),
+                '\s+', ' ', 'g')),
+            '[\s,]+(inc|llc|ltd|corp|co|pllc)\.?$', ''),
+            '[\s,.]+$', '')) as norm_name
     from companies
 ),
 sheets_clients as (
@@ -122,7 +139,16 @@ tier2_candidates as (
     from source_entities se
     join norm_companies nc
       on nc.norm_domain = lower(regexp_replace(se.domain, '^www\.', '', 'i'))
-     and nc.norm_name   = regexp_replace(lower(trim(se.name)), '\s+(inc|llc|ltd|corp)\.?$', '')
+     -- Identical normalization to norm_companies.norm_name (see the comment there) —
+     -- kept as one expression per side so the model stays a pure SELECT.
+     and nc.norm_name   = btrim(regexp_replace(regexp_replace(
+            btrim(regexp_replace(
+                replace(lower(translate(normalize(se.name, NFC),
+                                        E'\u00A0\u200B\u200C\u200D\uFEFF', ' ')),
+                        '&', ' and '),
+                '\s+', ' ', 'g')),
+            '[\s,]+(inc|llc|ltd|corp|co|pllc)\.?$', ''),
+            '[\s,.]+$', ''))
     where not exists (
         select 1 from tier1 t1
         where t1.source = se.source and t1.source_entity_id = se.source_entity_id

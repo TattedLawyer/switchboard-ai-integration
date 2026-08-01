@@ -1,4 +1,5 @@
 import { prng } from "./prng.js";
+import { normalizeCompanyName, normalizeDomain } from "./normalize.js";
 
 /** 2b-D3: the vertical trio is `plumbing | saas | realestate` (amends D10 — logistics
  *  out after the real-estate direction decision). Runtime-validated in
@@ -305,8 +306,12 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
   //            "www.") AND its name matches after normalization (case, Inc/LLC suffix).
   // Near-misses fail on purpose: B-0014 (name matches, domain doesn't), S-0012 (domain
   // matches, name doesn't) — both stay manual-review and never count as cross-system.
-  const normDomain = (d: string) => d.toLowerCase().replace(/^www\./, "");
-  const normName = (n: string) => n.toLowerCase().replace(/\s+(inc|llc)\.?$/, "").trim();
+  // Task F: the SHARED normalizer pair (normalize.ts) — the same strip set and pipeline
+  // the SQL side applies, so the L2-G4 drift (SQL stripped inc|llc|ltd|corp while this
+  // resolver stripped only inc|llc) can never silently reopen. Vector-pinned in
+  // ingest/test/normalizer-vectors.test.ts.
+  const normDomain = normalizeDomain;
+  const normName = normalizeCompanyName;
   const companyByContactEmail = new Map(contacts.map((p) => [p.email, p.company_id]));
   const companyByDomain = new Map(base.map((c) => [normDomain(c.domain), c]));
   const resolveCompanyId = (e: { email: string; domain: string; name: string }): string | null => {

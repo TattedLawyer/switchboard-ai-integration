@@ -24,12 +24,15 @@ red would be worse than the bug:
 
 1. **Name-normalization idempotence** — stacked legal suffixes normalize
    differently on repeat application (`"Acme Inc Ltd"` → `"acme inc"` → `"acme"`),
-   so `norm(norm(x)) ≠ norm(x)` for some inputs. Latent for the seeded data, but
-   NOT dormant as a project risk: `scripts/verify-identity.ts` makes the TS/SQL
-   normalizer pair CI-load-bearing the moment any fixture uses `Ltd`/`Corp` —
-   it is a tripwire, not background debt. Scheduled with the Phase 2b
-   vendor-normalization work, which also aligns the strip sets (SQL strips
-   `inc|llc|ltd|corp`, the manifest resolver only `inc|llc`).
+   so `norm(norm(x)) ≠ norm(x)` for some inputs. Single-strip is DELIBERATE
+   (Task F kept it while hardening everything else): looping to a fixpoint
+   would eat `"Acme Inc Ltd"` down to `"acme"` — a string no human wrote.
+   The Task F normalization work paid the rest of this area: the strip sets
+   are now ALIGNED via one shared normalizer pair (TS `normalizeCompanyName`
+   in mocks/core; identical SQL in `identity_resolution.sql` — strip set
+   `inc|llc|ltd|corp|co|pllc`), vector-pinned in
+   `ingest/test/normalizer-vectors.test.ts`, and `scripts/verify-identity.ts`
+   keeps the pair CI-load-bearing.
 
 *Paid:* the **ledger torn-line crash-safety** invariant formerly listed here
 was fixed in 2a.2 (RED tests first, parse-guard in both verifier copies,
@@ -116,9 +119,11 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   *Paid (2a.2):* `assert_canonical_targets_exist` dbt test + unit test proving
   the detection fires.
 - ~~`crm_emails` reads full raw history~~ *Paid (2a.2):* latest-state only.
-- **Unicode confusables under-merge silently.** ZWSP/NFC variants make
-  visually identical names normalize differently → false manual review.
-  *Scheduled: Phase 2b normalization hardening.*
+- ~~Unicode confusables under-merge silently~~ *Paid (2b Task F):* the pinned
+  normalizer now NFC-normalizes, deletes zero-width characters, and reads NBSP
+  as a space — in BOTH languages (shared `normalizeCompanyName` in mocks/core;
+  identical SQL expression in `identity_resolution.sql`), vector-pinned in
+  `ingest/test/normalizer-vectors.test.ts`.
 
 ## Security posture (updated 2a.3)
 
