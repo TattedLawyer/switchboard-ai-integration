@@ -5,7 +5,8 @@ import type { Server } from "node:http";
 import type pg from "pg";
 import { createCasebusApp, type CasebusApp } from "../../mocks/casebus/src/index.js";
 import { freshTestDb } from "./helpers/testdb.js";
-import { listGaps } from "../src/connectors/types.js";
+import { listGaps, recordGap } from "../src/connectors/types.js";
+import { BusReplayConnector } from "../src/connectors/bus-replay.js";
 
 // Task D pair 4 — the STANDING OPERATOR-SURFACE CHECKLIST (born from Gate-H catching this
 // class four times, binding): every new result field this connector produces is CONSUMED
@@ -22,6 +23,7 @@ import { listGaps } from "../src/connectors/types.js";
 
 const INGEST_DIR = fileURLToPath(new URL("..", import.meta.url));
 const DEFAULT_TENANT = "00000000-0000-0000-0000-000000000000";
+const TENANT_B = "33333333-3333-3333-3333-333333333333";
 
 let pool: pg.Pool;
 let dbUrl: string;
@@ -277,6 +279,111 @@ describe("gap-ack CLI — the operator path, and its refusals", () => {
     const res = await runCli("src/cli/gap-ack.ts", baseUrl, ["--source", "casebus", "--id", "1"]);
     expect(res.code).toBe(1);
     expect(res.out).toMatch(/--by/);
+  });
+});
+
+describe("operator-CLI scoping (debt-burn A5): recorded state over configured scope, and explicit tenancy", () => {
+  it("gap-ack --list defaults to ALL recorded gap state for the tenant — a loss on a source outside INGEST_SOURCES is flagged, never invisible; --source still narrows", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
+    await makeAgeOutGap(mock, baseUrl); // a loss on the ENABLED source
+    // A loss recorded on a source NOT in this deployment's INGEST_SOURCES (env pins
+    // casebus only) — exactly the row the enabledSources() iteration used to hide from
+    // the listing that a reconcile failure points operators at.
+    await recordGap(pool, {
+      tenantId: DEFAULT_TENANT,
+      source: "stripefeed",
+      cause: "retention",
+      fromEventId: "evt_lost_unconfigured",
+      fromOccurredAt: null,
+      toOccurredAt: null,
+    });
+
+    const res = await runCli("src/cli/gap-ack.ts", baseUrl, ["--list"]);
+    expect(res.code).toBe(0);
+    expect(res.out).toMatch(/\[casebus\] PERMANENT DATA LOSS/);
+    expect(res.out).toMatch(/\[stripefeed\] PERMANENT DATA LOSS/);
+    expect(res.out).toContain("evt_lost_unconfigured");
+    // Disclosure, not noise: the row says WHY this deployment's reconcile won't red on it.
+    expect(res.out).toMatch(/not currently in INGEST_SOURCES/);
+    // The enabled source's row is NOT flagged — the flag distinguishes, not decorates.
+    expect(res.out).not.toMatch(/\[casebus\][^\n]*not currently in INGEST_SOURCES/);
+
+    const narrowed = await runCli("src/cli/gap-ack.ts", baseUrl, ["--list", "--source", "casebus"]);
+    expect(narrowed.out).not.toContain("evt_lost_unconfigured");
+    expect(narrowed.out).toMatch(/\[casebus\] PERMANENT DATA LOSS/);
+  });
+
+  it("gap-ack --tenant scopes listing AND acknowledgement; without the flag the default tenant's behavior is unchanged (non-default-tenant pin)", async () => {
+    const baseUrl = listen(createCasebusApp({ seed: 42 }));
+    await recordGap(pool, {
+      tenantId: TENANT_B,
+      source: "casebus",
+      cause: "reset",
+      fromEventId: "evt_tenant_b_loss",
+      fromOccurredAt: null,
+      toOccurredAt: null,
+    });
+
+    // Default-tenant listing stays blind to tenant B's row — scoping, not leakage…
+    const defaultList = await runCli("src/cli/gap-ack.ts", baseUrl, ["--list"]);
+    expect(defaultList.out).not.toContain("evt_tenant_b_loss");
+    // …and the flag makes tenant B's record reachable.
+    const bList = await runCli("src/cli/gap-ack.ts", baseUrl, ["--list", "--tenant", TENANT_B]);
+    expect(bList.out).toContain("evt_tenant_b_loss");
+
+    const gapId = (await listGaps(pool, TENANT_B, "casebus"))[0].id;
+    // Acknowledging across the tenant line stays the refusal it always was:
+    const wrongTenant = await runCli("src/cli/gap-ack.ts", baseUrl, [
+      "--source", "casebus", "--id", String(gapId), "--by", "oncall",
+    ]);
+    expect(wrongTenant.code).toBe(1);
+    expect((await listGaps(pool, TENANT_B, "casebus"))[0].acknowledgedAt).toBeNull();
+    // With the flag, the named human's acknowledgement lands on the right tenant's row.
+    const acked = await runCli("src/cli/gap-ack.ts", baseUrl, [
+      "--tenant", TENANT_B, "--source", "casebus", "--id", String(gapId), "--by", "oncall",
+    ]);
+    expect(acked.code).toBe(0);
+    expect((await listGaps(pool, TENANT_B, "casebus"))[0].acknowledgedAt).not.toBeNull();
+  });
+
+  it("reconcile --tenant runs THAT tenant's reconcile: tenant B's standing loss reds and prints under the flag, and the default run stays clean (non-default-tenant pin)", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
+    mock.stream.emit(4);
+    // Both tenants drain the same bus; only tenant B carries a recorded loss.
+    await runCli("src/cli/backfill.ts", baseUrl);
+    await new BusReplayConnector({ baseUrl, batchSize: 100, tenantId: TENANT_B }).catchUp(pool);
+    await recordGap(pool, {
+      tenantId: TENANT_B,
+      source: "casebus",
+      cause: "reset",
+      fromEventId: "evt_tenant_b_loss",
+      fromOccurredAt: null,
+      toOccurredAt: null,
+    });
+
+    const defaultRun = await runCli("src/cli/reconcile.ts", baseUrl);
+    expect(defaultRun.code).toBe(0);
+    expect(defaultRun.out).not.toContain("evt_tenant_b_loss");
+
+    const bRun = await runCli("src/cli/reconcile.ts", baseUrl, ["--tenant", TENANT_B]);
+    expect(bRun.code).toBe(1);
+    expect(bRun.out).toContain("evt_tenant_b_loss");
+    expect(bRun.out).toMatch(/UNACKNOWLEDGED/);
+    expect(bRun.out).toMatch(/gap-ack/);
+  });
+
+  it("reconcile --tenant REFUSES ledger-feed sources by name rather than silently answering cross-tenant — their reconcile is not tenant-scoped", async () => {
+    const baseUrl = listen(createCasebusApp({ seed: 42 }));
+    const res = await runCli("src/cli/reconcile.ts", baseUrl, ["--tenant", TENANT_B], {
+      INGEST_SOURCES: "crm",
+      LEDGER_PATH_CRM: "/tmp/burn1-a5-ledger-does-not-exist.jsonl",
+    });
+    expect(res.code).toBe(1);
+    expect(res.out).toMatch(/--tenant/);
+    expect(res.out).toMatch(/crm/);
+    expect(res.out).toMatch(/not tenant-scoped|ledger-feed/);
   });
 });
 
