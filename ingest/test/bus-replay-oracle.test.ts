@@ -271,3 +271,64 @@ describe("oracle 7 — the poison event, co-batched (standing rule)", () => {
     expect(rec.raw).toBe(10);
   });
 });
+
+describe("oracle 8 — reconcile-first detection must not file a POORER record than catchUp-first (cold review I2)", () => {
+  it("a gap first observed by reconcile names the far edge by ID, exactly as a catchUp-first gap would", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
+
+    const aged = mock.stream.emit(9, { ageS: 70 * 3600 });
+    await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUp(pool);
+    const fresh = mock.stream.emit(7);
+    mock.stream.advance(3 * 3600);
+
+    // RECONCILE FIRST — the cron ordering nothing exercised before. `recordGap` is
+    // first-writer-wins, so whichever surface gets here first fixes the record's quality
+    // for the life of the gap; a reconcile-first gap used to keep to_event_id NULL
+    // FOREVER even though reconcile is holding the entire retained window in memory.
+    const rec = (await new BusReplayConnector({ baseUrl, batchSize: 100 }).reconcile(pool)).report as BusReconcileReport;
+    expect(rec.gaps).toHaveLength(1);
+
+    const stored = await listGaps(pool, "00000000-0000-0000-0000-000000000000", CASEBUS_SOURCE);
+    expect(stored).toHaveLength(1);
+    expect(stored[0].cause).toBe("retention");
+    expect(stored[0].fromEventId).toBe(aged.at(-1)!.event.id);
+    // The assertion this oracle exists for: the far edge is NAMED, not null.
+    expect(stored[0].toEventId).toBe(fresh[0].event.id);
+    expect(stored[0].toOccurredAt).toBe(fresh[0].event.event_time);
+  });
+
+  it("catchUp-first and reconcile-first produce the SAME record for the same loss — the ledger must not depend on which surface looked first", async () => {
+    const build = async (p: pg.Pool, reconcileFirst: boolean) => {
+      const mock = createCasebusApp({ seed: 42 });
+      const baseUrl = listen(mock);
+      mock.stream.emit(9, { ageS: 70 * 3600 });
+      await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUp(p);
+      mock.stream.emit(7);
+      mock.stream.advance(3 * 3600);
+      const c = new BusReplayConnector({ baseUrl, batchSize: 100 });
+      if (reconcileFirst) {
+        await c.reconcile(p);
+        await c.catchUpWithReport(p);
+      } else {
+        await c.catchUpWithReport(p);
+        await c.reconcile(p);
+      }
+      return (await listGaps(p, "00000000-0000-0000-0000-000000000000", CASEBUS_SOURCE))[0];
+    };
+
+    const catchUpFirst = await build(pool, false);
+    const other = await freshTestDb();
+    try {
+      const reconcileFirst = await build(other.pool, true);
+      // Same seed, same script ⇒ same ids; the only variable is who detected first.
+      expect(reconcileFirst.cause).toBe(catchUpFirst.cause);
+      expect(reconcileFirst.fromEventId).toBe(catchUpFirst.fromEventId);
+      expect(reconcileFirst.fromOccurredAt).toBe(catchUpFirst.fromOccurredAt);
+      expect(reconcileFirst.toEventId).toBe(catchUpFirst.toEventId);
+      expect(reconcileFirst.toOccurredAt).toBe(catchUpFirst.toOccurredAt);
+    } finally {
+      await other.cleanup();
+    }
+  });
+});

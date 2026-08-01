@@ -256,3 +256,70 @@ describe("the stripefeed retrofit — the register said BUILD ONCE, BOTH CONNECT
     expect(await listGaps(pool, "00000000-0000-0000-0000-000000000000", "stripefeed")).toHaveLength(1);
   });
 });
+
+describe("re-detection ENRICHES but never rewrites (cold review I2, disclosed decision)", () => {
+  it("a later detection carrying MORE information fills a null field — the ledger only ever gets more truthful", async () => {
+    const first = await recordGap(pool, {
+      tenantId: TENANT_A, source: "casebus", cause: "retention",
+      fromEventId: "cev_abc", fromOccurredAt: null, toEventId: null, toOccurredAt: null,
+    });
+    expect(first.toEventId).toBeNull();
+
+    // The same loss, seen by a surface that could name more of it.
+    const enriched = await recordGap(pool, {
+      tenantId: TENANT_A, source: "casebus", cause: "retention",
+      fromEventId: "cev_abc", fromOccurredAt: "2026-07-01T00:00:00.000Z",
+      toEventId: "cev_def", toOccurredAt: "2026-07-04T00:00:00.000Z",
+    });
+    expect(enriched.id).toBe(first.id); // still ONE loss, one row
+    expect(enriched.toEventId).toBe("cev_def");
+    expect(enriched.toOccurredAt).toBe("2026-07-04T00:00:00.000Z");
+    expect(enriched.fromOccurredAt).toBe("2026-07-01T00:00:00.000Z");
+  });
+
+  it("a POPULATED field is never overwritten, and never downgraded to null — bounds are a factual claim, not a running estimate", async () => {
+    const first = await recordGap(pool, {
+      tenantId: TENANT_A, source: "casebus", cause: "retention",
+      fromEventId: "cev_abc", fromOccurredAt: "2026-07-01T00:00:00.000Z",
+      toEventId: "cev_def", toOccurredAt: "2026-07-04T00:00:00.000Z",
+    });
+
+    // A later, WIDER far edge must not widen a loss that never grew (the window has moved
+    // on since; that is the window's metabolism, not more loss).
+    const wider = await recordGap(pool, {
+      tenantId: TENANT_A, source: "casebus", cause: "retention",
+      fromEventId: "cev_abc", fromOccurredAt: "2026-06-01T00:00:00.000Z",
+      toEventId: "cev_zzz", toOccurredAt: "2026-07-09T00:00:00.000Z",
+    });
+    expect(wider.id).toBe(first.id);
+    expect(wider.toEventId).toBe("cev_def");
+    expect(wider.toOccurredAt).toBe("2026-07-04T00:00:00.000Z");
+    expect(wider.fromOccurredAt).toBe("2026-07-01T00:00:00.000Z");
+
+    // And a POORER later detection cannot blank what we already knew.
+    const poorer = await recordGap(pool, {
+      tenantId: TENANT_A, source: "casebus", cause: "retention",
+      fromEventId: "cev_abc", fromOccurredAt: null, toEventId: null, toOccurredAt: null,
+    });
+    expect(poorer.toEventId).toBe("cev_def");
+    expect(poorer.fromOccurredAt).toBe("2026-07-01T00:00:00.000Z");
+    expect(await listGaps(pool, TENANT_A, "casebus")).toHaveLength(1);
+  });
+
+  it("enrichment never disturbs the acknowledgement — the operator's answer survives every later re-detection", async () => {
+    const g = await recordGap(pool, {
+      tenantId: TENANT_A, source: "casebus", cause: "retention",
+      fromEventId: "cev_abc", fromOccurredAt: null, toEventId: null, toOccurredAt: null,
+    });
+    await acknowledgeGap(pool, { tenantId: TENANT_A, id: g.id, by: "oncall", note: "accepted" });
+
+    const enriched = await recordGap(pool, {
+      tenantId: TENANT_A, source: "casebus", cause: "retention",
+      fromEventId: "cev_abc", fromOccurredAt: "2026-07-01T00:00:00.000Z", toEventId: "cev_def", toOccurredAt: null,
+    });
+    expect(enriched.toEventId).toBe("cev_def");   // enriched…
+    expect(enriched.acknowledgedBy).toBe("oncall"); // …without resurrecting the red
+    expect(enriched.note).toBe("accepted");
+    expect(await listGaps(pool, TENANT_A, "casebus", { unacknowledgedOnly: true })).toHaveLength(0);
+  });
+});

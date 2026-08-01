@@ -272,6 +272,62 @@ describe("gap-ack CLI — the operator path, and its refusals", () => {
   });
 });
 
+describe("the disclosure must survive the incident (cold review I1)", () => {
+  it("an UNREACHABLE source with a standing unacknowledged gap STILL prints the loss and the next step — the moment an operator is actually reading this output", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const server = mock.app.listen(0);
+    servers.push(server);
+    const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    await makeAgeOutGap(mock, baseUrl);
+    expect(await listGaps(pool, DEFAULT_TENANT, "casebus")).toHaveLength(1);
+
+    // The incident: the bus goes away. Reconcile can no longer read the live window —
+    // but the ledger row is STATE, and it is exactly what the operator needs on screen.
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
+    const res = await runCli("src/cli/reconcile.ts", baseUrl);
+    expect(res.code).toBe(1);
+    expect(res.out).toMatch(/bus unreadable/); // the live failure is still reported
+    // …and the standing loss is NOT swallowed by it.
+    expect(res.out).toMatch(/PERMANENT DATA LOSS/);
+    expect(res.out).toMatch(/unclosable gap \(retention\)/);
+    expect(res.out).toMatch(/UNACKNOWLEDGED/);
+    expect(res.out).toMatch(/gap-ack/);
+    // And it is labelled as standing, so nobody mistakes it for damage from this outage.
+    expect(res.out).toMatch(/standing \(recorded before this run\)/);
+  });
+
+  it("a gap detected DURING the run is labelled as such, so 'standing' means what it says", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
+    // No backfill at all: reconcile itself is the first surface to see the dead cursor.
+    mock.stream.emit(4, { ageS: 70 * 3600 });
+    await runCli("src/cli/backfill.ts", baseUrl);
+    mock.stream.emit(5);
+    mock.stream.advance(3 * 3600);
+
+    const res = await runCli("src/cli/reconcile.ts", baseUrl);
+    expect(res.out).toMatch(/detected in this run/);
+    expect(res.out).not.toMatch(/standing \(recorded before this run\)/);
+  });
+});
+
+describe("paradigm-honest PASS line (cold review M1)", () => {
+  it("a clean bus PASSes against its RETAINED WINDOW — there is no ledger in this paradigm", async () => {
+    const mock = createCasebusApp({ seed: 9 });
+    const baseUrl = listen(mock);
+    mock.stream.emit(12);
+    await runCli("src/cli/backfill.ts", baseUrl);
+
+    const res = await runCli("src/cli/reconcile.ts", baseUrl);
+    expect(res.code).toBe(0);
+    expect(res.out).toMatch(/PASS: raw matches the bus's retained window exactly/);
+    // The boilerplate this replaces: the integrity line two lines above it was fixed for
+    // exactly this reason, and the PASS line kept saying "ledger" anyway.
+    expect(res.out).not.toMatch(/raw matches ledger exactly/);
+  });
+});
+
 describe("service log — the loop consumes the report, not just a number", () => {
   it("createBackfillRunner surfaces the unclosable gap on the loud channel (console.error), naming the cause", async () => {
     const mock = createCasebusApp({ seed: 42 });
@@ -294,5 +350,24 @@ describe("service log — the loop consumes the report, not just a number", () =
     } finally {
       process.env.DATABASE_URL = prevDb;
     }
+  });
+
+  it("the service log also prints the catch-up COUNTS (cold review M3): for a paradigm where redelivery is the steady state, a loop that logs neither ingested nor absorbed is indistinguishable from one doing nothing", async () => {
+    const mock = createCasebusApp({ seed: 5, duplicate: { seed: 5, rate: 1 } });
+    const baseUrl = listen(mock);
+    mock.stream.emit(9);
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const { createBackfillRunner } = await import("../src/main.js");
+    const prevDb = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = dbUrl;
+    try {
+      await createBackfillRunner(pool, "casebus", baseUrl)();
+    } finally {
+      process.env.DATABASE_URL = prevDb;
+    }
+    const logged = logSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toMatch(/ingested 9/);
+    expect(logged).toMatch(/9 duplicate\(s\) absorbed/);
   });
 });
