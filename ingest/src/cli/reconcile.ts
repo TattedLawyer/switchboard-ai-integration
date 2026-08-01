@@ -33,8 +33,15 @@ const has = (name: string): boolean => process.argv.includes(`--${name}`);
  * scoped to that tenant (same registry wiring, tenant threaded in). Without the flag the
  * registry's default construction is used unchanged — the default tenant's behavior is
  * byte-identical to before the flag existed.
+ *
+ * Exported for the drift pin (sweep item 4): this switch DUPLICATES the registry's
+ * wiring by necessity (the registry constructs default-tenant connectors; the seam has
+ * no tenant parameter), so `reconcile-tenant-drift.test.ts` asserts per kind that both
+ * paths produce the same connector class with the same config, tenant aside. If the
+ * registry gains a source, kind, or construction option, that pin — plus the compiler's
+ * exhaustiveness on `kind` — is what forces this copy to follow.
  */
-function connectorForTenant(source: Source, tenantId: string): Connector {
+export function connectorForTenant(source: Source, tenantId: string): Connector {
   if (tenantId === DEFAULT_TENANT_ID) return connectorFor(source);
   const kind = connectorFor(source).kind;
   switch (kind) {
@@ -369,4 +376,9 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+// Entrypoint guard (main.ts precedent): tests import connectorForTenant for the drift
+// pin; without the guard the import itself would run a full reconcile and process.exit.
+import { pathToFileURL } from "node:url";
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
