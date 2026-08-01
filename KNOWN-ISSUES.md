@@ -293,10 +293,17 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   concurrent boots of two replicas are a real hazard, not cosmetic churn.
   *Scheduled: Phase 2b (tracking table + advisory lock, with the documented
   PgBouncer caveat on advisory locks).*
-- **Env parsing foot-guns** *(audit)* — `PORT`/`BACKFILL_INTERVAL_MS` go
+- ~~Env parsing foot-guns *(audit)* — `PORT`/`BACKFILL_INTERVAL_MS` go
   through bare `Number()` (a typo yields `NaN`, and `setInterval(fn, NaN)`
   fires every ~1ms), and an unrecognized `INGEST_ROLE` silently means "do
-  nothing". *Scheduled: 2b config module.*
+  nothing"~~ *Paid (debt-burn B1):* boot config now goes through a strict
+  hand-rolled parser (`ingest/src/config.ts`, envalid semantics without the
+  dependency): integer + range for `PORT` (1–65535) and
+  `BACKFILL_INTERVAL_MS` (1–2147483647, setInterval's documented clamp
+  boundary), whitelist for `INGEST_ROLE` — any invalid value is a boot
+  refusal naming the variable, the rejected value, and what is accepted
+  (wording pinned in `config.test.ts`; a typo can no longer become a ~1ms
+  hot loop or a role that silently does nothing).
 
 ## Spreadsheet source (sheets) — dispositions from the A-slice (2b)
 

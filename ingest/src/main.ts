@@ -8,17 +8,24 @@ import { assertWebhookSecrets } from "./hmac.js";
 import { baseUrlFor, enabledSources, type Source } from "./sources.js";
 import { createQueue, enqueueEvent, startWorker } from "./queue.js";
 import { catchUpReporter, connectorFor, formatUnclosableGap } from "./connectors/index.js";
+import { choiceFromEnv, intFromEnv, MAX_TIMER_DELAY_MS } from "./config.js";
 
 const pool = getPool();
-const port = Number(process.env.PORT ?? 4002);
-const ingestRole = (process.env.INGEST_ROLE ?? "all").toLowerCase();
+// B1: strict boot parsing (config.ts) — a typo'd PORT/interval/role is a boot refusal
+// naming the variable, never NaN into listen(), a ~1ms hot loop, or a role that
+// silently does nothing.
+const port = intFromEnv("PORT", 4002, { min: 1, max: 65535 });
+const ingestRole = choiceFromEnv("INGEST_ROLE", "all", ["receiver", "worker", "all"]);
 // Backfill cadence: pg-boss's boss.schedule() only supports cron-granularity (minimum
 // 1-minute resolution) scheduling of a job insertion, and still needs a boss.work()
 // consumer plus its own queue to actually run the poll — extra queue/DLQ wiring for no
 // benefit here, since backfill has no per-run payload and no retry/DLQ semantics of its
 // own (catchUp already retries internally). A plain setInterval in the receiver process
 // is simpler, gives the same ~1-minute cadence, and needs no additional pg-boss objects.
-const BACKFILL_INTERVAL_MS = Number(process.env.BACKFILL_INTERVAL_MS ?? 60_000);
+const BACKFILL_INTERVAL_MS = intFromEnv("BACKFILL_INTERVAL_MS", 60_000, {
+  min: 1,
+  max: MAX_TIMER_DELAY_MS,
+});
 
 // Factory to create a backfill runner with in-flight guard (prevents overlapping runs).
 // A7: routed through the connector seam — connectorFor picks the right paradigm per

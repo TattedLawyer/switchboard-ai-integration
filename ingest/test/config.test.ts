@@ -50,3 +50,58 @@ describe("B1: boot refuses invalid env instead of silently misbehaving", () => {
     await expect(importMainFresh()).resolves.toBeDefined();
   });
 });
+
+// The boot errors are operator surfaces (operator-surface checklist): their exact
+// wording is the pin, not just "some error mentioning the var".
+describe("B1: parser semantics and pinned error wording (config.ts)", () => {
+  it("intFromEnv: unset and empty both mean the default — empty is never parsed (Number('') is 0)", async () => {
+    const { intFromEnv } = await import("../src/config.js");
+    expect(intFromEnv("X", 42, { min: 1, max: 100 }, {})).toBe(42);
+    expect(intFromEnv("X", 42, { min: 1, max: 100 }, { X: "" })).toBe(42);
+  });
+
+  it("intFromEnv: valid integer in range passes", async () => {
+    const { intFromEnv } = await import("../src/config.js");
+    expect(intFromEnv("X", 42, { min: 1, max: 100 }, { X: "7" })).toBe(7);
+  });
+
+  it("intFromEnv error wording: names the var, echoes the value, states the accepted range", async () => {
+    const { intFromEnv } = await import("../src/config.js");
+    expect(() => intFromEnv("PORT", 4002, { min: 1, max: 65535 }, { PORT: "banana" })).toThrow(
+      'invalid PORT "banana": must be an integer between 1 and 65535',
+    );
+  });
+
+  it("intFromEnv rejects non-integers and out-of-range values, not just NaN", async () => {
+    const { intFromEnv } = await import("../src/config.js");
+    const opts = { min: 1, max: 65535 };
+    expect(() => intFromEnv("PORT", 4002, opts, { PORT: "80.5" })).toThrow(/invalid PORT/);
+    expect(() => intFromEnv("PORT", 4002, opts, { PORT: "0" })).toThrow(/invalid PORT/);
+    expect(() => intFromEnv("PORT", 4002, opts, { PORT: "70000" })).toThrow(/invalid PORT/);
+  });
+
+  it("choiceFromEnv error wording: names the var, echoes the value, lists every valid role", async () => {
+    const { choiceFromEnv } = await import("../src/config.js");
+    expect(() =>
+      choiceFromEnv("INGEST_ROLE", "all", ["receiver", "worker", "all"], { INGEST_ROLE: "wroker" }),
+    ).toThrow('invalid INGEST_ROLE "wroker": must be one of receiver, worker, all');
+  });
+
+  it("choiceFromEnv keeps the pre-B1 case tolerance: 'Receiver' is 'receiver'", async () => {
+    const { choiceFromEnv } = await import("../src/config.js");
+    expect(
+      choiceFromEnv("INGEST_ROLE", "all", ["receiver", "worker", "all"], { INGEST_ROLE: "Receiver" }),
+    ).toBe("receiver");
+  });
+
+  it("BACKFILL_INTERVAL_MS is bounded to setInterval's usable range (the NaN→1ms clamp boundary)", async () => {
+    const { intFromEnv, MAX_TIMER_DELAY_MS } = await import("../src/config.js");
+    expect(MAX_TIMER_DELAY_MS).toBe(2_147_483_647);
+    const opts = { min: 1, max: MAX_TIMER_DELAY_MS };
+    // one past the clamp boundary must refuse — Node would silently run it at 1ms
+    expect(() => intFromEnv("BACKFILL_INTERVAL_MS", 60_000, opts, { BACKFILL_INTERVAL_MS: "2147483648" })).toThrow(
+      /invalid BACKFILL_INTERVAL_MS/,
+    );
+    expect(intFromEnv("BACKFILL_INTERVAL_MS", 60_000, opts, { BACKFILL_INTERVAL_MS: "600000" })).toBe(600_000);
+  });
+});

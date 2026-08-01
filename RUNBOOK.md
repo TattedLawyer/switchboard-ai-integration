@@ -17,7 +17,7 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 | `LEDGER_PATH_CRM` / `_BILLING` / `_SUPPORT` | unset → reconcile FAILS naming the missing var (fail-closed); the literal `skip` opts the source out explicitly | reconcile CLI (per-source ledger lookup) |
 | `INGEST_SOURCES` | `crm,billing,support` — `sheets`, `stripefeed`, `hubcrm` and `casebus` are registered but **opt-in** (none of them speaks the `/events` shape the default surfaces poll; add them explicitly for catch-up/reconcile runs) | which sources ingest polls/reconciles (scripts pin it explicitly) |
 | `CRM_BASE_URL` / `BILLING_BASE_URL` / `SUPPORT_BASE_URL` / `SHEETS_BASE_URL` / `STRIPEFEED_BASE_URL` / `HUBCRM_BASE_URL` / `CASEBUS_BASE_URL` | `http://localhost:4001` / `4003` / `4004` / `4005` / `4006` / `4007` / `4008` | backfill CLI (sheets: the snapshot API; stripefeed: the `/v1/events` cursor feed; hubcrm: the object store; casebus: the `/subscribe` event stream) |
-| `INGEST_ROLE` | `all` (`receiver` \| `worker` \| `all`) | ingest main |
+| `INGEST_ROLE` | `all` (`receiver` \| `worker` \| `all`; anything else refuses boot naming the variable — same for a non-integer `PORT`/`BACKFILL_INTERVAL_MS`) | ingest main |
 | `CHAOS_SEED` | `7` | chaos.sh fault-plan seed (CI feeds it as a workflow input; reproduce a red run by re-entering its seed) |
 | `ANTHROPIC_API_KEY` | unset → deterministic report (risk table + watch list; a one-line notice replaces the AI narrative) | agent report |
 | `DBT_SCHEMA` | `public_analytics` | agent, report worker |
