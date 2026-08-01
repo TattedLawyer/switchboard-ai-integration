@@ -1,6 +1,7 @@
 import { getPool } from "../db.js";
 import { enabledSources } from "../sources.js";
 import { connectorFor, formatGapLedgerRow, listGaps } from "../connectors/index.js";
+import { gapCrossCheck } from "./gap-crosscheck.js";
 import { DEFAULT_TENANT_ID } from "../ingest-event.js";
 import type { SheetReconcileReport } from "../connectors/sheet-snapshot.js";
 import type { StripeFeedReconcileReport } from "../connectors/stripe-feed.js";
@@ -113,6 +114,30 @@ async function main(): Promise<void> {
       const report = result.report!;
       reconciledCount++;
 
+      // Debt-burn A3: the loss-bearing paradigms' reports carry their own `gaps`
+      // accounting, and it is CONSUMED here as a cross-check against the ledger rows
+      // printed above — the two surfaces must agree or the run reds naming the drift.
+      // (This un-inverts the standing operator-surface checklist for the field:
+      // produced ⇒ read on a shipped surface, and agreement is printed even at zero.)
+      let gapCrossCheckOk = true;
+      const reportedGaps =
+        connector.kind === "stripe-feed" || connector.kind === "bus-replay"
+          ? (report as StripeFeedReconcileReport | BusReconcileReport).gaps
+          : undefined;
+      if (reportedGaps !== undefined) {
+        const check = gapCrossCheck(reportedGaps, ledgerGaps);
+        if (check.ok) {
+          console.log(
+            `[${source}] gap cross-check: report agrees with the durable gap ledger (${reportedGaps.length} gap(s))`,
+          );
+        } else {
+          gapCrossCheckOk = false;
+          console.error(
+            `[${source}] FAIL: reconcile report gaps disagree with the durable gap ledger — ${check.detail}`,
+          );
+        }
+      }
+
       // Task C: hub-shaped reports reconcile OBJECTS against the vendor store, not
       // event ids against a ledger — label every count as what it actually is.
       const hub = connector.kind === "hub-hydrate" && "drifted" in report ? (report as HubReconcileReport) : undefined;
@@ -221,7 +246,8 @@ async function main(): Promise<void> {
         (stale?.length ?? 0) === 0 &&
         unacknowledged.length === 0 &&
         (hub?.drifted.length ?? 0) === 0 &&
-        (hub?.hydrationPending ?? 0) === 0;
+        (hub?.hydrationPending ?? 0) === 0 &&
+        gapCrossCheckOk;
       if (clean) {
         // An acknowledged gap is a STANDING DISCLOSED CONDITION, not a clean bill of
         // health — so a PASS that has one says so on the same line.

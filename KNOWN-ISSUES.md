@@ -248,12 +248,12 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
     halves are asymmetric. Deferred because adding a second termination path to
     a drain under fix-round pressure is how a bounded loud failure becomes a
     subtle one; it wants its own RED.
-  - `StripeFeedReconcileReport.gaps` is still populated (from the ledger) but no
-    longer read by the reconcile CLI, which prints ledger rows directly. A
-    report field with no operator surface is the standing checklist inverted.
-    Deferred because removing it is a public shape change to a Task B type that
-    that task's oracle genuinely uses; decide it together with whether ledger
-    rows should replace the field entirely.
+  - ~~`StripeFeedReconcileReport.gaps` is still populated (from the ledger) but no
+    longer read by the reconcile CLI~~ *Paid (debt-burn A3):* the remove arm was
+    eliminated (AIP-180 — removing a public field is a breaking change, and the
+    Task B oracle reads it); the CLI now consumes `gaps` (stripefeed AND bus) as
+    a cross-check against the ledger rows it prints — agreement printed even at
+    zero, disagreement a named red + nonzero exit (`cli/gap-crosscheck.ts`).
   - `gap-ack --list` without `--source` iterates `enabledSources()`, so a gap
     recorded against a source not currently in `INGEST_SOURCES` is invisible to
     the listing that a reconcile failure points operators at. Deferred because
