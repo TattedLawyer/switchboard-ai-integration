@@ -40,8 +40,15 @@ ready_wait() {
   exit 1
 }
 
+# B2: job control ON — each backgrounded `npm run …` pipeline becomes its own process
+# group, and the trap kills the GROUP (`kill -- -PGID`), not just npm's PID: npm has not
+# forwarded SIGTERM to its child since 9.8.x/Node 20.5 (npm/cli#6684), so a PID-only
+# kill strands the node grandchild on the port. Full mechanism rationale (and why
+# setsid/pkill -P were refuted) in demo.sh's identical block; lsof guidance in the
+# guards below remains the stale-state recovery path.
+set -m
 pids=()
-cleanup() { for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null || true; done; }
+cleanup() { for p in "${pids[@]:-}"; do kill -- -"$p" 2>/dev/null || true; done; }
 trap cleanup EXIT
 
 echo "1/8 postgres up"

@@ -179,16 +179,21 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
 
 ## Ingestion & reliability (MED)
 
-- **The demo/chaos scripts leak their mock server processes.** The cleanup traps
-  `kill` the `npm` process they started, but `npm run` spawns through a shell and
-  does not reap its grandchild on SIGTERM ([npm/cli#6684](https://github.com/npm/cli/issues/6684)),
-  so a `node` listener can outlive the script and hold its port. This is what
-  contaminated the first CI chaos run. It is now *detected* — both scripts assert
-  `GET /status` reports `fresh:true` before driving a mock, and refuse loudly with
-  the observed cursor otherwise — and it can no longer couple the two workflows,
-  which run as separate jobs on separate runners. The leak itself is unfixed.
-  *Scheduled: next CI/ops pass — kill the process group (`setsid` + `kill -- -PGID`,
-  or `pkill -P`) rather than the direct child.*
+- ~~The demo/chaos scripts leak their mock server processes~~ *Paid (debt-burn
+  B2), pending CI chaos confirmation.* The cleanup traps used to `kill` the
+  `npm` process they started, but `npm run` spawns through a shell and does not
+  reap its grandchild on SIGTERM ([npm/cli#6684](https://github.com/npm/cli/issues/6684)),
+  so a `node` listener could outlive the script and hold its port — what
+  contaminated the first CI chaos run. Both scripts now enable job control
+  (`set -m`: every backgrounded pipeline becomes its own process group) and the
+  traps kill the GROUP (`kill -- -PGID`), reaping the npm→sh→node chain —
+  mechanism live-verified on macOS with a grandchild chain. The entry's
+  original fix suggestion was itself refuted by research: `setsid` does not
+  exist on macOS and `pkill -P` matches direct children only. The freshness/
+  instance guards stay as the second line of defense (their `lsof` guidance
+  remains the stale-state recovery path), and chaos+demo remain separate CI
+  jobs. Final confirmation is the next CI chaos run — the scripts must not run
+  in shared local environments.
 - ~~`alter default privileges` in the migrations is not scoped `FOR ROLE`~~ *Paid in
   full (2b migration 007 + debt-burn B9):* the static grants for the default
   `public_analytics` schema were `FOR ROLE`-scoped in 007 (catalog-proven under a

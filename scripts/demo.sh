@@ -34,8 +34,19 @@ ready_wait() {
   exit 1
 }
 
+# B2: job control ON, so every backgrounded `npm run …` pipeline below becomes its own
+# process group (bash Set Builtin, -m: "All processes run in a separate process group"),
+# and the trap kills the GROUP (POSIX kill: a negative pid signals the process group,
+# `--` so it is not read as a flag). Killing only npm's PID strands the node grandchild
+# that actually holds the port — npm has not forwarded SIGTERM to its child since
+# npm 9.8.x/Node 20.5 (npm/cli#6684); that stranded listener is what contaminated CI run
+# 30159422468. `setsid` was refuted for this fix (absent on macOS — dev half of the
+# matrix); `pkill -P` too (direct children only, misses npm→sh→node). The fresh_wait /
+# instance_wait guards below stay as the second line, and their lsof guidance remains
+# the stale-state recovery path for leftovers from pre-fix runs or SIGKILLed scripts.
+set -m
 pids=()
-cleanup() { for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null || true; done; }
+cleanup() { for p in "${pids[@]:-}"; do kill -- -"$p" 2>/dev/null || true; done; }
 trap cleanup EXIT
 
 echo "1/6 postgres up"
