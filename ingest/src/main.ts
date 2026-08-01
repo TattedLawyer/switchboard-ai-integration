@@ -7,7 +7,11 @@ import { createIngestApp, type SourceEvent } from "./server.js";
 import { assertWebhookSecrets } from "./hmac.js";
 import { baseUrlFor, enabledSources, type Source } from "./sources.js";
 import { createQueue, enqueueEvent, startWorker } from "./queue.js";
-import { catchUpReporter, connectorFor, formatUnclosableGap } from "./connectors/index.js";
+import { catchUpReporter, connectorFor, formatUnclosableGap, type UnclosableGap } from "./connectors/index.js";
+import type { SheetCatchUpReport } from "./connectors/sheet-snapshot.js";
+import type { StripeFeedCatchUpReport } from "./connectors/stripe-feed.js";
+import type { BusReplayCatchUpReport } from "./connectors/bus-replay.js";
+import type { HubHydrationReport } from "./connectors/hub-hydrate.js";
 import { choiceFromEnv, intFromEnv, MAX_TIMER_DELAY_MS } from "./config.js";
 
 const pool = getPool();
@@ -56,33 +60,112 @@ export function createBackfillRunner(
       // while events were permanently lost. Same shared phrasing as the CLIs.
       const reporter = catchUpReporter(connector);
       if (reporter) {
+        // ── Exhaustive-consumption contract, SERVICE-LOG surface (Task F — the last of
+        // checklist line 1's three surfaces to come under the compile wall; KNOWN-ISSUES
+        // entry struck in the same commit). Same mechanism as cli/backfill.ts: each kind
+        // rest-destructures its connector's OWN widened report shape and types the
+        // remainder EMPTY, so a field added to any of the five shapes without a decided
+        // service-log surface is a tsc error here before any test or reviewer. The
+        // printing below reads ONLY these bindings; the `as` casts are the producer
+        // guarantee (each connector's catchUpWithReport returns its own shape for its
+        // own kind), exactly as in the CLIs.
         const report = await reporter.catchUpWithReport(pgPool, { baseUrl });
+        let counts: { ingested: number; duplicates: number; quarantined: number };
+        let gaps: readonly UnclosableGap[] | undefined;
+        let degradations: readonly string[] | undefined;
+        let hydration:
+          | { hydrated: number; tombstoned: number; hydrationDlq: number; hydrationPending: number }
+          | undefined;
+        switch (connector.kind) {
+          case "ledger-feed": {
+            // No widened shape today — the base seam shape IS its contract (reachable
+            // only if a ledger-feed connector ever grows a reporter), destructured full.
+            const {
+              ingested, duplicates, quarantined, gaps: g, degradations: d,
+              hydrated, tombstoned, hydrationDlq, hydrationPending, ...rest
+            } = report;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            gaps = g;
+            degradations = d;
+            hydration =
+              hydrated !== undefined
+                ? { hydrated, tombstoned: tombstoned ?? 0, hydrationDlq: hydrationDlq ?? 0, hydrationPending: hydrationPending ?? 0 }
+                : undefined;
+            break;
+          }
+          case "sheet-snapshot": {
+            const { ingested, duplicates, quarantined, degradations: d, ...rest } =
+              report as SheetCatchUpReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            degradations = d;
+            break;
+          }
+          case "stripe-feed": {
+            const { ingested, duplicates, quarantined, gaps: g, ...rest } =
+              report as StripeFeedCatchUpReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            gaps = g;
+            break;
+          }
+          case "bus-replay": {
+            const { ingested, duplicates, quarantined, gaps: g, ...rest } =
+              report as BusReplayCatchUpReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            gaps = g;
+            break;
+          }
+          case "hub-hydrate": {
+            const { ingested, duplicates, quarantined, hydrated, tombstoned, hydrationDlq, hydrationPending, ...rest } =
+              report as HubHydrationReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            hydration = { hydrated, tombstoned, hydrationDlq, hydrationPending };
+            break;
+          }
+        }
         // Cold review M3: the standing checklist is "both CLIs AND the service log", and
         // this loop consumed the failure fields while printing none of the WORK. For a
         // subscribe/replay source, where at-least-once redelivery is the steady state, a
         // loop that logs neither ingested nor absorbed counts is indistinguishable from
         // one that is doing nothing at all. Suppressed when the cycle was a genuine no-op
         // so a quiet system stays quiet.
-        if (report.ingested > 0 || report.duplicates > 0 || report.quarantined > 0) {
+        if (counts.ingested > 0 || counts.duplicates > 0 || counts.quarantined > 0) {
           console.log(
-            `[${source}] catch-up: ingested ${report.ingested}, ${report.duplicates} duplicate(s) absorbed ` +
-              `by idempotent ingest, ${report.quarantined} quarantined`,
+            `[${source}] catch-up: ingested ${counts.ingested}, ${counts.duplicates} duplicate(s) absorbed ` +
+              `by idempotent ingest, ${counts.quarantined} quarantined`,
           );
         }
-        for (const gap of report.gaps ?? []) console.error(formatUnclosableGap(source, gap));
+        // Hydration WORK surfaces on the same quiet-when-zero terms as the counts line:
+        // for the pump paradigm, hydrated/tombstoned ARE the cycle's work product, and a
+        // wall that consumed them into silence would satisfy the compiler while starving
+        // the operator (checklist line 1 is "consumed AND printed, or discarded with a
+        // named reason" — these are printed).
+        if (hydration !== undefined && (hydration.hydrated > 0 || hydration.tombstoned > 0)) {
+          console.log(
+            `[${source}] hydration: ${hydration.hydrated} snapshot(s), ${hydration.tombstoned} tombstone(s) this cycle`,
+          );
+        }
+        for (const gap of gaps ?? []) console.error(formatUnclosableGap(source, gap));
+        // Sheets degradations reach the service log on the loud channel, matching the
+        // CLI surface — previously consumed by the base-shape read and printed nowhere.
+        for (const note of degradations ?? []) console.error(`[${source}] degradation: ${note}`);
         // Task C standing checklist: the hydration paradigm's failures reach the
         // service log on the same loud channel as gaps — a dead-lettered hydration is
         // an event whose full record we could not obtain, and a log that stays silent
         // about it is the exact class the Gate-H cold review caught (C1/I1).
-        if ((report.hydrationDlq ?? 0) > 0) {
+        if ((hydration?.hydrationDlq ?? 0) > 0) {
           console.error(
-            `[${source}] HYDRATION DLQ: ${report.hydrationDlq} event(s) dead-lettered this run — ` +
+            `[${source}] HYDRATION DLQ: ${hydration!.hydrationDlq} event(s) dead-lettered this run — ` +
               "terminal, preserved, listed by reconcile; replay is an operator act (RUNBOOK)",
           );
         }
-        if ((report.hydrationPending ?? 0) > 0) {
+        if ((hydration?.hydrationPending ?? 0) > 0) {
           console.log(
-            `[${source}] hydration pending: ${report.hydrationPending} event(s) waiting on the rate budget — next cycle continues`,
+            `[${source}] hydration pending: ${hydration!.hydrationPending} event(s) waiting on the rate budget — next cycle continues`,
           );
         }
       } else {

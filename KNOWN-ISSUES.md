@@ -612,19 +612,17 @@ leaves it is gone from the source forever.
 
 ### Deferred minors from the debt-burn cold pass and Task E (each carries an owner, or is a disclosed standing limit)
 
-- **The service log sits outside the compile-time consumption contract** —
-  Task E's rest-destructure wall (`satisfies Record<string, never>`) makes an
-  unconsumed report field a compile error in both CLIs, per connector kind over
-  every report shape they consume (the five reconcile shapes in `reconcile.ts`,
-  the base plus all four widened per-connector catch-up shapes in
-  `backfill.ts` — the widened shapes were a hole until the Task E review's
-  phantom probe caught it). The service loop (`createBackfillRunner` consuming
-  `CatchUpReport` in `main.ts`) has no such wall: a new field silently
-  unprinted by the SERVICE surface would compile fine. Checklist line 1 names
-  all three surfaces; the compile contract enforces the two CLIs, and the
-  service log is covered only by review plus the service-log pins in
-  bus-cli/stripe-feed-cli tests. *Owner: Task F (first slice owning
-  `main.ts`), else phase-2b close.*
+- ~~The service log sits outside the compile-time consumption contract~~
+  *Paid (2b Task F):* `createBackfillRunner` in `main.ts` now carries the
+  same per-kind rest-destructure wall as the two CLIs (`satisfies
+  Record<string, never>` over the base plus all four widened catch-up
+  shapes), so checklist line 1's THIRD surface is compile-enforced — a
+  phantom field planted on `StripeFeedCatchUpReport` errors in both
+  `cli/backfill.ts` AND `main.ts` (demonstrated in the Task F report). The
+  wall also surfaced two genuine service-log gaps it exists to catch: sheets
+  `degradations` and hub `hydrated`/`tombstoned` were consumed by the old
+  base-shape read and printed nowhere — both now print (loud channel for
+  degradations; quiet-when-zero work line for hydration counts).
 - **The profile seam reaches the three 2a mocks only; the four 2b mocks are
   deaf to it** — `createCrmApp`/`createBillingApp`/`createSupportApp` accept
   `opts.profile`, but sheets (`seed.ts`), stripefeed (`feed.ts`), hubcrm
