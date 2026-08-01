@@ -110,3 +110,54 @@ describe("reconcile CLI × sheets (cold review I1/M6)", () => {
     expect(res.stdout).toContain(staleRk);
   });
 });
+
+// Debt-burn sweep (A8 follow-through): the RUNBOOK env table promises, verbatim —
+//   "unset → reconcile FAILS naming the missing var (fail-closed); the literal `skip`
+//    opts the source out explicitly"
+// — and until now that sentence was pinned only through the connector's return value,
+// never through the CLI surface the RUNBOOK is describing (checklist lines 3+7: the
+// claim lives in this test's name AND body, and the doc sentence is quoted here so a
+// wording change breaks something visible).
+describe("A8 on the real CLI — an enabled ledger-feed source with no ledger path", () => {
+  function runLedgerFeedReconcile(extraEnv: Record<string, string>): Promise<{ code: number; out: string }> {
+    return new Promise((resolve, reject) => {
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        DATABASE_URL: dbUrl,
+        INGEST_SOURCES: "crm",
+        ALLOW_DEV_SECRETS: "1",
+        ...extraEnv,
+      };
+      delete env.LEDGER_PATH_CRM; // the typo'd/missed-export deployment, guaranteed
+      for (const [k, v] of Object.entries(extraEnv)) env[k] = v;
+      execFile(
+        process.execPath,
+        ["--import", "tsx", "src/cli/reconcile.ts"],
+        { cwd: INGEST_DIR, timeout: 25_000, env: env as NodeJS.ProcessEnv },
+        (err, stdout, stderr) => {
+          if (err && typeof err.code !== "number") return reject(err);
+          resolve({ code: err ? (err.code as number) : 0, out: `${stdout}\n${stderr}` });
+        },
+      );
+    });
+  }
+
+  it("reconcile CLI FAILS naming the missing LEDGER_PATH_CRM and exits nonzero — unset is never consent", async () => {
+    const res = await runLedgerFeedReconcile({});
+    expect(res.code).toBe(1);
+    expect(res.out).toMatch(/\[crm\] FAIL: LEDGER_PATH_CRM is not set for enabled source crm/);
+    // Both remedies the refusal promises are on the operator's terminal:
+    expect(res.out).toMatch(/Set LEDGER_PATH_CRM to the ledger file/);
+    expect(res.out).toMatch(/literal value "skip" to opt this source out explicitly/);
+    expect(res.out).not.toMatch(/\[crm\] PASS/);
+  });
+
+  it("the literal `skip` opts the source out explicitly — printed as a skip, never a silent absence", async () => {
+    const res = await runLedgerFeedReconcile({ LEDGER_PATH_CRM: "skip" });
+    expect(res.out).toMatch(/\[crm\] skipped \(LEDGER_PATH_CRM=skip \(explicit opt-out\)\)/);
+    // With the only enabled source opted out, nothing was reconciled — and the CLI
+    // says so rather than passing an empty run.
+    expect(res.out).toMatch(/FAIL: no source had a ledger path set; nothing was reconciled/);
+    expect(res.code).toBe(1);
+  });
+});
