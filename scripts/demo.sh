@@ -2,8 +2,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DATABASE_URL="${DATABASE_URL:-postgres://switchboard:switchboard@localhost:5433/switchboard}"
-# All three sources: the ingest workers, backfill, and reconcile iterate this list.
-export INGEST_SOURCES=crm,billing,support
+# F-1c: the FLIPPED stack — the four sources the warehouse actually stages from.
+# hubcrm is the CRM arm (thin webhooks + hydration), stripefeed the billing arm,
+# casebus the support arm, and the 2a support mock remains for the csat arm only.
+# The 2a crm mock is retired; the 2a billing mock feeds no model and does not run.
+export INGEST_SOURCES=hubcrm,stripefeed,casebus,support
 
 # Identity for THIS run's ingest process. /status echoes it back, and instance_wait refuses
 # to proceed unless the process answering :4002 returns exactly this value -- proving we are
@@ -13,14 +16,12 @@ export INGEST_INSTANCE_ID="${INGEST_INSTANCE_ID:-run-$$-$(head -c 8 /dev/urandom
 # Demo runs on the published dev secrets by design (proves the mechanism, not secrecy).
 # Production must set WEBHOOK_SECRET_* and LEDGER_HMAC_KEY instead — see A2 fail-closed.
 export ALLOW_DEV_SECRETS=1
-# Absolute paths (not spec's relative ./out/) because each mock workspace process has a different
-# cwd. Per-source env consumed by the reconcile CLI; each mock process itself still takes
-# LEDGER_PATH (its own file-path option) — passed explicitly at its start line below.
-# NOTE: crm ledger renamed from out/ledger.jsonl → out/ledger-crm.jsonl (three-source era).
-export LEDGER_PATH_CRM="$(pwd)/out/ledger-crm.jsonl"
-export LEDGER_PATH_BILLING="$(pwd)/out/ledger-billing.jsonl"
+# Absolute paths (mock workspace processes have different cwds). Per-source env consumed by
+# the reconcile CLI; each ledger-bearing mock still takes LEDGER_PATH at its start line.
+# hubcrm's ledger is the EMISSION record (F-1c): every event the store emits, chained.
+export LEDGER_PATH_HUBCRM="$(pwd)/out/ledger-hubcrm.jsonl"
 export LEDGER_PATH_SUPPORT="$(pwd)/out/ledger-support.jsonl"
-rm -f out/monday-report.md "$LEDGER_PATH_CRM" "$LEDGER_PATH_BILLING" "$LEDGER_PATH_SUPPORT" out/ledger.jsonl
+rm -f out/monday-report.md "$LEDGER_PATH_HUBCRM" "$LEDGER_PATH_SUPPORT" out/ledger.jsonl out/ledger-crm.jsonl out/ledger-billing.jsonl
 
 # Wait until a service answers HTTP on its port (any response, incl. 404, means listening).
 # A bare sleep raced service startup on slow/loaded machines: first-run flake, exit 7.
@@ -49,7 +50,7 @@ pids=()
 cleanup() { for p in "${pids[@]:-}"; do kill -- -"$p" 2>/dev/null || true; done; }
 trap cleanup EXIT
 
-echo "1/6 postgres up"
+echo "1/7 postgres up"
 docker compose up -d postgres
 ready=false
 for i in $(seq 1 60); do
@@ -58,29 +59,32 @@ for i in $(seq 1 60); do
 done
 $ready || { echo "FAIL: postgres not ready after 60s"; exit 1; }
 
-echo "2/6 migrate"
+echo "2/7 migrate"
 npm run migrate -w ingest
 
-echo "2b/6 clean state (raw, ingest.ingest_journal, ingest.quarantine, cursors) so re-runs (and runs after
-scripts/chaos.sh, whose mock processes restart event seq at 1) don't collide with leftover
-rows from a prior run"
+echo "2b/7 clean state (raw, journal, quarantine, cursors, hydrated snapshots, gap ledger, queued jobs)
+so re-runs (and runs after scripts/chaos.sh, whose mock processes restart their scripts) don't
+collide with leftover rows from a prior run"
 docker compose exec -T postgres psql -U switchboard -c \
-  "truncate table raw.raw_events, ingest.ingest_journal, ingest.quarantine restart identity;" > /dev/null
+  "truncate table raw.raw_events, ingest.ingest_journal, ingest.quarantine, ingest.hydrated_snapshots restart identity;" > /dev/null
 docker compose exec -T postgres psql -U switchboard -c \
-  "delete from ingest.cursors;" > /dev/null
+  "delete from ingest.cursors; delete from ingest.gap_ledger;" > /dev/null
+docker compose exec -T postgres psql -U switchboard -c \
+  "delete from pgboss.job;" > /dev/null 2>&1 || true
 
-echo "3/6 start ingest + mock crm/billing/support (all mocks share the default manifest seed 42 —
-do NOT pass divergent seeds or cross-system correlation breaks)"
+echo "3/7 start ingest + mock hubcrm/stripefeed/casebus/support (all mocks share the default
+manifest seed 42 — do NOT pass divergent seeds or cross-system correlation breaks)"
 mkdir -p out  # log redirects + ledgers land here; gitignored, absent on fresh clones
 INGEST_INSTANCE_ID="$INGEST_INSTANCE_ID" PORT=4002 npm run start -w ingest > out/log-ingest.txt 2>&1 & pids+=($!)
-PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm     LEDGER_PATH="$LEDGER_PATH_CRM"     npm run start -w mocks/crm     > out/log-crm.txt 2>&1 & pids+=($!)
-PORT=4003 WEBHOOK_URL=http://localhost:4002/webhooks/billing LEDGER_PATH="$LEDGER_PATH_BILLING" npm run start -w mocks/billing > out/log-billing.txt 2>&1 & pids+=($!)
+PORT=4007 WEBHOOK_URL=http://localhost:4002/webhooks/hubcrm LEDGER_PATH="$LEDGER_PATH_HUBCRM" npm run start -w mocks/hubcrm > out/log-hubcrm.txt 2>&1 & pids+=($!)
+PORT=4006 npm run start -w mocks/stripefeed > out/log-stripefeed.txt 2>&1 & pids+=($!)
+PORT=4008 npm run start -w mocks/casebus    > out/log-casebus.txt    2>&1 & pids+=($!)
 PORT=4004 WEBHOOK_URL=http://localhost:4002/webhooks/support LEDGER_PATH="$LEDGER_PATH_SUPPORT" npm run start -w mocks/support > out/log-support.txt 2>&1 & pids+=($!)
 
 # Liveness is not readiness. ready_wait proves only that SOMETHING answers on the port; it
 # cannot tell our server from a previous script's leftover. Mocks derive their event script
-# index from a process-lifetime counter, so an inherited server silently emits the wrong
-# events. fresh_wait asserts that state instead.
+# index from process-lifetime state, so an inherited server silently emits the wrong events.
+# fresh_wait asserts that state instead.
 fresh_wait() {
   local port="$1" name="$2" status=""
   ready_wait "$port" "$name"
@@ -89,8 +93,8 @@ fresh_wait() {
     echo "FAIL: ${name} (port ${port}) answered but is NOT fresh: ${status}" >&2
     echo "  A previous run's mock still holds this port — 'npm run' does not reap its grandchild" >&2
     echo "  on SIGTERM (npm/cli#6684), so our own server never bound. Driving a mock whose script" >&2
-    echo "  cursor has advanced emits a DIFFERENT event mix than requested (the crm merge events" >&2
-    echo "  live at script indices 45/46 and would be skipped entirely). Free the port and re-run:" >&2
+    echo "  cursor has advanced emits a DIFFERENT event mix than requested (the hubcrm merges fire" >&2
+    echo "  at script ops 210/230 and would be skipped entirely). Free the port and re-run:" >&2
     echo "    lsof -ti :${port} | xargs kill -9" >&2
     exit 1
   fi
@@ -104,68 +108,78 @@ instance_wait() {
   if [[ "$got" != "$INGEST_INSTANCE_ID" ]]; then
     echo "FAIL: ${name} (port ${port}) answered, but it is NOT the process this run started." >&2
     echo "  expected instance_id=${INGEST_INSTANCE_ID}, got: ${status}" >&2
-    echo "  A stranded ingest from an earlier run holds this port, so ours never bound. It" >&2
-    echo "  keeps polling its OWN feed on its OWN env -- which would let CHAOS_SKIP_BACKFILL=1" >&2
-    echo "  reconcile clean and report PASS while proving nothing. Free it and re-run:" >&2
+    echo "  A stranded ingest from an earlier run holds this port, so ours never bound. Free it" >&2
+    echo "  and re-run:" >&2
     echo "    lsof -ti :${port} | xargs kill -9" >&2
     exit 1
   fi
 }
 
 instance_wait 4002 ingest
-fresh_wait 4001 crm; fresh_wait 4003 billing; fresh_wait 4004 support
+fresh_wait 4007 hubcrm; fresh_wait 4006 stripefeed; fresh_wait 4008 casebus; fresh_wait 4004 support
 
-# crm 108 (was 80): identity resolution's SUPPORT tier-1 expectations (S-0006..S-0009) key on
-# CRM contact emails at contact indices 20/22/24/26 (P-0021/P-0023/P-0025/P-0027). The crm
-# script emits contact index floor(i/4) at slots i%4==1, so index 26 emits at i=105 — a count
-# below 106 never stages those contacts and support tier-1 fails for a data-coverage reason,
-# not a logic bug. 108 rounds up to a whole 4-slot cycle. Companies (all 22 by i=43) and both
-# merges (i=45,46) were already covered at 80.
-echo "4/6 simulate: crm 108 (22 companies + both merges + contacts through P-0027), billing 100 (all 16 customers), support 80 (all requesters via first 14 tickets)"
-curl -sf -X POST http://localhost:4001/simulate \
-  -H 'content-type: application/json' -d '{"count": 108}' > /dev/null
-curl -sf -X POST http://localhost:4003/simulate \
+raw_count_for() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_events where source='$1'" | tr -d ' '; }
+queue_pending() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from pgboss.job where name like 'ingest-%' and state in ('created','active','retry')" | tr -d ' '; }
+# Bounded per-source drain gate (anchored to the EXPECTED count, not to any moving pair
+# of counters — the 2026-07-25 chaos-workflow lesson).
+wait_raw() {
+  local source="$1" expected="$2" got=0
+  for i in $(seq 1 120); do
+    got="$(raw_count_for "$source")"
+    if [[ "$got" -eq "$expected" && "$(queue_pending)" == "0" ]]; then return 0; fi
+    sleep 1
+  done
+  echo "FAIL: ${source} did not drain to ${expected} within 120s (raw=${got} pending=$(queue_pending))"; exit 1
+}
+
+# hubcrm: 300 script ops in THREE chunks with a hydration-pump backfill between them.
+# The chunk boundaries are the merge positions (the script's merges fire at ops 210 and
+# 230 — the exported OPS_UNTIL_MERGES_COMPLETE constant's derivation): every object a
+# merge consumes must be HYDRATED WHILE ALIVE (its snapshot is what merge_edges
+# translates the consumed ids through), so a pump runs after ops 0-209 (both original
+# merge-1 participants + C-0002 exist), after ops 210-229 (merge 1 fired; C-0022
+# created at 220, before merge 2 at 230), and after the tail. 300 total = the CI
+# fixture's derived count: >= OPS_UNTIL_MERGES_COMPLETE, >= 262 for support tier-1's
+# contact P-0027 (created at op 261), whole cycles so the dupe-attached deals
+# (D-0057/D-0059 at ops 282/292) reach staging and merge re-pointing is demonstrable.
+echo "4/7 simulate: hubcrm 210+20+70 (pump between chunks), stripefeed 100 (all 16 customers),
+casebus 80 (all 14 requesters via the first 20 cases), support 80 (csat arm)"
+hub_total=0
+for chunk in 210 20 70; do
+  curl -sf -X POST http://localhost:4007/simulate \
+    -H 'content-type: application/json' -d "{\"count\": ${chunk}}" > /dev/null
+  hub_total=$((hub_total + chunk))
+  wait_raw hubcrm "$hub_total"
+  npm run backfill -w ingest   # the hydration pump (also a no-op drain of the still-empty pull sources)
+done
+
+curl -sf -X POST http://localhost:4006/simulate \
   -H 'content-type: application/json' -d '{"count": 100}' > /dev/null
+curl -sf -X POST http://localhost:4008/simulate \
+  -H 'content-type: application/json' -d '{"count": 80}' > /dev/null
 curl -sf -X POST http://localhost:4004/simulate \
   -H 'content-type: application/json' -d '{"count": 80}' > /dev/null
 
-echo "4b/6 wait for async ingest pipeline to drain (raw total == sum of the three ledgers)"
-ledger_sum() {
-  local total=0 f lc
-  for f in "$LEDGER_PATH_CRM" "$LEDGER_PATH_BILLING" "$LEDGER_PATH_SUPPORT"; do
-    lc="$(wc -l < "$f" 2>/dev/null | tr -d ' ' || echo 0)"
-    total=$((total + ${lc:-0}))
-  done
-  echo "$total"
-}
-raw_count() { docker compose exec -T postgres psql -U switchboard -tAc "select count(*) from raw.raw_events" | tr -d ' '; }
-# Anchor the gate to the EXPECTED total, not ledger==raw equality: those are two counters
-# that move together (ledger-append precedes each delivery), so on a slow machine the
-# equality holds continuously DURING emission and the old check could declare "drained"
-# mid-simulate — dbt then built on a partial raw missing the crm tail (merges + late
-# contacts). That is exactly how the first chaos-workflow run on GitHub failed its demo
-# step (2026-07-25, run 30158941574) while every fast local run passed.
-EXPECTED_TOTAL=288  # 108 crm + 100 billing + 80 support — keep in sync with step 4/6 above
-drained=false
-lc=0; rc=0
-for i in $(seq 1 120); do
-  lc="$(ledger_sum)"
-  rc="$(raw_count)"
-  if [[ "$lc" -eq "$EXPECTED_TOTAL" && "$rc" -eq "$EXPECTED_TOTAL" ]]; then drained=true; break; fi
-  sleep 2
-done
-$drained || { echo "FAIL: ingest pipeline did not drain to $EXPECTED_TOTAL within 240s (ledger_sum=$lc raw=$rc)"; exit 1; }
-echo "    drained: ledger_sum=$lc raw=$rc (expected $EXPECTED_TOTAL)"
+echo "4b/7 drain: pull the feed/bus through their connectors; wait for the support push path"
+npm run backfill -w ingest
+wait_raw stripefeed 100
+wait_raw casebus 80
+wait_raw support 80
 
-echo "5/6 dbt build"
+echo "4c/7 reconcile all four paradigms (object store / feed window / bus window / ledger-feed)"
+npm run reconcile -w ingest
+
+echo "5/7 dbt build"
 docker compose run --rm dbt build
 
-echo "5b/6 verify identity resolution against the seed manifest"
+echo "5b/7 verify identity resolution against the seed manifest"
 npx tsx scripts/verify-identity.ts
 
-echo "6/6 generate report"
+echo "6/7 generate report"
 npm run report -w agent
 mkdir -p out
 # npm run report -w agent writes relative to agent workspace; copy artifact to repo-root out/ where check-demo.sh expects it
 cp agent/out/monday-report.md out/monday-report.md
+
+echo "7/7 check demo output"
 ./scripts/check-demo.sh

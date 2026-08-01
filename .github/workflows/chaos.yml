@@ -13,13 +13,14 @@ on:
 
 # chaos and demo run as SEPARATE JOBS, not steps of one job, and that is load-bearing.
 # Each job gets a fresh runner, so the two scripts cannot share a process table or contend
-# for ports 4001-4004 (https://docs.github.com/en/actions/learn-github-actions/understanding-github-actions).
+# for the mock/ingest ports (4002-4008) (https://docs.github.com/en/actions/learn-github-actions/understanding-github-actions).
 # As steps they did share one: run 30159422468 failed because the demo was served by a mock
 # left behind by the chaos step — 'npm run' does not reap its grandchild on SIGTERM
-# (https://github.com/npm/cli/issues/6684) — whose script cursor had already passed the crm
-# merge slots at index 45/46, so merge events were never emitted and eight identity
-# assertions failed downstream. Separate jobs make that class impossible rather than
-# defending against it; the fresh_wait guard in both scripts is the second line.
+# (https://github.com/npm/cli/issues/6684) — whose script cursor had already passed the
+# CRM merge slots (now the hubcrm script's ops 210/230), so merge events were never
+# emitted and eight identity assertions failed downstream. Separate jobs make that class
+# impossible rather than defending against it; the fresh_wait guard in both scripts is
+# the second line.
 # They are also independent, so running them in parallel is free.
 jobs:
   chaos:
@@ -55,9 +56,9 @@ jobs:
           PSQL="docker compose exec -T postgres psql -U switchboard -c"
           # Mock freshness first: a non-zero seq means this job drove a mock it did not start,
           # which changes WHICH events were emitted and invalidates every assertion below.
-          for p in 4001 4003 4004; do curl -s "http://localhost:$p/status" || true; echo; done
+          for p in 4004 4006 4007 4008; do curl -s "http://localhost:$p/status" || true; echo; done
           $PSQL "select source, event_type, count(*) from raw.raw_events group by 1,2 order by 1,2;"
-          $PSQL "select event_id, payload->>'occurred_at' as p_occ, payload->'data' as data from raw.raw_events where event_type = 'company.merged';" || true
+          $PSQL "select event_id, payload->>'occurred_at' as p_occ, payload->'data' as data from raw.raw_events where event_type = 'company.merge';" || true
           $PSQL "select * from public_analytics.merge_edges;" || true
           $PSQL "select company_id, canonical_id, is_cycle from public_analytics.int_crm__canonical_companies where company_id <> canonical_id or is_cycle;" || true
           $PSQL "select company_id, name, owner_email from public_analytics.stg_crm__companies order by company_id;" || true
