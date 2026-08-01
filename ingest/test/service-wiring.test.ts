@@ -174,7 +174,7 @@ describe("A7 obligation 1 — seam routing is behavior-preserving for the feed s
       const p1 = runBackfill();
       const p2 = runBackfill(); // arrives while the first cycle holds the gate
       await p2; // must resolve immediately — skipped, not queued behind p1
-      expect(logs).toContain("backfill still running, skipping tick");
+      expect(logs).toContain("[support] backfill still running, skipping tick");
       release();
       await p1;
     } finally {
@@ -284,7 +284,7 @@ describe("A7 obligation 3 — nudge hosting through the service wiring", () => {
       cycle = runSheets(); // interval-shaped cycle, held at the /snapshot gate
       await sheet.held; // provably in flight
       await wiring.sheetsNudge!(); // must resolve NOW — coalesced onto the running cycle
-      expect(logs).toContain("backfill still running, skipping tick");
+      expect(logs).toContain("[sheets] backfill still running, skipping tick");
     } finally {
       restore();
     }

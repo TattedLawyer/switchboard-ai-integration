@@ -143,7 +143,9 @@ describe("backfill", () => {
       await p2;
 
       // Check that second invocation was skipped
-      const skipLog = logs.find((log) => log.includes("backfill still running, skipping tick"));
+      // B4: the skip line carries its source — an operator tailing a multi-source
+      // service log must know WHICH source's tick coalesced.
+      const skipLog = logs.find((log) => log.includes("[crm] backfill still running, skipping tick"));
       expect(skipLog).toBeTruthy();
     } finally {
       console.log = originalLog;
