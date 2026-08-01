@@ -78,26 +78,43 @@ tier1_candidates as (
     join crm_emails ce on ce.email = se.email
     join canonical k on k.company_id = ce.company_id
 ),
--- Over-merge guard: tier 1 only resolves when the email maps to exactly ONE distinct
--- canonical company. min(canonical_id) is then that single canonical (deterministic).
+-- Over-merge guard, PER ENTITY (L2-G3, Task F): tier 1 resolves only when ALL of the
+-- entity's email evidence — every email, across every ticket/record it appeared on —
+-- collapses to exactly ONE distinct canonical company. Grouping by entity alone (never
+-- by (entity, email)) is the fix for the live-reproduced straddle: per-email groups let
+-- a requester with two emails, each cleanly matching a DIFFERENT canonical, form two
+-- clean count=1 groups and bypass every guard. min(email)/min(canonical_id) make the
+-- surviving row deterministic; corroborating emails that agree stay resolvable.
 tier1 as (
     select source, source_entity_id, min(canonical_id) as canonical_id,
-           1 as matched_tier, 'email=' || email as match_evidence
+           1 as matched_tier,
+           case when count(distinct email) = 1
+                then 'email=' || min(email)
+                else 'email=' || min(email) || ' (+' || (count(distinct email) - 1)
+                     || ' more, all one canonical)'
+           end as match_evidence
     from tier1_candidates
-    group by source, source_entity_id, email
+    group by source, source_entity_id
     having count(distinct canonical_id) = 1
 ),
--- A shared/freemail-style email registered at >1 distinct canonical company is AMBIGUOUS:
--- picking a winner would be a silent false merge. Route to manual review (tier 3) with
--- auditable evidence; also barred from tier 2 below — conflicting email evidence makes
--- any automatic merge suspect.
+-- Email evidence spanning >1 distinct canonical company is AMBIGUOUS — whether one
+-- shared/freemail-style address registered at two companies, or (the straddle) two
+-- addresses each clean on their own. Picking a winner would be a silent false merge.
+-- Route to manual review (tier 3) with auditable evidence; also barred from tier 2
+-- below — conflicting email evidence makes any automatic merge suspect.
 tier1_ambiguous as (
     select source, source_entity_id,
            source || ':' || source_entity_id as canonical_id,
            3 as matched_tier,
-           'ambiguous email=' || email || ' matched ' || count(distinct canonical_id) || ' canonical companies' as match_evidence
+           case when count(distinct email) = 1
+                then 'ambiguous email=' || min(email) || ' matched '
+                     || count(distinct canonical_id) || ' canonical companies'
+                else 'ambiguous email evidence: ' || count(distinct email)
+                     || ' emails matched ' || count(distinct canonical_id)
+                     || ' distinct canonical companies'
+           end as match_evidence
     from tier1_candidates
-    group by source, source_entity_id, email
+    group by source, source_entity_id
     having count(distinct canonical_id) > 1
 ),
 tier2_candidates as (
@@ -115,28 +132,36 @@ tier2_candidates as (
         where ta.source = se.source and ta.source_entity_id = se.source_entity_id
     )
 ),
--- Over-merge guard (mirrors tier 1): domain+name only resolves when the candidates
--- collapse to exactly ONE distinct canonical company — merged duplicates share a
--- canonical_id and still resolve. min(canonical_id) is then that single canonical
--- (deterministic).
+-- Over-merge guard (mirrors tier 1), PER ENTITY (L2-G3): domain+name resolves only when
+-- ALL of the entity's (domain,name) evidence tuples collapse to exactly ONE distinct
+-- canonical company — merged duplicates share a canonical_id and still resolve, and a
+-- requester whose tickets carry two tuples matching two DIFFERENT canonicals demotes
+-- below instead of forming two clean per-tuple groups. min() keeps it deterministic.
 tier2 as (
     select source, source_entity_id, min(canonical_id) as canonical_id,
            2 as matched_tier,
-           'domain+name=' || norm_domain || '|' || norm_name as match_evidence
+           'domain+name=' || min(norm_domain || '|' || norm_name) as match_evidence
     from tier2_candidates
-    group by source, source_entity_id, norm_domain, norm_name
+    group by source, source_entity_id
     having count(distinct canonical_id) = 1
 ),
--- Normalized domain+name shared by >1 distinct canonical company is AMBIGUOUS: picking
--- a winner would be a silent false merge (DISTINCT ON previously kept an arbitrary,
+-- Domain+name evidence spanning >1 distinct canonical company is AMBIGUOUS — one tuple
+-- shared by two canonicals, or (the straddle) two clean tuples pointing apart. Picking a
+-- winner would be a silent false merge (DISTINCT ON previously kept an arbitrary,
 -- plan-dependent row here). Route to manual review (tier 3) with auditable evidence.
 tier2_ambiguous as (
     select source, source_entity_id,
            source || ':' || source_entity_id as canonical_id,
            3 as matched_tier,
-           'ambiguous domain+name=' || norm_domain || '|' || norm_name || ' matched ' || count(distinct canonical_id) || ' canonical companies' as match_evidence
+           case when count(distinct (norm_domain, norm_name)) = 1
+                then 'ambiguous domain+name=' || min(norm_domain || '|' || norm_name)
+                     || ' matched ' || count(distinct canonical_id) || ' canonical companies'
+                else 'ambiguous domain+name evidence: ' || count(distinct (norm_domain, norm_name))
+                     || ' tuples matched ' || count(distinct canonical_id)
+                     || ' distinct canonical companies'
+           end as match_evidence
     from tier2_candidates
-    group by source, source_entity_id, norm_domain, norm_name
+    group by source, source_entity_id
     having count(distinct canonical_id) > 1
 ),
 matched as (

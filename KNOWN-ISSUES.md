@@ -91,27 +91,18 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   well-formed-but-absurd timestamp (`9999-12-31`, vendor clock bugs) previously
   pinned an entity's latest-state forever, undislodgeable by any later correct
   event *(audit)*. Out-of-window events quarantine, never drop.
-- **Multi-tuple entities can straddle ambiguity guards.** A support requester
-  whose tickets carry different (domain, name) or email values produces
-  multiple candidate rows; two clean groups matching different canonicals pick
-  a plan-dependent winner, and a clean group can outrank an ambiguity flag.
-  The per-key guards don't compose per-entity: each tuple forms its own clean
-  count = 1 group, so no guard fires, and the final `DISTINCT ON` orders by
-  matched_tier alone. **Reproduced live against the real `identity_resolution`
-  SQL on 2026-07-31** — both shapes, not just the tier-2 one: at tier 2, one
-  requester with two tickets carrying two clean (domain, name) tuples matching
-  different canonicals collapses to a single row with no ambiguity flag; the
-  tier-1 shape (different emails across tickets, each matching a different
-  canonical) **bypasses `tier1_ambiguous` entirely**, because that guard groups
-  per email and each email is unambiguous on its own. Both are pinned at
-  `ingest/test/identity-straddle.test.ts` as `it.fails` — they pass only while
-  the defect exists and will fail loudly the instant a fix lands, forcing
-  promotion to plain `it`. *Owned by Phase 2b Task F (identity/normalization),
-  where the fix — per-entity cross-group ambiguity detection, or a
-  deterministic same-tier tiebreak plus demotion — can be shaped against that
-  task's final source set rather than reshaping guard semantics twice.* Until
-  then, a real requester with conflicting clean evidence resolves silently and
-  plan-dependently.
+- ~~Multi-tuple entities can straddle ambiguity guards~~ *Paid (2b Task F):*
+  every tier's over-merge guard now groups by **entity** (source,
+  source_entity_id) across ALL of the entity's evidence — never by (entity,
+  evidence-key) — so a requester whose tickets carry two clean tuples matching
+  two different canonicals demotes to manual review exactly like a single
+  ambiguous tuple always did, at both tiers. The live-reproduced 2026-07-31
+  shapes (tier-2 two-clean-tuples; tier-1 different-emails bypassing
+  `tier1_ambiguous`) are pinned as plain green tests in
+  `ingest/test/identity-straddle.test.ts`, shown red against the pre-fix SQL;
+  boundary companions pin that corroborating evidence (multiple tuples, one
+  canonical) still resolves at its tier. Evidence strings for the new
+  cross-group case name the count of conflicting tuples/emails.
 - **Tier 2 is unsafe on free-email domains** *(audit)* — there is no
   free-domain blocklist, so for gmail-heavy SMB data the domain half of
   domain+name carries no signal and every duplicate common name merges into

@@ -13,7 +13,8 @@ import { loadModel } from "./helpers/load-model.js";
 // different canonicals, and the final DISTINCT ON (ordered by matched_tier alone) keeps a
 // plan-dependent, silently-arbitrary winner — the exact "silent guess" the guards exist to
 // forbid. (A6 fixed this shape for the SHEETS arm only, by collapsing to one candidate
-// tuple per client before the tiers; the support/billing arms still straddle.)
+// tuple per client before the tiers; the support/billing arms straddled until the Task F
+// per-entity guards landed.)
 //
 // These tests assert the HONEST spec: conflicting clean evidence for one entity must not
 // silently resolve to an arbitrary canonical. They are written against the REAL
