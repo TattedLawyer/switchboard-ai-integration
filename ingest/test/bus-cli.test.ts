@@ -347,6 +347,19 @@ describe("operator-CLI scoping (debt-burn A5): recorded state over configured sc
     expect((await listGaps(pool, TENANT_B, "casebus"))[0].acknowledgedAt).not.toBeNull();
   });
 
+  it("a BARE --tenant refuses identically on BOTH CLIs — never a silent fall-back that reconciles the default tenant while the operator believes it was tenant X (checklist line 6)", async () => {
+    const baseUrl = listen(createCasebusApp({ seed: 42 }));
+    // Same condition, equally rich behavior across surfaces: a flag whose value was
+    // forgotten (or swallowed by the shell) must be a refusal on every CLI that takes
+    // it, with the same wording — a bare --tenant that quietly runs the DEFAULT tenant
+    // and exits 0 is the silently-WRONG-answer class the ledger-feed refusal names.
+    for (const script of ["src/cli/gap-ack.ts", "src/cli/reconcile.ts"] as const) {
+      const res = await runCli(script, baseUrl, ["--tenant"]);
+      expect(res.code, script).toBe(1);
+      expect(res.out, script).toMatch(/--tenant requires a tenant id/);
+    }
+  });
+
   it("reconcile --tenant runs THAT tenant's reconcile: tenant B's standing loss reds and prints under the flag, and the default run stays clean (non-default-tenant pin)", async () => {
     const mock = createCasebusApp({ seed: 42 });
     const baseUrl = listen(mock);
