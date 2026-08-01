@@ -6,6 +6,7 @@ import express from "express";
 import type pg from "pg";
 import { createStripeFeedApp, type StripeFeedApp } from "../../mocks/stripefeed/src/index.js";
 import { freshTestDb } from "./helpers/testdb.js";
+import { listenReady } from "./helpers/listen-ready.js";
 import { expectGapDisclosure, expectParadigmIntegrityLine } from "./helpers/operator-surface.js";
 import { StripeFeedConnector, type StripeFeedReconcileReport } from "../src/connectors/stripe-feed.js";
 
@@ -39,9 +40,14 @@ afterEach(async () => {
   await cleanup();
 });
 
-function listen(app: express.Express): string {
-  srv = app.listen(0);
-  return `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+// F-1b rider: ready-or-loud boot (helpers/listen-ready.ts) — this file's I1 test died
+// once in a full-suite run on a bare `fetch failed` against its own just-started mock
+// (register flake, 2026-08-01). The helper probes until the socket ACCEPTS, so a boot
+// race is either absorbed or fails by name before any assertion runs.
+async function listen(app: express.Express): Promise<string> {
+  const ready = await listenReady(app);
+  srv = ready.server;
+  return ready.baseUrl;
 }
 
 /** Runs a REAL CLI entrypoint as a child process. Non-zero exit is a result, not an error. */
@@ -77,7 +83,7 @@ function runCli(
 /** The reviewer's reproduction, chapter 1: history ingested while retrievable. */
 async function agedScenario(): Promise<{ mock: StripeFeedApp; baseUrl: string; cursorId: string }> {
   const mock = createStripeFeedApp({ seed: 42 });
-  const baseUrl = listen(mock.app);
+  const baseUrl = await listen(mock.app);
   const batch1 = mock.feed.emit(8, { ageS: 26 * 86_400 });
   const c = new StripeFeedConnector({ baseUrl });
   await c.catchUp(pool);
@@ -140,7 +146,7 @@ describe("C1 — the reviewer's reproduction, inverted: permanent loss is LOUD o
 describe("I1 — paradigm-honest integrity line (the recorded Minor-6 class, extended to the third paradigm)", () => {
   it("reconcile CLI never claims 'ledger hash chain' for stripe-feed and states what was actually verified", async () => {
     const mock = createStripeFeedApp({ seed: 42 });
-    const baseUrl = listen(mock.app);
+    const baseUrl = await listen(mock.app);
     mock.feed.emit(8);
     await new StripeFeedConnector({ baseUrl }).catchUp(pool);
 
@@ -158,7 +164,7 @@ describe("I1 — paradigm-honest integrity line (the recorded Minor-6 class, ext
 describe("I2 — quarantined-but-retained events are classified, cross-referenced, and never fail the verdict alone", () => {
   /** A stub feed serving one good and one contract-violating event, every request —
    *  a shape the honest mock refuses to emit, same stub convention as stripe-feed.test.ts. */
-  function stubFeedWithPoisonEvent(): string {
+  async function stubFeedWithPoisonEvent(): Promise<string> {
     const t = Math.floor(Date.now() / 1000) - 60;
     const app = express();
     app.get("/v1/events", (_req, res) =>
@@ -172,11 +178,11 @@ describe("I2 — quarantined-but-retained events are classified, cross-reference
         ],
       }),
     );
-    return listen(app);
+    return await listen(app);
   }
 
   it("connector report: the quarantined event leaves `missing` and appears as quarantined-with-count; CLI prints it and still PASSes", async () => {
-    const baseUrl = stubFeedWithPoisonEvent();
+    const baseUrl = await stubFeedWithPoisonEvent();
     const c = new StripeFeedConnector({ baseUrl });
     const catchUpReport = await c.catchUpWithReport(pool);
     expect(catchUpReport).toMatchObject({ ingested: 1, quarantined: 1 });
@@ -198,7 +204,7 @@ describe("I2 — quarantined-but-retained events are classified, cross-reference
   });
 
   it("a re-served quarantined event accumulates count, still never surfaces as missing", async () => {
-    const baseUrl = stubFeedWithPoisonEvent();
+    const baseUrl = await stubFeedWithPoisonEvent();
     const c = new StripeFeedConnector({ baseUrl });
     await c.catchUp(pool);
     // Second drain from a rolled-back cursor re-serves the page → re-quarantine.
@@ -224,7 +230,7 @@ describe("I3 — the failure hint names the REAL cursor for this paradigm", () =
         data: [{ id: "evt_m1resume", object: "event", type: "charge.succeeded", created: t, data: { object: { id: "DEMO-CH-1", amount_cents: 100 } } }],
       }),
     );
-    await new StripeFeedConnector({ baseUrl: listen(app) }).catchUp(pool);
+    await new StripeFeedConnector({ baseUrl: await listen(app) }).catchUp(pool);
 
     // …then fail against an unreachable feed: the hint must name where we really are.
     const res = await runCli("src/cli/backfill.ts", "http://127.0.0.1:1");
@@ -241,7 +247,7 @@ describe("I3 — the failure hint names the REAL cursor for this paradigm", () =
 describe("A3 end-to-end — a report-vs-ledger gap drift reds the real reconcile CLI", () => {
   it("a ledger row the report cannot carry → the named disagreement prints and the run exits nonzero", async () => {
     const mock = createStripeFeedApp({ seed: 42 });
-    const baseUrl = listen(mock.app);
+    const baseUrl = await listen(mock.app);
     mock.feed.emit(8);
     await new StripeFeedConnector({ baseUrl }).catchUp(pool);
 
