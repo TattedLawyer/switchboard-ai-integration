@@ -617,13 +617,13 @@ describe("A6 pair 2 — customer_360 sheet columns: own columns, per-source curr
   // display attribute — it appears even for a free provider, because identity_resolution
   // (not the mart) is where the blocklist refuses it as MERGE evidence.
   it("C2 companion — orphan-domain derivation, named: an email-keyed tier-3 orphan carries the domain split from its own address (even a free provider — display attribute, not merge evidence); a row-keyed orphan keeps NULL, never guessed", async () => {
-    await pool.query("insert into tmp_resolution values ('sheets', 'email:pat@gmail.com', 'sheets:email:pat@gmail.com', 3)");
-    await seedSheetFixtureRow(pool, "rk-0010", "email:pat@gmail.com", { clientName: "Pat Doe", company: "Pat Doe Plumbing" });
+    await pool.query("insert into tmp_resolution values ('sheets', 'email:pat@freemail.example.com', 'sheets:email:pat@freemail.example.com', 3)");
+    await seedSheetFixtureRow(pool, "rk-0010", "email:pat@freemail.example.com", { clientName: "Pat Doe", company: "Pat Doe Plumbing" });
     await pool.query("insert into tmp_resolution values ('sheets', 'row:rk-0011', 'sheets:row:rk-0011', 3)");
     await seedSheetFixtureRow(pool, "rk-0011", "row:rk-0011", { clientName: "Keyless Kay" });
 
-    const emailOrphan = await martRow(pool, "sheets:email:pat@gmail.com");
-    expect(emailOrphan.domain).toBe("gmail.com"); // derived from its OWN email, verbatim
+    const emailOrphan = await martRow(pool, "sheets:email:pat@freemail.example.com");
+    expect(emailOrphan.domain).toBe("freemail.example.com"); // derived from its OWN email, verbatim
     const keylessOrphan = await martRow(pool, "sheets:row:rk-0011");
     expect(keylessOrphan.domain).toBeNull(); // no usable email → NULL kept, never guessed
   });

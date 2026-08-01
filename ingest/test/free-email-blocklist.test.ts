@@ -52,7 +52,10 @@ beforeEach(async () => {
       client_key text not null, detected_at timestamptz not null, received_at timestamptz not null
     );
     create table tmp_free_domains (domain text primary key);
-    insert into tmp_free_domains values ('gmail.com'), ('yahoo.com'), ('outlook.com');
+    -- Fixture list, example-shaped per the repo hygiene wall (every email-shaped string
+    -- is *.example.com); the REAL list ships as the dbt seed. The mechanism is list-driven,
+    -- so 'freemail.example.com' here exercises exactly what gmail.com does in production.
+    insert into tmp_free_domains values ('freemail.example.com'), ('webmail.example.com');
     create view tmp_canonical as select company_id, canonical_id from tmp_ir_companies;
     create view tmp_stg_companies as
       select company_id, name, domain, null::text as owner_email from tmp_ir_companies;
@@ -88,36 +91,36 @@ const resolve = async (source: string, id: string) =>
   );
 
 describe("free-email blocklist: tier-2 matches on free-provider domains demote to manual review", () => {
-  it("a support requester on gmail.com whose name matches a gmail-domiciled company lands in MANUAL REVIEW with the provider named — never a silent tier-2 merge of two unrelated gmail businesses", async () => {
+  it("a support requester on a free-provider domain whose name matches a free-provider-domiciled company lands in MANUAL REVIEW with the provider named — never a silent tier-2 merge of two unrelated gmail businesses", async () => {
     // The gmail-heavy SMB scenario from KNOWN-ISSUES: an SMB whose CRM record uses its
     // gmail address as its domain, and a DIFFERENT business with the same common name.
     await pool.query(`
-      insert into tmp_ir_companies values ('C-1', 'Smith Plumbing', 'gmail.com', 'C-1');
+      insert into tmp_ir_companies values ('C-1', 'Smith Plumbing', 'freemail.example.com', 'C-1');
       insert into tmp_support_tickets values
-        ('R-1', 'smithplumbing2@gmail.com', 'gmail.com', 'Smith Plumbing LLC');
+        ('R-1', 'smithplumbing2@freemail.example.com', 'freemail.example.com', 'Smith Plumbing LLC');
     `);
     const rows = await resolve("support", "R-1");
     expect(rows).toHaveLength(1);
     expect(rows[0].matched_tier).toBe(3);
-    expect(String(rows[0].match_evidence)).toMatch(/free-email domain=gmail\.com/);
+    expect(String(rows[0].match_evidence)).toMatch(/free-email domain=freemail\.example\.com/);
     expect(String(rows[0].match_evidence)).toMatch(/manual review/);
     // The demotion names its own cause, not the generic ones (checklist line 5).
     expect(String(rows[0].match_evidence)).not.toMatch(/^unmatched$/);
     expect(String(rows[0].match_evidence)).not.toMatch(/ambiguous/);
   });
 
-  it("C2 companion — the sheets arm inherits the gate: a sheet client's ORPHAN-DERIVED gmail domain (split from its own email) must not tier-2 resolve; it demotes with the provider named", async () => {
+  it("C2 companion — the sheets arm inherits the gate: a sheet client's ORPHAN-DERIVED free-provider domain (split from its own email) must not tier-2 resolve; it demotes with the provider named", async () => {
     await pool.query(`
-      insert into tmp_ir_companies values ('C-1', 'Smith Plumbing', 'gmail.com', 'C-1');
+      insert into tmp_ir_companies values ('C-1', 'Smith Plumbing', 'freemail.example.com', 'C-1');
       insert into tmp_sheet_rows values
-        ('rk-1', 'smithplumbing2@gmail.com', 'Sam Smith', 'Smith Plumbing LLC',
-         1000, 'USD', 'open', 'row', 'hash-1', 'email:smithplumbing2@gmail.com',
+        ('rk-1', 'smithplumbing2@freemail.example.com', 'Sam Smith', 'Smith Plumbing LLC',
+         1000, 'USD', 'open', 'row', 'hash-1', 'email:smithplumbing2@freemail.example.com',
          '2026-07-28T10:00:00Z', '2026-07-28T10:00:00Z');
     `);
-    const rows = await resolve("sheets", "email:smithplumbing2@gmail.com");
+    const rows = await resolve("sheets", "email:smithplumbing2@freemail.example.com");
     expect(rows).toHaveLength(1);
     expect(rows[0].matched_tier).toBe(3);
-    expect(String(rows[0].match_evidence)).toMatch(/free-email domain=gmail\.com/);
+    expect(String(rows[0].match_evidence)).toMatch(/free-email domain=freemail\.example\.com/);
     expect(String(rows[0].match_evidence)).toMatch(/manual review/);
   });
 
@@ -137,10 +140,10 @@ describe("free-email blocklist: tier-2 matches on free-provider domains demote t
     await pool.query(`
       insert into tmp_ir_companies values
         ('C-1', 'Acme Group',     'acme.example.com', 'C-1'),
-        ('C-2', 'Smith Plumbing', 'gmail.com',        'C-2');
+        ('C-2', 'Smith Plumbing', 'freemail.example.com',        'C-2');
       insert into tmp_support_tickets values
         ('R-3', null, 'acme.example.com', 'Acme Group'),
-        ('R-3', null, 'gmail.com',        'Smith Plumbing');
+        ('R-3', null, 'freemail.example.com', 'Smith Plumbing');
     `);
     const rows = await resolve("support", "R-3");
     expect(rows).toHaveLength(1);
@@ -149,12 +152,12 @@ describe("free-email blocklist: tier-2 matches on free-provider domains demote t
     expect(String(rows[0].match_evidence)).not.toMatch(/ambiguous|free-email/);
   });
 
-  it("tier-1 exact-address evidence is untouched by the blocklist: a specific gmail MAILBOX that is CRM contact evidence still resolves at tier 1 — only the domain half is meaningless, never the address", async () => {
+  it("tier-1 exact-address evidence is untouched by the blocklist: a specific free-provider MAILBOX that is CRM contact evidence still resolves at tier 1 — only the domain half is meaningless, never the address", async () => {
     await pool.query(`
       insert into tmp_ir_companies values ('C-1', 'Acme Group', 'acme.example.com', 'C-1');
-      insert into tmp_ir_crm_emails values ('owner.acme@gmail.com', 'C-1');
+      insert into tmp_ir_crm_emails values ('owner.acme@freemail.example.com', 'C-1');
       insert into tmp_support_tickets values
-        ('R-4', 'owner.acme@gmail.com', 'gmail.com', 'Unrelated Words');
+        ('R-4', 'owner.acme@freemail.example.com', 'freemail.example.com', 'Unrelated Words');
     `);
     const rows = await resolve("support", "R-4");
     expect(rows).toHaveLength(1);
