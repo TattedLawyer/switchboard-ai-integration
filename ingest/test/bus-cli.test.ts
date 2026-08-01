@@ -74,13 +74,24 @@ function runCli(
   });
 }
 
-/** Drive the mock into the aged-out-cursor state a real operator would meet. */
-async function makeAgeOutGap(mock: CasebusApp, baseUrl: string): Promise<void> {
-  mock.stream.emit(5, { ageS: 70 * 3600 });
+/**
+ * Drive the mock into the aged-out-cursor state a real operator would meet, and hand back
+ * the output of the run that DETECTED the loss along with the two bound ids.
+ *
+ * Returning the detecting run is the point (review I2): a gap is announced by the run that
+ * falls back, and by the next run the cursor is valid again and the CLI says nothing about
+ * it — so assertions made on any later run are vacuous no matter how they are worded.
+ */
+async function makeAgeOutGap(
+  mock: CasebusApp,
+  baseUrl: string,
+): Promise<{ detectingRun: { code: number; out: string }; lostEventId: string; farEventId: string }> {
+  const aged = mock.stream.emit(5, { ageS: 70 * 3600 });
   await runCli("src/cli/backfill.ts", baseUrl);
-  mock.stream.emit(6);
+  const fresh = mock.stream.emit(6);
   mock.stream.advance(3 * 3600);
-  await runCli("src/cli/backfill.ts", baseUrl);
+  const detectingRun = await runCli("src/cli/backfill.ts", baseUrl);
+  return { detectingRun, lostEventId: aged.at(-1)!.event.id, farEventId: fresh[0].event.id };
 }
 
 describe("backfill CLI — the drain's numbers, INCLUDING the ones only this paradigm produces", () => {
@@ -100,16 +111,41 @@ describe("backfill CLI — the drain's numbers, INCLUDING the ones only this par
   it("an AGE-OUT gap prints loudly with bounds and cause, and the drain still exits 0 (forward progress succeeded; reconcile is the gate)", async () => {
     const mock = createCasebusApp({ seed: 42 });
     const baseUrl = listen(mock);
+    const { detectingRun, lostEventId, farEventId } = await makeAgeOutGap(mock, baseUrl);
+
+    // What the test's NAME has always claimed, now actually asserted. The `reset` cause
+    // was pinned on this surface from the start; `retention` — the commoner of the two —
+    // was not, and the old body asserted only an exit code, twice.
+    expect(detectingRun.out).toMatch(/PERMANENT DATA LOSS/);
+    expect(detectingRun.out).toMatch(/unclosable gap \(retention\)/);
+    expect(detectingRun.out).toMatch(/aged out of the source's retention window/);
+    // Bounds, both edges, by name: a loss report without them tells an operator that
+    // something was lost but not what.
+    expect(detectingRun.out).toContain(lostEventId);
+    expect(detectingRun.out).toContain(farEventId);
+    // A retention gap must NOT borrow the reset explanation — the mirror of the negative
+    // assertion the reset test carries.
+    expect(detectingRun.out).not.toMatch(/RESET/);
+    // Forward progress still reported, and the drain still exits 0: the drain succeeded,
+    // and reconcile is the gate that turns a gap into a red.
+    expect(detectingRun.out).toMatch(/ingested 6 event\(s\)/);
+    expect(detectingRun.code).toBe(0);
+  });
+
+  it("the run AFTER a fallback says nothing about the gap — which is exactly why asserting on it proved nothing (review I2, pinned so the vacuity cannot come back)", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
     await makeAgeOutGap(mock, baseUrl);
 
-    const res = await runCli("src/cli/backfill.ts", baseUrl);
-    expect(res.code).toBe(0);
-    const gapRun = await (async () => res)();
-    void gapRun;
-    // The gap was printed by the run that detected it; re-assert on that run's output.
+    // The cursor is valid again, so this drain is ordinary and silent about the loss.
+    // The old version of the test above asserted `code === 0` on a run like this one —
+    // which would have passed with the gap line absent, misspelt, or naming the wrong
+    // cause. The durable record of the loss is the ledger, and reconcile is what reads it.
     mock.stream.emit(1);
-    const again = await runCli("src/cli/backfill.ts", baseUrl);
-    expect(again.code).toBe(0);
+    const after = await runCli("src/cli/backfill.ts", baseUrl);
+    expect(after.code).toBe(0);
+    expect(after.out).not.toMatch(/PERMANENT DATA LOSS/);
+    expect(await listGaps(pool, DEFAULT_TENANT, "casebus")).toHaveLength(1);
   });
 
   it("a RESET gap names the reset — never 'aged out of the retention window', which would send the operator to the wrong investigation", async () => {

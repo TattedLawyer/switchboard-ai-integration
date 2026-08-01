@@ -116,10 +116,17 @@ export function formatUnclosableGap(source: string, gap: UnclosableGap): string 
       ? "were purged when the source's retained event stream was RESET (the vendor documents this " +
         "for an org moved to a new instance; it can strike a cursor of any age) and cannot be recovered"
       : "aged out of the source's retention window before ingestion and cannot be recovered";
+  // Both far-edge facts when both are known: a paradigm that can name the far EVENT
+  // (the bus) was dropping its timestamp here, which made its loss line incomparable at
+  // a glance with the one from a paradigm that can only name the far TIME (the feed).
+  const farEdge =
+    gap.toEventId != null && gap.toOccurredAt != null
+      ? `${gap.toEventId} (occurred ${gap.toOccurredAt})`
+      : (gap.toEventId ?? gap.toOccurredAt ?? "the end of the retained window");
   return (
     `[${source}] PERMANENT DATA LOSS — unclosable gap (${gap.cause}): events after ` +
     `${gap.fromEventId ?? "the start of our record"} (occurred ${gap.fromOccurredAt ?? "unknown"}) up to ` +
-    `${gap.toEventId ?? gap.toOccurredAt ?? "the end of the retained window"} ${why}`
+    `${farEdge} ${why}`
   );
 }
 

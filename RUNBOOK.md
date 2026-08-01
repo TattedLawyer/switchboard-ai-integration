@@ -191,7 +191,7 @@ Task F flips the switch.
 ```bash
 PORT=4006 npm run start -w mocks/stripefeed          # the feed (shuffle ON: ordering is undocumented)
 INGEST_SOURCES=stripefeed npm run backfill  -w ingest  # drain via starting_after + has_more
-INGEST_SOURCES=stripefeed npm run reconcile -w ingest  # full retained-window drain vs raw (read-only)
+INGEST_SOURCES=stripefeed npm run reconcile -w ingest  # full retained-window drain vs raw (WRITES: records newly-observed gaps)
 ```
 
 Operational notes:
@@ -296,7 +296,7 @@ the 2a `support` mock; nothing in that mock changed.
 ```bash
 PORT=4008 npm run start -w mocks/casebus              # the bus (72h window, seeded clock)
 INGEST_SOURCES=casebus npm run backfill  -w ingest    # subscribe from the stored replay id
-INGEST_SOURCES=casebus npm run reconcile -w ingest    # full retained-window drain vs raw (read-only)
+INGEST_SOURCES=casebus npm run reconcile -w ingest    # full retained-window drain vs raw (WRITES: records newly-observed gaps)
 ```
 
 - **The cursor is a replay id, not a number.** It lives in
@@ -312,7 +312,11 @@ INGEST_SOURCES=casebus npm run reconcile -w ingest    # full retained-window dra
   the two values that decide it.
 - **Duplicates on the backfill log are normal.** At-least-once delivery means
   `N duplicate(s) absorbed by idempotent ingest` is the healthy steady state,
-  not an incident.
+  not an incident. That clause is emitted by the backfill CLI for **any**
+  report-bearing connector whose run absorbed duplicates (so a sheets or
+  stripefeed line can now carry it too — it is suppressed at zero, so a line
+  that never had duplicates is unchanged). It counts idempotent re-ingests, not
+  errors.
 - **Reading a casebus reconcile report**: `retained window` = events the bus
   retains *right now* (its 72h ledger-equivalent), `raw` = everything ever
   ingested, `aged out of window` = raw rows older than the retained window
@@ -327,6 +331,15 @@ INGEST_SOURCES=casebus npm run reconcile -w ingest    # full retained-window dra
   door — an armed door with a real secret, not a silent hole.
 
 ## Admitted permanent losses — the gap ledger and how to answer one
+
+> **`reconcile` is no longer read-only for the two loss-bearing sources.** Since the
+> durable gap ledger landed, `stripefeed` and `casebus` reconcile runs **INSERT** into
+> `ingest.gap_ledger` when they observe a gap the ledger does not already hold (that is
+> how a loss detected by a process that has since exited still reds the run). Consequence
+> for deployment: reconcile for those sources needs a role with `insert` on
+> `ingest.gap_ledger` — `switchboard_app` has it — and **cannot** be run against a
+> read-only role or a read replica. Every other source's reconcile remains read-only.
+> `gap-ack` writes by definition (it `update`s the acknowledgement columns).
 
 Two sources can lose data permanently by the design of the vendor paradigm they
 model: stripefeed (30-day feed retention) and casebus (72h bus window, plus

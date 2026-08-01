@@ -1,6 +1,6 @@
 import { getPool } from "../db.js";
 import { enabledSources } from "../sources.js";
-import { connectorFor, formatGapLedgerRow, formatUnclosableGap, listGaps } from "../connectors/index.js";
+import { connectorFor, formatGapLedgerRow, listGaps } from "../connectors/index.js";
 import { DEFAULT_TENANT_ID } from "../ingest-event.js";
 import type { SheetReconcileReport } from "../connectors/sheet-snapshot.js";
 import type { StripeFeedReconcileReport } from "../connectors/stripe-feed.js";

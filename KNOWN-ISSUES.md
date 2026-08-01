@@ -215,7 +215,35 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   connector work, where the poll path is the subject.*
 - **The ledger hash chain doesn't enforce `seq` monotonicity or event-id
   uniqueness** — a restarted mock forks the logical stream and still verifies.
-  *Scheduled: Phase 2b.*
+  *Partially paid in 2b Task D; the verifier half is NOT done. Owner: Task F.*
+  - **Paid in Task D, for the bus source only:** the casebus stream's replay-id
+    position is monotone **across resets** (a reset clears retained events but
+    never rewinds the position counter), so a pre-reset cursor can never be
+    silently revalidated by a later event; replay ids are unique by
+    construction; and at-least-once duplicate delivery is pinned as
+    absorbed-and-counted end to end (`bus-replay-oracle.test.ts` oracle 2).
+    That removes the "replay makes duplicate seq real" hazard *for that
+    source* — it does not touch the ledger verifier.
+  - **Still outstanding:** `verifyLedgerChain` validates only the hash chain.
+    It needs two more predicates — `seq` strictly increasing, and `event_id`
+    unique within the chain — each returning `{ ok: false, brokenAt: <line> }`
+    like the existing checks. The function is **duplicated on purpose** in
+    `ingest/src/reconcile.ts` and `mocks/core/src/ledger.ts` (separate
+    workspaces, no cross-import), so both copies must change together and
+    `ingest/test/ledger-verify.test.ts`'s cross-copy drift coverage must be
+    extended to the new predicates. Note also that `reconcile()` builds
+    `ledgerIds` as a `Set`, which silently collapses a duplicate `event_id`
+    into one — so the count comparison cannot see it today.
+  - **Why Task D did not finish it:** neither file was in Task D's permitted
+    file set. Re-owned by **Task F**, which already retires the old mock and
+    touches this ledger machinery.
+- **The door-enumeration comment in `ingest/src/event-schema.ts` is stale.** It
+  claims "the invariant is the enumeration, not a count" and then lists the
+  webhook, replay, backfill-poll, sheet-snapshot and stripe-feed doors — but
+  not the bus-replay door added in 2b Task D, which applies the same predicate.
+  A one-line comment fix; the file was outside Task D's permitted set, and the
+  comment's own history is a cold-review finding about exactly this drift, so
+  it is recorded here rather than left to be rediscovered. *Owner: Task F.*
 - **`ingest.outbox` has no consumer** *(audit)* — written in the hot ingest
   transaction, `processed_at` never set, grows one row per event forever. It
   serves only as the demo's equality counter; it is *named* for a

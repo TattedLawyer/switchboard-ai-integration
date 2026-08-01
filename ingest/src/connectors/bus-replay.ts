@@ -400,10 +400,10 @@ export class BusReplayConnector implements Connector {
     // — with the cause derived from the same stream identity the drain would have used.
     const cursor = await this.getCursor(pool, tenantId);
     if (cursor.replayId !== null) {
-      const retainedReplayIds = new Set(rawRes.rows.map((r) => r.replay_id).filter((r): r is string => r !== null));
+      // Asked of the BUS, never of raw: raw's copy of a replay id is history (what we
+      // once read), not evidence about the source's current window.
       const stillServed = await this.replayIdIsServed(baseUrl, cursor.replayId, batchSize);
       if (!stillServed) {
-        void retainedReplayIds; // (raw's copy is history, not the bus's current window)
         const cause: GapCause =
           cursor.streamId !== null && currentStreamId !== null && currentStreamId !== cursor.streamId
             ? "reset"
