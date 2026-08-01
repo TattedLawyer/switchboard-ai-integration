@@ -215,6 +215,13 @@ async function main(): Promise<void> {
         console.log(`[${source}] raw:    ${report.raw} distinct event_id(s)`);
       }
       console.log(`[${source}] raw duplicates: ${report.rawDuplicates}`);
+      if (report.ledgerDuplicates !== undefined) {
+        // Debt-burn A6 (operator-surface rule: a produced field is printed). Nonzero is
+        // unreachable on this path today — the chain verifier rejects duplicate ids
+        // before reconcile runs — printed anyway so the count comparison's honesty is
+        // visible, and gated below as defense in depth.
+        console.log(`[${source}] ledger duplicates (same event_id appended more than once — writer bug): ${report.ledgerDuplicates}`);
+      }
       if (hub !== undefined) {
         console.log(`[${source}] missing (in the object store, never seen in raw — lost webhooks): ${report.missing.length}`);
       } else {
@@ -304,6 +311,7 @@ async function main(): Promise<void> {
         unacknowledged.length === 0 &&
         (hub?.drifted.length ?? 0) === 0 &&
         (hub?.hydrationPending ?? 0) === 0 &&
+        (report.ledgerDuplicates ?? 0) === 0 &&
         gapCrossCheckOk;
       if (clean) {
         // An acknowledged gap is a STANDING DISCLOSED CONDITION, not a clean bill of

@@ -85,6 +85,8 @@ export function verifyLedgerChain(
   if (!existsSync(path)) return { ok: true };
   const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
   let expectedPrev = GENESIS_HASH;
+  let lastSeq: number | null = null;
+  const seenEventIds = new Set<string>();
   for (let i = 0; i < lines.length; i++) {
     const lineNo = i + 1;
     let entry: LedgerEntry;
@@ -103,6 +105,21 @@ export function verifyLedgerChain(
     if (recomputed !== entry.hash) {
       return { ok: false, brokenAt: lineNo };
     }
+    // Writer-bug predicates (debt-burn A6, mirroring RFC 9162's index check layered on
+    // top of Merkle hashing): the chain proves the FILE was not rewritten, but a buggy
+    // writer produces a perfectly-chained log of whatever it appended — a restarted mock
+    // re-counts seq from 1 and forks the logical stream, and a duplicate event_id hashes
+    // as happily as a fresh one. seq must be a number and STRICTLY increasing
+    // (monotonicity, not density — the type guard also keeps a non-numeric seq from
+    // passing every NaN comparison); event_id must be unique within the chain.
+    if (typeof entry.seq !== "number" || !Number.isFinite(entry.seq) || (lastSeq !== null && entry.seq <= lastSeq)) {
+      return { ok: false, brokenAt: lineNo };
+    }
+    lastSeq = entry.seq;
+    if (typeof entry.event_id !== "string" || seenEventIds.has(entry.event_id)) {
+      return { ok: false, brokenAt: lineNo };
+    }
+    seenEventIds.add(entry.event_id);
     expectedPrev = entry.hash;
   }
   return { ok: true };
@@ -114,11 +131,21 @@ export interface ReconcileReport {
   missing: string[];
   extra: string[];
   rawDuplicates: number;
+  /** Ledger-paradigm only (debt-burn A6): entries minus distinct event_ids — the writer
+   *  bug the Set-based membership diff used to collapse out of the count comparison
+   *  entirely. Defense in depth: the CLI path never sees it nonzero because the chain
+   *  verifier now rejects duplicate ids first, but `reconcile()` is public API and must
+   *  count honestly on its own. Optional because the other paradigms' reports extend
+   *  this shape and have no ledger file. */
+  ledgerDuplicates?: number;
 }
 
 export async function reconcile(pool: pg.Pool, source: string, ledgerPath: string): Promise<ReconcileReport> {
   const ledgerEntries = readLedger(ledgerPath);
   const ledgerIds = new Set(ledgerEntries.map((e) => e.event_id));
+  // The Set is the right shape for the membership diffs below; its SIZE alone would hide
+  // a duplicated event_id from the count comparison (debt-burn A6) — count the collapse.
+  const ledgerDuplicates = ledgerEntries.length - ledgerIds.size;
 
   const rawRes = await pool.query<{ event_id: string }>(
     "select event_id from raw.raw_events where source = $1",
@@ -150,5 +177,6 @@ export async function reconcile(pool: pg.Pool, source: string, ledgerPath: strin
     missing,
     extra,
     rawDuplicates,
+    ledgerDuplicates,
   };
 }

@@ -457,6 +457,9 @@ describe("the disclosure must survive the incident (cold review I1)", () => {
     expect(await listGaps(pool, DEFAULT_TENANT, "casebus")).toHaveLength(1);
     // Later sources still processed: the throw used to kill the whole run here.
     expect(res.out).toMatch(/\[crm\] PASS/);
+    // Debt-burn A6 rider (operator-surface rule): the ledger paradigm's new
+    // ledgerDuplicates count is printed by the CLI, even at its boring zero.
+    expect(res.out).toMatch(/\[crm\] ledger duplicates[^\n]*: 0/);
   });
 
   it("a gap detected DURING the run is labelled as such, so 'standing' means what it says", async () => {

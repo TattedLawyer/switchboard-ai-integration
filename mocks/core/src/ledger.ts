@@ -98,6 +98,8 @@ export function verifyLedgerChain(
   if (!existsSync(path)) return { ok: true };
   const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
   let expectedPrev = GENESIS_HASH;
+  let lastSeq: number | null = null;
+  const seenEventIds = new Set<string>();
   for (let i = 0; i < lines.length; i++) {
     const lineNo = i + 1;
     let entry: LedgerEntry;
@@ -116,6 +118,20 @@ export function verifyLedgerChain(
     if (recomputed !== entry.hash) {
       return { ok: false, brokenAt: lineNo };
     }
+    // Writer-bug predicates (debt-burn A6): the chain proves the FILE was not rewritten,
+    // not that the writer told the truth — a restarted writer re-counts seq from 1 with
+    // every hash valid, and a duplicate event_id chains as happily as a fresh one. seq
+    // must be a number and STRICTLY increasing (monotonicity, not density); event_id
+    // must be unique within the chain. Mirrors the ingest copy (ingest/src/reconcile.ts)
+    // — keep both in sync; ledger-verify.test.ts runs both over identical fixtures.
+    if (typeof entry.seq !== "number" || !Number.isFinite(entry.seq) || (lastSeq !== null && entry.seq <= lastSeq)) {
+      return { ok: false, brokenAt: lineNo };
+    }
+    lastSeq = entry.seq;
+    if (typeof entry.event_id !== "string" || seenEventIds.has(entry.event_id)) {
+      return { ok: false, brokenAt: lineNo };
+    }
+    seenEventIds.add(entry.event_id);
     expectedPrev = entry.hash;
   }
   return { ok: true };

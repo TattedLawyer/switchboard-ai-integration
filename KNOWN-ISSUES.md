@@ -213,9 +213,14 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   ingested, so a feed that overstates it permanently skips the gap: silent,
   unbounded data loss on the poll path *(audit)*. *Scheduled: Phase 2b
   connector work, where the poll path is the subject.*
-- **The ledger hash chain doesn't enforce `seq` monotonicity or event-id
-  uniqueness** — a restarted mock forks the logical stream and still verifies.
-  *Partially paid in 2b Task D; the verifier half is NOT done. Owner: Task F.*
+- ~~The ledger hash chain doesn't enforce `seq` monotonicity or event-id
+  uniqueness~~ — a restarted mock forks the logical stream and still verifies.
+  *Paid in full (debt-burn A6, to the Task D report's spec):* both
+  `verifyLedgerChain` copies now enforce `seq` strictly increasing and
+  `event_id` unique with `{ ok: false, brokenAt }`, the cross-copy drift test
+  runs both copies over identical predicate fixtures, and `reconcile()` counts
+  `ledgerDuplicates` instead of collapsing them in the Set (printed and gated
+  by the CLI). Details of the original entry kept below for the record.
   - **Paid in Task D, for the bus source only:** the casebus stream's replay-id
     position is monotone **across resets** (a reset clears retained events but
     never rewinds the position counter), so a pre-reset cursor can never be
@@ -224,19 +229,9 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
     absorbed-and-counted end to end (`bus-replay-oracle.test.ts` oracle 2).
     That removes the "replay makes duplicate seq real" hazard *for that
     source* — it does not touch the ledger verifier.
-  - **Still outstanding:** `verifyLedgerChain` validates only the hash chain.
-    It needs two more predicates — `seq` strictly increasing, and `event_id`
-    unique within the chain — each returning `{ ok: false, brokenAt: <line> }`
-    like the existing checks. The function is **duplicated on purpose** in
-    `ingest/src/reconcile.ts` and `mocks/core/src/ledger.ts` (separate
-    workspaces, no cross-import), so both copies must change together and
-    `ingest/test/ledger-verify.test.ts`'s cross-copy drift coverage must be
-    extended to the new predicates. Note also that `reconcile()` builds
-    `ledgerIds` as a `Set`, which silently collapses a duplicate `event_id`
-    into one — so the count comparison cannot see it today.
-  - **Why Task D did not finish it:** neither file was in Task D's permitted
-    file set. Re-owned by **Task F**, which already retires the old mock and
-    touches this ledger machinery.
+  - ~~Still outstanding: the verifier half (both copies, cross-copy drift
+    coverage, and the `ledgerIds` Set collapse in `reconcile()`)~~ *Paid
+    (debt-burn A6)* — see above; nothing of this entry remains with Task F.
 - **Three connector-layer Minors were deliberately deferred at 2b Task D's
   review, and are recorded here rather than only in a task report** (which is
   the failure mode the L1-G7 entry above exists to correct). The review
