@@ -58,10 +58,10 @@ sheets_clients as (
     -- staging's exposed recency (detected_at, received_at — the successor ordering's
     -- clocks) with row_key as a unique deterministic tail.
     -- Domain evidence derives from the email's own domain (sheets carry no domain
-    -- column). Tier-2 is safe HERE because manifest-derived synthetic emails are
-    -- corporate-domain; the free-email blocklist (gmail.com et al. would make domain
-    -- evidence meaningless) remains Task F's gate before real data — see the deferred
-    -- register; deliberately not built in this slice.
+    -- column). The free-email blocklist (Task F) now gates this derived evidence like
+    -- every other tier-2 domain: a free-provider domain (gmail.com et al.) demotes the
+    -- match to manual review in tier2_free_demoted below rather than serving as merge
+    -- evidence.
     -- client_name (the sheet's PERSON column) is deliberately NOT tier evidence
     -- (debt-burn C1; reason recorded in the A6 review): the tier-2 name predicate
     -- equates a candidate's name with a normalized CRM COMPANY name
@@ -134,8 +134,19 @@ tier1_ambiguous as (
     group by source, source_entity_id
     having count(distinct canonical_id) > 1
 ),
-tier2_candidates as (
-    select se.source, se.source_entity_id, nc.canonical_id, nc.norm_domain, nc.norm_name
+free_email_domains as (
+    -- Task F blocklist (the register's before-tier-2-on-real-data gate). Research-
+    -- verified rationale: free-provider domains carry no company-identity signal —
+    -- HubSpot's company matching refuses freemail domains as company evidence
+    -- (knowledge.hubspot.com/object-settings/automatically-create-and-associate-
+    -- companies-with-contacts); provenance + curated-not-exhaustive caveat documented
+    -- on the seed (warehouse/seeds/schema.yml).
+    select domain from {{ ref('free_email_domains') }}
+),
+tier2_all_candidates as (
+    select se.source, se.source_entity_id, nc.canonical_id, nc.norm_domain, nc.norm_name,
+           exists (select 1 from free_email_domains f where f.domain = nc.norm_domain)
+             as is_free_domain
     from source_entities se
     join norm_companies nc
       on nc.norm_domain = lower(regexp_replace(se.domain, '^www\.', '', 'i'))
@@ -157,6 +168,36 @@ tier2_candidates as (
         select 1 from tier1_ambiguous ta
         where ta.source = se.source and ta.source_entity_id = se.source_entity_id
     )
+),
+-- Free-provider evidence is NO-SIGNAL evidence (blocklist): it neither resolves nor
+-- conflicts, so the guards below see only corporate-domain candidates — an entity with
+-- one corporate match and one free match resolves on the corporate evidence instead of
+-- reading the free match as a straddle.
+tier2_candidates as (
+    select source, source_entity_id, canonical_id, norm_domain, norm_name
+    from tier2_all_candidates
+    where not is_free_domain
+),
+-- A name+domain match whose domain is a free provider DID match — but on evidence that
+-- carries no company signal (two unrelated "Smith Plumbing"s on gmail.com are the
+-- textbook silent false merge). When that is ALL the tier-2 evidence an entity has, the
+-- match goes to a human with the provider named, never to a silent tier-2 resolve and
+-- never to a bare 'unmatched' that hides the fact a match occurred.
+tier2_free_demoted as (
+    select tac.source, tac.source_entity_id,
+           tac.source || ':' || tac.source_entity_id as canonical_id,
+           3 as matched_tier,
+           'free-email domain=' || min(tac.norm_domain) || ' matched '
+             || count(distinct tac.canonical_id)
+             || ' canonical company(ies) — free-provider domains carry no company signal; manual review'
+             as match_evidence
+    from tier2_all_candidates tac
+    where tac.is_free_domain
+      and not exists (
+        select 1 from tier2_candidates c
+        where c.source = tac.source and c.source_entity_id = tac.source_entity_id
+      )
+    group by tac.source, tac.source_entity_id
 ),
 -- Over-merge guard (mirrors tier 1), PER ENTITY (L2-G3): domain+name resolves only when
 -- ALL of the entity's (domain,name) evidence tuples collapse to exactly ONE distinct
@@ -193,6 +234,7 @@ tier2_ambiguous as (
 matched as (
     select * from tier1 union all select * from tier2
     union all select * from tier1_ambiguous union all select * from tier2_ambiguous
+    union all select * from tier2_free_demoted
 ),
 tier3 as (
     select se.source, se.source_entity_id,

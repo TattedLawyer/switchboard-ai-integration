@@ -36,8 +36,10 @@ external_only as (
       on r.source = 'support' and st.requester_id = r.source_entity_id
     -- The derived domain carries identity_resolution's free-email caveat verbatim:
     -- an email's domain is only as meaningful as its provider (gmail.com et al. carry
-    -- no org signal); the free-email blocklist remains Task F's gate. Here it is a
-    -- carried attribute on an unmerged tier-3 entity, not merge evidence.
+    -- no org signal); the free-email blocklist (Task F, wired at identity_resolution's
+    -- tier 2) is what keeps such a domain out of MERGE evidence. Here it is a carried
+    -- attribute on an unmerged tier-3 entity — displayed even for a free provider,
+    -- pinned by the C2 companion in sheet-mart-oracle.test.ts.
     left join (select distinct on (client_key) client_key, company_name, client_name,
                       nullif(split_part(nullif(lower(trim(client_email)), ''), '@', 2), '') as domain
                from {{ ref('stg_sheets__rows') }}

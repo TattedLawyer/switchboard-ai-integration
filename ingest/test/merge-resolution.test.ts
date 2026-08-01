@@ -22,6 +22,10 @@ beforeEach(async () => {
       source text not null, source_entity_id text not null,
       email text not null, domain text not null, name text not null
     );
+    -- Task F: the model refs the free_email_domains seed; this suite's concerns are
+    -- corporate-domain, so the fixture list is empty (blocklist pins live in
+    -- free-email-blocklist.test.ts).
+    create table tmp_free_domains (domain text primary key);
   `);
   // B2: fixture VIEWS with the staging models' names/columns, so the REAL model text
   // (loaded from disk) runs against the same simple fixtures the old mirrors used.
@@ -201,6 +205,7 @@ const TIER_SQL = `
     stg_billing__customers: "tmp_stg_billing",
     stg_support__tickets: "tmp_stg_support",
     stg_sheets__rows: "tmp_stg_sheet_rows",
+    free_email_domains: "tmp_free_domains",
   })}) m
 `;
 

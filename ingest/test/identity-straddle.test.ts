@@ -46,6 +46,7 @@ beforeEach(async () => {
     create table tmp_support_tickets (
       requester_id text not null, requester_email text, domain text, company_name text
     );
+    create table tmp_free_domains (domain text primary key);
     create view tmp_canonical as select company_id, canonical_id from tmp_ir_companies;
     create view tmp_stg_companies as
       select company_id, name, domain, null::text as owner_email from tmp_ir_companies;
@@ -75,6 +76,7 @@ const RESOLUTION_SQL = loadModel("models/identity/identity_resolution.sql", {
   stg_billing__customers: "tmp_stg_billing",
   stg_support__tickets: "tmp_stg_support",
   stg_sheets__rows: "tmp_stg_sheet_rows",
+  free_email_domains: "tmp_free_domains",
 });
 
 const seedCompanies = async () => {

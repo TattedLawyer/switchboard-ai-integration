@@ -106,15 +106,21 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   boundary companions pin that corroborating evidence (multiple tuples, one
   canonical) still resolves at its tier. Evidence strings for the new
   cross-group case name the count of conflicting tuples/emails.
-- **Tier 2 is unsafe on free-email domains** *(audit)* — there is no
-  free-domain blocklist, so for gmail-heavy SMB data the domain half of
-  domain+name carries no signal and every duplicate common name merges into
-  the first company sharing it, unflagged (count = 1 → guard silent). The
-  normalizer also fails on ordinary legal-name variants (verified empirically):
-  `"Acme Plumbing, Inc."` → `acme plumbing,` (trailing comma — never matches),
-  `Co`/`PLLC` not stripped, `&` vs `and` never match, double spaces preserved.
-  *Scheduled: Phase 2b normalization + blocking work, before tier 2 ever runs
-  on real data. Do not run tier 2 unsupervised on real SMB data until then.*
+- ~~Tier 2 is unsafe on free-email domains~~ *(audit)* *Paid (2b Task F):*
+  the free-email blocklist (dbt seed `free_email_domains`, provenance on the
+  seed schema) now demotes any tier-2 match whose domain evidence is a free
+  provider to manual review with the provider named — never a silent merge of
+  two unrelated gmail businesses, and never a bare `unmatched` that hides
+  that a match occurred. Free evidence is no-signal: it neither resolves nor
+  conflicts (corporate evidence beside it still resolves); exact-address
+  tier-1 evidence stays provider-blind. The sheets arm's orphan-derived
+  domains run through the same gate. The normalizer legal-name variants
+  (trailing comma, `Co`/`PLLC`, `&`/`and`, double spaces) are fixed in the
+  shared normalizer pair, vector-pinned. **Remaining disclosed limit:** the
+  shipped list is a curated set of major providers — a production deployment
+  should vendor a maintained exhaustive list (e.g. Kikobeats/free-email-domains
+  or willwhite/freemail `free.txt`) into the seed; the mechanism is
+  list-agnostic and test-pinned against fixture lists.
 - ~~A merge event targeting a nonexistent company mints a phantom canonical~~
   *Paid (2a.2):* `assert_canonical_targets_exist` dbt test + unit test proving
   the detection fires.

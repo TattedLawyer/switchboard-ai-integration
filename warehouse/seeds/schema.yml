@@ -1,0 +1,23 @@
+version: 2
+
+seeds:
+  - name: free_email_domains
+    description: >
+      Free-email-provider domains whose presence as tier-2 DOMAIN evidence demotes a
+      match to manual review (Task F; the register's before-tier-2-on-real-data gate).
+      Rationale, research-verified from primary sources (2026-08-01): free-provider
+      domains carry no company-identity signal — HubSpot's own company matching refuses
+      freemail domains as company evidence and falls back to Website URL
+      (knowledge.hubspot.com/object-settings/automatically-create-and-associate-companies-with-contacts),
+      and its forms product maintains a blocked-domain list for the same providers
+      (knowledge.hubspot.com/forms/what-domains-are-blocked-when-using-the-forms-email-domains-to-block-feature).
+      This seed is a CURATED list of major consumer providers, deliberately not
+      exhaustive: a production deployment should vendor a maintained exhaustive list
+      (github.com/Kikobeats/free-email-domains or github.com/willwhite/freemail's
+      free.txt — free providers, not the separate disposable-domain category) into this
+      seed. The MECHANISM is what the tests pin (ingest/test/free-email-blocklist.test.ts
+      runs the real model text against fixture lists); the list content is swappable.
+      Domains are stored lowercase and compared against the model's normalized domain.
+    columns:
+      - name: domain
+        data_tests: [not_null, unique]

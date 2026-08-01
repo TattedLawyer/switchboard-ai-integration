@@ -228,6 +228,7 @@ const IDENTITY_SQL = `
     stg_billing__customers: "tmp_stg_billing",
     stg_support__tickets: "tmp_stg_support",
     stg_sheets__rows: "tmp_sheet_rows",
+    free_email_domains: "tmp_free_domains",
   })}) m
 `;
 
@@ -249,6 +250,7 @@ const createIdentityFixtures = async (db: pg.Pool): Promise<void> => {
       amount_cents bigint, currency text, status text, label text, content_hash text,
       client_key text not null, detected_at timestamptz not null, received_at timestamptz not null
     );
+    create table tmp_free_domains (domain text primary key);
     create view tmp_canonical as select company_id, canonical_id from tmp_ir_companies;
     create view tmp_stg_companies as
       select company_id, name, domain, null::text as owner_email from tmp_ir_companies;
@@ -685,6 +687,10 @@ const chainWarehouse = async (db: pg.Pool): Promise<void> => {
   await db.query(`create view int_crm__canonical_companies as ${loadModel("models/identity/int_crm__canonical_companies.sql", {
     stg_crm__companies: "stg_crm__companies", merge_edges: "merge_edges",
   })}`);
+  // The blocklist seed rides the chain as an empty relation: the manifest universe is
+  // corporate-domain by construction, so the stage-2 oracle exercises the mechanism's
+  // pass-through side; the demotion side is unit-pinned in free-email-blocklist.test.ts.
+  await db.query(`create table free_email_domains (domain text primary key)`);
   await db.query(`create view identity_resolution as ${loadModel("models/identity/identity_resolution.sql", {
     int_crm__canonical_companies: "int_crm__canonical_companies",
     stg_crm__companies: "stg_crm__companies",
@@ -692,6 +698,7 @@ const chainWarehouse = async (db: pg.Pool): Promise<void> => {
     stg_billing__customers: "stg_billing__customers",
     stg_support__tickets: "stg_support__tickets",
     stg_sheets__rows: "stg_sheets__rows",
+    free_email_domains: "free_email_domains",
   })}`);
   await db.query(`create view customer_360 as ${loadModel("models/marts/customer_360.sql", {
     int_crm__canonical_companies: "int_crm__canonical_companies",
