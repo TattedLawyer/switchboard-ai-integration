@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
-import { createQueue, enqueueEvent, startWorker, fetchDlq, queueName, dlqName } from "../src/queue.js";
+import { createQueue, enqueueEvent, startWorker, fetchDlq, replayDlq, queueName, dlqName } from "../src/queue.js";
 import type { SourceEvent } from "../src/server.js";
 import { PgBoss } from "pg-boss";
 
@@ -283,4 +283,49 @@ describe("pg-boss queue", () => {
       await boss.stop();
     }
   }, 25000);
+
+  it("fetchDlq and replayDlq DRAIN: an 11+ DLQ is reported in full and replayed in one invocation — never a silent 10 (debt-burn A7)", async () => {
+    // Clean slate, as the sibling tests above do in this shared DB. (pgboss.job is
+    // cleaned AFTER createQueue: boss.start() is what creates the schema, so this test
+    // also runs standalone against a fresh database.)
+    await pool.query("truncate table raw.raw_events, ingest.outbox restart identity");
+    const boss = await createQueue(connectionString, { retryLimit: 1, retryDelay: 1, retryBackoff: false });
+    await pool.query("delete from pgboss.job");
+    try {
+      const poisonPool = {
+        connect: async () => {
+          throw new Error("Pool is poisoned");
+        },
+      } as unknown as pg.Pool;
+      await startWorker(boss, poisonPool);
+
+      const ids = Array.from({ length: 12 }, (_, i) => `evt-drain-${String(i + 1).padStart(2, "0")}`);
+      for (const id of ids) await enqueueEvent(boss, "crm", ev(id));
+
+      // Wait on the DATABASE, not on fetchDlq — the defect under test is precisely that
+      // fetchDlq under-reports, so polling it for 12 would never terminate.
+      await pollUntil(async () => {
+        const n = await pool.query(
+          "select count(*)::int as n from pgboss.job where name = $1 and state in ('created','retry')",
+          [dlqName("crm")],
+        );
+        return n.rows[0].n === 12;
+      }, 30_000);
+
+      // The AWS-CLI contract (research A7): exhaustive retrieval is the DEFAULT; a
+      // silently-capped listing makes an operator read a false "done" on an 11+ queue.
+      const all = await fetchDlq(boss);
+      expect(all).toHaveLength(12);
+      expect(new Set(all.map((j) => j.data.event_id))).toEqual(new Set(ids));
+
+      // And one replay invocation drains everything — with a healthy pool this time.
+      const result = await replayDlq(boss, pool);
+      expect(result).toEqual({ replayed: 12, failed: 0 });
+      const rawN = await pool.query("select count(*)::int as n from raw.raw_events where source = 'crm'");
+      expect(rawN.rows[0].n).toBe(12);
+      expect(await fetchDlq(boss)).toHaveLength(0);
+    } finally {
+      await boss.stop();
+    }
+  }, 45000);
 });
