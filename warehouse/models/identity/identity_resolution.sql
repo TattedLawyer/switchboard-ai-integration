@@ -48,9 +48,11 @@ sheets_clients as (
     -- client_name (the sheet's PERSON column) is deliberately NOT tier evidence
     -- (debt-burn C1; reason recorded in the A6 review): the tier-2 name predicate
     -- equates a candidate's name with a normalized CRM COMPANY name
-    -- (norm_companies.norm_name), and a person's name can never legitimately match a
-    -- company's — including it could only manufacture false candidate evidence, never
-    -- a true match. client_name still serves in customer_360's ORPHAN-NAMING path
+    -- (norm_companies.norm_name). A person's name matching a company's is almost
+    -- always coincidence — the sole-proprietor edge (a business trading under its
+    -- owner's own name) is real, but rare enough on this evidence that including the
+    -- column would manufacture far more false candidate evidence than the handful of
+    -- true matches it could add. client_name still serves in customer_360's ORPHAN-NAMING path
     -- (company_name first, then client_name) — there it is a display label, not merge
     -- evidence, which is exactly the boundary.
     select distinct on (client_key)
