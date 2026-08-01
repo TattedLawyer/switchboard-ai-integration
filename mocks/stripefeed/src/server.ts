@@ -18,6 +18,8 @@ import { createFeed, UnknownCursorError, type FeedState } from "./feed.js";
 
 export interface StripeFeedAppOptions {
   seed: number;
+  /** Vertical profile (F-1) — threads to the feed's manifest; see FeedOptions. */
+  profile?: import("@switchboard/mock-core").Profile;
   retentionDays?: number;
   /** Response ordering is UNDOCUMENTED (research §2). Under this seeded flag every page
    *  is shuffled before serving, so a connector that trusts response position breaks in
@@ -50,7 +52,7 @@ const stripeError = (
   });
 
 export function createStripeFeedApp(opts: StripeFeedAppOptions): StripeFeedApp {
-  const feed = createFeed({ seed: opts.seed, retentionDays: opts.retentionDays });
+  const feed = createFeed({ seed: opts.seed, profile: opts.profile, retentionDays: opts.retentionDays });
 
   const shuffleRand = opts.shuffle ? prng(opts.shuffle.seed) : null;
   const faultRand = opts.read429 ? prng(opts.read429.seed) : null;

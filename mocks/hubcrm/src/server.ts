@@ -17,6 +17,8 @@ import { createHubStore, type HubObjectType, type HubStore } from "./store.js";
 
 export interface HubcrmAppOptions {
   seed: number;
+  /** Vertical profile (F-1) — threads to the store's manifest; see HubStoreOptions. */
+  profile?: import("@switchboard/mock-core").Profile;
   /** Where /simulate delivers webhook batches (the ingest batch door). Optional: tests
    *  that drive the store in-process never need it. */
   webhookUrl?: string;
@@ -38,7 +40,7 @@ const OBJECT_TYPES: readonly HubObjectType[] = ["company", "contact", "deal"];
 const isObjectType = (v: string): v is HubObjectType => (OBJECT_TYPES as readonly string[]).includes(v);
 
 export function createHubcrmApp(opts: HubcrmAppOptions): HubcrmApp {
-  const store = createHubStore({ seed: opts.seed, portalId: opts.portalId });
+  const store = createHubStore({ seed: opts.seed, portalId: opts.portalId, profile: opts.profile });
   const rand429 = opts.read429 ? prng(opts.read429.seed) : null;
   const rand5xx = opts.read5xx ? prng(opts.read5xx.seed) : null;
   const poison = new Set(opts.poisonObjectIds ?? []);

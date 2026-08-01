@@ -627,19 +627,17 @@ leaves it is gone from the source forever.
   `degradations` and hub `hydrated`/`tombstoned` were consumed by the old
   base-shape read and printed nowhere — both now print (loud channel for
   degradations; quiet-when-zero work line for hydration counts).
-- **The profile seam reaches the three 2a mocks only; the four 2b mocks are
-  deaf to it** — `createCrmApp`/`createBillingApp`/`createSupportApp` accept
-  `opts.profile`, but sheets (`seed.ts`), stripefeed (`feed.ts`), hubcrm
-  (`store.ts`), and casebus (`stream.ts`) call `generateManifest` with seed
-  only — always generic. The break this would cause is real: cross-system
-  identity correlation is DOMAIN-based and domains are profile-derived
-  (`hillcrest-4.example.com` vs `consulting-4.example.com`), so running the
-  2a mocks on a vertical profile beside the faithful mocks falsifies
-  hubcrm's "SHARED universe" premise and collapses tier-2 matching. It is
-  LATENT today: no script, env, or entrypoint threads a profile — selection
-  is programmatic `opts.profile` only, so every operator-reachable stack is
-  coherent generic. *Owner: Task F, alongside the faithful-source staging
-  switch (the slice that already touches the other mocks' seams).*
+- ~~The profile seam reaches the three 2a mocks only; the four 2b mocks are
+  deaf to it~~ *Paid (2b Task F-1):* sheets (`seed.ts`/`sheet.ts`/
+  `editor.ts`), stripefeed (`feed.ts`), hubcrm (`store.ts`), and casebus
+  (`stream.ts`) now accept `profile` through the same seam as the 2a mocks
+  — one optional option, threaded to `generateManifest`, generic by default,
+  refusing unknown names at construction with the valid set — so a profiled
+  full stack keeps cross-system domain correlation coherent. Pinned per mock
+  (content IS the profile's manifest; refusal is loud) in
+  `ingest/test/profile-threading.test.ts`. Profile selection is still
+  programmatic only (no script/env threads one) — unchanged, and now safe
+  either way.
 - **Profile flavor-word vetting is review-enforced, not machine-enforced** —
   the per-profile hygiene scans catch real email/domain shapes, but a real
   brand name used as a flavor word would pass (plant-verified in the Task E

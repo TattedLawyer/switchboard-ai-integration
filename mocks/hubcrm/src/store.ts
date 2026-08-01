@@ -8,7 +8,7 @@
 // carry up to 100 events; ordering NOT guaranteed. The full record is reachable only
 // through the hydration API (server.ts), which serves FETCH-time state.
 
-import { generateManifest, prng, secretForSource, signBody } from "@switchboard/mock-core";
+import { generateManifest, prng, secretForSource, signBody, type Profile } from "@switchboard/mock-core";
 
 export type HubObjectType = "company" | "contact" | "deal";
 
@@ -68,6 +68,10 @@ export interface DeliverOptions {
 export interface HubStoreOptions {
   seed: number;
   portalId?: number;
+  /** Vertical profile (F-1): threads to generateManifest exactly like the 2a mocks'
+   *  opts.profile — the SHARED-universe premise holds only if every mock in a stack
+   *  derives from the same (seed, profile). Unknown names refuse at construction. */
+  profile?: Profile;
 }
 
 export interface HubStore {
@@ -88,7 +92,7 @@ const CHANGE_SOURCES = ["CRM_UI", "API", "IMPORT"];
 
 export function createHubStore(opts: HubStoreOptions): HubStore {
   const portalId = opts.portalId ?? 24_000_000 + (opts.seed % 1000);
-  const manifest = generateManifest(opts.seed).crm; // the SHARED universe — identities correlate with the 2a mocks at the same seed
+  const manifest = generateManifest(opts.seed, opts.profile).crm; // the SHARED universe — identities correlate with the 2a mocks at the same (seed, profile)
   const idRand = prng(opts.seed ^ 0x9e3779b9);
   const mintedIds = new Set<number>();
   /** Non-ordinal numeric ids (HubSpot eventIds/objectIds are int64-ish): random draws

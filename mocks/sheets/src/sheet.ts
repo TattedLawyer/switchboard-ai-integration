@@ -6,6 +6,7 @@
 // compares these rows against pipeline output exactly.
 
 import { COL, createRowSource, SHEET_HEADER } from "./seed.js";
+import type { Profile } from "@switchboard/mock-core";
 
 export type SheetRow = { rowKey: string; cells: string[] };
 export type Grid = { header: string[]; rows: string[][] };
@@ -73,8 +74,8 @@ const colLetter = (i: number) => String.fromCharCode(65 + i);
 const sheetRow = (dataIndex: number) => dataIndex + 2;
 const rowRange = (dataIndex: number) => `A${sheetRow(dataIndex)}:${colLetter(WIDTH - 1)}${sheetRow(dataIndex)}`;
 
-export function createSheet(opts: { seed: number; rowCount?: number }): SheetState {
-  const { seed, rowCount = 12 } = opts;
+export function createSheet(opts: { seed: number; rowCount?: number; profile?: Profile }): SheetState {
+  const { seed, rowCount = 12, profile } = opts;
   const header: string[] = [...SHEET_HEADER];
   const rows: SheetRow[] = [];
   const journal: JournalEntry[] = [];
@@ -103,7 +104,7 @@ export function createSheet(opts: { seed: number; rowCount?: number }): SheetSta
   };
 
   // seed rows are row BIRTHS, not edits: the journal records only mutations
-  const source = createRowSource(seed);
+  const source = createRowSource(seed, profile);
   for (let i = 0; i < rowCount; i++) rows.push(birth(source.next()));
 
   const record = (op: EditOpType, range: string, rowsChanged: number, detail: Record<string, unknown>): AppliedEdit => {

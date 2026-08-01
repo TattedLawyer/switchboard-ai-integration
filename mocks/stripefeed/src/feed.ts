@@ -9,7 +9,7 @@
 // is its full retained event set: this paradigm has no ledger file and no push channel —
 // the feed IS the interface.
 
-import { generateManifest, prng } from "@switchboard/mock-core";
+import { generateManifest, prng, type Profile } from "@switchboard/mock-core";
 
 export interface FeedEvent {
   id: string;
@@ -21,6 +21,8 @@ export interface FeedEvent {
 
 export interface FeedOptions {
   seed: number;
+  /** Vertical profile (F-1): threads to generateManifest like the 2a mocks' opts.profile. */
+  profile?: Profile;
   /** Research: "events retrievable for 30 days". Overridable only so tests can pin the
    *  boundary cheaply; the default IS the researched contract. */
   retentionDays?: number;
@@ -57,7 +59,7 @@ const pad = (n: number) => String(n).padStart(4, "0");
 
 export function createFeed(opts: FeedOptions): FeedState {
   const retentionS = (opts.retentionDays ?? 30) * 86_400;
-  const { customers, invoices } = generateManifest(opts.seed).billing;
+  const { customers, invoices } = generateManifest(opts.seed, opts.profile).billing;
 
   // Two independent seeded streams so id minting never perturbs anything else.
   const idRand = prng(opts.seed ^ 0x5f3759df);

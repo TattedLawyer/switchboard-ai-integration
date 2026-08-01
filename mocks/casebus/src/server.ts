@@ -42,6 +42,8 @@ import { CorruptedReplayIdError, REPLAY_PRESETS, createStream, type ReplayPreset
 
 export interface CasebusAppOptions {
   seed: number;
+  /** Vertical profile (F-1) — threads to the stream's manifest; see StreamOptions. */
+  profile?: import("@switchboard/mock-core").Profile;
   retentionHours?: number;
   /** See StreamOptions: these emission ordinals ship an unparseable `event_time`, so a
    *  poison event lands MID-BATCH between healthy ones — the standing poison-isolation
@@ -76,6 +78,7 @@ const busError = (
 export function createCasebusApp(opts: CasebusAppOptions): CasebusApp {
   const stream = createStream({
     seed: opts.seed,
+    profile: opts.profile,
     retentionHours: opts.retentionHours,
     poisonEmissionIndexes: opts.poisonEmissionIndexes,
   });

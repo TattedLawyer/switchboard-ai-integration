@@ -20,7 +20,7 @@
 // and no push channel — the subscription IS the interface.
 
 import { randomUUID } from "node:crypto";
-import { generateManifest, prng } from "@switchboard/mock-core";
+import { generateManifest, prng, type Profile } from "@switchboard/mock-core";
 
 /** Exactly the vendor's enum, spelling and case re-verified at implementation time. */
 export const REPLAY_PRESETS = ["LATEST", "EARLIEST", "CUSTOM"] as const;
@@ -40,6 +40,8 @@ export interface BusEvent {
 
 export interface StreamOptions {
   seed: number;
+  /** Vertical profile (F-1): threads to generateManifest like the 2a mocks' opts.profile. */
+  profile?: Profile;
   /** Research: 72 hours. Overridable only so tests can pin the boundary cheaply; the
    *  default IS the researched contract. */
   retentionHours?: number;
@@ -95,7 +97,7 @@ const pad = (n: number) => String(n).padStart(4, "0");
 
 export function createStream(opts: StreamOptions): StreamState {
   const retentionS = (opts.retentionHours ?? 72) * 3600;
-  const { tickets, requesters } = generateManifest(opts.seed).support;
+  const { tickets, requesters } = generateManifest(opts.seed, opts.profile).support;
 
   // Three independent seeded streams so no draw perturbs another.
   const idRand = prng(opts.seed ^ 0x5bf03635);

@@ -21,6 +21,9 @@ export type Read429Options = {
 export type SheetsAppOptions = {
   seed: number;
   rowCount?: number;
+  /** Vertical profile (F-1) — threads to the seeded rows AND the editor's replacement
+   *  values, so a profiled sheet stays inside its profile's universe under edits. */
+  profile?: import("@switchboard/mock-core").Profile;
   read429?: Read429Options;
   /** Optional push channel target. No URL → no trigger channel at all (a sheet with
    *  no Apps-Script trigger installed — the default posture). */
@@ -52,7 +55,7 @@ const QUOTA_BODY = {
 } as const;
 
 export function createSheetsApp(opts: SheetsAppOptions): SheetsApp {
-  const sheet = createSheet({ seed: opts.seed, rowCount: opts.rowCount });
+  const sheet = createSheet({ seed: opts.seed, rowCount: opts.rowCount, profile: opts.profile });
 
   // The trigger is wired ONLY into the editor's human path. sheet.apply() — the
   // API/script write path — has no route to it (documented: "Script executions and
@@ -67,7 +70,7 @@ export function createSheetsApp(opts: SheetsAppOptions): SheetsApp {
         dailyQuota: opts.trigger?.dailyQuota,
       })
     : undefined;
-  const editor = createEditor(sheet, { seed: opts.seed, onHumanEdit: trigger?.onHumanEdit });
+  const editor = createEditor(sheet, { seed: opts.seed, profile: opts.profile, onHumanEdit: trigger?.onHumanEdit });
 
   // Seeded read-fault stream: one draw per read request, in arrival order —
   // deterministic for any identical request sequence.

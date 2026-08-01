@@ -4,6 +4,7 @@
 
 import { prng } from "@switchboard/mock-core";
 import { COL, createRowSource, editValueSource } from "./seed.js";
+import type { Profile } from "@switchboard/mock-core";
 import type { EditOp, EditOpType, SheetState } from "./sheet.js";
 
 export const FAULT_PLANS = ["calm", "messy", "bulk", "hostile"] as const;
@@ -70,13 +71,13 @@ const CLOCK_BASE_MS = Date.parse("2026-07-01T00:00:00.000Z");
 
 export function createEditor(
   sheet: SheetState,
-  opts: { seed: number; onHumanEdit?: (e: HumanEdit) => void },
+  opts: { seed: number; profile?: Profile; onHumanEdit?: (e: HumanEdit) => void },
 ): Editor {
   const rand = prng(opts.seed);
   // Distinct content stream from the sheet's seed stream (offset avoids replaying the
   // exact seed rows) — still fully determined by the editor seed.
-  const rowSource = createRowSource(opts.seed + 1_000_003);
-  const editValue = editValueSource(rand);
+  const rowSource = createRowSource(opts.seed + 1_000_003, opts.profile);
+  const editValue = editValueSource(rand, opts.profile);
   let steps = 0;
   let hostileSteps = 0;
 
