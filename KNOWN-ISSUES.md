@@ -462,17 +462,23 @@ events per request, ordering not guaranteed, 10 retries over 24 hours and then
 the delivery is gone — all research-verified) and the full record must be
 fetched afterwards. Three stated limits of the paradigm itself:
 
-- **Merge-modeling fidelity note (F-1b decision 1).** `company.merge` thin
-  events and new-survivor semantics (a NEW record id carrying
-  `hs_merged_object_ids`; neither input survives under its own id) are
-  research-verified verbatim (`.superpowers/sdd/f2-wire-research.md` Q1). Two
-  points are DISCLOSED INFERENCE, modeled conservatively because no vendor
-  page states them: GET on a consumed record id answers **404** (the vendor
-  documents old-id resolution only for the basic update endpoint), and a merge
-  event's `objectId` carries the **survivor's** id (the payload documents the
-  field but not which id it holds on a merge). Reconcile treats
-  merge-explained absence as metabolism (`mergedAwayRaw`, beside
-  `tombstonedRaw`).
+- **Merge-modeling fidelity note (F-1b decision 1; re-researched on request,
+  2026-08-01).** `company.merge` thin events and new-survivor semantics (a NEW
+  record id carrying `hs_merged_object_ids`; neither input survives under its
+  own id) are research-verified verbatim (`.superpowers/sdd/f2-wire-research.md`
+  Q1). The **404-on-consumed-id** model was re-tested against re-opened vendor
+  pages and STANDS as the documented-behavior reading: the KB says old ids are
+  searchable *via the Merged IDs property* (reference data), and the dev docs
+  support old ids *only* on the basic update endpoint ("not supported … batch
+  update") — read-by-old-id is stated nowhere, so the mock refuses to invent an
+  alias. One remaining inference, still disclosed: a merge event's `objectId`
+  carries the **survivor's** id. Design corroboration (digest-level, labeled):
+  production ETL vendors handle HubSpot merges the same way this pipeline does
+  — secondaries tracked as removed, lineage kept via `hs_merged_object_ids`,
+  survivor re-fetched after a merge (Fivetran's HubSpot connector docs/support
+  notes) — which is exactly `merge_edges` + `mergedAwayRaw` + hydration via
+  the merge event. Reconcile treats merge-explained absence as metabolism
+  (`mergedAwayRaw`, beside `tombstonedRaw`).
 
 - **A webhook that exhausts its retries is permanently undeliverable, and this
   source has no feed to re-read.** Unlike stripefeed (whose catchUp re-drains a
