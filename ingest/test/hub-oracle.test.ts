@@ -184,3 +184,38 @@ describe("the hydration trichotomy under chaos", () => {
     expect(r.missing.length + r.drifted.length).toBeGreaterThan(0);
   });
 });
+
+// ── F-1b: reconcile understands MERGES — absence explained by a merge event is
+// metabolism, not a discrepancy ─────────────────────────────────────────────────────────
+describe("merge-aware reconcile (F-1b: the merged-away are explained, the survivor is hydrated)", () => {
+  it("a fault-free run past the merge ops reconciles CLEAN: consumed ids are neither extra nor missing but counted mergedAwayRaw; the survivor snapshot carries hs_merged_object_ids", async () => {
+    const hub = createHubcrmApp({ seed: 42 });
+    const baseUrl = listen(hub.app);
+    hub.store.simulate(240); // 22 creates + both merges land (mock-side pin covers the shape)
+    await deliver(hub);
+
+    const c = await connector(baseUrl);
+    await c.catchUpWithReport(pool); // hydration pump: every thin event → terminal state
+    const rec = await c.reconcile(pool);
+    expect(rec.integrity.ok).toBe(true);
+    const report = rec.report!;
+    expect(report.missing).toEqual([]);
+    expect(report.extra).toEqual([]); // pre-fix: the four consumed company ids land here
+    // The four consumed record ids (2 winners' inputs + 2 merged-away) are absent from
+    // the store BECAUSE a merge event in raw explains them — their own named bucket,
+    // as rich as tombstonedRaw (checklist line 6: same condition, equally rich record).
+    expect((report as Record<string, unknown>).mergedAwayRaw).toBe(4);
+
+    const merges = hub.store.emittedEvents().filter((e) => e.subscriptionType === "company.merge");
+    for (const m of merges) {
+      const snap = await pool.query(
+        `select snapshot from ingest.hydrated_snapshots
+          where object_type = 'company' and object_id = $1 and not tombstone`,
+        [String(m.newObjectId)],
+      );
+      expect(snap.rowCount).toBeGreaterThan(0); // the survivor was hydrated via the merge event
+      const props = (snap.rows[0].snapshot as { properties: Record<string, string> }).properties;
+      expect(String(props.hs_merged_object_ids)).toContain(String(m.primaryObjectId));
+    }
+  });
+});
