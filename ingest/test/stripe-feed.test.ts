@@ -353,12 +353,26 @@ describe("addendum — one malformed `created` must not blind a thirty-day windo
     expect(result.report!.missing).toEqual(["evt_a", "evt_b", "evt_bad"]);
   });
 
-  it("the malformed event contributes NO timestamp: the aged-out boundary is computed from the events that have one", async () => {
+  it("TRAP A — one NaN in the retained set must not EMPTY the `extra` bucket: a raw row inside the window is still flagged", async () => {
+    // Direction matters, and the first version of this pin got it backwards while
+    // claiming to prove it. With NaN in the retained set, `Math.min` yields NaN,
+    // `occurredMs >= NaN` is FALSE for every row, and every unretained raw row therefore
+    // falls to the `else` branch — so the bug SUPPRESSES `extra` entirely. It is a false
+    // NEGATIVE: the real-anomaly bucket silently empties. (The superseded pin placed its
+    // raw row OUTSIDE the window, where both versions answer {extra: 0, aged: 1}, so it
+    // passed with and without the fix — it survived its own revert and proved nothing.)
     const now = NOW_S();
-    // A raw row older than every well-formed retained event is normal metabolism
-    // (ingested, then aged out) and must stay out of `extra`. If the malformed event's
-    // NaN leaked into the boundary arithmetic, every comparison against it would be
-    // false and this row would be misfiled.
+
+    // Inside the window: NEWER than the earliest well-formed retained event, and no
+    // longer served by the feed. That combination cannot be an age-out, so it is exactly
+    // the real anomaly `extra` exists to report.
+    await pool.query(
+      `insert into raw.raw_events (source, event_id, event_type, payload)
+       values ('stripefeed', 'evt_vanished', 'charge.succeeded', $1)`,
+      [JSON.stringify({ event_id: "evt_vanished", event_type: "charge.succeeded", occurred_at: new Date((now - 50) * 1000).toISOString(), data: {} })],
+    );
+    // And one genuinely aged-out row, so the two buckets are told apart rather than
+    // merely counted.
     await pool.query(
       `insert into raw.raw_events (source, event_id, event_type, payload)
        values ('stripefeed', 'evt_old', 'charge.succeeded', $1)`,
@@ -373,8 +387,43 @@ describe("addendum — one malformed `created` must not blind a thirty-day windo
 
     const result = await c.reconcile(pool);
     expect(result.integrity.ok).toBe(true);
+    // THE discriminating assertion: buggy ⇒ [] (bucket emptied), fixed ⇒ ["evt_vanished"].
+    expect(result.report!.extra).toEqual(["evt_vanished"]);
+    // …and the genuine age-out is still classified as metabolism, not swept up with it.
     expect(result.report!.agedOutRaw).toBe(1);
-    expect(result.report!.extra).toEqual([]);
+  });
+
+  it("TRAP B — cursor selection is ORDER-INVARIANT: a timestamp-less envelope cannot win the paging cursor by arriving first", async () => {
+    // The trap: `deepest === null` accepts the first candidate unconditionally, and every
+    // later comparison against a NaN `created` is false — so a malformed envelope taken
+    // first can never be displaced, and the paging cursor becomes a function of ARRIVAL
+    // ORDER. That is precisely the response-position dependence this connector exists to
+    // refuse (the feed's ordering is undocumented and the mock shuffles).
+    const now = NOW_S();
+    const a = evt("evt_a", now - 100);
+    const b = evt("evt_b", now - 90);
+    const bad = { ...evt("evt_bad", now - 95), created: undefined as unknown as number } as StubEvent;
+
+    // Same candidate SET, two arrival orders — malformed last, then malformed first.
+    const cursorFor = async (page1: StubEvent[]): Promise<string | undefined> => {
+      const { baseUrl, urls } = scriptedFeed([
+        (_req, res) => res.json(pageBody(page1, true)),
+        (_req, res) => res.json(pageBody([], false)),
+      ]);
+      const result = await new StripeFeedConnector({ baseUrl: await baseUrl, pageLimit: 100 }).reconcile(pool);
+      expect(result.integrity.ok).toBe(true);
+      srv?.close();
+      srv = undefined;
+      // The cursor the connector chose is observable as the second request's parameter.
+      return new URL(`http://x${urls[1]}`).searchParams.get("starting_after") ?? undefined;
+    };
+
+    const malformedLast = await cursorFor([a, bad, b]);
+    const malformedFirst = await cursorFor([bad, a, b]);
+
+    expect(malformedLast).toBe(malformedFirst);
+    // And it is the deepest WELL-FORMED envelope — never the one with no timestamp.
+    expect(malformedLast).toBe("evt_b");
   });
 
   it("a missing IDENTITY is still fatal — there is nothing to compare against raw", async () => {
