@@ -340,3 +340,52 @@ describe("F-1b merge modeling: company.merge thin events + new-survivor semantic
     expect(pick(a)).toEqual(pick(b));
   });
 });
+
+// ── F-1c: the staging switch makes this store the warehouse's CRM universe, so the
+// DEFAULT script must never destroy what the identity tiers match on — contact emails
+// (tier 1) and company name/domain/owner_email (tier 2). The mutation slots exist to
+// exercise the propertyChange/hydration machinery, and they keep doing that — on
+// NON-identity properties. Evidence-destroying mutations are a fault-shaped scenario:
+// they belong to bespoke test stores, not to the seeded universe every downstream
+// identity proof (verify-identity's 22→20 + tier partition) builds on. ──────────────────
+describe("F-1c identity-evidence invariance of the default script", () => {
+  const opsPastMerges = OPS_UNTIL_MERGES_COMPLETE + 60; // through the merges AND into the recycling tail
+
+  it("every live company's name/domain/owner_email equals its manifest values at every point past merge completion — the company mutation slot touches no identity property", () => {
+    const store = createHubStore({ seed: 42 });
+    const byId = new Map(generateManifest(42).crm.companies.map((c) => [c.id, c]));
+    store.simulate(opsPastMerges);
+    for (const rec of store.list("company")) {
+      const m = byId.get(String(rec.properties.hs_manifest_id));
+      expect(m, `live company ${rec.objectId} names manifest id ${String(rec.properties.hs_manifest_id)}`).toBeDefined();
+      expect(rec.properties.name).toBe(m!.name);
+      expect(rec.properties.domain).toBe(m!.domain);
+      expect(rec.properties.owner_email).toBe(m!.owner_email);
+    }
+  });
+
+  it("every live contact's email equals its manifest value — the contact mutation slot touches no identity property", () => {
+    const store = createHubStore({ seed: 42 });
+    const byId = new Map(generateManifest(42).crm.contacts.map((c) => [c.id, c]));
+    store.simulate(opsPastMerges);
+    for (const rec of store.list("contact")) {
+      const m = byId.get(String(rec.properties.hs_manifest_id));
+      expect(m).toBeDefined();
+      expect(rec.properties.email).toBe(m!.email);
+    }
+  });
+
+  it("the mutation machinery still runs: propertyChange traffic flows for all three object types, and the company/contact changes name only NON-identity properties", () => {
+    const store = createHubStore({ seed: 42 });
+    store.simulate(opsPastMerges);
+    const changes = store.emittedEvents().filter((e) => e.subscriptionType.endsWith(".propertyChange"));
+    expect(new Set(changes.map((e) => e.subscriptionType))).toEqual(
+      new Set(["company.propertyChange", "contact.propertyChange", "deal.propertyChange"]),
+    );
+    const identityProps = new Set(["name", "domain", "owner_email", "email", "hs_manifest_id", "company_manifest_id"]);
+    for (const e of changes) {
+      if (e.subscriptionType === "deal.propertyChange") continue; // deal amount/status/currency are working data, not identity evidence
+      expect(identityProps.has(String(e.propertyName)), `${e.subscriptionType} mutated identity property ${String(e.propertyName)}`).toBe(false);
+    }
+  });
+});
