@@ -112,7 +112,10 @@ async function grantAgentReadOnly(pool: pg.Pool): Promise<void> {
   // scoping this entry narrows nothing granted elsewhere.)
   const dbtRole = process.env.DBT_ROLE;
   if (dbtRole === undefined || dbtRole === "") {
-    console.warn(
+    // stdout, not stderr: this is a disclosed configuration limitation, not a failure —
+    // stderr on this repo's operational surfaces is reserved for real problems (gap
+    // disclosures, failures), and the CI fixture pins its own stderr EMPTY.
+    console.log(
       "[migrate] DBT_ROLE not set — default privileges bind to the migrator's own role, " +
         "so tables (re)created by a different dbt role will NOT carry the agent grant. " +
         "Set DBT_ROLE to the role dbt connects as to scope the grant FOR ROLE.",

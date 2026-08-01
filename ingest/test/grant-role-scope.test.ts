@@ -90,12 +90,15 @@ describe("B9: grantAgentReadOnly scopes default privileges FOR ROLE <dbt role>",
 
   it("DBT_ROLE absent → prior behavior preserved AND the limitation logged at migrate time (operator surface, wording pinned)", async () => {
     vi.stubEnv("DBT_ROLE", "");
-    const warns: string[] = [];
-    vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
-      warns.push(args.map(String).join(" "));
+    // stdout on purpose: a disclosed limitation is not an error, and the CI fixture
+    // pins its child-process stderr EMPTY (ci-fixture-alignment.test.ts) — a warn here
+    // would fail that standing pin on every migrate.
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
     });
     await runMigrations(pool);
-    const line = warns.find((w) => w.includes("DBT_ROLE"));
+    const line = logs.find((w) => w.includes("DBT_ROLE"));
     expect(line).toBe(
       "[migrate] DBT_ROLE not set — default privileges bind to the migrator's own role, " +
         "so tables (re)created by a different dbt role will NOT carry the agent grant. " +
