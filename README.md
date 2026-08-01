@@ -220,8 +220,8 @@ PROFILE=saas node --import tsx -e 'import("@switchboard/mock-core").then(({gener
 ```
 
 ```text
-company DEMO-C-0001 DEMO Cloudmetric Software 1 · cloudmetric-1.example.com
-company DEMO-C-0002 DEMO Datastack Software 2 · datastack-2.example.com
+company DEMO-C-0001 DEMO Cloudbriar Software 1 · cloudbriar-1.example.com
+company DEMO-C-0002 DEMO Datawren Software 2 · datawren-2.example.com
 deal    DEMO-D-0001 DEMO Team Plan Upgrade 1 · $108251.78
 ticket  DEMO-T-0001 DEMO API Rate Limit Ticket 1
 ```

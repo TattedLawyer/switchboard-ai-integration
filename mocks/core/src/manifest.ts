@@ -118,9 +118,13 @@ const PROFILE_CONTENT: Record<Profile, ProfileContent> = {
     nearMissSupportEmail: "help.hydrojet-17b@example.com",
   },
   // Software/SaaS: subscription-shaped deals (ARR bands), product tickets.
+  // Sector words are INVENTED tokens, each individually web-vetted (Task E fix round,
+  // review I2 — the first list shipped real company names): no company/product match
+  // found for any word below at vetting time; the per-word search record is in the
+  // task report for the range.
   saas: {
-    sectors: ["Cloudmetric", "Datastack", "Devloop", "Apigrid", "Signalframe",
-      "Queryforge", "Stackpilot", "Bitgarden", "Logscape", "Netplane"],
+    sectors: ["Cloudbriar", "Datawren", "Devburrow", "Apibloom", "Signalfern",
+      "Queryhollow", "Stackbramble", "Bitmarrow", "Logthistle", "Netgorse"],
     companyName: (sector, n) => `DEMO ${sector} Software ${n}`,
     contactName: (n) => `DEMO Admin Contact ${n}`,
     dealName: (n) =>
@@ -132,17 +136,21 @@ const PROFILE_CONTENT: Record<Profile, ProfileContent> = {
     ticketSubject: (n) =>
       `DEMO ${at(["Login Failure", "API Rate Limit", "Billing Question", "Data Export",
         "Webhook Outage", "SSO Setup", "Slow Dashboard", "Feature Request"], n)} Ticket ${n}`,
-    tier2BillingEmails: ["billing.cloudmetric-11@example.com", "billing.devloop-12@example.com", "billing.queryforge-13@example.com"],
-    nearMissBillingDomain: "datastack-14b.example.com",
-    nearMissBillingEmail: "billing.datastack-14b@example.com",
-    tier2SupportEmails: ["help.logscape-15@example.com", "help.apigrid-16@example.com"],
-    nearMissSupportEmail: "help.netplane-17b@example.com",
+    tier2BillingEmails: ["billing.cloudbriar-11@example.com", "billing.devburrow-12@example.com", "billing.queryhollow-13@example.com"],
+    nearMissBillingDomain: "datawren-14b.example.com",
+    nearMissBillingEmail: "billing.datawren-14b@example.com",
+    tier2SupportEmails: ["help.logthistle-15@example.com", "help.apibloom-16@example.com"],
+    nearMissSupportEmail: "help.netgorse-17b@example.com",
   },
   // Real estate as a VERTICAL, generic vertical language only — listings, closings,
   // commissions, escrow, inspections (2b-D5 wall: nothing sourced from any real
   // engagement, broker, or document; the repo stays synthetic, period).
   realestate: {
-    sectors: ["Harborview", "Summit", "Lakeside", "Metroline", "Prairie",
+    // Generic-geography vocabulary only (review-cleared class: descriptive place
+    // words used by countless unaffiliated local businesses, no distinctive brand).
+    // "Metroline" was replaced by "Hillcrest" in the Task E fix round — exact match
+    // with the London bus operator; per-word vetting record in the task report.
+    sectors: ["Harborview", "Summit", "Lakeside", "Hillcrest", "Prairie",
       "Coastal", "Uptown", "Foothill", "Riverbend", "Highland"],
     companyName: (sector, n) => `DEMO ${sector} Realty ${n}`,
     contactName: (n) => `DEMO Client Contact ${n}`,
