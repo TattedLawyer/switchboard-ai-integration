@@ -180,7 +180,8 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
 ## Ingestion & reliability (MED)
 
 - ~~The demo/chaos scripts leak their mock server processes~~ *Paid (debt-burn
-  B2), pending CI chaos confirmation.* The cleanup traps used to `kill` the
+  B2); CI-confirmed 2026-08-01 — the chaos workflow ran green with the new
+  group-kill traps on the wave head.* The cleanup traps used to `kill` the
   `npm` process they started, but `npm run` spawns through a shell and does not
   reap its grandchild on SIGTERM ([npm/cli#6684](https://github.com/npm/cli/issues/6684)),
   so a `node` listener could outlive the script and hold its port — what
@@ -825,7 +826,7 @@ unprefixed lines are genuinely global-scope (CLI flag errors, whole-queue
 depth counts), not per-source · migration
 001-recreate/003-drop churn at startup · ~~CI installs dbt via bare pip (no
 setup-python pin) and double-runs on PR branches (no concurrency group)~~
-*Paid (debt-burn B7, pending live-run confirmation on next push):*
+*Paid (debt-burn B7; live-run confirmed 2026-08-01 — setup-python + concurrency active on the wave head's runs. Confirmed limit: the ref-keyed group does NOT dedupe push-vs-PR runs of the same commit — different refs — so the cross-event double-run persists; one-line head-ref group fix registered to ride the next CI-touching commit):*
 `setup-python@v7` pinned to 3.13 with a pip cache keyed on the workflow file
 (where the pinned dbt version lives), and a `concurrency` group per
 workflow+ref with `cancel-in-progress` conditional off `main` so a push to
