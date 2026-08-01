@@ -314,7 +314,10 @@ INGEST_SOURCES=casebus npm run reconcile -w ingest    # full retained-window dra
   connector compares the stream identity it stored against the one the recovery
   subscription reports. If you are debugging a gap's cause, `GET /status` on the
   mock and `select stream_id from ingest.cursors where source = 'casebus'` are
-  the two values that decide it.
+  the two values that decide it. A NULL `stream_id` means the identity was never
+  OBSERVED for that cursor (status frames may omit it) — the connector then
+  claims the conservative `retention`, and it never back-fills the column from
+  an older run's memory (Task F: remembered identity is not evidence).
 - **Duplicates on the backfill log are normal.** At-least-once delivery means
   `N duplicate(s) absorbed by idempotent ingest` is the healthy steady state,
   not an incident. That clause is emitted by the backfill CLI for **any**
