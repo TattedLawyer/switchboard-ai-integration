@@ -573,11 +573,19 @@ leaves it is gone from the source forever.
   `integrity: { ok: false }` for that source only, with its own wording, **no
   gap row filed**, standing-loss disclosure and later sources intact (pinned
   both directions in `bus-replay.test.ts` and `bus-cli.test.ts`).
-- **A status frame that omits `stream_id` can bind a new cursor to the old
-  stream identity** (`setCursor`'s `coalesce`), which would later mislabel a
-  reset as `retention`. Unreachable against this mock, which always sends the
-  field; the honest fix needs a mock knob that omits it plus its own RED, not
-  a defensive coalesce swap. Owner: Task F (mock/fixture rework).
+- ~~A status frame that omits `stream_id` can bind a new cursor to the old
+  stream identity~~ *Paid (2b Task F):* the mock gained its honest knob
+  (`omitStreamIdInStatusFrames`, budget consumed only by frames actually
+  rendered), and the simulated RED corrected this entry's own direction claim
+  (the standing simulate-don't-reason rule): the coalesce resurrected a
+  PREVIOUS stream's identity, so the next ordinary age-out compared stale-old
+  vs current and mislabeled **retention as `reset`** — not reset as retention
+  (that direction is the separate, documented conservative unknown-identity
+  path). Fix: `setCursor` writes the identity verbatim (NULL = "unobserved"),
+  and the connector binds only identity observed DURING THE RUN (a mid-run
+  omitting frame keeps the run's carry; a blind run binds NULL). Pinned both
+  directions plus the boundary in `bus-replay.test.ts`; reconcile's mid-scan
+  carry matches.
 - ~~A ledger-insert failure in the corrupted-cursor path now fails the
   backfill — an unremarked failure-mode change with no test naming it~~ *Paid
   (debt-burn A2):* research (WAL record-before-act) resolved the open

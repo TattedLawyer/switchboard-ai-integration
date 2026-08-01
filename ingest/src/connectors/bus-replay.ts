@@ -176,6 +176,13 @@ export class BusReplayConnector implements Connector {
 
     const report: BusReplayCatchUpReport = { ingested: 0, duplicates: 0, quarantined: 0, gaps: [] };
     let cursor = await this.getCursor(pool, tenantId);
+    // M4 (Task F): the stream identity OBSERVED DURING THIS RUN — the only identity
+    // setCursor may bind to an advancing replay id. A status frame may omit stream_id;
+    // filling that hole with the identity remembered from a PREVIOUS run (the old SQL
+    // coalesce) fabricated evidence and made the next ordinary age-out read as a reset.
+    // Within one run the carry is sound: a live subscription cannot change streams
+    // without the cursor dying first (a reset invalidates it as corrupted).
+    let runStreamId: string | null = null;
 
     for (let rounds = 0; ; rounds++) {
       if (rounds >= maxRounds) {
@@ -203,6 +210,7 @@ export class BusReplayConnector implements Connector {
           // tells us the CURRENT stream identity), name the cause from that identity,
           // record the loss with bounds, then keep ingesting.
           const probe = await this.fetchBatch(baseUrl, fallback, null, batchSize);
+          if (probe.streamId !== null) runStreamId = probe.streamId;
           const cause: GapCause =
             cursor.streamId !== null && probe.streamId !== null && probe.streamId !== cursor.streamId
               ? "reset"
@@ -239,7 +247,7 @@ export class BusReplayConnector implements Connector {
             // retains nothing there is no tip to adopt, so the cursor stays cleared and
             // the next run subscribes fresh.
             if (probe.latestReplayId !== null) {
-              await this.setCursor(pool, tenantId, probe.latestReplayId, probe.streamId);
+              await this.setCursor(pool, tenantId, probe.latestReplayId, probe.streamId ?? runStreamId);
             }
             return report;
           }
@@ -265,9 +273,13 @@ export class BusReplayConnector implements Connector {
       // Advance only after the WHOLE batch is processed: a crash between batch and cursor
       // write means a re-fetch, i.e. duplicates — which this paradigm produces anyway and
       // idempotent ingest absorbs. Re-delivery is the safe failure mode; skipping is not.
+      // M4: the identity bound to the advance is what THIS RUN observed — an omitting
+      // frame falls back to the run-scoped carry, and an entirely blind run binds NULL
+      // ("identity unobserved"), never a prior stream's remembered id.
+      if (batch.streamId !== null) runStreamId = batch.streamId;
       if (deepest !== null) {
-        cursor = { replayId: deepest, streamId: batch.streamId };
-        await this.setCursor(pool, tenantId, deepest, batch.streamId);
+        cursor = { replayId: deepest, streamId: runStreamId };
+        await this.setCursor(pool, tenantId, deepest, runStreamId);
       }
 
       if (!batch.hasMore) return report;
@@ -318,7 +330,9 @@ export class BusReplayConnector implements Connector {
           cursorId === null
             ? await this.fetchBatch(baseUrl, "EARLIEST", null, batchSize)
             : await this.fetchBatch(baseUrl, "CUSTOM", cursorId, batchSize);
-        currentStreamId = batch.streamId;
+        // M4: run-scoped identity carry, same rule as catchUp — a mid-scan omitting
+        // frame keeps the identity this scan already observed; it never resurrects one.
+        currentStreamId = batch.streamId ?? currentStreamId;
         let last: string | null = null;
         for (const { frame } of batch.events) {
           const id = frame.event?.id;
@@ -652,7 +666,7 @@ export class BusReplayConnector implements Connector {
        values ($1, $2, 0, $3, $4, now())
        on conflict (tenant_id, source) do update
          set last_event_id = excluded.last_event_id,
-             stream_id = coalesce(excluded.stream_id, ingest.cursors.stream_id),
+             stream_id = excluded.stream_id,
              updated_at = now()`,
       [tenantId, this.source, replayId, streamId],
     );
