@@ -256,13 +256,9 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
     with their source and not-currently-enabled sources flagged (disclosure,
     not noise); `--source` narrows; `--tenant` landed on both CLIs in the same
     pass (see the tenancy entry below).
-- **The door-enumeration comment in `ingest/src/event-schema.ts` is stale.** It
-  claims "the invariant is the enumeration, not a count" and then lists the
-  webhook, replay, backfill-poll, sheet-snapshot and stripe-feed doors — but
-  not the bus-replay door added in 2b Task D, which applies the same predicate.
-  A one-line comment fix; the file was outside Task D's permitted set, and the
-  comment's own history is a cold-review finding about exactly this drift, so
-  it is recorded here rather than left to be rediscovered. *Owner: Task F.*
+- ~~The door-enumeration comment in `ingest/src/event-schema.ts` is stale~~
+  *Paid (debt-burn, B12 rider):* the bus-replay door joined the enumeration —
+  the one-line fix the entry asked for.
 - **`ingest.outbox` has no consumer** *(audit)* — written in the hot ingest
   transaction, `processed_at` never set, grows one row per event forever. It
   serves only as the demo's equality counter; it is *named* for a

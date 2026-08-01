@@ -42,7 +42,8 @@ export function isAcceptableOccurredAt(s: string, nowMs: number = Date.now()): b
 
 // Raw's doors — the webhook (server.ts), the quarantine replay (quarantine.ts), the
 // backfill poll (backfill.ts), the sheet-snapshot connector (connectors/sheet-snapshot.ts),
-// and the stripe-feed connector (connectors/stripe-feed.ts) — must ALL apply this same
+// the stripe-feed connector (connectors/stripe-feed.ts), and the bus-replay connector
+// (connectors/bus-replay.ts, 2b Task D) — must ALL apply this same
 // predicate; the invariant is the enumeration, not a count (a stale "three doors" here
 // survived two door additions — cold-review comment-drift class). The poll path once did
 // not apply it, and could put a value in raw that throws the staging cast. The definition
