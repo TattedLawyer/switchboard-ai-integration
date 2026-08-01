@@ -22,13 +22,24 @@ external_only as (
            -- person: company_name, then client_name — an orphan row is still NAMED,
            -- never a null-labelled mystery.
            max(coalesce(bc.name, st.company_name, sh.company_name, sh.client_name)) as entity_name,
-           max(coalesce(bc.domain, st.domain))     as domain
+           -- Debt-burn C2 (review M2): a sheets orphan's domain is derivable from its
+           -- own email — the sh subquery derives it with the identity model's exact
+           -- expression, so the two models' treatment of the same evidence cannot
+           -- diverge. Sheets trails billing/support here too, matching the naming
+           -- coalesce above. A 'row:'-keyed orphan (no usable email) derives NULL and
+           -- keeps it — never guessed. Pinned by assert_sheet_orphan_domains_derived.
+           max(coalesce(bc.domain, st.domain, sh.domain)) as domain
     from resolution r
     left join {{ ref('stg_billing__customers') }} bc
       on r.source = 'billing' and bc.customer_id = r.source_entity_id
     left join (select distinct requester_id, company_name, domain from {{ ref('stg_support__tickets') }}) st
       on r.source = 'support' and st.requester_id = r.source_entity_id
-    left join (select distinct on (client_key) client_key, company_name, client_name
+    -- The derived domain carries identity_resolution's free-email caveat verbatim:
+    -- an email's domain is only as meaningful as its provider (gmail.com et al. carry
+    -- no org signal); the free-email blocklist remains Task F's gate. Here it is a
+    -- carried attribute on an unmerged tier-3 entity, not merge evidence.
+    left join (select distinct on (client_key) client_key, company_name, client_name,
+                      nullif(split_part(nullif(lower(trim(client_email)), ''), '@', 2), '') as domain
                from {{ ref('stg_sheets__rows') }}
                order by client_key, detected_at desc, received_at desc, row_key desc) sh
       on r.source = 'sheets' and sh.client_key = r.source_entity_id
