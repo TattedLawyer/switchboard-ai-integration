@@ -6,6 +6,7 @@ import { COL, createSheetsApp, type SheetsApp, type SheetsAppOptions } from "../
 import { generateManifest } from "../../mocks/core/src/manifest.js";
 import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
+import { insertHubObjectState } from "./helpers/hub-staging.js";
 import { SheetSnapshotConnector } from "../src/connectors/sheet-snapshot.js";
 import {
   canonicalRowContent,
@@ -757,20 +758,22 @@ function sheetTruth(sheets: SheetsApp): { rowKey: string; content: Record<string
 
 const manifest = generateManifest(42);
 let crmEvt = 0;
-const insertCrmRaw = async (db: pg.Pool, eventType: string, data: Record<string, unknown>): Promise<void> => {
-  await db.query(
-    `insert into raw.raw_events (source, event_id, event_type, payload)
-     values ('crm', $1, $2, $3::jsonb)`,
-    [`evt-${90000 + ++crmEvt}`, eventType, JSON.stringify({ occurred_at: "2026-07-20T00:00:00.000Z", data })],
-  );
-};
-/** The whole manifest CRM universe as raw events — the same people/companies the sheet
- *  mock draws its rows from (master seed 42), so per-client resolution has real targets. */
+/** The whole manifest CRM universe as hubcrm object states (F-1c: the CRM arm stages
+ *  from hydrated snapshots) — the same people/companies the sheet mock draws its rows
+ *  from (master seed 42), so per-client resolution has real targets. */
 const seedCrmUniverse = async (db: pg.Pool): Promise<void> => {
-  for (const c of manifest.crm.companies)
-    await insertCrmRaw(db, "company.updated", { id: c.id, name: c.name, domain: c.domain, owner_email: c.owner_email });
-  for (const ct of manifest.crm.contacts)
-    await insertCrmRaw(db, "contact.updated", { id: ct.id, company_id: ct.company_id, name: ct.name, email: ct.email });
+  for (const [i, c] of manifest.crm.companies.entries())
+    await insertHubObjectState(db, {
+      objectType: "company", objectId: 900_000 + i, eventId: `evt-${90000 + ++crmEvt}`,
+      occurredAt: "2026-07-20T00:00:00.000Z",
+      properties: { name: c.name, domain: c.domain, owner_email: c.owner_email, hs_manifest_id: c.id },
+    });
+  for (const [i, ct] of manifest.crm.contacts.entries())
+    await insertHubObjectState(db, {
+      objectType: "contact", objectId: 910_000 + i, eventId: `evt-${90000 + ++crmEvt}`,
+      occurredAt: "2026-07-20T00:00:00.000Z",
+      properties: { name: ct.name, email: ct.email, company_manifest_id: ct.company_id, hs_manifest_id: ct.id },
+    });
 };
 
 type MartRow = Record<string, unknown>;

@@ -143,6 +143,15 @@ export const NUMERIC_CONTRACT: Readonly<Record<string, EventContract>> = {
   "company.creation":       { ...HUB_THIN },
   "company.propertyChange": { ...HUB_THIN, ...HUB_PROP },
   "company.deletion":       { ...HUB_THIN },
+  // F-1c: the merge event enters the contract WITH its consumption (merge_edges
+  // re-sources from it — the flip's same-commit rule: a task that declares new contract
+  // types moves the declared-count floor with them). The researched field set
+  // (f2-wire-research.md Q1), vendor-named: the winner's INPUT id, the NEW surviving
+  // record's id, and the property-move count are required integers on every merge.
+  // `mergedObjectIds` is an ARRAY and the field contract's rule shapes are scalar —
+  // deliberately undeclared here (undeclared fields pass untouched); its shape is
+  // enforced at consumption, where merge_edges' lateral unnest reads it.
+  "company.merge":          { ...HUB_THIN, primaryObjectId: { ...INT_REQ }, newObjectId: { ...INT_REQ }, numberOfPropertiesMoved: { ...INT_REQ } },
   "contact.creation":       { ...HUB_THIN },
   "contact.propertyChange": { ...HUB_THIN, ...HUB_PROP },
   "contact.deletion":       { ...HUB_THIN },

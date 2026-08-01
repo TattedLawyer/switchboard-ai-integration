@@ -327,10 +327,14 @@ describe("L1 numeric contract at the trust boundary", () => {
         const sql = readFileSync(join(modelsDir, f), "utf8");
         for (const m of sql.matchAll(/'([a-z_]+\.[a-z_]+)'/g)) consumed.add(m[1]);
       }
-      // 13 staging + company.merged + the two sheet.* types stg_sheets__rows consumes
-      // (A6). The floor guards a silent SCAN break (a regex or directory change that
-      // stops finding event types), not the exact count.
-      expect(consumed.size).toBeGreaterThanOrEqual(16);
+      // The floor guards a silent SCAN break (a regex or directory change that stops
+      // finding event types), not the exact count. F-1c moved it 16 → 11 deliberately:
+      // the staging switch consolidated the warehouse onto fewer, richer faithful
+      // event types (customer/invoice.finalized/charge.* on the envelope feed,
+      // company.merge on the thin-webhook side — its state models filter snapshots by
+      // object_type, not event_type — case.* on the bus, csat.recorded on the 2a
+      // support feed, sheet.* unchanged).
+      expect(consumed.size).toBeGreaterThanOrEqual(11);
       const declared = Object.keys(NUMERIC_CONTRACT);
       for (const type of consumed) {
         // NOT toHaveProperty: vitest treats "invoice.created" as a nested path.
@@ -347,7 +351,10 @@ describe("L1 numeric contract at the trust boundary", () => {
       // without raising the floor, so the pin had gone slack by 12 and would not have
       // noticed them vanishing. Task D adds 4 (the casebus case lifecycle) and the floor
       // is re-tightened to the true count, deliberately, so it goes back to doing its job.
-      expect(declared.length).toBeGreaterThanOrEqual(35);
+      // F-1c: +1 — `company.merge` enters the contract in the same commit merge_edges
+      // starts consuming it (the flip's same-commit rule), and the floor moves with it.
+      expect(declared.length).toBeGreaterThanOrEqual(36);
+      expect(declared).toContain("company.merge");
       expect(declared).toContain("sheet.row_upserted");
       expect(declared).toContain("sheet.row_deleted");
       expect(declared).toContain("invoice.finalized");

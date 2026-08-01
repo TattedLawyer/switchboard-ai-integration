@@ -150,22 +150,29 @@ describe("customer_360 — missing amount is not zero (L3)", () => {
       occurredAt: string,
       amount: string,
     ): Promise<void> => {
+      // F-1c: stripefeed-sourced — invoice state rides invoice.finalized envelopes.
       await pool.query(
         `insert into raw.raw_events (source, event_id, event_type, payload)
-         values ('billing', $1, $2, $3::jsonb)`,
+         values ('stripefeed', $1, $2, $3::jsonb)`,
         [
           eventId,
           eventType,
           JSON.stringify({
             occurred_at: occurredAt,
-            data: { id: "inv-9", customer_id: "cust-5", amount_cents: amount, currency: "USD" },
+            data: { id: "inv-9", object: "invoice", customer_id: "cust-5", amount_cents: amount, currency: "USD" },
           }),
         ],
       );
     };
     // OLDER event: good amount. NEWER event (same invoice, later occurred_at): malformed.
-    await insertRaw("evt-1", "invoice.created", "2026-01-05T00:00:00.000Z", "5000");
-    await insertRaw("evt-2", "invoice.paid", "2026-01-06T00:00:00.000Z", "abc");
+    await insertRaw("evt-1", "invoice.finalized", "2026-01-05T00:00:00.000Z", "5000");
+    await insertRaw("evt-2", "invoice.finalized", "2026-01-06T00:00:00.000Z", "abc");
+    // A successful charge for the invoice: paid state derives from the charge family.
+    await pool.query(
+      `insert into raw.raw_events (source, event_id, event_type, payload)
+       values ('stripefeed', 'evt-3', 'charge.succeeded', $1::jsonb)`,
+      [JSON.stringify({ occurred_at: "2026-01-06T01:00:00.000Z", data: { id: "ch-9", object: "charge", invoice_id: "inv-9", customer_id: "cust-5", amount_cents: 5000, currency: "USD" } })],
+    );
 
     // Chain the REAL staging model (raw → latest-state, L2 safe cast) into the mart fixture.
     await pool.query(`

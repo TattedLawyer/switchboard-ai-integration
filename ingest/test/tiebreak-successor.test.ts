@@ -31,6 +31,21 @@ import { loadModel } from "./helpers/load-model.js";
 // that same text by swapping exactly the tiebreak clause. The ordinal is retired spec — a
 // frozen historical reference is the one kind of "copy" that cannot drift, because the
 // thing it describes no longer changes.
+//
+// NARROWED (F-1c, deliberate): the staging switch re-sourced eight of the nine models
+// away from 2a-shaped feeds (hubcrm snapshots / stripefeed envelopes / the casebus bus),
+// so the "identical winner on 2a-shaped delivery" question is MOOT for them — they can
+// no longer receive 2a-shaped data at all, and their fixtures here stopped compiling
+// against reality. What survives of this suite's claims, and where each lives now:
+//   · the ordinal cast is GONE from every model's text — still asserted here, all nine;
+//   · the equivalence + divergence + vendor-id-safety machinery runs on the one model
+//     still consuming a 2a feed: stg_support__csat (the 2a support mock remains for the
+//     csat arm — the decided end-state);
+//   · the re-sourced models' successor ordering and vendor-shaped-id behavior are
+//     pinned on their OWN source shapes in staging-flip.test.ts (hub event ids are
+//     numeric, stripefeed ids are evt_<opaque>, casebus ids are cev_<opaque> — every
+//     fixture there is vendor-shaped, so "no throw on vendor ids" is exercised by
+//     construction on every pin).
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -71,57 +86,29 @@ interface ModelSpec {
   makeData(entityId: string, marker: string): Record<string, unknown>;
 }
 
-// All nine models that carried the ordinal (8 staging + merge_edges). stg_sheets__rows is
-// absent on purpose: it was born with the successor (A6) and never had the cast.
+// All nine models that carried the ordinal (8 staging + merge_edges); stg_sheets__rows
+// is absent on purpose — born with the successor (A6), never had the cast.
+// Eight of the nine are re-sourced (F-1c) — only their
+// no-ordinal TEXT assertion remains here (see the header's narrowing note); their
+// ordering behavior is pinned in staging-flip.test.ts on their own source shapes.
+const RESOURCED_MODEL_PATHS: { title: string; path: string }[] = [
+  { title: "stg_crm__companies", path: "models/staging/stg_crm__companies.sql" },
+  { title: "stg_crm__contacts", path: "models/staging/stg_crm__contacts.sql" },
+  { title: "stg_crm__deals", path: "models/staging/stg_crm__deals.sql" },
+  { title: "stg_billing__customers", path: "models/staging/stg_billing__customers.sql" },
+  { title: "stg_billing__invoices", path: "models/staging/stg_billing__invoices.sql" },
+  { title: "stg_billing__payments", path: "models/staging/stg_billing__payments.sql" },
+  { title: "stg_support__tickets", path: "models/staging/stg_support__tickets.sql" },
+  { title: "merge_edges", path: "models/identity/merge_edges.sql" },
+];
+
+// The one model still consuming a 2a-shaped feed (the support mock remains for csat):
+// the full equivalence/divergence/vendor-safety machinery keeps running here.
 const MODELS: ModelSpec[] = [
-  {
-    title: "stg_crm__companies", path: "models/staging/stg_crm__companies.sql",
-    source: "crm", eventType: "company.updated", idColumn: "company_id", markerColumn: "name",
-    makeData: (id, marker) => ({ id, name: marker, domain: `${id}.example.com` }),
-  },
-  {
-    title: "stg_crm__contacts", path: "models/staging/stg_crm__contacts.sql",
-    source: "crm", eventType: "contact.updated", idColumn: "contact_id", markerColumn: "name",
-    makeData: (id, marker) => ({ id, company_id: "co-1", name: marker, email: `${id}@x.example.com` }),
-  },
-  {
-    title: "stg_crm__deals", path: "models/staging/stg_crm__deals.sql",
-    source: "crm", eventType: "deal.updated", idColumn: "deal_id", markerColumn: "name",
-    makeData: (id, marker) => ({ id, company_id: "co-1", name: marker, amount_cents: 1000, currency: "USD", status: "open" }),
-  },
-  {
-    title: "stg_billing__customers", path: "models/staging/stg_billing__customers.sql",
-    source: "billing", eventType: "customer.created", idColumn: "customer_id", markerColumn: "name",
-    makeData: (id, marker) => ({ id, name: marker, domain: `${id}.example.com`, email: `${id}@x.example.com` }),
-  },
-  {
-    title: "stg_billing__invoices", path: "models/staging/stg_billing__invoices.sql",
-    source: "billing", eventType: "invoice.created", idColumn: "invoice_id", markerColumn: "customer_id",
-    makeData: (id, marker) => ({ id, customer_id: marker, amount_cents: 1000, currency: "USD" }),
-  },
-  {
-    title: "stg_billing__payments", path: "models/staging/stg_billing__payments.sql",
-    source: "billing", eventType: "payment.succeeded", idColumn: "payment_id", markerColumn: "customer_id",
-    makeData: (id, marker) => ({ id, invoice_id: "inv-1", customer_id: marker, amount_cents: 1000 }),
-  },
-  {
-    title: "stg_support__tickets", path: "models/staging/stg_support__tickets.sql",
-    source: "support", eventType: "ticket.created", idColumn: "ticket_id", markerColumn: "requester_name",
-    makeData: (id, marker) => ({
-      id, requester_id: "r-1", requester_email: "r@x.example.com", requester_name: marker,
-      company_name: "X Co", domain: "x.example.com", priority: "normal",
-      created_at: "2026-01-01T00:00:00Z", sla_due_at: "2026-01-02T00:00:00Z",
-    }),
-  },
   {
     title: "stg_support__csat", path: "models/staging/stg_support__csat.sql",
     source: "support", eventType: "csat.recorded", idColumn: "ticket_id", markerColumn: "csat_id",
     makeData: (id, marker) => ({ id: marker, ticket_id: id, score: 3 }),
-  },
-  {
-    title: "merge_edges", path: "models/identity/merge_edges.sql",
-    source: "crm", eventType: "company.merged", idColumn: "from_id", markerColumn: "to_id",
-    makeData: (id, marker) => ({ from_id: id, to_id: marker }),
   },
 ];
 
@@ -154,6 +141,12 @@ async function winners(sql: string, spec: ModelSpec): Promise<Map<string, string
 // occurred_at values inside the door's [now-30d, now+5m] window so the same fixture would
 // pass ingest; received_at values are explicit so arrival order is a controlled input.
 const T = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+
+describe.each(RESOURCED_MODEL_PATHS)("$title — evt-N ordinal stays retired (re-sourced model)", ({ path }) => {
+  it("the evt-N ordinal cast is gone from the model text", () => {
+    expect(loadModel(path)).not.toContain("substring(event_id from 5)");
+  });
+});
 
 describe.each(MODELS)("$title — evt-N tiebreak retirement", (spec) => {
   it("the evt-N ordinal cast is gone from the model text", () => {
@@ -249,7 +242,7 @@ describe.each(MODELS)("$title — evt-N tiebreak retirement", (spec) => {
 //     needs two separate ingest transactions to commit in the same MICROSECOND — not
 //     producible by the sequential awaited 2a delivery path; synthetic only.
 describe("documented spec change: ties the successor resolves DIFFERENTLY than the retired ordinal", () => {
-  const spec = MODELS[0]; // representative: stg_crm__companies
+  const spec = MODELS[0]; // representative: stg_support__csat — the one still-2a-sourced model (F-1c narrowing)
 
   it("divergence 1 — same occurred_at, arrival inverted by the shuffle fault: successor crowns the later ARRIVAL, ordinal crowned the later EMISSION", async () => {
     const tie = T(20);

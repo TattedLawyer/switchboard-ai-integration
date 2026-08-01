@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
+import { insertHubObjectState } from "./helpers/hub-staging.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -150,27 +151,28 @@ describe("crm_emails latest-state (L2-G7)", () => {
     `;
   };
 
-  const insertCrmRaw = async (eventId: string, eventType: string, occurredAt: string, data: Record<string, unknown>) => {
-    await pool.query(
-      `insert into raw.raw_events (source, event_id, event_type, payload)
-       values ('crm', $1, $2, $3::jsonb)`,
-      [eventId, eventType, JSON.stringify({ occurred_at: occurredAt, data })],
-    );
-  };
-
+  // F-1c: the staging arms are hubcrm-snapshot-sourced — states are seeded through the
+  // shared two-table helper (thin event + snapshot), and the L2-G7 claim is unchanged:
+  // evidence ages out with the latest STATE, ordered by the triggering event's clocks.
   it("a REPLACED owner_email stops being identity evidence: only the latest-state owner_email survives, even when the stale update arrives late", async () => {
-    const company = { id: "c-own-1", name: "Owner Test Co", domain: "own.example.com" };
+    const props = { name: "Owner Test Co", domain: "own.example.com", hs_manifest_id: "c-own-1" };
     // TRUE latest state (newer occurred_at) delivered FIRST...
-    await insertCrmRaw("evt-20", "company.updated", "2026-07-22T10:00:00.000Z", {
-      ...company, owner_email: "owner.new@example.com",
+    await insertHubObjectState(pool, {
+      objectType: "company", objectId: 801, eventId: "evt-20",
+      occurredAt: "2026-07-22T10:00:00.000Z",
+      properties: { ...props, owner_email: "owner.new@example.com" },
     });
     // ...then the STALE state (older occurred_at, the replaced owner) arrives LATE.
-    await insertCrmRaw("evt-21", "company.updated", "2026-07-21T10:00:00.000Z", {
-      ...company, owner_email: "owner.old@example.com",
+    await insertHubObjectState(pool, {
+      objectType: "company", objectId: 801, eventId: "evt-21", eventType: "company.propertyChange",
+      occurredAt: "2026-07-21T10:00:00.000Z", receivedAt: new Date().toISOString(),
+      properties: { ...props, owner_email: "owner.old@example.com" },
     });
     // Contact emails ride along untouched (the other UNION arm).
-    await insertCrmRaw("evt-22", "contact.updated", "2026-07-22T10:00:00.000Z", {
-      id: "ct-1", company_id: "c-own-1", name: "Jane", email: "jane@own.example.com",
+    await insertHubObjectState(pool, {
+      objectType: "contact", objectId: 802, eventId: "evt-22",
+      occurredAt: "2026-07-22T10:00:00.000Z",
+      properties: { id: "ct-1", name: "Jane", email: "jane@own.example.com", company_manifest_id: "c-own-1", hs_manifest_id: "ct-1" },
     });
 
     const rows = (await pool.query(crmEmailsSql())).rows;
@@ -183,8 +185,10 @@ describe("crm_emails latest-state (L2-G7)", () => {
   });
 
   it("a company whose latest state has NO owner_email contributes no owner row (null is filtered, not matched)", async () => {
-    await insertCrmRaw("evt-23", "company.updated", "2026-07-22T10:00:00.000Z", {
-      id: "c-own-2", name: "No Owner Co", domain: "noown.example.com",
+    await insertHubObjectState(pool, {
+      objectType: "company", objectId: 803, eventId: "evt-23",
+      occurredAt: "2026-07-22T10:00:00.000Z",
+      properties: { name: "No Owner Co", domain: "noown.example.com", hs_manifest_id: "c-own-2" },
     });
     const rows = (await pool.query(crmEmailsSql())).rows;
     expect(rows).toEqual([]);

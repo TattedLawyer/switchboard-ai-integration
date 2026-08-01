@@ -1,34 +1,51 @@
+-- Re-sourced (F-1c): invoices stage from the stripefeed envelope feed's own vocabulary
+-- and are RE-SHAPED onto the warehouse's invoice surface:
+--   · invoice.finalized carries the invoice object (data.object verbatim under
+--     payload.data — the connector's door mapping);
+--   · payment state lives on the CHARGE family on this feed, so status derives from it:
+--     an invoice with a charge.succeeded is 'paid'; a finalized invoice with no
+--     successful charge stays 'created' — the warehouse's open-invoice state, kept
+--     under the existing vocabulary so the mart's rollups are untouched. 'voided' is
+--     unreachable on this feed (no void event modeled) and simply never appears.
+-- Successor ordering as everywhere (see stg_crm__companies.sql for the cast rationale).
 with events as (
-    -- received_at: the successor tiebreak's second clock (see stg_crm__companies.sql).
-    select event_id, event_type, payload, received_at from raw.raw_events
-    where source = 'billing' and event_type in ('invoice.created', 'invoice.paid', 'invoice.voided')
+    select event_id, payload, received_at from raw.raw_events
+    where source = 'stripefeed' and event_type = 'invoice.finalized'
 ),
 latest as (
-    select distinct on (payload -> 'data' ->> 'id')
-        payload -> 'data' as invoice,
-        split_part(event_type, '.', 2) as status
+    select distinct on (payload -> 'data' ->> 'id') payload -> 'data' as invoice
     from events
     order by payload -> 'data' ->> 'id',
              ((payload ->> 'occurred_at')::timestamptz) desc,
              received_at desc,
              event_id desc
+),
+paid_invoices as (
+    select distinct payload -> 'data' ->> 'invoice_id' as invoice_id
+    from raw.raw_events
+    where source = 'stripefeed' and event_type = 'charge.succeeded'
+),
+shaped as (
+    select
+        invoice ->> 'id'          as invoice_id,
+        invoice ->> 'customer_id' as customer_id,
+        -- L2 safe cast: raw rows that never passed the ingest door must degrade to
+        -- NULL, not kill the whole build (blast-radius containment; L1 is the
+        -- enforcement). NULLs stay visible downstream (L3/L4).
+        case when pg_input_is_valid(invoice ->> 'amount_cents', 'bigint')
+             then (invoice ->> 'amount_cents')::bigint end as amount_cents,
+        -- L5: currency carried, not discarded; constrained to a three-letter uppercase
+        -- code at the source — anything else becomes NULL ("unknown": counted by the
+        -- mart and refused from its totals, never summed).
+        case when (invoice ->> 'currency') ~ '^[A-Z]{3}$'
+             then invoice ->> 'currency' end as currency
+    from latest
 )
 select
-    invoice ->> 'id'          as invoice_id,
-    invoice ->> 'customer_id' as customer_id,
-    -- L2 safe cast: raw rows that never passed the ingest door (legacy, direct inserts,
-    -- historical backfill) must degrade to NULL, not kill the whole build. The ingest
-    -- contract (ingest/src/numeric-contract.ts) is the enforcement; this is blast-radius
-    -- containment. NULLs are deliberately left visible for downstream
-    -- surfacing (numeric-integrity plan, L3/L4 tasks) rather than erased or guessed at.
-    case when pg_input_is_valid(invoice ->> 'amount_cents', 'bigint')
-         then (invoice ->> 'amount_cents')::bigint end as amount_cents,
-    -- L5: currency is carried, not discarded — the mart refuses to sum across currencies.
-    -- Currency is payload-controlled text that flows to the mart, the MCP read tool, and
-    -- the report's LLM prompt. Constrain it to a three-letter uppercase code at the source:
-    -- anything else becomes NULL ("unknown" — counted by the mart and REFUSED from its
-    -- labeled totals, never summed) rather than riding a free-text channel downstream. ISO-4217 allowlisting is registered follow-up work.
-    case when (invoice ->> 'currency') ~ '^[A-Z]{3}$'
-         then invoice ->> 'currency' end as currency,
-    status
-from latest
+    s.invoice_id,
+    s.customer_id,
+    s.amount_cents,
+    s.currency,
+    case when p.invoice_id is not null then 'paid' else 'created' end as status
+from shaped s
+left join paid_invoices p on p.invoice_id = s.invoice_id
