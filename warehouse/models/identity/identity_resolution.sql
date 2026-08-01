@@ -45,6 +45,14 @@ sheets_clients as (
     -- corporate-domain; the free-email blocklist (gmail.com et al. would make domain
     -- evidence meaningless) remains Task F's gate before real data — see the deferred
     -- register; deliberately not built in this slice.
+    -- client_name (the sheet's PERSON column) is deliberately NOT tier evidence
+    -- (debt-burn C1; reason recorded in the A6 review): the tier-2 name predicate
+    -- equates a candidate's name with a normalized CRM COMPANY name
+    -- (norm_companies.norm_name), and a person's name can never legitimately match a
+    -- company's — including it could only manufacture false candidate evidence, never
+    -- a true match. client_name still serves in customer_360's ORPHAN-NAMING path
+    -- (company_name first, then client_name) — there it is a display label, not merge
+    -- evidence, which is exactly the boundary.
     select distinct on (client_key)
         client_key,
         nullif(lower(trim(client_email)), '') as email,
