@@ -69,7 +69,11 @@ describe("createSourceApp /simulate start_index (B3)", () => {
       data: e.data,
     }));
 
-  it("the same explicit-index request emits identically across a server restart", async () => {
+  // Sweep item 6 (naming honesty): what this proves is EVENT-IDENTITY purity —
+  // seq/event_id/event_type/data are a function of the request alone. `occurred_at` is
+  // wall-clock at emission time by design (so hashes differ too); the projection below
+  // deliberately excludes it, and the old name ("emits identically") overclaimed.
+  it("the same explicit-index request emits the same event identities (seq/event_id/type/data) across a server restart — occurred_at stays wall-clock", async () => {
     const request = {
       method: "POST" as const,
       headers: { "content-type": "application/json" },
