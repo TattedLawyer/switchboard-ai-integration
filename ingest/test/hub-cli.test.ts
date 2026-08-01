@@ -5,6 +5,7 @@ import type { Server } from "node:http";
 import express from "express";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
+import { expectParadigmIntegrityLine } from "./helpers/operator-surface.js";
 import { createIngestApp } from "../src/server.js";
 import { createHubcrmApp, type HubcrmApp } from "../../mocks/hubcrm/src/index.js";
 
@@ -101,8 +102,8 @@ describe("reconcile CLI — paradigm-honest integrity + every bucket printed", (
     await runCli("src/cli/backfill.ts", baseUrl); // hydrate first
 
     const res = await runCli("src/cli/reconcile.ts", baseUrl);
-    expect(res.out).toMatch(/object-store integrity: ok/);
-    expect(res.out).not.toMatch(/ledger hash chain/);
+    // Helper: this paradigm's honest line, every sibling paradigm's line excluded.
+    expectParadigmIntegrityLine(res.out, "hub-hydrate");
     expect(res.out).toMatch(/object store: \d+ live object\(s\)/);
     expect(res.out).toMatch(/tombstoned .*: \d+/);
     expect(res.out).toMatch(/drifted .*: 0/);

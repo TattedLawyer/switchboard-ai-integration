@@ -6,6 +6,7 @@ import express from "express";
 import type pg from "pg";
 import { createStripeFeedApp, type StripeFeedApp } from "../../mocks/stripefeed/src/index.js";
 import { freshTestDb } from "./helpers/testdb.js";
+import { expectGapDisclosure, expectParadigmIntegrityLine } from "./helpers/operator-surface.js";
 import { StripeFeedConnector, type StripeFeedReconcileReport } from "../src/connectors/stripe-feed.js";
 
 // Gate-H cold review, Task B range — C1 + I1 + I2 + I3: the connector↔OPERATOR seam.
@@ -93,11 +94,9 @@ describe("C1 — the reviewer's reproduction, inverted: permanent loss is LOUD o
 
     const res = await runCli("src/cli/backfill.ts", baseUrl);
     expect(res.out).toMatch(/ingested 6 event\(s\)/); // forward progress still reported
-    // The inversion of the cold-review transcript: the loss is now on the run log.
-    expect(res.out).toMatch(/PERMANENT DATA LOSS/i);
-    expect(res.out).toMatch(/unclosable gap/i);
-    expect(res.out).toContain(cursorId); // the near bound is named
-    expect(res.out).toMatch(/retention/);
+    // The inversion of the cold-review transcript: the loss is now on the run log —
+    // cause named with its own wording (sibling excluded), near bound named (helper).
+    expectGapDisclosure(res.out, { cause: "retention", bounds: [cursorId] });
     // Deliberate semantics (disclosed): backfill exits 0 — the drain itself succeeded
     // and forward progress is real; reconcile is the gate that turns a gap into a red.
     expect(res.code).toBe(0);
@@ -122,8 +121,7 @@ describe("C1 — the reviewer's reproduction, inverted: permanent loss is LOUD o
     mock.feed.advance(5 * 86_400); // EVERYTHING ages out: missing/extra all empty, gap live
 
     const res = await runCli("src/cli/reconcile.ts", baseUrl);
-    expect(res.out).toMatch(/unclosable gap/i);
-    expect(res.out).toContain(cursorId);
+    expectGapDisclosure(res.out, { cause: "retention", bounds: [cursorId], ack: "unacknowledged" });
     expect(res.out).toMatch(/aged out of window[^:]*: 8/); // agedOutRaw printed, expected-not-flagged
     // Debt-burn A3: `StripeFeedReconcileReport.gaps` is consumed by the CLI as a
     // cross-check against the printed ledger rows — no longer a field with no surface.
@@ -147,8 +145,8 @@ describe("I1 — paradigm-honest integrity line (the recorded Minor-6 class, ext
     await new StripeFeedConnector({ baseUrl }).catchUp(pool);
 
     const res = await runCli("src/cli/reconcile.ts", baseUrl);
-    expect(res.out).not.toMatch(/ledger hash chain/);
-    expect(res.out).toMatch(/feed window integrity: ok/);
+    // Helper: this paradigm's honest line, every sibling paradigm's line excluded.
+    expectParadigmIntegrityLine(res.out, "stripe-feed");
     // The count label says what the number IS for this paradigm — a 30-day window,
     // not a ledger file.
     expect(res.out).toMatch(/retained window: 8/);

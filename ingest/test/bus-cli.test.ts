@@ -5,6 +5,11 @@ import type { Server } from "node:http";
 import type pg from "pg";
 import { createCasebusApp, type CasebusApp } from "../../mocks/casebus/src/index.js";
 import { freshTestDb } from "./helpers/testdb.js";
+import {
+  captureDetectingRun,
+  expectGapDisclosure,
+  expectParadigmIntegrityLine,
+} from "./helpers/operator-surface.js";
 import { listGaps, recordGap } from "../src/connectors/types.js";
 import { BusReplayConnector } from "../src/connectors/bus-replay.js";
 
@@ -90,12 +95,17 @@ async function makeAgeOutGap(
   mock: CasebusApp,
   baseUrl: string,
 ): Promise<{ detectingRun: { code: number; out: string }; lostEventId: string; farEventId: string }> {
-  const aged = mock.stream.emit(5, { ageS: 70 * 3600 });
-  await runCli("src/cli/backfill.ts", baseUrl);
-  const fresh = mock.stream.emit(6);
-  mock.stream.advance(3 * 3600);
-  const detectingRun = await runCli("src/cli/backfill.ts", baseUrl);
-  return { detectingRun, lostEventId: aged.at(-1)!.event.id, farEventId: fresh[0].event.id };
+  const { detectingRun, context } = await captureDetectingRun({
+    arrange: async () => {
+      const aged = mock.stream.emit(5, { ageS: 70 * 3600 });
+      await runCli("src/cli/backfill.ts", baseUrl);
+      const fresh = mock.stream.emit(6);
+      mock.stream.advance(3 * 3600);
+      return { lostEventId: aged.at(-1)!.event.id, farEventId: fresh[0].event.id };
+    },
+    detect: () => runCli("src/cli/backfill.ts", baseUrl),
+  });
+  return { detectingRun, ...context };
 }
 
 describe("backfill CLI — the drain's numbers, INCLUDING the ones only this paradigm produces", () => {
@@ -117,19 +127,11 @@ describe("backfill CLI — the drain's numbers, INCLUDING the ones only this par
     const baseUrl = listen(mock);
     const { detectingRun, lostEventId, farEventId } = await makeAgeOutGap(mock, baseUrl);
 
-    // What the test's NAME has always claimed, now actually asserted. The `reset` cause
-    // was pinned on this surface from the start; `retention` — the commoner of the two —
-    // was not, and the old body asserted only an exit code, twice.
-    expect(detectingRun.out).toMatch(/PERMANENT DATA LOSS/);
-    expect(detectingRun.out).toMatch(/unclosable gap \(retention\)/);
-    expect(detectingRun.out).toMatch(/aged out of the source's retention window/);
-    // Bounds, both edges, by name: a loss report without them tells an operator that
-    // something was lost but not what.
-    expect(detectingRun.out).toContain(lostEventId);
-    expect(detectingRun.out).toContain(farEventId);
-    // A retention gap must NOT borrow the reset explanation — the mirror of the negative
-    // assertion the reset test carries.
-    expect(detectingRun.out).not.toMatch(/RESET/);
+    // What the test's NAME has always claimed, now actually asserted (helper): shared
+    // alert phrase, retention's own wording, the reset sibling excluded, both edge
+    // bounds named — a loss report without them tells an operator that something was
+    // lost but not what.
+    expectGapDisclosure(detectingRun.out, { cause: "retention", bounds: [lostEventId, farEventId] });
     // Forward progress still reported, and the drain still exits 0: the drain succeeded,
     // and reconcile is the gate that turns a gap into a red.
     expect(detectingRun.out).toMatch(/ingested 6 event\(s\)/);
@@ -161,10 +163,7 @@ describe("backfill CLI — the drain's numbers, INCLUDING the ones only this par
     mock.stream.reset();
     mock.stream.emit(4);
     const res = await runCli("src/cli/backfill.ts", baseUrl);
-    expect(res.out).toMatch(/PERMANENT DATA LOSS/);
-    expect(res.out).toMatch(/unclosable gap \(reset\)/);
-    expect(res.out).toMatch(/RESET/);
-    expect(res.out).not.toMatch(/aged out of the source's retention window/);
+    expectGapDisclosure(res.out, { cause: "reset" });
     expect(res.code).toBe(0);
   });
 });
@@ -177,10 +176,9 @@ describe("reconcile CLI — paradigm-honest integrity, every bucket printed, and
     await runCli("src/cli/backfill.ts", baseUrl);
 
     const res = await runCli("src/cli/reconcile.ts", baseUrl);
-    expect(res.out).toMatch(/event stream integrity: ok/);
-    expect(res.out).not.toMatch(/ledger hash chain/);
-    // What reconcile ACTUALLY verified for THIS paradigm — no hash chain exists here.
-    expect(res.out).toMatch(/retained window fully drained/);
+    // What reconcile ACTUALLY verified for THIS paradigm — no hash chain exists here;
+    // the helper also excludes every sibling paradigm's integrity claim.
+    expectParadigmIntegrityLine(res.out, "bus-replay");
     expect(res.out).toMatch(/retained window: 20 event\(s\)/);
     expect(res.out).toMatch(/72h ledger-equivalent/);
     expect(res.out).toMatch(/aged out of window/);
@@ -199,8 +197,7 @@ describe("reconcile CLI — paradigm-honest integrity, every bucket printed, and
     const res = await runCli("src/cli/reconcile.ts", baseUrl);
     expect(res.code).toBe(1);
     expect(res.out).toMatch(/FAIL/);
-    expect(res.out).toMatch(/unclosable gap \(retention\)/);
-    expect(res.out).toMatch(/UNACKNOWLEDGED/);
+    expectGapDisclosure(res.out, { cause: "retention", ack: "unacknowledged" });
     expect(res.out).toMatch(/gap #\d+/);
     // The operator is TOLD how to answer it — a red with no next step is how reconcile
     // gets ignored.
@@ -226,10 +223,11 @@ describe("reconcile CLI — paradigm-honest integrity, every bucket printed, and
     const res = await runCli("src/cli/reconcile.ts", baseUrl);
     expect(res.code).toBe(0);
     expect(res.out).toMatch(/PASS/);
-    // Acknowledged is not hidden: the loss stays on the operator surface forever.
+    // Acknowledged is not hidden: the loss stays on the operator surface forever —
+    // full disclosure (helper) plus the named human and their note.
+    expectGapDisclosure(res.out, { cause: "retention", ack: "acknowledged" });
     expect(res.out).toMatch(/acknowledged .* by oncall/);
     expect(res.out).toMatch(/loss accepted/);
-    expect(res.out).not.toMatch(/UNACKNOWLEDGED/);
   });
 
   it("a NEW gap after an acknowledgement reds the run again — acknowledging one loss never blanket-silences the next", async () => {
