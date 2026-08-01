@@ -21,6 +21,7 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 | `CHAOS_SEED` | `7` | chaos.sh fault-plan seed (CI feeds it as a workflow input; reproduce a red run by re-entering its seed) |
 | `ANTHROPIC_API_KEY` | unset → deterministic report (risk table + watch list; a one-line notice replaces the AI narrative) | agent report |
 | `DBT_SCHEMA` | `public_analytics` | agent, report worker |
+| `DBT_ROLE` | unset → migrate keeps the unscoped default-privilege grant (bound to the migrator's own role) and logs the limitation. Set it to the role dbt connects as and migrate scopes the agent grant `FOR ROLE` — required whenever dbt and the migrator use different roles, or dbt's rebuilt tables silently lose the agent's SELECT. The migrator must be a member of the role (checked, clear error otherwise) | ingest migrate (`grantAgentReadOnly`) |
 | `DBT_PORT` | `5432` (CI sets `5433`) | dbt profile (host port of Postgres) |
 
 ## Start / stop

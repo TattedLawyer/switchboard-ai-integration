@@ -188,15 +188,18 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   which run as separate jobs on separate runners. The leak itself is unfixed.
   *Scheduled: next CI/ops pass — kill the process group (`setsid` + `kill -- -PGID`,
   or `pkill -P`) rather than the direct child.*
-- ~~`alter default privileges` in the migrations is not scoped `FOR ROLE`~~ *Mostly paid
-  (2b, migration 007):* the default-privilege grants for the default `public_analytics`
-  schema are now `FOR ROLE`-scoped and proven by catalog inspection under a split-role
-  migrator. **Residual:** the *runtime* grant in `migrate.ts` (`grantAgentReadOnly`, which
-  handles `DBT_SCHEMA` overrides) is still unscoped — reachable only when a deployment BOTH
-  overrides `DBT_SCHEMA` AND migrates under a non-`switchboard` role, a combination no
-  shipped config uses. Register-owned: the fix lands with the next slice that owns
-  `migrate.ts`. Also note: 007's scoped grant requires the migrator to be a member of
-  `switchboard` — a missing membership fails loudly at migrate time.
+- ~~`alter default privileges` in the migrations is not scoped `FOR ROLE`~~ *Paid in
+  full (2b migration 007 + debt-burn B9):* the static grants for the default
+  `public_analytics` schema were `FOR ROLE`-scoped in 007 (catalog-proven under a
+  split-role migrator), and the *runtime* grant in `migrate.ts` (`grantAgentReadOnly`,
+  which handles `DBT_SCHEMA` overrides) is now scoped too — `FOR ROLE $DBT_ROLE`, a
+  new identifier-gated env var naming the role dbt connects as, with the docs'
+  membership precondition surfaced as a clear error and role existence checked
+  (pinned in `grant-role-scope.test.ts`, membership case under a non-superuser
+  migrator). `DBT_ROLE` unset preserves the old unscoped behavior for existing
+  deployments and logs the limitation at migrate time (wording pinned). Also note:
+  007's scoped grant requires the migrator to be a member of `switchboard` — a
+  missing membership fails loudly at migrate time.
 - ~~`replayAllQuarantined` records no attempt~~ *Paid (2b, migration 007):* quarantine rows
   now carry `attempts` and `last_attempt_at`, recorded on every replay attempt (recorded
   *before* the outcome on purpose: a crash can overcount attempts, never undercount — the

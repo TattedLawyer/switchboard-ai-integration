@@ -85,6 +85,8 @@ export async function runMigrations(pool: pg.Pool): Promise<void> {
 // The analytics schema name is runtime config (DBT_SCHEMA), so its grants can't live in
 // a static migration file. Validated with the same rule as agent/src/host/schema.ts —
 // operator config, but it lands in SQL identifier position, so never trust it raw.
+// B9: DBT_ROLE (the role dbt connects as) is the same kind of config and passes the
+// same identifier gate before landing in FOR ROLE position.
 const SCHEMA_RE = /^[a-z_][a-z0-9_]*$/;
 
 async function grantAgentReadOnly(pool: pg.Pool): Promise<void> {
@@ -98,8 +100,51 @@ async function grantAgentReadOnly(pool: pg.Pool): Promise<void> {
   await pool.query(`create schema if not exists ${schema}`);
   await pool.query(`grant usage on schema ${schema} to switchboard_agent`);
   await pool.query(`grant select on all tables in schema ${schema} to switchboard_agent`);
+
+  // B9: ALTER DEFAULT PRIVILEGES binds to "the current role if unspecified" (Postgres
+  // docs) — i.e. to whoever runs THIS migration, not to dbt. Unscoped, the entry covers
+  // nothing a differently-rolled dbt later (re)creates, silently. The target role is
+  // runtime config (DBT_ROLE); when set, the grant is scoped FOR ROLE after two
+  // precondition checks the docs impose: the role must exist, and the executor must be
+  // a member of it (superusers pass trivially). Absent → the pre-B9 unscoped statement
+  // runs unchanged AND the limitation is logged, so no existing deployment breaks.
+  // (Docs caveat carried here: per-schema default privileges ADD to any global ones —
+  // scoping this entry narrows nothing granted elsewhere.)
+  const dbtRole = process.env.DBT_ROLE;
+  if (dbtRole === undefined || dbtRole === "") {
+    console.warn(
+      "[migrate] DBT_ROLE not set — default privileges bind to the migrator's own role, " +
+        "so tables (re)created by a different dbt role will NOT carry the agent grant. " +
+        "Set DBT_ROLE to the role dbt connects as to scope the grant FOR ROLE.",
+    );
+    await pool.query(
+      `alter default privileges in schema ${schema} grant select on tables to switchboard_agent`,
+    );
+    return;
+  }
+  if (!SCHEMA_RE.test(dbtRole)) {
+    throw new Error(`invalid DBT_ROLE "${dbtRole}": must match ${SCHEMA_RE}`);
+  }
+  const exists = await pool.query("select 1 from pg_roles where rolname = $1", [dbtRole]);
+  if (exists.rowCount === 0) {
+    throw new Error(
+      `DBT_ROLE "${dbtRole}" does not exist in this database cluster — ` +
+        `create the role dbt connects as, or unset DBT_ROLE to keep the unscoped grant.`,
+    );
+  }
+  const member = await pool.query(
+    "select pg_has_role(current_user, $1::name, 'member') as is_member, current_user as who",
+    [dbtRole],
+  );
+  if (!member.rows[0].is_member) {
+    throw new Error(
+      `cannot scope default privileges FOR ROLE "${dbtRole}": migrator role ` +
+        `"${member.rows[0].who}" is not a member of "${dbtRole}" (ALTER DEFAULT PRIVILEGES ` +
+        `requires membership — GRANT "${dbtRole}" TO "${member.rows[0].who}", or migrate as a member).`,
+    );
+  }
   await pool.query(
-    `alter default privileges in schema ${schema} grant select on tables to switchboard_agent`,
+    `alter default privileges for role ${dbtRole} in schema ${schema} grant select on tables to switchboard_agent`,
   );
 }
 
