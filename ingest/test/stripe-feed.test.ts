@@ -317,3 +317,74 @@ describe("numeric contract for the new event types (rejections AND over-rejectio
     expect(numericContractViolation("charge.succeeded", { amount_cents: 1, currency: "usd" })?.field).toBe("currency");
   });
 });
+
+// ── Task D review addendum (adjudication i) ───────────────────────────────────────────
+//
+// The defect the bus oracle found, confirmed in the OLDER paradigm and worse there: one
+// envelope whose `created` is not a number made stripefeed's reconcile return
+// integrity:false with NO report, blinding the comparison across the feed's whole
+// THIRTY-DAY window — ten times the bus's blast radius. The connector's own two halves
+// disagreed about it: the drain quarantines that same envelope (occurred_at fails the
+// schema gate) and keeps going, while reconcile treated it as an unreadable source.
+//
+// The rule these pins establish, matching what landed on the bus side: a missing
+// IDENTITY is still fatal (there is nothing to compare against raw), but a bad TIMESTAMP
+// is bad DATA — the event counts toward the retained window, contributes no timestamp,
+// and is excluded from the aged-out boundary arithmetic rather than poisoning it.
+describe("addendum — one malformed `created` must not blind a thirty-day window", () => {
+  it("a retained window containing ONE non-numeric `created` still reconciles; the rest of the window is compared normally", async () => {
+    const now = NOW_S();
+    const good = [evt("evt_a", now - 100), evt("evt_b", now - 90)];
+    const malformed = { ...evt("evt_bad", now - 95), created: "2026-07-30T00:00:00Z" as unknown as number };
+
+    const { baseUrl } = scriptedFeed([
+      (_req, res) => res.json(pageBody([...good, malformed] as StubEvent[], false)),
+    ]);
+    const c = new StripeFeedConnector({ baseUrl: await baseUrl, pageLimit: 100 });
+
+    const result = await c.reconcile(pool);
+    // Before the fix: integrity false, report undefined — the whole window unreadable.
+    expect(result.integrity.ok).toBe(true);
+    expect(result.report).toBeDefined();
+    // The malformed event is really THERE, so it counts toward the window…
+    expect(result.report!.ledger).toBe(3);
+    // …and it is reported as missing-from-raw like any other un-ingested event, which is
+    // the honest classification: nothing was ingested here at all.
+    expect(result.report!.missing).toEqual(["evt_a", "evt_b", "evt_bad"]);
+  });
+
+  it("the malformed event contributes NO timestamp: the aged-out boundary is computed from the events that have one", async () => {
+    const now = NOW_S();
+    // A raw row older than every well-formed retained event is normal metabolism
+    // (ingested, then aged out) and must stay out of `extra`. If the malformed event's
+    // NaN leaked into the boundary arithmetic, every comparison against it would be
+    // false and this row would be misfiled.
+    await pool.query(
+      `insert into raw.raw_events (source, event_id, event_type, payload)
+       values ('stripefeed', 'evt_old', 'charge.succeeded', $1)`,
+      [JSON.stringify({ event_id: "evt_old", event_type: "charge.succeeded", occurred_at: new Date((now - 10_000) * 1000).toISOString(), data: {} })],
+    );
+
+    const malformed = { ...evt("evt_bad", now - 95), created: null as unknown as number };
+    const { baseUrl } = scriptedFeed([
+      (_req, res) => res.json(pageBody([evt("evt_a", now - 100), malformed] as StubEvent[], false)),
+    ]);
+    const c = new StripeFeedConnector({ baseUrl: await baseUrl, pageLimit: 100 });
+
+    const result = await c.reconcile(pool);
+    expect(result.integrity.ok).toBe(true);
+    expect(result.report!.agedOutRaw).toBe(1);
+    expect(result.report!.extra).toEqual([]);
+  });
+
+  it("a missing IDENTITY is still fatal — there is nothing to compare against raw", async () => {
+    const now = NOW_S();
+    const noId = { ...evt("evt_a", now - 100), id: undefined as unknown as string };
+    const { baseUrl } = scriptedFeed([(_req, res) => res.json(pageBody([noId] as StubEvent[], false))]);
+
+    const result = await new StripeFeedConnector({ baseUrl: await baseUrl, pageLimit: 100 }).reconcile(pool);
+    expect(result.integrity.ok).toBe(false);
+    expect(result.report).toBeUndefined();
+    expect(result.integrity.detail).toMatch(/id/);
+  });
+});
