@@ -35,9 +35,15 @@ contract in `ingest/src/cli/reconcile.ts` / `backfill.ts` and the shared helpers
 
 ## How each line is enforced
 
-- Line 1 is compiled: the CLIs rest-destructure every report shape to an empty
-  remainder (`rest satisfies Record<string, never>`), so an unconsumed new field is
-  a `tsc` error before any test or reviewer.
+- Line 1 is compiled for the two CLIs: `reconcile.ts` rest-destructures all five
+  reconcile report shapes (base + sheet/stripe/hub/bus) and `backfill.ts` the base
+  `CatchUpReport` plus all four widened per-connector catch-up shapes, each per
+  connector kind to an empty remainder (`rest satisfies Record<string, never>`), so
+  an unconsumed new field on any of the ten shapes is a `tsc` error before any test
+  or reviewer — and a new `ConnectorKind` cannot compile until both switches carry
+  its destructure. The SERVICE LOG is not yet under the wall (KNOWN-ISSUES,
+  owner Task F): for `main.ts`, line 1 is still enforced by review plus the
+  service-log pins in the CLI test files.
 - Lines 2 and 5 are structural in the helpers: `captureDetectingRun` hands back only
   the detecting run; `expectGapDisclosure` asserts the named cause's wording and each
   sibling's absence. New CLI tests use the helpers.

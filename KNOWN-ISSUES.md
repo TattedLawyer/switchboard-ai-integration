@@ -604,11 +604,17 @@ leaves it is gone from the source forever.
 
 - **The service log sits outside the compile-time consumption contract** —
   Task E's rest-destructure wall (`satisfies Record<string, never>`) makes an
-  unconsumed report field a compile error in both CLIs, but the service loop
-  (`createBackfillRunner` consuming `CatchUpReport` in `main.ts`) has no such
-  wall: a new field silently unprinted by the SERVICE surface would compile
-  fine. Checklist line 1 names all three surfaces; the contract enforces two.
-  *Owner: Task F (first slice owning `main.ts`), else phase-2b close.*
+  unconsumed report field a compile error in both CLIs, per connector kind over
+  every report shape they consume (the five reconcile shapes in `reconcile.ts`,
+  the base plus all four widened per-connector catch-up shapes in
+  `backfill.ts` — the widened shapes were a hole until the Task E review's
+  phantom probe caught it). The service loop (`createBackfillRunner` consuming
+  `CatchUpReport` in `main.ts`) has no such wall: a new field silently
+  unprinted by the SERVICE surface would compile fine. Checklist line 1 names
+  all three surfaces; the compile contract enforces the two CLIs, and the
+  service log is covered only by review plus the service-log pins in
+  bus-cli/stripe-feed-cli tests. *Owner: Task F (first slice owning
+  `main.ts`), else phase-2b close.*
 - **Profile flavor-word vetting is review-enforced, not machine-enforced** —
   the per-profile hygiene scans catch real email/domain shapes, but a real
   brand name used as a flavor word would pass (plant-verified in the Task E

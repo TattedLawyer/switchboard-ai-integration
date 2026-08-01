@@ -1,6 +1,15 @@
 import { getPool } from "../db.js";
 import { baseUrlFor, enabledSources } from "../sources.js";
-import { catchUpReporter, connectorFor, formatUnclosableGap } from "../connectors/index.js";
+import {
+  catchUpReporter,
+  connectorFor,
+  formatUnclosableGap,
+  type UnclosableGap,
+} from "../connectors/index.js";
+import type { SheetCatchUpReport } from "../connectors/sheet-snapshot.js";
+import type { StripeFeedCatchUpReport } from "../connectors/stripe-feed.js";
+import type { BusReplayCatchUpReport } from "../connectors/bus-replay.js";
+import type { HubHydrationReport } from "../connectors/hub-hydrate.js";
 
 async function main(): Promise<void> {
   const pool = getPool();
@@ -18,35 +27,96 @@ async function main(): Promise<void> {
       if (reporter) {
         // ── Exhaustive-consumption contract (docs/operator-surface-checklist.md line 1,
         // compile-time) ─────────────────────────────────────────────────────────────────
-        // Every field CatchUpReport can carry is rest-destructured here and the remainder
-        // typed EMPTY, so a report field added without a decided operator surface is a
-        // compile error in this CLI — before any test or reviewer. The printing below
-        // reads ONLY these bindings; a deliberately-unprinted field must be discarded
-        // here with a comment naming why.
-        const {
-          ingested, duplicates, quarantined, gaps, degradations,
-          hydrated, tombstoned, hydrationDlq, hydrationPending,
-          ...rest
-        } = await reporter.catchUpWithReport(pool);
-        rest satisfies Record<string, never>;
+        // PER-KIND, over the WIDENED catch-up shapes — not just the seam's base
+        // CatchUpReport. The house widening-method pattern means new fields are born on
+        // the per-connector interfaces (that is exactly where `gaps` first appeared), and
+        // a base-only destructure is blind to them (Task E cold review I1: a phantom on
+        // StripeFeedCatchUpReport typechecked clean). Each case rest-destructures its
+        // connector's OWN report shape and types the remainder EMPTY, so a field added to
+        // any of the five shapes without a decided operator surface is a compile error in
+        // this CLI before any test or reviewer. The printing below reads ONLY these
+        // bindings; a deliberately-unprinted field must be discarded here with a comment
+        // naming why. The `as` casts are the producer guarantee, as in reconcile.ts:
+        // each connector's catchUpWithReport returns its own shape for its own kind.
+        const report = await reporter.catchUpWithReport(pool);
+        let counts: { ingested: number; duplicates: number; quarantined: number };
+        let gaps: readonly UnclosableGap[] | undefined;
+        let degradations: readonly string[] | undefined;
+        let hydration:
+          | { hydrated: number; tombstoned: number; hydrationDlq: number; hydrationPending: number }
+          | undefined;
+        switch (connector.kind) {
+          case "ledger-feed": {
+            // No widened shape today (ledger-feed connectors are number-only; this arm is
+            // reachable only if one ever grows a reporter) — the base seam shape IS its
+            // contract, destructured in full.
+            const {
+              ingested, duplicates, quarantined, gaps: g, degradations: d,
+              hydrated, tombstoned, hydrationDlq, hydrationPending, ...rest
+            } = report;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            gaps = g;
+            degradations = d;
+            hydration =
+              hydrated !== undefined
+                ? { hydrated, tombstoned: tombstoned ?? 0, hydrationDlq: hydrationDlq ?? 0, hydrationPending: hydrationPending ?? 0 }
+                : undefined;
+            break;
+          }
+          case "sheet-snapshot": {
+            const { ingested, duplicates, quarantined, degradations: d, ...rest } =
+              report as SheetCatchUpReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            degradations = d;
+            break;
+          }
+          case "stripe-feed": {
+            const { ingested, duplicates, quarantined, gaps: g, ...rest } =
+              report as StripeFeedCatchUpReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            gaps = g;
+            break;
+          }
+          case "bus-replay": {
+            const { ingested, duplicates, quarantined, gaps: g, ...rest } =
+              report as BusReplayCatchUpReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            gaps = g;
+            break;
+          }
+          case "hub-hydrate": {
+            const { ingested, duplicates, quarantined, hydrated, tombstoned, hydrationDlq, hydrationPending, ...rest } =
+              report as HubHydrationReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            hydration = { hydrated, tombstoned, hydrationDlq, hydrationPending };
+            break;
+          }
+        }
+        const { ingested, duplicates, quarantined } = counts;
         const quarantineNote = quarantined > 0 ? `, quarantined ${quarantined}` : "";
-        if (hydrated !== undefined) {
+        if (hydration !== undefined) {
+          const { hydrated, tombstoned, hydrationDlq, hydrationPending } = hydration;
           // Hydration paradigm (Task C standing checklist): this connector's catchUp is
           // a hydration PUMP — thin events arrive by webhook push, so an "ingested 0"
           // line here would be a number-only truth hiding the actual work and the
           // actual failures. Print what the run really did.
           console.log(
             `backfill[${source}]: hydrated ${hydrated} snapshot(s), ` +
-              `${tombstoned ?? 0} tombstone(s) (thin events arrive by webhook push; ` +
+              `${tombstoned} tombstone(s) (thin events arrive by webhook push; ` +
               `catchUp is the hydration pump)${quarantineNote} from ${baseUrl}`,
           );
-          if ((hydrationDlq ?? 0) > 0) {
+          if (hydrationDlq > 0) {
             console.error(
               `[${source}] HYDRATION DLQ: ${hydrationDlq} event(s) dead-lettered this run — ` +
                 "terminal, preserved, listed by reconcile; replay is an operator act (RUNBOOK)",
             );
           }
-          if ((hydrationPending ?? 0) > 0) {
+          if (hydrationPending > 0) {
             console.log(
               `backfill[${source}]: ${hydrationPending} event(s) still pending hydration ` +
                 "(rate budget reached) — the next run continues",
