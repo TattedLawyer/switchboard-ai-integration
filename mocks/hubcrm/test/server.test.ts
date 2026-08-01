@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import express from "express";
 import type { Server } from "node:http";
-import { generateManifest } from "@switchboard/mock-core";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { generateManifest, readLedger, verifyLedgerChain } from "@switchboard/mock-core";
 import { createHubcrmApp, createHubStore, OPS_UNTIL_MERGES_COMPLETE, type ThinEvent } from "../src/index.js";
 
 // Task C pair 2 — the HubSpot-STYLE thin-webhook CRM mock's own truth.
@@ -387,5 +390,50 @@ describe("F-1c identity-evidence invariance of the default script", () => {
       if (e.subscriptionType === "deal.propertyChange") continue; // deal amount/status/currency are working data, not identity evidence
       expect(identityProps.has(String(e.propertyName)), `${e.subscriptionType} mutated identity property ${String(e.propertyName)}`).toBe(false);
     }
+  });
+});
+
+// ── F-1c chaos port: the emission-side hash-chained ledger. The 2a chaos oracle's
+// tamper-evident record ports to this paradigm as a record of what the STORE EMITTED —
+// including events the fault plan later drops — so the chaos harness can compare an
+// unforgeable emission count against raw and name every loss. The chain machinery is
+// mocks/core's, imported (never moved or duplicated — the F-4 drift rider's condition
+// stays definitionally empty). ────────────────────────────────────────────────────────
+describe("F-1c emission ledger (chaos-port prerequisite)", () => {
+  it("with a ledgerPath, every emitted event (merges included) appends to a hash-chained ledger that verifies, one line per emission, in emission order — and dropped deliveries are still on it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hub-ledger-"));
+    const ledgerPath = join(dir, "ledger-hubcrm.jsonl");
+    const store = createHubStore({ seed: 42, ledgerPath });
+    store.simulate(OPS_UNTIL_MERGES_COMPLETE);
+    const { url } = receiver();
+    // A drop-heavy plan: the ledger is the emission record, not the delivery record.
+    await store.deliver({ webhookUrl: url, faultPlan: { seed: 7, dropRate: 0.5 } });
+
+    const entries = readLedger(ledgerPath);
+    const emitted = store.emittedEvents();
+    expect(entries).toHaveLength(emitted.length);
+    expect(entries.map((e) => e.event_id)).toEqual(emitted.map((e) => String(e.eventId)));
+    expect(entries.map((e) => e.event_type)).toEqual(emitted.map((e) => e.subscriptionType));
+    expect(entries.filter((e) => e.event_type === "company.merge")).toHaveLength(2);
+    expect(verifyLedgerChain(ledgerPath)).toEqual({ ok: true });
+  });
+
+  it("the ledger is tamper-evident: mutating one line breaks chain verification at that line", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hub-ledger-"));
+    const ledgerPath = join(dir, "ledger-hubcrm.jsonl");
+    const store = createHubStore({ seed: 42, ledgerPath });
+    store.simulate(30);
+    const lines = readFileSync(ledgerPath, "utf8").split("\n").filter(Boolean);
+    const doctored = JSON.parse(lines[9]) as { event_type: string };
+    doctored.event_type = "company.creation";
+    lines[9] = JSON.stringify(doctored);
+    writeFileSync(ledgerPath, lines.join("\n") + "\n");
+    expect(verifyLedgerChain(ledgerPath).ok).toBe(false);
+  });
+
+  it("without a ledgerPath nothing is written (tests and the CI fixture stay file-free)", () => {
+    const store = createHubStore({ seed: 42 });
+    store.simulate(20);
+    expect(store.emittedEvents().length).toBeGreaterThan(0); // and no throw — no path, no file
   });
 });
