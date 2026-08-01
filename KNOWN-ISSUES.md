@@ -600,7 +600,7 @@ leaves it is gone from the source forever.
   `bus-replay.ts` again; the fix wants A1's per-source containment shape
   applied to the write path without weakening A2's record-before-report rule).
 
-### Deferred minors from the debt-burn cold pass and Task E (owners assigned)
+### Deferred minors from the debt-burn cold pass and Task E (each carries an owner, or is a disclosed standing limit)
 
 - **The service log sits outside the compile-time consumption contract** —
   Task E's rest-destructure wall (`satisfies Record<string, never>`) makes an
@@ -615,6 +615,19 @@ leaves it is gone from the source forever.
   service log is covered only by review plus the service-log pins in
   bus-cli/stripe-feed-cli tests. *Owner: Task F (first slice owning
   `main.ts`), else phase-2b close.*
+- **The profile seam reaches the three 2a mocks only; the four 2b mocks are
+  deaf to it** — `createCrmApp`/`createBillingApp`/`createSupportApp` accept
+  `opts.profile`, but sheets (`seed.ts`), stripefeed (`feed.ts`), hubcrm
+  (`store.ts`), and casebus (`stream.ts`) call `generateManifest` with seed
+  only — always generic. The break this would cause is real: cross-system
+  identity correlation is DOMAIN-based and domains are profile-derived
+  (`hillcrest-4.example.com` vs `consulting-4.example.com`), so running the
+  2a mocks on a vertical profile beside the faithful mocks falsifies
+  hubcrm's "SHARED universe" premise and collapses tier-2 matching. It is
+  LATENT today: no script, env, or entrypoint threads a profile — selection
+  is programmatic `opts.profile` only, so every operator-reachable stack is
+  coherent generic. *Owner: Task F, alongside the faithful-source staging
+  switch (the slice that already touches the other mocks' seams).*
 - **Profile flavor-word vetting is review-enforced, not machine-enforced** —
   the per-profile hygiene scans catch real email/domain shapes, but a real
   brand name used as a flavor word would pass (plant-verified in the Task E

@@ -1,9 +1,8 @@
 # The standing operator-surface checklist
 
 Seven lines, binding on every task that touches a connector, a CLI, or the service
-log. Adopted at Phase 2b Task E from the operator-surface plan review
-(`docs/superpowers/plans/` lineage; rationale in
-`.superpowers/sdd/operator-surface-plan-review.md` while the branch lives), after six
+log. Adopted at Phase 2b Task E (the `17d6624..` Task E range on
+`phase2b-connectors`; each line's rationale is its provenance note below), after six
 consecutive cold-pass merge-blockers of the same species: the pipeline computes the
 right thing and the surface a human reads fails to say it.
 
