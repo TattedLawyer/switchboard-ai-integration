@@ -77,9 +77,11 @@ async function main(): Promise<void> {
         );
         const row = endRes.rows[0] as { last_seq?: unknown; last_event_id?: string | null } | undefined;
         const cursor = row?.last_event_id ?? String(Number(row?.last_seq ?? 0));
-        console.log(`state is consistent; re-run to resume from cursor ${cursor}`);
+        // B4: prefixed in this file's own house style — the line prints mid-incident,
+        // in a loop over sources, where an anonymous cursor is actively misleading.
+        console.log(`backfill[${source}]: state is consistent; re-run to resume from cursor ${cursor}`);
       } catch (cursorErr) {
-        console.error("could not read cursor:", cursorErr);
+        console.error(`backfill[${source}] could not read cursor:`, cursorErr);
       }
     }
   }

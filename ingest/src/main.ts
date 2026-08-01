@@ -42,7 +42,9 @@ export function createBackfillRunner(
   let running = false;
   return async () => {
     if (running) {
-      console.log("backfill still running, skipping tick");
+      // B4: every per-source line carries its source — a multi-source service log
+      // with anonymous lines cannot be triaged.
+      console.log(`[${source}] backfill still running, skipping tick`);
       return;
     }
 
@@ -87,7 +89,7 @@ export function createBackfillRunner(
         await connector.catchUp(pgPool, { baseUrl });
       }
     } catch (err) {
-      console.error("backfill round failed:", err);
+      console.error(`[${source}] backfill round failed:`, err);
     } finally {
       running = false;
     }

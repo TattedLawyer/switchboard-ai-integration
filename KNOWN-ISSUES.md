@@ -743,8 +743,11 @@ three)~~ *Paid (debt-burn A8):* an enabled ledger-feed source with no
 `LEDGER_PATH_<S>` now FAILS the reconcile naming the missing variable
 (fail-closed config validation); the literal value `skip` is the explicit
 opt-out · the repo-wide hygiene test lives inside the CRM mock's workspace, so
-its scope and its home disagree (relocate in 2b) · some log lines lack the
-`[source]` prefix · migration
+its scope and its home disagree (relocate in 2b) · ~~some log lines lack the
+`[source]` prefix~~ *Paid (debt-burn B4):* the skip-tick, round-failed, and
+resume-cursor lines now carry their source (pinned); the remaining
+unprefixed lines are genuinely global-scope (CLI flag errors, whole-queue
+depth counts), not per-source · migration
 001-recreate/003-drop churn at startup · CI installs dbt via bare pip (no
 setup-python pin) and double-runs on PR branches (no concurrency group) ·
 agent test files assign `DBT_SCHEMA` at module top-level and share one DB —
