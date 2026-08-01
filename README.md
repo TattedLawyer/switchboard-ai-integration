@@ -192,6 +192,56 @@ docker compose up -d postgres
 DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard npm test
 ```
 
+### One pipeline, three verticals
+
+The core is vertical-agnostic by construction: no mart column is
+industry-specific, connectors are paradigm-specific (webhook, cursor feed, event
+bus, spreadsheet) — never industry-specific — and a vertical profile swaps only
+vocabulary and value ranges. The seed generator ships three vertical profiles
+(`plumbing | saas | realestate`, default `generic`) on the same skeleton: same
+entity counts, same id schemes, same seeded duplicates and merge pairs, same
+tier-1/2/3 identity expectations. Same seed, same pipeline — different business.
+Deterministic and reproducible (a test runs these exact commands and diffs the
+output against this section):
+
+```bash
+PROFILE=plumbing node --import tsx -e 'import("@switchboard/mock-core").then(({generateManifest})=>{const m=generateManifest(42,process.env.PROFILE);for(const c of m.crm.companies.slice(0,2))console.log("company",c.id,c.name,"·",c.domain);const d=m.crm.deals[0];console.log("deal   ",d.id,d.name,"· $"+(d.amount_cents/100).toFixed(2));const t=m.support.tickets[0];console.log("ticket ",t.id,t.subject)})'
+```
+
+```text
+company DEMO-C-0001 DEMO Rooter Plumbing 1 · rooter-1.example.com
+company DEMO-C-0002 DEMO Drainworks Plumbing 2 · drainworks-2.example.com
+deal    DEMO-D-0001 DEMO Job 1: Sewer Line Repair · $6807.11
+ticket  DEMO-T-0001 DEMO Clogged Drain Call 1
+```
+
+```bash
+PROFILE=saas node --import tsx -e 'import("@switchboard/mock-core").then(({generateManifest})=>{const m=generateManifest(42,process.env.PROFILE);for(const c of m.crm.companies.slice(0,2))console.log("company",c.id,c.name,"·",c.domain);const d=m.crm.deals[0];console.log("deal   ",d.id,d.name,"· $"+(d.amount_cents/100).toFixed(2));const t=m.support.tickets[0];console.log("ticket ",t.id,t.subject)})'
+```
+
+```text
+company DEMO-C-0001 DEMO Cloudmetric Software 1 · cloudmetric-1.example.com
+company DEMO-C-0002 DEMO Datastack Software 2 · datastack-2.example.com
+deal    DEMO-D-0001 DEMO Team Plan Upgrade 1 · $108251.78
+ticket  DEMO-T-0001 DEMO API Rate Limit Ticket 1
+```
+
+```bash
+PROFILE=realestate node --import tsx -e 'import("@switchboard/mock-core").then(({generateManifest})=>{const m=generateManifest(42,process.env.PROFILE);for(const c of m.crm.companies.slice(0,2))console.log("company",c.id,c.name,"·",c.domain);const d=m.crm.deals[0];console.log("deal   ",d.id,d.name,"· $"+(d.amount_cents/100).toFixed(2));const t=m.support.tickets[0];console.log("ticket ",t.id,t.subject)})'
+```
+
+```text
+company DEMO-C-0001 DEMO Harborview Realty 1 · harborview-1.example.com
+company DEMO-C-0002 DEMO Summit Realty 2 · summit-2.example.com
+deal    DEMO-D-0001 DEMO Buyer Representation 1 · $337597.19
+ticket  DEMO-T-0001 DEMO Escrow Question Request 1
+```
+
+The demo scripts and every identity/oracle proof run on `generic`, whose output
+is byte-frozen against the pre-profile baseline; all data in every profile is
+synthetic (`DEMO` markers, `*.example.com` domains), enforced per profile by the
+hygiene tests.
+
 **Stack:** TypeScript / Node 22 · Express 5 · Postgres 16 · dbt · pg-boss · MCP
 TypeScript SDK · Anthropic SDK · Docker Compose · GitHub Actions. Planned in later
 phases: OpenTelemetry + Grafana (Phase 4).

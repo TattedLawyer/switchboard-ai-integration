@@ -1,10 +1,12 @@
 import express from "express";
-import { createSourceApp, generateManifest, type EventScript } from "@switchboard/mock-core";
-import { generateSeed } from "./seed.js";
+import { createSourceApp, generateManifest, type EventScript, type Profile } from "@switchboard/mock-core";
 
-export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; seed?: number }): express.Express {
-  const { companies, contacts, deals } = generateSeed(opts.seed);
-  const { mergePairs } = generateManifest(opts.seed ?? 42).crm;
+export function createCrmApp(opts: { webhookUrl: string; ledgerPath: string; seed?: number; profile?: Profile }): express.Express {
+  // Task E: `profile` threads exactly like `seed` — an optional opts field, generic by
+  // default. One manifest call now feeds companies/contacts/deals AND merge pairs
+  // (generateSeed remains the generic-only adapter for its existing consumers); an
+  // unknown profile name refuses here, at startup, naming the valid set.
+  const { companies, contacts, deals, mergePairs } = generateManifest(opts.seed ?? 42, opts.profile).crm;
 
   // Deterministic, index-pure script covering companies, contacts, deals, and merges.
   // Company slots at i % 4 ∈ {0, 3} (two per cycle → all 22 covered by index 43);
