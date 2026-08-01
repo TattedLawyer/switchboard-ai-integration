@@ -213,8 +213,9 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   is a bounded named failure with the cursor untouched. Pinned in
   `backfill.test.ts` (lying feed recovered in full; 300ms bounded timeout).
 - ~~The ledger hash chain doesn't enforce `seq` monotonicity or event-id
-  uniqueness~~ — a restarted mock forks the logical stream and still verifies.
-  *Paid in full (debt-burn A6, to the Task D report's spec):* both
+  uniqueness — a restarted mock forks the logical stream and still
+  verifies~~ (that fork now breaks the chain at its line). *Paid in full
+  (debt-burn A6, to the Task D report's spec):* both
   `verifyLedgerChain` copies now enforce `seq` strictly increasing and
   `event_id` unique with `{ ok: false, brokenAt }`, the cross-copy drift test
   runs both copies over identical predicate fixtures, and `reconcile()` counts
@@ -522,6 +523,22 @@ leaves it is gone from the source forever.
   behavior was the correct behavior. Now remarked at both `recordGap` sites in
   `bus-replay.ts` and pinned in `bus-replay.test.ts`: insert fails ⇒ run
   fails, cursor not advanced, no gap row; the next healthy run re-detects.
+- **A2 residue — the RECONCILE-path `recordGap` throw still suppresses later
+  sources' disclosures.** Mechanism: a gap_ledger insert failure inside
+  `BusReplayConnector.reconcile()` (the live-gap detection block,
+  `bus-replay.ts`) throws out of `reconcile()` — deliberate fail-loud for the
+  write itself (A2's verdict; a DB write failure is not source transport) —
+  but the reconcile CLI's standing-loss disclosure block runs *after*
+  `reconcile()` returns, so the throw lands in the CLI's top-level catch and
+  kills the run before LATER sources print their standing state: the same
+  disclosure-dies-during-an-incident class A1 fixed for probe failures,
+  through the database door. Blast radius is bounded (exit 1, nothing
+  half-written, and a gap_ledger insert failure usually means the same DB the
+  disclosure reads would fail too — but not always: a constraint or
+  permission error on the one INSERT is not an outage of the SELECTs).
+  Commented at the site. *Owner: phase-2b close* (no earlier slice owns
+  `bus-replay.ts` again; the fix wants A1's per-source containment shape
+  applied to the write path without weakening A2's record-before-report rule).
 
 ## Numeric & monetary integrity (added with the numeric-integrity wave)
 
