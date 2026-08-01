@@ -715,8 +715,11 @@ and none is started. Effort classes are estimates by the maintainer.
 ~~`fetchDlq`/`replayDlq` cap at 10 per invocation~~ *Paid (debt-burn A7):*
 both drain the full queue in one invocation (drain-by-default per the AWS-CLI
 pagination contract; pinned with a 12-deep DLQ in `queue.test.ts`) ·
-reconcile skips a source whose ledger-path env var is unset (scripts pin all
-three) · the repo-wide hygiene test lives inside the CRM mock's workspace, so
+~~reconcile skips a source whose ledger-path env var is unset (scripts pin all
+three)~~ *Paid (debt-burn A8):* an enabled ledger-feed source with no
+`LEDGER_PATH_<S>` now FAILS the reconcile naming the missing variable
+(fail-closed config validation); the literal value `skip` is the explicit
+opt-out · the repo-wide hygiene test lives inside the CRM mock's workspace, so
 its scope and its home disagree (relocate in 2b) · some log lines lack the
 `[source]` prefix · migration
 001-recreate/003-drop churn at startup · CI installs dbt via bare pip (no

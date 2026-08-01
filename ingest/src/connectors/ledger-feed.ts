@@ -43,8 +43,27 @@ export class LedgerFeedConnector implements Connector {
       opts && "ledgerPath" in opts ? opts.ledgerPath : ledgerPathFor(this.source);
 
     if (!ledgerPath) {
+      // FAIL CLOSED (debt-burn A8): this source is ENABLED in INGEST_SOURCES and its
+      // paradigm declares a ledger — an unset LEDGER_PATH_<S> here is a config error
+      // (typo'd variable, missed export), not consent to skip. Returning a skip let one
+      // typo silently drop a source from the zero-loss proof while the aggregate said
+      // PASS. Unset is never consent; the explicit literal `skip` below is.
+      const varName = `LEDGER_PATH_${this.source.toUpperCase()}`;
       return {
-        skipped: `no LEDGER_PATH_${this.source.toUpperCase()}`,
+        integrity: {
+          ok: false,
+          detail:
+            `${varName} is not set for enabled source ${this.source} — refusing to silently drop it from ` +
+            `the reconcile. Set ${varName} to the ledger file, or to the literal value "skip" to opt this ` +
+            "source out explicitly.",
+        },
+      };
+    }
+    if (ledgerPath === "skip") {
+      // The explicit, on-the-record escape hatch: a deployment that genuinely wants a
+      // ledger-feed source unreconciled says so by name, not by omission.
+      return {
+        skipped: `LEDGER_PATH_${this.source.toUpperCase()}=skip (explicit opt-out)`,
         integrity: { ok: true },
       };
     }
