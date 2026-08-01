@@ -1,6 +1,10 @@
 import { prng } from "./prng.js";
 
-export type Profile = "generic" | "plumbing" | "saas" | "logistics";
+/** 2b-D3: the vertical trio is `plumbing | saas | realestate` (amends D10 — logistics
+ *  out after the real-estate direction decision). Runtime-validated in
+ *  generateManifest because mock servers may thread an operator-supplied string. */
+export const PROFILES = ["generic", "plumbing", "saas", "realestate"] as const;
+export type Profile = (typeof PROFILES)[number];
 
 export type Company = { id: string; name: string; domain: string; owner_email: string };
 export type Contact = { id: string; company_id: string; name: string; email: string };
@@ -31,33 +35,158 @@ export type Manifest = {
   };
 };
 
-const SECTORS = ["Logistics", "Manufacturing", "Retail", "Consulting", "Media",
-  "Freight", "Staffing", "Catering", "Printing", "Security"];
+/**
+ * What a vertical profile IS: vocabulary and value ranges, nothing else. Structure —
+ * entity counts, id schemes, the dupe/merge construction, the tier-1/2/3 rows and the
+ * near-miss/unmatchable placements — is shared code below and identical for every
+ * profile (pinned per-profile by profiles.test.ts; generic's exact bytes are pinned by
+ * manifest-generic-pin.test.ts against the pre-profile fixture). Every name a profile
+ * emits must keep the `DEMO` marker and *.example.com domains — the hygiene wall.
+ * amount ranges are cents: amount = floor(rand() * span) + min, one rand() call either
+ * way, so the PRNG stream is call-for-call identical across profiles.
+ */
+type ProfileContent = {
+  /** Ten flavor words; word i%10 names company i+1 and slugs its domain
+   *  (`<word.toLowerCase()>-<n>.example.com`), so they must be single [a-z0-9]+ tokens. */
+  sectors: string[];
+  companyName: (sector: string, n: number) => string;
+  contactName: (n: number) => string;
+  dealName: (n: number) => string;
+  dealAmount: { min: number; span: number };
+  invoiceAmount: { min: number; span: number };
+  requesterName: (n: number) => string;
+  ticketSubject: (n: number) => string;
+  /** Flavor emails for billing tier-2 rows B-0011..B-0013 (tier 2 matches on
+   *  domain+name, so these emails are free-form color — but they are still operator-
+   *  visible content, so each profile keeps them in its own register). */
+  tier2BillingEmails: [string, string, string];
+  /** B-0014, the billing near-miss: name matches company 14, domain deliberately
+   *  matches NOTHING (profiles must keep it off every company domain). */
+  nearMissBillingDomain: string;
+  nearMissBillingEmail: string;
+  /** S-0010..S-0011 (support tier 2) and S-0012 (support near-miss) flavor emails. */
+  tier2SupportEmails: [string, string];
+  nearMissSupportEmail: string;
+};
+
+const at = <T>(xs: readonly T[], n: number): T => xs[n % xs.length];
+
+const PROFILE_CONTENT: Record<Profile, ProfileContent> = {
+  // generic reproduces the Phase 0/1 seed literals EXACTLY — the byte-identical wall.
+  generic: {
+    sectors: ["Logistics", "Manufacturing", "Retail", "Consulting", "Media",
+      "Freight", "Staffing", "Catering", "Printing", "Security"],
+    companyName: (sector, n) => `DEMO ${sector} Group ${n}`,
+    contactName: (n) => `DEMO Contact ${n}`,
+    dealName: (n) => `DEMO Deal ${n}`,
+    dealAmount: { min: 50_000, span: 5_000_000 },
+    invoiceAmount: { min: 10_000, span: 2_000_000 },
+    requesterName: (n) => `DEMO Requester ${n}`,
+    ticketSubject: (n) => `DEMO Ticket ${n}`,
+    tier2BillingEmails: ["billing.media-11@example.com", "billing.freight-12@example.com", "billing.staffing-13@example.com"],
+    nearMissBillingDomain: "catering-14b.example.com",
+    nearMissBillingEmail: "billing.catering-14b@example.com",
+    tier2SupportEmails: ["help.security-15@example.com", "help.freight-16@example.com"],
+    nearMissSupportEmail: "help.printing-17b@example.com",
+  },
+  // Trades & field services: job-shaped deals in the hundreds-to-thousands, service
+  // calls as tickets.
+  plumbing: {
+    sectors: ["Rooter", "Drainworks", "Pipeworks", "Hydrojet", "Backflow",
+      "Waterline", "Septic", "Repipe", "Trenchless", "Fixture"],
+    companyName: (sector, n) => `DEMO ${sector} Plumbing ${n}`,
+    contactName: (n) => `DEMO Site Contact ${n}`,
+    dealName: (n) =>
+      `DEMO Job ${n}: ${at(["Water Heater Replacement", "Sewer Line Repair", "Drain Cleaning",
+        "Whole-House Repipe", "Leak Detection", "Fixture Install", "Backflow Test", "Hydro Jetting"], n)}`,
+    dealAmount: { min: 15_000, span: 1_485_000 },     // $150 – $15,000: a plumbing job
+    invoiceAmount: { min: 9_500, span: 240_500 },     // $95 – $2,500: a service invoice
+    requesterName: (n) => `DEMO Caller ${n}`,
+    ticketSubject: (n) =>
+      `DEMO ${at(["Burst Pipe", "Clogged Drain", "No Hot Water", "Low Water Pressure",
+        "Leaking Fixture", "Sewer Backup", "Running Toilet", "Water Heater Noise"], n)} Call ${n}`,
+    tier2BillingEmails: ["billing.rooter-11@example.com", "billing.pipeworks-12@example.com", "billing.septic-13@example.com"],
+    nearMissBillingDomain: "drainworks-14b.example.com",
+    nearMissBillingEmail: "billing.drainworks-14b@example.com",
+    tier2SupportEmails: ["help.fixture-15@example.com", "help.waterline-16@example.com"],
+    nearMissSupportEmail: "help.hydrojet-17b@example.com",
+  },
+  // Software/SaaS: subscription-shaped deals (ARR bands), product tickets.
+  saas: {
+    sectors: ["Cloudmetric", "Datastack", "Devloop", "Apigrid", "Signalframe",
+      "Queryforge", "Stackpilot", "Bitgarden", "Logscape", "Netplane"],
+    companyName: (sector, n) => `DEMO ${sector} Software ${n}`,
+    contactName: (n) => `DEMO Admin Contact ${n}`,
+    dealName: (n) =>
+      `DEMO ${at(["Starter Subscription", "Team Plan Upgrade", "Enterprise Contract", "Annual Renewal",
+        "Seat Expansion", "Usage Overage", "Premium Support Add-on"], n)} ${n}`,
+    dealAmount: { min: 120_000, span: 23_880_000 },   // $1,200 – $240,000: an ARR deal
+    invoiceAmount: { min: 4_900, span: 995_100 },     // $49 – $10,000: a subscription invoice
+    requesterName: (n) => `DEMO User ${n}`,
+    ticketSubject: (n) =>
+      `DEMO ${at(["Login Failure", "API Rate Limit", "Billing Question", "Data Export",
+        "Webhook Outage", "SSO Setup", "Slow Dashboard", "Feature Request"], n)} Ticket ${n}`,
+    tier2BillingEmails: ["billing.cloudmetric-11@example.com", "billing.devloop-12@example.com", "billing.queryforge-13@example.com"],
+    nearMissBillingDomain: "datastack-14b.example.com",
+    nearMissBillingEmail: "billing.datastack-14b@example.com",
+    tier2SupportEmails: ["help.logscape-15@example.com", "help.apigrid-16@example.com"],
+    nearMissSupportEmail: "help.netplane-17b@example.com",
+  },
+  // Real estate as a VERTICAL, generic vertical language only — listings, closings,
+  // commissions, escrow, inspections (2b-D5 wall: nothing sourced from any real
+  // engagement, broker, or document; the repo stays synthetic, period).
+  realestate: {
+    sectors: ["Harborview", "Summit", "Lakeside", "Metroline", "Prairie",
+      "Coastal", "Uptown", "Foothill", "Riverbend", "Highland"],
+    companyName: (sector, n) => `DEMO ${sector} Realty ${n}`,
+    contactName: (n) => `DEMO Client Contact ${n}`,
+    dealName: (n) =>
+      `DEMO ${at(["Residential Listing", "Buyer Representation", "Commercial Sale", "Lease Agreement",
+        "Property Management Contract", "Land Sale", "Escrow Closing"], n)} ${n}`,
+    dealAmount: { min: 250_000, span: 74_750_000 },   // $2,500 – $750,000: a closing
+    invoiceAmount: { min: 45_000, span: 2_955_000 },  // $450 – $30,000: a commission invoice
+    requesterName: (n) => `DEMO Client ${n}`,
+    ticketSubject: (n) =>
+      `DEMO ${at(["Inspection Scheduling", "Escrow Question", "Listing Update", "Showing Request",
+        "Closing Document", "Commission Statement", "Maintenance Request", "Lease Renewal"], n)} Request ${n}`,
+    tier2BillingEmails: ["billing.harborview-11@example.com", "billing.lakeside-12@example.com", "billing.uptown-13@example.com"],
+    nearMissBillingDomain: "summit-14b.example.com",
+    nearMissBillingEmail: "billing.summit-14b@example.com",
+    tier2SupportEmails: ["help.highland-15@example.com", "help.coastal-16@example.com"],
+    nearMissSupportEmail: "help.riverbend-17b@example.com",
+  },
+};
+
 const STATUSES: Deal["status"][] = ["open", "won", "lost"];
 const pad = (n: number) => String(n).padStart(4, "0");
 
 export function generateManifest(masterSeed = 42, profile: Profile = "generic"): Manifest {
-  if (profile !== "generic") {
-    // D4: the parameter seam ships in 2a; vertical CONTENT (plumbing|saas|logistics) is Phase 2b.
-    throw new Error(`profile "${profile}" not implemented until Phase 2b (only "generic" in 2a)`);
+  // Operator-surface refusal: mock servers thread profile from caller config, so an
+  // unknown name must be named and answered with the valid set — not a crash from
+  // undefined content halfway through generation.
+  const P = (PROFILE_CONTENT as Record<string, ProfileContent | undefined>)[profile];
+  if (P === undefined) {
+    throw new Error(`unknown profile "${profile}" — valid profiles: ${PROFILES.join(", ")}`);
   }
   const rand = prng(masterSeed);
+  const slugOf = (c: Company) => c.domain.replace(".example.com", "");
 
-  // 20 base companies — identical construction to the Phase 0/1 seed (ids/names/domains stable).
+  // 20 base companies — for `generic`, identical construction to the Phase 0/1 seed
+  // (ids/names/domains stable); other profiles swap vocabulary on the same skeleton.
   const base: Company[] = Array.from({ length: 20 }, (_, i) => {
-    const sector = SECTORS[i % SECTORS.length];
+    const sector = P.sectors[i % P.sectors.length];
     const slug = `${sector.toLowerCase()}-${i + 1}`;
     return {
       id: `DEMO-C-${pad(i + 1)}`,
-      name: `DEMO ${sector} Group ${i + 1}`,
+      name: P.companyName(sector, i + 1),
       domain: `${slug}.example.com`,
       owner_email: `owner.${slug}@example.com`,
     };
   });
   // ~8% seeded duplicates (2 of 22): dupes of C-0001/C-0002 — same domain, name variant.
   const dupes: Company[] = [
-    { id: "DEMO-C-0021", name: `${base[0].name} Inc`, domain: base[0].domain, owner_email: "owner.logistics-1b@example.com" },
-    { id: "DEMO-C-0022", name: base[1].name, domain: base[1].domain, owner_email: "owner.manufacturing-2b@example.com" },
+    { id: "DEMO-C-0021", name: `${base[0].name} Inc`, domain: base[0].domain, owner_email: `owner.${slugOf(base[0])}b@example.com` },
+    { id: "DEMO-C-0022", name: base[1].name, domain: base[1].domain, owner_email: `owner.${slugOf(base[1])}b@example.com` },
   ];
   const companies = [...base, ...dupes];
   const mergePairs: MergePair[] = [
@@ -67,11 +196,11 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
 
   // NEW entity (original spec §2, D4): 2 contacts per base company.
   const contacts: Contact[] = base.flatMap((c, i) => {
-    const slug = c.domain.replace(".example.com", "");
+    const slug = slugOf(c);
     return [0, 1].map((k) => ({
       id: `DEMO-P-${pad(i * 2 + k + 1)}`,
       company_id: c.id,
-      name: `DEMO Contact ${i * 2 + k + 1}`,
+      name: P.contactName(i * 2 + k + 1),
       email: `contact${k + 1}.${slug}@example.com`,
     }));
   });
@@ -82,16 +211,16 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
     ...Array.from({ length: 56 }, (_, i) => ({
       id: `DEMO-D-${pad(i + 1)}`,
       company_id: base[Math.floor(rand() * base.length)].id,
-      name: `DEMO Deal ${i + 1}`,
-      amount_cents: Math.floor(rand() * 5_000_000) + 50_000,
+      name: P.dealName(i + 1),
+      amount_cents: Math.floor(rand() * P.dealAmount.span) + P.dealAmount.min,
       status: STATUSES[Math.floor(rand() * STATUSES.length)],
       currency: "USD" as const,
     })),
     ...Array.from({ length: 4 }, (_, i) => ({
       id: `DEMO-D-${pad(57 + i)}`,
       company_id: dupes[i % 2].id,
-      name: `DEMO Deal ${57 + i}`,
-      amount_cents: Math.floor(rand() * 5_000_000) + 50_000,
+      name: P.dealName(57 + i),
+      amount_cents: Math.floor(rand() * P.dealAmount.span) + P.dealAmount.min,
       status: STATUSES[Math.floor(rand() * STATUSES.length)],
       currency: "USD" as const,
     })),
@@ -105,10 +234,10 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
     ...base.slice(0, 10).map((c, i) => ({
       id: bId(i + 1), name: c.name, domain: c.domain, email: contacts[i * 2].email,
     })),
-    { id: bId(11), name: `${base[10].name} Inc`, domain: base[10].domain, email: "billing.media-11@example.com" },
-    { id: bId(12), name: base[11].name.toUpperCase(), domain: `WWW.${base[11].domain}`, email: "billing.freight-12@example.com" },
-    { id: bId(13), name: base[12].name, domain: base[12].domain, email: "billing.staffing-13@example.com" },
-    { id: bId(14), name: base[13].name, domain: "catering-14b.example.com", email: "billing.catering-14b@example.com" },
+    { id: bId(11), name: `${base[10].name} Inc`, domain: base[10].domain, email: P.tier2BillingEmails[0] },
+    { id: bId(12), name: base[11].name.toUpperCase(), domain: `WWW.${base[11].domain}`, email: P.tier2BillingEmails[1] },
+    { id: bId(13), name: base[12].name, domain: base[12].domain, email: P.tier2BillingEmails[2] },
+    { id: bId(14), name: base[13].name, domain: P.nearMissBillingDomain, email: P.nearMissBillingEmail },
     { id: bId(15), name: "DEMO Standalone Billing Co 1", domain: "standalone-billing-1.example.com", email: "billing.standalone1@example.com" },
     { id: bId(16), name: "DEMO Standalone Billing Co 2", domain: "standalone-billing-2.example.com", email: "billing.standalone2@example.com" },
   ];
@@ -116,7 +245,7 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
   const invoices: Invoice[] = Array.from({ length: 40 }, (_, i) => ({
     id: `DEMO-I-${pad(i + 1)}`,
     customer_id: customers[i % customers.length].id,
-    amount_cents: Math.floor(invRand() * 2_000_000) + 10_000,
+    amount_cents: Math.floor(invRand() * P.invoiceAmount.span) + P.invoiceAmount.min,
     currency: "USD",
   }));
 
@@ -127,14 +256,14 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
   const sId = (n: number) => `DEMO-S-${pad(n)}`;
   const requesters: SupportRequester[] = [
     ...base.slice(5, 14).map((c, i) => ({
-      id: sId(i + 1), name: `DEMO Requester ${i + 1}`, email: contacts[(i + 5) * 2].email,
+      id: sId(i + 1), name: P.requesterName(i + 1), email: contacts[(i + 5) * 2].email,
       company_name: c.name, domain: c.domain,
     })),
-    { id: sId(10), name: "DEMO Requester 10", email: "help.security-15@example.com", company_name: `${base[14].name} LLC`, domain: base[14].domain },
-    { id: sId(11), name: "DEMO Requester 11", email: "help.freight-16@example.com", company_name: base[15].name, domain: `www.${base[15].domain}` },
-    { id: sId(12), name: "DEMO Requester 12", email: "help.printing-17b@example.com", company_name: "DEMO Totally Different Name", domain: base[16].domain },
-    { id: sId(13), name: "DEMO Requester 13", email: "help.standalone1@example.com", company_name: "DEMO Standalone Support Co 1", domain: "standalone-support-1.example.com" },
-    { id: sId(14), name: "DEMO Requester 14", email: "help.standalone2@example.com", company_name: "DEMO Standalone Support Co 2", domain: "standalone-support-2.example.com" },
+    { id: sId(10), name: P.requesterName(10), email: P.tier2SupportEmails[0], company_name: `${base[14].name} LLC`, domain: base[14].domain },
+    { id: sId(11), name: P.requesterName(11), email: P.tier2SupportEmails[1], company_name: base[15].name, domain: `www.${base[15].domain}` },
+    { id: sId(12), name: P.requesterName(12), email: P.nearMissSupportEmail, company_name: "DEMO Totally Different Name", domain: base[16].domain },
+    { id: sId(13), name: P.requesterName(13), email: "help.standalone1@example.com", company_name: "DEMO Standalone Support Co 1", domain: "standalone-support-1.example.com" },
+    { id: sId(14), name: P.requesterName(14), email: "help.standalone2@example.com", company_name: "DEMO Standalone Support Co 2", domain: "standalone-support-2.example.com" },
   ];
   const BASE_T = Date.parse("2026-07-01T00:00:00.000Z");
   const iso = (ms: number) => new Date(ms).toISOString();
@@ -146,7 +275,7 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
     return {
       id: `DEMO-T-${pad(i + 1)}`,
       requester_id: requesters[i % requesters.length].id,
-      subject: `DEMO Ticket ${i + 1}`,
+      subject: P.ticketSubject(i + 1),
       priority,
       created_at: iso(created),
       sla_due_at: iso(created + slaHours * 3_600_000),
@@ -194,7 +323,7 @@ export function generateManifest(masterSeed = 42, profile: Profile = "generic"):
       tier2: { billing: [bId(11), bId(12), bId(13)], support: [sId(10), sId(11)] },
       manualReview: { billing: [bId(14), bId(15), bId(16)], support: [sId(12), sId(13), sId(14)] },
       mergePairs,
-      crossSystemCompanyIds, // derived above: C-0006..C-0013 for the generic profile
+      crossSystemCompanyIds, // derived above: C-0006..C-0013 for every profile's construction
     },
   };
 }

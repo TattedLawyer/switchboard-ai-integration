@@ -1,6 +1,7 @@
 export { prng } from "./prng.js";
 export {
   generateManifest,
+  PROFILES,
   type Profile,
   type Manifest,
   type Company,
