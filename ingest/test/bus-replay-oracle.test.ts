@@ -299,12 +299,17 @@ describe("oracle 8 — reconcile-first detection must not file a POORER record t
   });
 
   it("catchUp-first and reconcile-first produce the SAME record for the same loss — the ledger must not depend on which surface looked first", async () => {
+    // Each ordering is compared against ITS OWN mock's truth, and the two are then
+    // compared on the seed-determined fields. The timestamps are deliberately NOT compared
+    // across runs: the mock's clock is anchored to real boot time, so two instances
+    // constructed a second apart legitimately stamp events a second apart. Cross-comparing
+    // them would pin the wall clock, not the connector — a flake wearing an oracle's hat.
     const build = async (p: pg.Pool, reconcileFirst: boolean) => {
       const mock = createCasebusApp({ seed: 42 });
       const baseUrl = listen(mock);
-      mock.stream.emit(9, { ageS: 70 * 3600 });
+      const aged = mock.stream.emit(9, { ageS: 70 * 3600 });
       await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUp(p);
-      mock.stream.emit(7);
+      const fresh = mock.stream.emit(7);
       mock.stream.advance(3 * 3600);
       const c = new BusReplayConnector({ baseUrl, batchSize: 100 });
       if (reconcileFirst) {
@@ -314,19 +319,30 @@ describe("oracle 8 — reconcile-first detection must not file a POORER record t
         await c.catchUpWithReport(p);
         await c.reconcile(p);
       }
-      return (await listGaps(p, "00000000-0000-0000-0000-000000000000", CASEBUS_SOURCE))[0];
+      const stored = (await listGaps(p, "00000000-0000-0000-0000-000000000000", CASEBUS_SOURCE))[0];
+      // Whoever detected first, the record must describe THIS mock's loss exactly.
+      expect(stored.fromEventId).toBe(aged.at(-1)!.event.id);
+      expect(stored.fromOccurredAt).toBe(aged.at(-1)!.event.event_time);
+      expect(stored.toEventId).toBe(fresh[0].event.id);
+      expect(stored.toOccurredAt).toBe(fresh[0].event.event_time);
+      return stored;
     };
 
     const catchUpFirst = await build(pool, false);
     const other = await freshTestDb();
     try {
       const reconcileFirst = await build(other.pool, true);
-      // Same seed, same script ⇒ same ids; the only variable is who detected first.
+      // Same seed, same script ⇒ same ids. The only variable is who looked first, and it
+      // must make no difference to the record's identity or its fidelity.
       expect(reconcileFirst.cause).toBe(catchUpFirst.cause);
       expect(reconcileFirst.fromEventId).toBe(catchUpFirst.fromEventId);
-      expect(reconcileFirst.fromOccurredAt).toBe(catchUpFirst.fromOccurredAt);
       expect(reconcileFirst.toEventId).toBe(catchUpFirst.toEventId);
-      expect(reconcileFirst.toOccurredAt).toBe(catchUpFirst.toOccurredAt);
+      // Both orderings know both edges — the point of the fix.
+      for (const g of [catchUpFirst, reconcileFirst]) {
+        expect(g.toEventId).not.toBeNull();
+        expect(g.toOccurredAt).not.toBeNull();
+        expect(g.fromOccurredAt).not.toBeNull();
+      }
     } finally {
       await other.cleanup();
     }

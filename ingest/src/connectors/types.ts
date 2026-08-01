@@ -135,12 +135,25 @@ const GAP_COLUMNS =
 /**
  * Record a permanent loss. IDEMPOTENT by (tenant, source, cause, from_event_id): the same
  * loss re-detected by a later run is the SAME gap, so a cron loop cannot manufacture a
- * row per tick. On a repeat the ORIGINAL row is returned unchanged — deliberately:
- *   · the FAR edge is not refreshed. It records where the source's window stood when the
- *     loss was first observed; letting it drift forward with every re-detection would
- *     quietly widen a reported loss that never grew.
- *   · an acknowledgement is not cleared. The loss did not get worse; it is the same loss,
- *     and un-acknowledging it would resurrect a red the operator already answered.
+ * row per tick.
+ *
+ * On a repeat the row is ENRICHED, never rewritten (Task D cold review I2, disclosed
+ * decision). The rule is exactly one-directional: a NULL field may be filled by a later
+ * detection that knows more; a POPULATED field is never changed. So the ledger only ever
+ * gets more truthful, and specifically:
+ *   · a WIDER far edge from a later detection does NOT replace the original. The far edge
+ *     records where the source's window stood when the loss was first observed; letting it
+ *     drift forward with the window would quietly widen a reported loss that never grew.
+ *   · a POORER later detection cannot blank what we already knew.
+ *   · `detected_at` is never touched — it is when we FIRST learned of the loss.
+ *   · the acknowledgement columns are never touched. The loss did not get worse; it is the
+ *     same loss, and un-acknowledging it would resurrect a red the operator already
+ *     answered.
+ *
+ * Why this matters rather than being tidiness: before it, `recordGap` was first-writer-
+ * wins, so whichever SURFACE happened to observe a loss first fixed the record's quality
+ * for the life of that gap — a gap first seen by a cron reconcile stayed permanently less
+ * useful than the identical gap first seen by a backfill.
  */
 export async function recordGap(
   pool: pg.Pool,
@@ -158,7 +171,14 @@ export async function recordGap(
     `insert into ingest.gap_ledger
        (tenant_id, source, cause, from_event_id, from_occurred_at, to_event_id, to_occurred_at)
      values ($1, $2, $3, $4, $5, $6, $7)
-     on conflict (tenant_id, source, cause, coalesce(from_event_id, '')) do nothing
+     on conflict (tenant_id, source, cause, coalesce(from_event_id, '')) do update
+       -- Enrichment, one-directional: the INCUMBENT value wins whenever it exists, so
+       -- coalesce(existing, incoming) fills nulls and is a no-op for everything else.
+       -- detected_at and the acknowledgement columns are deliberately absent from this
+       -- list. The update always matches, so RETURNING gives us the row either way.
+       set from_occurred_at = coalesce(ingest.gap_ledger.from_occurred_at, excluded.from_occurred_at),
+           to_event_id      = coalesce(ingest.gap_ledger.to_event_id,      excluded.to_event_id),
+           to_occurred_at   = coalesce(ingest.gap_ledger.to_occurred_at,   excluded.to_occurred_at)
      returning ${GAP_COLUMNS}`,
     [
       gap.tenantId,
@@ -170,15 +190,9 @@ export async function recordGap(
       gap.toOccurredAt,
     ],
   );
-  if (res.rowCount === 1) return toGapRow(res.rows[0]);
-  // DO NOTHING returns no row on conflict; read the incumbent back. Not an error path —
-  // this is the common path once a loss has been detected once.
-  const existing = await pool.query<GapLedgerDbRow>(
-    `select ${GAP_COLUMNS} from ingest.gap_ledger
-      where tenant_id = $1 and source = $2 and cause = $3 and coalesce(from_event_id, '') = coalesce($4, '')`,
-    [gap.tenantId, gap.source, gap.cause, gap.fromEventId],
-  );
-  return toGapRow(existing.rows[0]);
+  // DO UPDATE always produces a row, so unlike the previous DO NOTHING form there is no
+  // read-back path to get wrong.
+  return toGapRow(res.rows[0]);
 }
 
 /** This (tenant, source)'s recorded losses, newest first. Scoped IN THE QUERY, never

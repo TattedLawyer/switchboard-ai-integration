@@ -29,6 +29,7 @@ import type {
   ConnectorCatchUpOptions,
   ConnectorReconcileOptions,
   ConnectorReconcileResult,
+  GapCause,
 } from "./types.js";
 import { listGaps, recordGap } from "./types.js";
 import type { ReconcileReport } from "../reconcile.js";
@@ -68,7 +69,10 @@ export interface StripeFeedGap {
   /** created of the earliest event still retained at fallback time; null when the feed
    *  had aged EVERYTHING out (the loss has no knowable near edge). */
   toOccurredAt: string | null;
-  cause: "retention";
+  /** Widened from the `"retention"` literal (cold review M2): the field now carries what
+   *  the ledger holds rather than a value this mapping asserts. This paradigm still only
+   *  produces `retention` — that is a property of the vendor contract, not of the type. */
+  cause: GapCause;
 }
 
 export interface StripeFeedCatchUpReport {
@@ -413,7 +417,12 @@ export class StripeFeedConnector implements Connector {
         fromEventId: g.fromEventId!,
         fromOccurredAt: g.fromOccurredAt,
         toOccurredAt: g.toOccurredAt,
-        cause: "retention" as const,
+        // Cold review M2: CARRIED, not fabricated. This paradigm can only record
+        // `retention` today, so hard-coding it was correct-by-accident — but a value
+        // asserted rather than read is a value that silently lies the day the assumption
+        // changes, and a `reset` row filed under this source would have printed as a
+        // retention loss and sent the operator to the wrong investigation.
+        cause: g.cause,
       }));
 
     return {

@@ -20,7 +20,50 @@ async function main(): Promise<void> {
   try {
     for (const source of enabledSources()) {
       const connector = connectorFor(source);
+
+      // Which losses were already on the record BEFORE this run. Taken as ids rather than
+      // by comparing timestamps because `detected_at` is the DATABASE clock and this is
+      // the app clock; an id-set diff needs no clock at all.
+      const priorGapIds = new Set((await listGaps(pool, DEFAULT_TENANT_ID, source)).map((g) => g.id));
+
       const result = await connector.reconcile(pool);
+
+      // ── the durable disclosure, printed BEFORE any degraded-path exit ──────────────
+      //
+      // Cold review I1: this read used to sit below the `skipped` and `!integrity.ok`
+      // continues, so a source that was unreachable or unreadable printed its live
+      // failure and NOTHING about the permanent losses already on its record — at exactly
+      // the moment an operator is reading this output. The gate still held (exit nonzero),
+      // but the disclosure is the point of the ledger: a row nobody prints is a row nobody
+      // acts on. A standing loss is a fact about the past; it is not contingent on whether
+      // the source answered the phone today.
+      const ledgerGaps = await listGaps(pool, DEFAULT_TENANT_ID, source);
+      const unacknowledged = ledgerGaps.filter((g) => g.acknowledgedAt === null);
+      if (ledgerGaps.length > 0) {
+        console.error(
+          `[${source}] gap ledger: ${ledgerGaps.length} recorded permanent loss(es), ` +
+            `${unacknowledged.length} unacknowledged — read from ingest.gap_ledger, independent of this run's live read`,
+        );
+      }
+      // Every gap is printed, acknowledged or not: acknowledging a loss records that a
+      // human accepted it, it does not make it stop being true. Each line says whether it
+      // was already on the record or was found just now, so a standing loss is never
+      // mistaken for fresh damage during an incident (and vice versa).
+      for (const gap of ledgerGaps) {
+        const when = priorGapIds.has(gap.id) ? "standing (recorded before this run)" : "detected in this run";
+        console.error(`${formatGapLedgerRow(source, gap)} — ${when}`);
+      }
+      if (unacknowledged.length > 0) {
+        // A red with no next step is how reconcile gets ignored. Print the exact command.
+        console.error(
+          `[${source}] ${unacknowledged.length} UNACKNOWLEDGED gap(s). No retry can close a gap — once you have ` +
+            "accepted the loss, record it:\n" +
+            `  node --import tsx src/cli/gap-ack.ts --source ${source} --id <n> --by <operator> --note "why"`,
+        );
+        // The gate is the ledger's, not the live read's: an unacknowledged permanent loss
+        // reds the run even when this source was skipped or unreadable this time.
+        allClean = false;
+      }
 
       if (result.skipped) {
         console.log(`[${source}] skipped (${result.skipped})`);
@@ -167,26 +210,10 @@ async function main(): Promise<void> {
         for (const q of windowed.quarantined) console.log(`  - ${q.event_id} (${q.count} quarantine row(s))`);
       }
 
-      // ── the durable gap ledger (Task D) ────────────────────────────────────────────
-      // Read as STATE, from the table, for EVERY source — not from whatever this process
-      // happened to detect. That is the whole point of migration 010: before it, whether
-      // a permanent loss reddened reconcile depended on which process ran the fallback.
-      // Reading here rather than threading it through each report also means a future
-      // loss-bearing paradigm is covered by this surface the day it writes a gap row.
-      const ledgerGaps = await listGaps(pool, DEFAULT_TENANT_ID, source);
-      const unacknowledged = ledgerGaps.filter((g) => g.acknowledgedAt === null);
-      // Every gap is printed on the loud channel, acknowledged or not: acknowledging a
-      // loss records that a human accepted it, it does not make it stop being true.
-      for (const gap of ledgerGaps) console.error(formatGapLedgerRow(source, gap));
-      if (unacknowledged.length > 0) {
-        // A red with no next step is how reconcile gets ignored. Print the exact command.
-        console.error(
-          `[${source}] ${unacknowledged.length} UNACKNOWLEDGED gap(s). No retry can close a gap — once you have ` +
-            "accepted the loss, record it:\n" +
-            `  node --import tsx src/cli/gap-ack.ts --source ${source} --id <n> --by <operator> --note "why"`,
-        );
-      }
-
+      // The gap ledger was read and printed ABOVE, before the degraded-path exits — see
+      // the cold-review I1 note there. `unacknowledged` is in scope from that read and is
+      // what gates below; it is deliberately NOT re-read here, so the line an operator saw
+      // and the verdict they get cannot disagree.
       const clean =
         report.missing.length === 0 &&
         report.extra.length === 0 &&
@@ -202,8 +229,17 @@ async function main(): Promise<void> {
           ledgerGaps.length > 0
             ? ` (with ${ledgerGaps.length} acknowledged permanent gap(s) standing — see above)`
             : "";
+        // Paradigm-honest PASS line (cold review M1): the same class the integrity lines
+        // above were rewritten for, left behind on the verdict itself. A bus and a feed
+        // have no ledger; a sheet has no ledger file either. Say what actually matched.
         if (hub !== undefined) {
           console.log(`[${source}] PASS: store, raw thin events, and hydrated snapshots agree; nothing pending${ackNote}`);
+        } else if (connector.kind === "bus-replay") {
+          console.log(`[${source}] PASS: raw matches the bus's retained window exactly, no duplicates${ackNote}`);
+        } else if (connector.kind === "stripe-feed") {
+          console.log(`[${source}] PASS: raw matches the feed's retained window exactly, no duplicates${ackNote}`);
+        } else if (connector.kind === "sheet-snapshot") {
+          console.log(`[${source}] PASS: raw latest-state matches the sheet exactly, no duplicates${ackNote}`);
         } else {
           console.log(`[${source}] PASS: raw matches ledger exactly, no duplicates${ackNote}`);
         }

@@ -48,6 +48,18 @@ export function createBackfillRunner(
       const reporter = catchUpReporter(connector);
       if (reporter) {
         const report = await reporter.catchUpWithReport(pgPool, { baseUrl });
+        // Cold review M3: the standing checklist is "both CLIs AND the service log", and
+        // this loop consumed the failure fields while printing none of the WORK. For a
+        // subscribe/replay source, where at-least-once redelivery is the steady state, a
+        // loop that logs neither ingested nor absorbed counts is indistinguishable from
+        // one that is doing nothing at all. Suppressed when the cycle was a genuine no-op
+        // so a quiet system stays quiet.
+        if (report.ingested > 0 || report.duplicates > 0 || report.quarantined > 0) {
+          console.log(
+            `[${source}] catch-up: ingested ${report.ingested}, ${report.duplicates} duplicate(s) absorbed ` +
+              `by idempotent ingest, ${report.quarantined} quarantined`,
+          );
+        }
         for (const gap of report.gaps ?? []) console.error(formatUnclosableGap(source, gap));
         // Task C standing checklist: the hydration paradigm's failures reach the
         // service log on the same loud channel as gaps — a dead-lettered hydration is

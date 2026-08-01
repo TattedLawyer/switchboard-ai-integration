@@ -377,11 +377,20 @@ export class BusReplayConnector implements Connector {
     }
     missing = [...missing].sort();
 
-    // Timestamp-bearing retained events only: a poisoned event_time contributes no
-    // boundary (see the reconcile drain above). Math.min over a NaN would poison every
-    // aged-out classification silently, which is worse than the poison itself.
-    const retainedTimes = [...retained.values()].filter((ms) => !Number.isNaN(ms));
-    const earliestRetainedMs = retainedTimes.length > 0 ? Math.min(...retainedTimes) : null;
+    // The earliest retained event, by ID as well as by time. Timestamp-bearing events
+    // only: a poisoned event_time contributes no boundary (see the reconcile drain above),
+    // and a Math.min over NaN would silently poison every aged-out classification.
+    // Keeping the ID (cold review I2) is what lets reconcile's own gap detection name the
+    // far edge as precisely as catchUp does — it is holding the whole window right here,
+    // and filing a null it could have filled made a reconcile-first gap permanently worse
+    // than the identical catchUp-first one. Iteration is stream order, so a tie resolves
+    // to the first event the bus served — deterministic, and the bus's own ordering.
+    let earliestRetained: { id: string; ms: number } | null = null;
+    for (const [id, ms] of retained) {
+      if (Number.isNaN(ms)) continue;
+      if (earliestRetained === null || ms < earliestRetained.ms) earliestRetained = { id, ms };
+    }
+    const earliestRetainedMs = earliestRetained === null ? null : earliestRetained.ms;
     const extra: string[] = [];
     let agedOutRaw = 0;
     for (const row of rawRes.rows) {
@@ -415,7 +424,9 @@ export class BusReplayConnector implements Connector {
           cause,
           fromEventId: near.eventId,
           fromOccurredAt: near.occurredAt,
-          toEventId: null,
+          // Named, not null (cold review I2): the same fidelity catchUp's buildGap files,
+          // so the record does not depend on which surface noticed the loss first.
+          toEventId: earliestRetained === null ? null : earliestRetained.id,
           toOccurredAt: earliestRetainedMs === null ? null : new Date(earliestRetainedMs).toISOString(),
         });
       }
