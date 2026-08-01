@@ -235,3 +235,38 @@ describe("I3 — the failure hint names the REAL cursor for this paradigm", () =
     expect(res.out).not.toMatch(/resume from cursor 0\b/);
   });
 });
+
+// Debt-burn sweep (A3 follow-through): the cross-check's DISAGREEMENT branch, end to
+// end. The agreement line was already pinned on this CLI (C1 above); the mismatch →
+// red-line + nonzero-exit branch was pinned only at unit level (gap-crosscheck.test.ts),
+// so the CLI wiring of the red path could rot with every test green.
+describe("A3 end-to-end — a report-vs-ledger gap drift reds the real reconcile CLI", () => {
+  it("a ledger row the report cannot carry → the named disagreement prints and the run exits nonzero", async () => {
+    const mock = createStripeFeedApp({ seed: 42 });
+    const baseUrl = listen(mock.app);
+    mock.feed.emit(8);
+    await new StripeFeedConnector({ baseUrl }).catchUp(pool);
+
+    // Force the drift through the shipped seam: stripe-feed's reconcile FILTERS
+    // null-near-edge rows out of report.gaps ("a stripefeed gap always names the
+    // cursor it lost"), so a hand-inserted row with from_event_id NULL exists in the
+    // durable ledger but can never appear in the report — report 0, ledger 1.
+    // Acknowledged at insert so the unacknowledged-gap gate cannot be what reds the
+    // run: the cross-check must carry the verdict alone.
+    await pool.query(
+      `insert into ingest.gap_ledger (source, cause, from_event_id, acknowledged_at, acknowledged_by, note)
+       values ('stripefeed', 'retention', null, now(), 'sweep-test', 'forced report-vs-ledger drift')`,
+    );
+
+    const res = await runCli("src/cli/reconcile.ts", baseUrl);
+    expect(res.out).toMatch(
+      /\[stripefeed\] FAIL: reconcile report gaps disagree with the durable gap ledger — retention\|<null> \(report 0, ledger 1\)/,
+    );
+    expect(res.out).not.toMatch(/gap cross-check: report agrees/);
+    // The acknowledged row is still disclosed as standing state…
+    expect(res.out).toMatch(/1 recorded permanent loss\(es\), 0 unacknowledged/);
+    // …and the verdict is the discrepancy FAIL, exit nonzero.
+    expect(res.out).toMatch(/\[stripefeed\] FAIL: reconciliation found discrepancies/);
+    expect(res.code).toBe(1);
+  });
+});
