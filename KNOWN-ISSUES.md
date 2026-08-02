@@ -147,14 +147,18 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   and the pre-fix under-merge of ordinary mixed-case mail was the larger real
   error); no plus-tag/dot aliasing rules, which are provider-specific and
   would manufacture false merges.
-- **TS↔SQL normalizer divergence outside the pinned vectors** *(cold review
-  M-4)*. JS `\s` matches the full Unicode space class; Postgres `\s` is
-  effectively `[[:space:]]` — a name carrying e.g. an em-space collapses in TS
-  but not in SQL. Likewise `lower()` vs `.toLowerCase()` diverge on non-ASCII
-  uppercase under a C-locale database. Both latent for the seeded universe
-  (no vector covers either class — exactly the drift the vector suite exists
-  to pin). Sits beside the single-strip caveat above. Owner: **phase-2b close
-  (identity-quality pass)**.
+- ~~TS↔SQL normalizer divergence outside the pinned vectors~~ *(cold review
+  M-4)* *Paid (phase-2b close, F16 — vectors first, then the truth):* both
+  suspected classes are now vector-pinned (em-space U+2003; non-ASCII
+  uppercase "CAFÉ"), and the RED run refuted the suspicion on the pinned
+  stack — postgres:16-alpine runs en_US.utf8 (compose AND CI), where PG's
+  regex space class matches U+2003 and `lower()` agrees with `.toLowerCase()`
+  on the accented class, so the vectors pin AGREEMENT and a future C-locale
+  deployment (where both classes genuinely diverge) reds the SQL-side suite
+  loudly. One residual divergence found and documented AT the vector
+  (mocks/core `normalize.ts`): Turkish İ (U+0130) lowers to 2 code points in
+  JS, 1 in PG — locale-honest, surfaces as a loud verify-identity tier
+  mismatch, deliberately not special-cased.
 
 ## Security posture (updated 2a.3)
 

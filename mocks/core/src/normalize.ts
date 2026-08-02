@@ -33,6 +33,26 @@ export const NORMALIZATION_VECTORS: readonly NormalizationVector[] = [
   { label: "zero-width space is stripped (L2-G8)", input: "Acme\u200B Group", expected: "acme group" },
   { label: "non-breaking space reads as a space (L2-G8)", input: "Acme\u00A0Group", expected: "acme group" },
   { label: "NFC: decomposed accents normalize to the composed form (L2-G8)", input: "Cafe\u0301 Group", expected: "caf\u00E9 group" },
+  // Close F16: the two vector classes the M-4 entry named as unpinned.
+  // The SUSPECTED divergences (JS \s = full Unicode space class vs PG's regex space
+  // class; .toLowerCase() vs lower() on non-ASCII uppercase) were probed on the pinned
+  // stack (postgres:16-alpine, en_US.utf8, the compose AND CI image): both classes
+  // AGREE there, so these vectors pin the agreement. A deployment on a C-locale
+  // database, where both classes genuinely diverge, reds the SQL-side vector suite
+  // loudly instead of drifting silently.
+  { label: "em-space (U+2003) collapses like a space in BOTH languages (M-4 class 1, F16)", input: "Acme\u2003Group", expected: "acme group" },
+  { label: "non-ASCII uppercase lowers in BOTH languages (M-4 class 2, F16)", input: "CAF\u00C9 GROUP Inc.", expected: "caf\u00E9 group" },
+  // DOCUMENTED RESIDUAL DIVERGENCE (F16, at-the-vector per the close research; probed
+  // 2026-08-02): Turkish dotted capital I (U+0130). In JS, toLowerCase() maps it to
+  // 'i' + U+0307 combining dot (2 code points); PG lower() under en_US.utf8 yields
+  // plain 'i' (1 code point). A company name carrying U+0130 therefore normalizes
+  // differently across the pair: the TS oracle would expect a string the SQL side
+  // never produces, and the entity would surface as a tier mismatch in
+  // verify-identity (loud, not silent).
+  // Deliberately NOT a shared vector (it cannot carry one `expected`) and deliberately
+  // NOT "fixed": special-casing one code point would trade a documented, locale-honest
+  // edge for a hand-rolled Unicode table. Revisit only if a real Turkish-market
+  // engagement lands.
 ];
 
 /** Normalize a company name for identity comparison. MUST stay semantically identical
