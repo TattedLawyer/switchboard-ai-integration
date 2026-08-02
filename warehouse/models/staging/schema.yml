@@ -34,7 +34,8 @@ models:
       - name: status
         data_tests:
           - accepted_values:
-              values: [created, paid, voided]
+              arguments:
+                values: [created, paid, voided]
       - name: is_unlikely_amount
         description: >
           Unlikely Value flag at row grain (Wave 5) — true when amount_cents exceeds the
@@ -52,7 +53,8 @@ models:
       - name: status
         data_tests:
           - accepted_values:
-              values: [succeeded, failed]
+              arguments:
+                values: [succeeded, failed]
       - name: is_unlikely_amount
         description: >
           Unlikely Value flag at row grain (Wave 5) — true when amount_cents exceeds the
@@ -66,7 +68,8 @@ models:
       - name: status
         data_tests:
           - accepted_values:
-              values: [open, solved]
+              arguments:
+                values: [open, solved]
   - name: stg_sheets__rows
     columns:
       - name: row_key

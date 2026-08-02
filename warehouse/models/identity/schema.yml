@@ -22,8 +22,9 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: [1, 2, 3]
-              quote: false
+              arguments:
+                values: [1, 2, 3]
+                quote: false
   - name: manual_review
     columns:
       - name: resolution_key
@@ -36,5 +37,6 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values: [true, false]
-              quote: false
+              arguments:
+                values: [true, false]
+                quote: false

@@ -68,8 +68,10 @@ jobs:
           cache: 'pip'
           cache-dependency-path: .github/workflows/ci.yml
       - name: dbt build + data tests
+        # dbt-core co-pinned exactly (phase-close F3) — same pin, same rationale as
+        # warehouse/Dockerfile: dbt-postgres alone lets dbt-core float across majors.
         run: |
-          pip install dbt-postgres==1.11.0
+          pip install dbt-postgres==1.11.0 dbt-core==1.12.0
           cd warehouse && dbt build --profiles-dir .
         env:
           DBT_HOST: localhost
