@@ -35,6 +35,13 @@ models:
         data_tests:
           - accepted_values:
               values: [created, paid, voided]
+      - name: is_unlikely_amount
+        description: >
+          Unlikely Value flag at row grain (Wave 5) — true when amount_cents exceeds the
+          contract's plausibleMax for invoice.finalized, joined from the emitted
+          numeric_bounds seed. Above-bound rows are accepted and surfaced
+          (assert_amounts_plausible, warn), never dropped; NULL amounts stay false.
+        data_tests: [not_null]
   - name: stg_billing__payments
     columns:
       - name: payment_id
@@ -46,6 +53,12 @@ models:
         data_tests:
           - accepted_values:
               values: [succeeded, failed]
+      - name: is_unlikely_amount
+        description: >
+          Unlikely Value flag at row grain (Wave 5) — true when amount_cents exceeds the
+          contract's plausibleMax for the row's charge.* event type, joined from the
+          emitted numeric_bounds seed. Accepted and surfaced, never dropped; NULL false.
+        data_tests: [not_null]
   - name: stg_support__tickets
     columns:
       - name: ticket_id

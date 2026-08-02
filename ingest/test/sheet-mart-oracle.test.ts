@@ -7,6 +7,7 @@ import { generateManifest } from "../../mocks/core/src/manifest.js";
 import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
 import { insertHubObjectState } from "./helpers/hub-staging.js";
+import { createNumericBoundsFixture } from "./helpers/numeric-bounds.js";
 import { SheetSnapshotConnector } from "../src/connectors/sheet-snapshot.js";
 import {
   canonicalRowContent,
@@ -683,7 +684,10 @@ const chainWarehouse = async (db: pg.Pool): Promise<void> => {
     "stg_billing__customers", "stg_billing__invoices", "stg_billing__payments",
     "stg_support__tickets", "stg_support__csat", "stg_sheets__rows",
   ];
-  for (const m of staging) await db.query(`create view ${m} as ${loadModel(`models/staging/${m}.sql`)}`);
+  // Wave 5 (Task G): the billing staging views join ref('numeric_bounds') — materialize
+  // the COMMITTED seed first (real content, real join); inert for the other models.
+  await createNumericBoundsFixture(db);
+  for (const m of staging) await db.query(`create view ${m} as ${loadModel(`models/staging/${m}.sql`, { numeric_bounds: "numeric_bounds" })}`);
   await db.query(`create view merge_edges as ${loadModel("models/identity/merge_edges.sql")}`);
   await db.query(`create view int_crm__canonical_companies as ${loadModel("models/identity/int_crm__canonical_companies.sql", {
     stg_crm__companies: "stg_crm__companies", merge_edges: "merge_edges",

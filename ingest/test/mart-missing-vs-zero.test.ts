@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
+import { createNumericBoundsFixture } from "./helpers/numeric-bounds.js";
 
 // L3 (missing is not zero): after L2, malformed amounts sit in staging as NULLs. The mart's
 // `coalesce(sum(...), 0)` renders those NULLs as confident zeros — an entity whose amounts
@@ -45,6 +46,8 @@ beforeEach(async () => {
       received_at timestamptz not null default now()
     );
   `);
+  // Wave 5 (Task G): the chained real-staging load below joins ref('numeric_bounds').
+  await createNumericBoundsFixture(pool);
 });
 
 afterEach(async () => {
@@ -178,7 +181,7 @@ describe("customer_360 — missing amount is not zero (L3)", () => {
     await pool.query(`
       insert into tmp_invoices (invoice_id, customer_id, amount_cents, status, currency)
       select invoice_id, customer_id, amount_cents, status, currency
-      from (${loadModel("models/staging/stg_billing__invoices.sql")}) s
+      from (${loadModel("models/staging/stg_billing__invoices.sql", { numeric_bounds: "numeric_bounds" })}) s
     `);
     // Sanity: staging really did pick the newer row and NULL its amount.
     const stg = await pool.query("select * from tmp_invoices where invoice_id = 'inv-9'");

@@ -1,0 +1,7 @@
+event_type,field,plausible_max,scale_min,scale_max
+charge.failed,amount_cents,99999999,,
+charge.succeeded,amount_cents,99999999,,
+csat.recorded,score,,1,5
+invoice.finalized,amount_cents,99999999,,
+payment.failed,amount_cents,99999999,,
+payment.succeeded,amount_cents,99999999,,

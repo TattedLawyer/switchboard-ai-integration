@@ -46,6 +46,13 @@ select
     s.customer_id,
     s.amount_cents,
     s.currency,
-    case when p.invoice_id is not null then 'paid' else 'created' end as status
+    case when p.invoice_id is not null then 'paid' else 'created' end as status,
+    -- Unlikely Value flag at row grain (Kimball #164, Wave 5): the contract's
+    -- plausibleMax for invoice.finalized, via the EMITTED numeric_bounds seed — never
+    -- re-typed here (see stg_billing__payments.sql for the full rationale; the flag
+    -- accepts and surfaces, never drops; NULL amounts stay false — L3's story).
+    coalesce(s.amount_cents > b.plausible_max, false) as is_unlikely_amount
 from shaped s
 left join paid_invoices p on p.invoice_id = s.invoice_id
+left join {{ ref('numeric_bounds') }} b
+  on b.event_type = 'invoice.finalized' and b.field = 'amount_cents'

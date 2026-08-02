@@ -1,6 +1,31 @@
 version: 2
 
 seeds:
+  - name: numeric_bounds
+    description: >
+      The numeric contract's quantitative bounds (Wave 5, Task G), EMITTED from
+      ingest/src/numeric-contract.ts by scripts/generate-numeric-bounds-seed.ts — the one
+      bridge from the L1 TypeScript contract to the warehouse. One row per (event_type,
+      field) declaring a plausibleMax (warn-tier ceiling — above it is flagged, never
+      rejected) or a hard min/max scale; an absent row means "no declared bound". NEVER
+      hand-edit: regenerate and commit the diff (the consistency pins in
+      ingest/test/numeric-bounds-seed.test.ts red the suite when this file and the
+      contract disagree in either direction, byte-for-byte and row-for-row). Committed
+      generated file over build-time emission by the free_email_domains precedent:
+      warehouse inputs stay reviewable tree state. Consumers: the staging
+      is_unlikely_amount flag (stg_billing__payments / stg_billing__invoices),
+      assert_amounts_plausible (warn surface), assert_csat_in_scale (hard invariant,
+      loud-when-bound-missing shape).
+    config:
+      column_types:
+        plausible_max: bigint
+        scale_min: integer
+        scale_max: integer
+    columns:
+      - name: event_type
+        data_tests: [not_null]
+      - name: field
+        data_tests: [not_null]
   - name: free_email_domains
     description: >
       Free-email-provider domains whose presence as tier-2 DOMAIN evidence demotes a

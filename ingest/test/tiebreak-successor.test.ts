@@ -144,7 +144,8 @@ const T = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toI
 
 describe.each(RESOURCED_MODEL_PATHS)("$title — evt-N ordinal stays retired (re-sourced model)", ({ path }) => {
   it("the evt-N ordinal cast is gone from the model text", () => {
-    expect(loadModel(path)).not.toContain("substring(event_id from 5)");
+    // Text-only load; the billing models ref numeric_bounds since Wave 5 (inert here).
+    expect(loadModel(path, { numeric_bounds: "numeric_bounds" })).not.toContain("substring(event_id from 5)");
   });
 });
 

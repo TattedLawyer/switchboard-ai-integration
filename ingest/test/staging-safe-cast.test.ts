@@ -3,6 +3,12 @@ import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
 import { insertHubObjectState } from "./helpers/hub-staging.js";
+import { createNumericBoundsFixture } from "./helpers/numeric-bounds.js";
+
+// The billing staging models join ref('numeric_bounds') since Wave 5 (Task G) — the
+// fixture materializes the COMMITTED seed; extra refMap entries are inert for models
+// without the ref.
+const BOUNDS_REF = { numeric_bounds: "numeric_bounds" };
 
 // L2 (blast-radius containment): these tests insert malformed numerics DIRECTLY into
 // raw.raw_events, bypassing the ingest door's numeric contract (L1) ON PURPOSE — the
@@ -19,6 +25,7 @@ let cleanup: () => Promise<void>;
 
 beforeEach(async () => {
   ({ pool, cleanup } = await freshTestDb());
+  await createNumericBoundsFixture(pool);
 });
 
 afterEach(async () => {
@@ -117,7 +124,7 @@ for (const spec of SPECS) {
       // With the bare `::bigint` / `::int` cast this THROWS `invalid input syntax`
       // and the entire model (in production: the entire dbt build) dies.
       const res = await pool.query(
-        `select * from (${loadModel(spec.modelPath)}) m order by ${spec.idColumn}`,
+        `select * from (${loadModel(spec.modelPath, BOUNDS_REF)}) m order by ${spec.idColumn}`,
       );
 
       expect(res.rowCount).toBe(3);
@@ -227,7 +234,7 @@ describe("staging currency constraint (security M2)", () => {
       }
 
       const res = await pool.query(
-        `select * from (${loadModel(spec.modelPath)}) m order by ${spec.idColumn}`,
+        `select * from (${loadModel(spec.modelPath, BOUNDS_REF)}) m order by ${spec.idColumn}`,
       );
       expect(res.rowCount).toBe(4);
       const byId = Object.fromEntries(res.rows.map((r) => [r[spec.idColumn], r]));
