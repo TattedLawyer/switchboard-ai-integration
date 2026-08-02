@@ -353,7 +353,20 @@ describe("L1 numeric contract at the trust boundary", () => {
       // is re-tightened to the true count, deliberately, so it goes back to doing its job.
       // F-1c: +1 — `company.merge` enters the contract in the same commit merge_edges
       // starts consuming it (the flip's same-commit rule), and the floor moves with it.
-      expect(declared.length).toBeGreaterThanOrEqual(36);
+      //
+      // PHASE-CLOSE DECISION (D1, deliberate): the pin is EQUALITY, not a floor. A floor
+      // is one-directional — it catches shrinkage only until growth re-slackens it, which
+      // is exactly the Task C incident this comment block records (slack by 12, undetected
+      // through two reviews). Snapshot/schema-freeze practice asserts exact state with a
+      // deliberate explicit-update workflow (jest -u; buf breaking against a pinned
+      // baseline), and this is the cheapest possible snapshot: one integer.
+      //
+      // THE WORKFLOW IS THE MECHANISM: any commit that declares or retires an event type
+      // in NUMERIC_CONTRACT must move this number IN THE SAME COMMIT, stating why. That
+      // friction is the detector — a declaration that appears without this line moving is
+      // a red suite, which is precisely what the floor could not promise. Review lens
+      // stays as equality's complement: diff this number against the declaration diff.
+      expect(declared.length).toBe(36);
       expect(declared).toContain("company.merge");
       expect(declared).toContain("sheet.row_upserted");
       expect(declared).toContain("sheet.row_deleted");
