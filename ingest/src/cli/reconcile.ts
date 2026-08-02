@@ -278,9 +278,26 @@ async function main(): Promise<void> {
       if (reportedGaps !== undefined) {
         const check = gapCrossCheck(reportedGaps, ledgerGaps);
         if (check.ok) {
-          console.log(
-            `[${source}] gap cross-check: report agrees with the durable gap ledger (${reportedGaps.length} gap(s))`,
-          );
+          // Close F10 — the printed claim is narrowed to what each arm actually proves.
+          // The STRIPEFEED report derives its gaps independently (its catchUp/reconcile
+          // accounting), so agreement there is a real cross-check. The BUS report's
+          // `gaps` field is built from the same listGaps query this CLI compares it
+          // against (bus-replay.ts reconcile return), so its agreement is structural
+          // self-consistency — printing "agrees with the ledger" there claimed a
+          // discriminating check that cannot discriminate. The comparison still RUNS on
+          // both arms (a bus-arm mismatch is impossible by construction; if it ever
+          // fires, something is deeply wrong and the red below says what drifted) —
+          // only the PASS-line claim is honest per arm. An independent bus derivation
+          // is real design work, deliberately not close scope.
+          if (connector.kind === "bus-replay") {
+            console.log(
+              `[${source}] gap cross-check (structural): the bus report's gaps are the ledger's own rows — self-consistency, not an independent derivation (${reportedGaps.length} gap(s))`,
+            );
+          } else {
+            console.log(
+              `[${source}] gap cross-check: report agrees with the durable gap ledger (${reportedGaps.length} gap(s))`,
+            );
+          }
         } else {
           gapCrossCheckOk = false;
           console.error(

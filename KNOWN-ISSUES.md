@@ -732,13 +732,17 @@ leaves it is gone from the source forever.
   no fix scheduled; machine-enforcing "is this a real company" is not
   tractable here.*
 
-- **The bus arm of the gaps-vs-ledger cross-check is structurally vacuous** —
-  for bus-replay, `report.gaps` is built from the same `listGaps` query the
-  reconcile CLI then compares it against, so only the stripefeed arm (whose
-  report carries independently-derived gaps) has real discriminating power.
-  The cross-check is honest for stripefeed and self-consistent-by-construction
-  for the bus; either give the bus arm an independent derivation or narrow the
-  printed claim to the stripefeed arm. *Owner: phase-2b close.*
+- ~~The bus arm of the gaps-vs-ledger cross-check printed a claim it could not
+  discriminate~~ *Paid (phase-2b close, F10, claim-narrowing arm):* the bus
+  arm's PASS line now says what it is — "gap cross-check (structural): the bus
+  report's gaps are the ledger's own rows — self-consistency, not an
+  independent derivation" — while the stripefeed arm keeps the real
+  "report agrees with the durable gap ledger" claim (its report derives gaps
+  independently). The comparison still runs on both arms as defense in depth;
+  an independent bus derivation remains real design work, deliberately not
+  done at close (nothing now overclaims while it doesn't exist). Pinned in
+  `bus-cli.test.ts` (structural wording positive, independent-claim wording
+  negative, both zero-gap and gap-bearing runs).
 - ~~A gap recorded on a source later removed from the SOURCES registry is
   listable but unacknowledgeable~~ *Paid (phase-2b close, F9):* the `isSource`
   gate in `gap-ack` now falls back to the RECORDED ledger — a `--source` with

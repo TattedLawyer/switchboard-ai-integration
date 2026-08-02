@@ -182,9 +182,12 @@ describe("reconcile CLI — paradigm-honest integrity, every bucket printed, and
     expect(res.out).toMatch(/retained window: 20 event\(s\)/);
     expect(res.out).toMatch(/72h ledger-equivalent/);
     expect(res.out).toMatch(/aged out of window/);
-    // Debt-burn A3: the report's `gaps` field is CONSUMED — cross-checked against the
-    // ledger rows the CLI prints — and says so even at zero, so agreement is visible.
-    expect(res.out).toMatch(/gap cross-check: report agrees with the durable gap ledger \(0 gap\(s\)\)/);
+    // Debt-burn A3 + close F10: the report's `gaps` field is CONSUMED and the line says
+    // what the bus arm's check actually is — the report's gaps come from the same
+    // listGaps query, so the claim is SELF-CONSISTENCY, never independent agreement
+    // (that claim belongs to the stripefeed arm alone, whose report derives its own).
+    expect(res.out).toMatch(/gap cross-check \(structural\): the bus report's gaps are the ledger's own rows — self-consistency, not an independent derivation \(0 gap\(s\)\)/);
+    expect(res.out).not.toMatch(/report agrees with the durable gap ledger/);
     expect(res.out).toMatch(/PASS/);
     expect(res.code).toBe(0);
   });
@@ -202,9 +205,10 @@ describe("reconcile CLI — paradigm-honest integrity, every bucket printed, and
     // The operator is TOLD how to answer it — a red with no next step is how reconcile
     // gets ignored.
     expect(res.out).toMatch(/gap-ack/);
-    // Debt-burn A3: on a gap-bearing run the consumed report field must agree with the
-    // printed ledger rows — the cross-check line proves the field is read, not decorative.
-    expect(res.out).toMatch(/gap cross-check: report agrees with the durable gap ledger \(1 gap\(s\)\)/);
+    // Debt-burn A3 + close F10: the consumed field is still read on a gap-bearing run,
+    // under the bus arm's honest structural label (see the clean-world pin above).
+    expect(res.out).toMatch(/gap cross-check \(structural\): the bus report's gaps are the ledger's own rows — self-consistency, not an independent derivation \(1 gap\(s\)\)/);
+    expect(res.out).not.toMatch(/report agrees with the durable gap ledger/);
   });
 
   it("once acknowledged the SAME gap is still printed, still listed, and no longer reds the run — a standing disclosed condition, not a permanent red", async () => {
