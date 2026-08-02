@@ -350,7 +350,9 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   ingest gate. jsonb-unstorable rows (NUL / lone surrogates / extreme depth)
   still report `still-invalid` by design — the event store is jsonb too;
   `replay --sanitize` (explicit, logged, operator-approved transform) remains
-  *Planned: Phase 2b/4.*
+  planned — **re-stamped at phase-2b close (F11): Phase 4** (2b closed without
+  it; it rides the same Phase-4 raw-contract step that makes jsonb-unstorable
+  rows storable in the first place).
 - ~~Oversized bodies return 500, not 413~~ *Paid (2a.3):* 413 with an explicit
   100kb limit; non-JSON content types now 415 instead of a downstream 500.
   (Upgraded from "cosmetic": to a real vendor, 500 means *retry me* — Stripe
@@ -498,6 +500,21 @@ second admitted loss class, reported with bounds rather than papered over.
   the real anomaly: a raw event *inside* the retained window that the feed no
   longer serves. The two are separable only by that time boundary; an event
   exactly at the boundary second is classified conservatively as `extra`.
+- **Behavior change to shipped Task B, disclosed here at phase close (the
+  register's owed visibility, F4):** a feed envelope with a malformed
+  `created` timestamp used to make reconcile REFUSE the whole window
+  (`integrity: not ok` — one poisoned vendor event blinded a thirty-day
+  reconcile). Since the Task D review addendum it is treated as bad DATA on a
+  readable source, per envelope: the event still counts toward the retained
+  window (it really is there), contributes no timestamp, is excluded from the
+  aged-out boundary arithmetic and from cursor selection, and on the drain
+  side it quarantines at the schema gate while its page siblings land — so it
+  surfaces through the `quarantined`/`missing` buckets instead of erasing the
+  run. A missing envelope *id* is still genuinely fatal to the window
+  (nothing to compare); only the timestamp class was demoted. Pinned in
+  `ingest/src/connectors/stripe-feed.ts` (per-envelope handling and its
+  tests); this entry exists because the change previously lived only in a
+  review-response commit, invisible to a register reader.
 
 ## CRM thin-webhook source (hubcrm) — metadata-only push + hydration (2b Task C)
 
@@ -825,7 +842,9 @@ leaves it is gone from the source forever.
   semantics for NULL currency are unchanged. The staging `^[A-Z]{3}$`-or-NULL regexp is
   thereby demoted to containment for doorless rows (direct inserts, pre-contract history).
   The pattern admits plausible fakes like "ABC" — the ISO-4217 allowlist stays a
-  registered follow-up.
+  registered follow-up, **owner stamped at phase-2b close (R11): Phase 4
+  hardening / the next contract-touching slice** (dormant until a real vendor
+  exercises the door; previously unowned, which was the only defect).
 - **Legacy rows with NO currency field no longer sum at all.** Any NULL-currency row
   (never carried, or — on doorless rows — malformed and nulled at staging) refuses its
   source's money sums:
@@ -838,7 +857,10 @@ leaves it is gone from the source forever.
   (`null_currency_invoice_count` / `null_currency_deal_count`) and the report renders
   "unknown", never a figure. A future source that legitimately sends no currency should
   get a per-source declared default currency at the connector/config layer, not a lenient
-  mart. *Registered follow-up: connector-level `default_currency` config.*
+  mart. *Registered follow-up: connector-level `default_currency` config — owner
+  stamped at phase-2b close (R11): Phase 4 hardening / the next
+  contract-touching slice (dormant until a currencyless source lands;
+  previously unowned).*
 - **An error-severity numeric test failure halts the mart refresh.** dbt skips downstream
   models when a staging test fails at severity error, so one NULL amount that reaches
   staging stops `customer_360` rebuilding until someone looks. Loud by design — with the
@@ -852,8 +874,11 @@ leaves it is gone from the source forever.
 
 - **The raw store is stricter than the wire.** `raw_events.payload` is jsonb,
   which rejects content valid JSON can carry; today's quarantine divert is the
-  mitigation. Decided end-state (Phase 2b): **text-first raw** + **claim-check
-  enqueue**, which dissolves this class entirely.
+  mitigation. Decided end-state — **re-stamped at phase-2b close (F11)**: the
+  2b-D decision took the expand-now arm only, and the raw CONTRACT step
+  (**text-first raw** + **claim-check enqueue**, which dissolves this class
+  entirely) moved to **Phase 4**; 2b closed without it, and this label
+  previously still promised it "Phase 2b".
 - ~~Mirrored SQL in tests is synced by discipline~~ *Paid (2a.3), with a
   correction:* this file previously said a mechanical CI diff was "in
   progress". That check **did not exist**, and could never have worked — the
@@ -874,7 +899,10 @@ leaves it is gone from the source forever.
   chaos workflow would have caught it). The
   tests now import the REAL mock functions; mutating the mock's hashing turns
   7 tests red (demonstrated). The `src` copies remain intentionally duplicated
-  until the Phase 2b shared package.
+  — **re-stamped at phase-2b close (F11): the shared package did not land in
+  2b** (`ingest/src/hmac.ts` and `mocks/core/src/hmac.ts` both live at head);
+  it is **Phase 4** consolidation work, and the cross-compat tests above are
+  what hold the pair together until then.
 - **Version-fragile dependencies are now pinned** *(audit)* — `pg-boss` exact
   at 12.26.1 (four documented behaviors depend on its *internals*, which
   semver does not cover) and the MCP SDK exact (the registration guard casts
@@ -998,12 +1026,16 @@ unprefixed lines are genuinely global-scope (CLI flag errors, whole-queue
 depth counts), not per-source · migration
 001-recreate/003-drop churn at startup · ~~CI installs dbt via bare pip (no
 setup-python pin) and double-runs on PR branches (no concurrency group)~~
-*Paid (debt-burn B7; live-run confirmed 2026-08-01 — setup-python + concurrency active on the wave head's runs. Confirmed limit: the ref-keyed group does NOT dedupe push-vs-PR runs of the same commit — different refs — so the cross-event double-run persists; one-line head-ref group fix registered to ride the next CI-touching commit):*
-`setup-python@v7` pinned to 3.13 with a pip cache keyed on the workflow file
-(where the pinned dbt version lives), and a `concurrency` group per
-workflow+ref with `cancel-in-progress` conditional off `main` so a push to
-main never cancels a release-relevant run; chaos.yml needs no group — its
-triggers (schedule / dispatch / PR label) have no push+PR double-run pair ·
+*Paid in full (debt-burn B7 + Task G second attempt; cross-event double-run
+CONFIRMED-FIXED at phase-2b close, F2):* `setup-python@v7` pinned to 3.13 with
+a pip cache keyed on the workflow file (where the pinned dbt version lives),
+and a `concurrency` group normalized to the BARE branch name on both event
+types (`github.head_ref || github.ref_name`, commit `a2d4b2e`) with
+`cancel-in-progress` conditional off `main`. The earlier ref-keyed group's
+push-vs-PR double-run limit no longer exists: attempt 2 was observed live on
+the Task G push — one surviving CI run, its sibling cancelled. chaos.yml
+still needs no group — its triggers (schedule / dispatch / PR label) have no
+push+PR double-run pair ·
 agent test files assign `DBT_SCHEMA` at module top-level and share one DB —
 order-dependent by construction, benign today *(audit)* · assorted items
 tracked in review ledgers.
