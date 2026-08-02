@@ -516,6 +516,45 @@ fetched afterwards. Three stated limits of the paradigm itself:
   is the documented watch surface, and a dead letter that evaporates is a
   silent return to limbo.
 
+## The faithful-source end-state (2b Task F-1c) — what remains 2a, and why
+
+The warehouse now stages **only from the faithful sources**: the CRM arm from
+hubcrm hydrated snapshots (merge lineage from `company.merge` events — both
+merge inputs map to the NEW survivor, translated into the business-key space
+staging resolves in), the billing arm from the stripefeed envelope feed, the
+support arm from the casebus wire's supplied-* intake fields, and the sheets
+arm unchanged. `scripts/verify-identity.ts` — byte-identical to before the
+flip — passes against the re-sourced graph: the 22→20 merge collapse, the
+tier partition, deal conservation, and the mart rowcount all hold on the
+faithful wire shapes.
+
+Deliberate remainders, each bounded and owned:
+
+- **The 2a support mock remains** and feeds exactly ONE model:
+  `stg_support__csat` (`csat.recorded`). Its ticket lifecycle events still
+  land in raw but no model consumes them (declared-but-unconsumed is the
+  registry's permitted direction).
+- **The 2a billing mock remains in the repo but feeds no model and runs in no
+  demo/CI composition except chaos**, where it (with support) is the
+  ledger-feed paradigm's zero-loss actor — drops recovered by feed backfill,
+  the story the faithful window paradigms cannot tell.
+- **The `evt-N` sweep is complete on the CRM side** (the minting died with the
+  deleted mock) and **bounded on the billing/support side**: `evt-N` ids are
+  minted only by `mocks/core/src/source-app.ts` for those two lanes, nothing
+  reads them as ordinals anywhere (the ordinal tiebreak retired in Task C),
+  and the remainder retires with the mocks themselves.
+- **The `crm` Source literal is a registered, mock-less legacy lane**
+  (`ingest/src/sources.ts`): no longer default-enabled, nothing serves its
+  port; removing the literal is a wider spec change (raw rows under it may
+  exist in deployed databases; many door/contract suites exercise the generic
+  machinery through it) that rides the full 2a retirement wave.
+- **Permanent hubcrm webhook loss remains detected-not-recovered** (see the
+  hubcrm section above). The chaos green path therefore drives hubcrm through
+  its RECOVERABLE weather (duplicates, holdovers, shuffle, bounded
+  redelivery); injected permanent drops belong to the RED mode
+  (`CHAOS_SKIP_BACKFILL=1`), where reconcile must name the loss. A
+  reconcile-driven repair pump is register-owned follow-up.
+
 ## Support event-bus source (casebus) — the 72-hour window and the stream reset (2b Task D)
 
 The event-bus paradigm is a stream you **subscribe** to. It retains events for

@@ -39,12 +39,16 @@ engineering on data you can inspect freely.
 
 ## What's built and working today (Phases 0–2a)
 
-- **Three simulated business systems** — CRM, billing, support — each streaming
-  signed events and each keeping an **HMAC-keyed, hash-chained, append-only log**
-  of everything it sends: the tamper-evident measuring stick the reliability tests
-  reconcile against. All three share one mock core with on-demand fault injection
-  (dropped, duplicated, out-of-order deliveries and API errors, deterministic from
-  a seed), and all three are generated from **one correlated seed manifest**, so
+- **Simulated business systems across four integration paradigms** — a
+  HubSpot-style thin-webhook CRM (metadata-only batches + a hydration pump), a
+  Stripe-style envelope feed for billing, a Salesforce-style subscribe/replay
+  event bus for support, a Google-Sheets-style snapshot source, and the original
+  ledger-feed mocks — the push sources each keeping an **HMAC-keyed,
+  hash-chained, append-only log** of everything they emit: the tamper-evident
+  measuring stick the reliability tests reconcile against. All share one mock
+  core with on-demand fault injection (dropped, duplicated, out-of-order
+  deliveries and API errors, deterministic from a seed), and all are generated
+  from **one correlated seed manifest**, so
   the same fictional companies deliberately appear across systems under mismatched
   names, domains, and IDs — including seeded duplicates and planned near-misses
   the identity layer must get right. The log chain is keyed (`LEDGER_HMAC_KEY`)
@@ -66,11 +70,15 @@ engineering on data you can inspect freely.
   delivered is ever dropped, and event timestamps are bounded to a sanity window
   so a vendor clock bug can't permanently pin an entity's state), and per-source
   cursor backfill that catches anything webhooks lose.
-- **A zero-data-loss proof you can run:** `./scripts/chaos.sh` fires 600 events —
-  200 per source, all three under injected failures simultaneously — and proves,
-  by reconciling each source against its tamper-evident log, that every event
-  landed exactly once (typically ~20 seconds; the settle wait is backoff-aware
-  and bounded at 240s so retry-backoff spikes finish instead of flaking).
+- **A zero-data-loss proof you can run:** `./scripts/chaos.sh` drives all three
+  chaos sources under injected failures simultaneously — the thin-webhook CRM
+  through its own weather (duplicated requests, cross-batch holdovers,
+  within-batch shuffle, a bounded redelivery budget) and the two ledger-feed
+  sources through drops/dups/API errors — and proves each source reconciles
+  clean under its own paradigm's oracle: object store vs raw thin events vs
+  hydrated snapshots for the CRM, tamper-evident log vs raw for the feeds
+  (the settle wait is backoff-aware and bounded at 240s so retry-backoff
+  spikes finish instead of flaking).
 - **Identity resolution** (dbt): three deterministic tiers — exact email match,
   then normalized domain + company name, then a `manual_review` queue (never a
   silent guess) — with **every resolved link recording which tier matched and the
@@ -92,9 +100,10 @@ engineering on data you can inspect freely.
 - A worker that generates the Monday revenue-risk report — with a timeout and
   fallback so the report generates even when the AI service is down, and per-call
   cost logging.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 194 tests, the
-  dbt build (14 models + 47 data tests), the agent action-safety eval, and the
-  identity oracle, against a real Postgres service container
+- **CI:** the `ci` workflow runs on every push — typecheck, all 799 tests, the
+  dbt build (89 build steps: models, seeds and data tests), the agent
+  action-safety eval, and the identity oracle, against a real Postgres service
+  container
   ([`ci.yml`](.github/workflows/ci.yml)). The heavier chaos + demo proof runs on
   a nightly schedule and manual dispatch, with the fault seed as a workflow input
   so any red run is reproducible by re-entering its seed
@@ -106,7 +115,7 @@ engineering on data you can inspect freely.
   on a slow machine, and a leftover mock server inherited across steps sharing a
   process table. Each is narrated with its run ID in the
   [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
-- 194 automated tests, green in CI and locally — including a seeded
+- 799 automated tests, green in CI and locally — including a seeded
   property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety under
   arbitrary torn writes. Test-first is provable from git history for hardening
@@ -124,13 +133,13 @@ engineering on data you can inspect freely.
 
 | Claim | Evidence | Result |
 |---|---|---|
-| Zero lost events under faults | `./scripts/chaos.sh` (600 events, 20% drops / 15% dups / 20% API errors) | at the default seed, 158 of 200 per source arrive by push and backfill recovers exactly the 42 dropped. That split moves with `CHAOS_SEED`; the pass condition does not — the script asserts every source's ledger reconciles exactly against its raw rows (3×), with 0 duplicates, quarantine 0, DLQ 0 |
-| Loss *detection* has teeth | `CHAOS_SKIP_BACKFILL=1 ./scripts/chaos.sh` | correctly FAILS, listing every unrecovered event per source (42 each at the default seed) |
-| End-to-end pipeline equality | `./scripts/demo.sh` (288 events across 3 sources) | ledger = raw = journal at 288/288/288, report generated |
+| Zero lost events under faults | `./scripts/chaos.sh` (hubcrm 240 ops with dup/holdover/shuffle + bounded redelivery; billing/support 200 events each with 20% drops / 15% dups / 20% API errors) | the exact per-seed split moves with `CHAOS_SEED`; the pass condition does not — every source must reconcile clean under its own paradigm's oracle, with quarantine 0 and DLQ 0 (validated in CI via the chaos workflow) |
+| Loss *detection* has teeth | `CHAOS_SKIP_BACKFILL=1 ./scripts/chaos.sh` | correctly FAILS per paradigm: the ledger-feeds list every unrecovered dropped event, and the CRM reds on dropped webhooks (missing/drifted objects) plus un-hydrated events |
+| End-to-end pipeline equality | `./scripts/demo.sh` (560 events across 4 sources: hubcrm 300 ops, stripefeed 100, casebus 80, support 80) | ledger = raw = journal where a ledger exists (hubcrm, support); journal = raw plus a four-paradigm `reconcile` pass for the window sources; report generated |
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 194 tests green (incl. 6 seeded fast-check properties); 47/47 dbt data tests (61 build steps incl. 14 models) |
+| Suite | `npm test` + dbt | 799 tests green across nine workspaces (incl. 6 seeded fast-check properties); 89/89 dbt build steps (models, seeds and data tests) |
 
 ## What's coming (built in phases, in public)
 
@@ -176,8 +185,8 @@ deterministic template fallback when `ANTHROPIC_API_KEY` is unset).
 
 ```bash
 npm install
-./scripts/demo.sh        # end-to-end: 288 events, 3 sources → oracle-equality + identity checks → report
-./scripts/chaos.sh       # 600 events under injected faults → zero-loss proof
+./scripts/demo.sh        # end-to-end: 560 events, 4 faithful sources → per-paradigm reconcile + identity checks → report
+./scripts/chaos.sh       # seeded faults across two paradigms → zero-loss proof
 ```
 
 The first run also pulls the Postgres image and builds the dbt container, so budget
