@@ -26,6 +26,16 @@ export interface FeedOptions {
   /** Research: "events retrievable for 30 days". Overridable only so tests can pin the
    *  boundary cheaply; the default IS the researched contract. */
   retentionDays?: number;
+  /** Honest knob (close F7, the omitStreamIdInStatusFrames precedent): override
+   *  amount_cents at named SCRIPT INDICES, for money-bearing slots only. A genuinely
+   *  large amount is valid vendor data — the contract's plausibleMax FLAGS it, never
+   *  refuses — and the CI fixture uses this to put one above-bound row through the real
+   *  connector so the warn surface demonstrably fires instead of passing vacuously.
+   *  The BOUND VALUE is the caller's to supply (the fixture derives it from the
+   *  contract); this mock types no bound. An index landing on an amount-less slot
+   *  (customer.created) refuses loudly at emit — a knob typo must never silently
+   *  override nothing. Default absent = byte-identical stream. */
+  amountCentsAt?: Readonly<Record<number, number>>;
 }
 
 export interface FeedState {
@@ -90,20 +100,29 @@ export function createFeed(opts: FeedOptions): FeedState {
   const script = (i: number): { type: string; object: Record<string, unknown> } => {
     const n = Math.floor(i / 4);
     const inv = invoices[n % invoices.length];
+    const override = opts.amountCentsAt?.[i];
+    const withOverride = (object: Record<string, unknown>): Record<string, unknown> =>
+      override === undefined ? object : { ...object, amount_cents: override };
     switch (i % 4) {
       case 0:
+        if (override !== undefined) {
+          throw new Error(
+            `amountCentsAt[${i}] targets a customer.created slot (i % 4 === 0), which carries no ` +
+              "amount_cents — the override would silently apply to nothing. Pick an invoice/charge index.",
+          );
+        }
         return { type: "customer.created", object: { ...customers[n % customers.length], object: "customer" } };
       case 1:
-        return { type: "invoice.finalized", object: { ...inv, object: "invoice" } };
+        return { type: "invoice.finalized", object: withOverride({ ...inv, object: "invoice" }) };
       case 2:
         return {
           type: "charge.succeeded",
-          object: { id: `DEMO-CH-${pad(n * 2 + 1)}`, object: "charge", invoice_id: inv.id, customer_id: inv.customer_id, amount_cents: inv.amount_cents, currency: inv.currency },
+          object: withOverride({ id: `DEMO-CH-${pad(n * 2 + 1)}`, object: "charge", invoice_id: inv.id, customer_id: inv.customer_id, amount_cents: inv.amount_cents, currency: inv.currency }),
         };
       default:
         return {
           type: "charge.failed",
-          object: { id: `DEMO-CH-${pad(n * 2 + 2)}`, object: "charge", invoice_id: inv.id, customer_id: inv.customer_id, amount_cents: inv.amount_cents, currency: inv.currency },
+          object: withOverride({ id: `DEMO-CH-${pad(n * 2 + 2)}`, object: "charge", invoice_id: inv.id, customer_id: inv.customer_id, amount_cents: inv.amount_cents, currency: inv.currency }),
         };
     }
   };

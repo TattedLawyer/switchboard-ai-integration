@@ -272,3 +272,35 @@ describe("seeded 429 fault injection (house pattern from mocks/sheets)", () => {
     expect(body.error.code).toBe("rate_limit");
   });
 });
+
+describe("honest amount-override knob (close F7 — amountCentsAt, opt-in only)", () => {
+  it("default absent → the stream is byte-identical to a knob-free feed (the knob cannot leak into demo/oracle runs)", () => {
+    const plain = app();
+    const knobless = app({ amountCentsAt: undefined });
+    plain.feed.emit(12);
+    knobless.feed.emit(12);
+    expect(knobless.feed.retained()).toEqual(plain.feed.retained());
+  });
+
+  it("overrides amount_cents at EXACTLY the named script index and nowhere else, leaving ids/currency/linkage untouched", () => {
+    const a = app({ amountCentsAt: { 2: 123_456_789 } });
+    const plain = app();
+    a.feed.emit(8);
+    plain.feed.emit(8);
+    const got = a.feed.retained();
+    const base = plain.feed.retained();
+    expect(got[2].type).toBe("charge.succeeded");
+    expect(got[2].data.object.amount_cents).toBe(123_456_789);
+    // Everything else about the overridden envelope, and every OTHER envelope, is unchanged.
+    expect({ ...got[2].data.object, amount_cents: 0 }).toEqual({ ...base[2].data.object, amount_cents: 0 });
+    for (let i = 0; i < 8; i++) {
+      if (i === 2) continue;
+      expect(got[i]).toEqual(base[i]);
+    }
+  });
+
+  it("REFUSES an index that lands on an amount-less slot (customer.created) — a knob typo must never silently override nothing", () => {
+    const a = app({ amountCentsAt: { 4: 999 } }); // i % 4 === 0 → customer.created
+    expect(() => a.feed.emit(8)).toThrow(/customer\.created.*no.*amount_cents|amountCentsAt\[4\]/);
+  });
+});

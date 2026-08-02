@@ -21,6 +21,7 @@ import { createSupportApp } from "../mocks/support/src/server.js";
 import { createSheetsApp, COL } from "../mocks/sheets/src/index.js";
 import { createHubcrmApp, OPS_UNTIL_MERGES_COMPLETE } from "../mocks/hubcrm/src/index.js";
 import { createStripeFeedApp } from "../mocks/stripefeed/src/index.js";
+import { NUMERIC_CONTRACT } from "../ingest/src/numeric-contract.js";
 import { createCasebusApp } from "../mocks/casebus/src/index.js";
 import { generateManifest } from "../mocks/core/src/manifest.js";
 import { SheetSnapshotConnector } from "../ingest/src/connectors/sheet-snapshot.js";
@@ -95,7 +96,15 @@ async function main() {
   hubSrv.close();
 
   // ── stripefeed: emit, then drain the retained window through the pull connector ─────
-  const feed = createStripeFeedApp({ seed: 42 });
+  // One ABOVE-BOUND charge (close F7): script index 2 is the first charge.succeeded; its
+  // amount is overridden to plausibleMax + 1, derived from the CONTRACT (never re-typed),
+  // so CI's dbt leg demonstrably FIRES the unlikely-value surface (is_unlikely_amount
+  // true on one payments row; assert_amounts_plausible WARNS with exactly that row)
+  // instead of passing vacuously on all-plausible amounts. Flagged is never refused —
+  // the row stays in every sum — so every equality/aggregate check is unmoved.
+  const chargeBound = NUMERIC_CONTRACT["charge.succeeded"].amount_cents.plausibleMax;
+  if (chargeBound === undefined) throw new Error("charge.succeeded declares no plausibleMax — the F7 fixture row needs one");
+  const feed = createStripeFeedApp({ seed: 42, amountCentsAt: { 2: chargeBound + 1 } });
   const feedSrv = feed.app.listen(0);
   const feedPort = (feedSrv.address() as { port: number }).port;
   const feedRes = await fetch(`http://127.0.0.1:${feedPort}/simulate`, {

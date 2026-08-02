@@ -29,6 +29,8 @@ export interface StripeFeedAppOptions {
   /** Seeded read-fault stream: fraction of GET /v1/events answered 429 with the
    *  Stripe-shaped rate_limit_error. Backoff is the CONNECTOR's job. */
   read429?: { seed: number; rate: number };
+  /** Honest amount override at named script indices — see FeedOptions.amountCentsAt. */
+  amountCentsAt?: Readonly<Record<number, number>>;
 }
 
 export interface StripeFeedApp {
@@ -52,7 +54,7 @@ const stripeError = (
   });
 
 export function createStripeFeedApp(opts: StripeFeedAppOptions): StripeFeedApp {
-  const feed = createFeed({ seed: opts.seed, profile: opts.profile, retentionDays: opts.retentionDays });
+  const feed = createFeed({ seed: opts.seed, profile: opts.profile, retentionDays: opts.retentionDays, amountCentsAt: opts.amountCentsAt });
 
   const shuffleRand = opts.shuffle ? prng(opts.shuffle.seed) : null;
   const faultRand = opts.read429 ? prng(opts.read429.seed) : null;
