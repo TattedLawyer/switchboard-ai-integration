@@ -134,6 +134,22 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   as a space — in BOTH languages (shared `normalizeCompanyName` in mocks/core;
   identical SQL expression in `identity_resolution.sql`), vector-pinned in
   `ingest/test/normalizer-vectors.test.ts`.
+- **Email evidence is byte-exact, and the arms disagree on even that** *(cold
+  review M-3; Task F normalized names/domains, deliberately not emails)*.
+  Tier-1 joins raw email strings verbatim (support `SuppliedEmail`, billing
+  `email`, `crm_emails`) while the sheets arm lower-trims — so a real-world
+  `John@Acme.example.com` intake under-merges to manual review rather than resolving.
+  Conservative direction, carried over from 2a, but the asymmetry is real and
+  this file previously read as if normalization here were "paid." Owner:
+  **phase-2b close (identity-quality pass)**.
+- **TS↔SQL normalizer divergence outside the pinned vectors** *(cold review
+  M-4)*. JS `\s` matches the full Unicode space class; Postgres `\s` is
+  effectively `[[:space:]]` — a name carrying e.g. an em-space collapses in TS
+  but not in SQL. Likewise `lower()` vs `.toLowerCase()` diverge on non-ASCII
+  uppercase under a C-locale database. Both latent for the seeded universe
+  (no vector covers either class — exactly the drift the vector suite exists
+  to pin). Sits beside the single-strip caveat above. Owner: **phase-2b close
+  (identity-quality pass)**.
 
 ## Security posture (updated 2a.3)
 
@@ -554,6 +570,19 @@ Deliberate remainders, each bounded and owned:
   redelivery); injected permanent drops belong to the RED mode
   (`CHAOS_SKIP_BACKFILL=1`), where reconcile must name the loss. A
   reconcile-driven repair pump is register-owned follow-up.
+- **A merge whose survivor snapshot is missing is a RED BUILD, not a repair**
+  *(cold review I-3, F-1c fix round)*. `merge_edges` translates through
+  snapshots, and the two miss directions are not symmetric: a consumed-side
+  miss is harmless (the object never staged, nothing strands), but a
+  survivor-side miss — the merge event's own hydration DLQ'd or
+  tombstone-only — would drop the merge's edges while both consumed companies
+  keep staging as two separate stale canonicals. That shape is now DETECTED
+  loudly (`warehouse/tests/assert_merge_survivors_translate.sql` fails the
+  dbt build naming the event) but not auto-repaired: recovery is re-arming
+  the DLQ'd hydration, which is the SAME register line as the
+  reconcile-driven repair pump above (same mechanism, same owner). The
+  `merge_edges.sql` header states the asymmetry; the shipped fixture/demo
+  pump cadence never enters the state.
 
 ## Support event-bus source (casebus) — the 72-hour window and the stream reset (2b Task D)
 

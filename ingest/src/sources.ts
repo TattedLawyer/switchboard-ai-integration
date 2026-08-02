@@ -32,7 +32,7 @@ export function baseUrlFor(source: Source): string {
   return process.env[`${source.toUpperCase()}_BASE_URL`] ?? `http://localhost:${DEFAULT_PORTS[source]}`;
 }
 
-// The feed+ledger trio polls by default. sheets (A5) is deliberately NOT in the default:
+// The feed+ledger 2a pair polls by default (a trio until F-1c retired the crm mock). sheets (A5) is deliberately NOT in the default:
 // it has no /events feed, so the surfaces this default drives — main.ts's feed-shaped
 // interval backfill, the demo scripts — have nothing to poll there. A deployment opts a
 // sheet in via INGEST_SOURCES, which also makes WEBHOOK_SECRET_SHEETS a boot requirement

@@ -14,9 +14,9 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 | `AGENT_DATABASE_URL` | derived: `DATABASE_URL` with user/password swapped to `switchboard_agent` (dev password `switchboard_agent`; override with `AGENT_DB_PASSWORD`). The agent/report pool runs as this **database-enforced read-only role** — set explicitly in production | agent report/MCP pool |
 | `INGEST_INSTANCE_ID` | unset → `/status` reports `instance_id: null` and nothing checks it. demo.sh/chaos.sh mint one per run and refuse to proceed unless `:4002/status` echoes it back, proving they are driving the ingest they just started and not one stranded by an earlier run | ingest `/status`, demo.sh, chaos.sh |
 | `LEDGER_PATH` | no code default — export it (scripts set it for you) | each mock process (its own ledger file) |
-| `LEDGER_PATH_CRM` / `_BILLING` / `_SUPPORT` | unset → reconcile FAILS naming the missing var (fail-closed); the literal `skip` opts the source out explicitly | reconcile CLI (per-source ledger lookup) |
-| `INGEST_SOURCES` | `crm,billing,support` — `sheets`, `stripefeed`, `hubcrm` and `casebus` are registered but **opt-in** (none of them speaks the `/events` shape the default surfaces poll; add them explicitly for catch-up/reconcile runs) | which sources ingest polls/reconciles (scripts pin it explicitly) |
-| `CRM_BASE_URL` / `BILLING_BASE_URL` / `SUPPORT_BASE_URL` / `SHEETS_BASE_URL` / `STRIPEFEED_BASE_URL` / `HUBCRM_BASE_URL` / `CASEBUS_BASE_URL` | `http://localhost:4001` / `4003` / `4004` / `4005` / `4006` / `4007` / `4008` | backfill CLI (sheets: the snapshot API; stripefeed: the `/v1/events` cursor feed; hubcrm: the object store; casebus: the `/subscribe` event stream) |
+| `LEDGER_PATH_HUBCRM` / `_BILLING` / `_SUPPORT` | unset → reconcile FAILS naming the missing var (fail-closed); the literal `skip` opts the source out explicitly. `_HUBCRM` names the F-1c emission-side ledger (every event the store emits, chained — drops included); the 2a billing/support feed ledgers are unchanged | reconcile CLI (per-source ledger lookup) |
+| `INGEST_SOURCES` | `billing,support` (F-1c: `crm` left the default — its mock is retired and nothing serves port 4001). `sheets`, `stripefeed`, `hubcrm` and `casebus` are registered but **opt-in**; set them explicitly for anything real — in particular `hubcrm` MUST be enabled on the service that should run its hydration pump, or webhooks land with no snapshots and the warehouse CRM arm stays empty. Every script pins this variable explicitly | which sources ingest polls/reconciles (scripts pin it explicitly) |
+| `CRM_BASE_URL` / `BILLING_BASE_URL` / `SUPPORT_BASE_URL` / `SHEETS_BASE_URL` / `STRIPEFEED_BASE_URL` / `HUBCRM_BASE_URL` / `CASEBUS_BASE_URL` | `http://localhost:4001` / `4003` / `4004` / `4005` / `4006` / `4007` / `4008` (`crm` is the retired mock's legacy lane — nothing serves 4001; see KNOWN-ISSUES' end-state note) | backfill CLI (sheets: the snapshot API; stripefeed: the `/v1/events` cursor feed; hubcrm: the object store; casebus: the `/subscribe` event stream) |
 | `INGEST_ROLE` | `all` (`receiver` \| `worker` \| `all`; anything else refuses boot naming the variable — same for a non-integer `PORT`/`BACKFILL_INTERVAL_MS`) | ingest main |
 | `CHAOS_SEED` | `7` | chaos.sh fault-plan seed (CI feeds it as a workflow input; reproduce a red run by re-entering its seed) |
 | `ANTHROPIC_API_KEY` | unset → deterministic report (risk table + watch list; a one-line notice replaces the AI narrative) | agent report |
@@ -30,7 +30,9 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 export DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard
 docker compose up -d postgres            # DB (host port 5433)
 npm run migrate -w ingest                # idempotent
-PORT=4002 npm run start -w ingest        # receiver+worker+scheduled backfill, all sources
+# INGEST_SOURCES pinned explicitly: the code default is billing,support only (F-1c),
+# which would leave stripefeed/casebus never polled and hubcrm webhooks never hydrated.
+INGEST_SOURCES=hubcrm,stripefeed,casebus,support PORT=4002 npm run start -w ingest   # receiver+worker+scheduled backfill/pump
 PORT=4007 WEBHOOK_URL=http://localhost:4002/webhooks/hubcrm  LEDGER_PATH=./out/ledger-hubcrm.jsonl  npm run start -w mocks/hubcrm
 PORT=4006 npm run start -w mocks/stripefeed   # pull-only: the /v1/events feed is the interface
 PORT=4008 npm run start -w mocks/casebus      # pull-only: the /subscribe stream is the interface
@@ -167,7 +169,7 @@ and re-diffs from scratch anyway. The trigger channel may now point at the
 live service; its target is the nudge route itself:
 
 ```bash
-INGEST_SOURCES=crm,billing,support,sheets PORT=4002 npm run start -w ingest
+INGEST_SOURCES=hubcrm,stripefeed,casebus,support,sheets PORT=4002 npm run start -w ingest
 PORT=4005 WEBHOOK_URL=http://localhost:4002/connectors/sheets/nudge npm run start -w mocks/sheets
 ```
 
@@ -245,8 +247,12 @@ The hubcrm source is the HubSpot-STYLE CRM: **push-first** — the vendor POSTs
 signed batches of up to 100 *metadata-only* events to
 `POST /webhooks/hubcrm` (the request body is a JSON array; a single object is
 a 400), and the full record is fetched afterwards through the hydration API.
-It lands *alongside* the 2a crm mock; nothing consumes it in the warehouse
-until Task F retires the old CRM.
+Since F-1c it IS the warehouse's CRM: the 2a crm mock is retired, and the
+staging layer builds companies/contacts/deals from this source's hydrated
+snapshots and merge lineage from its `company.merge` events — so the hydration
+pump is load-bearing, not optional (an unpumped deployment builds an empty CRM
+arm, and a merge whose survivor snapshot is missing reds the dbt build by name:
+`assert_merge_survivors_translate`).
 
 ```bash
 PORT=4007 npm run start -w mocks/hubcrm                # the object store + webhook batches

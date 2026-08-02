@@ -106,13 +106,16 @@ export interface HubStore {
 const CHANGE_SOURCES = ["CRM_UI", "API", "IMPORT"];
 
 /** The minimum simulate() op count after which the FULL manifest universe has been
- *  enacted: all 22 companies created (slot-0 ops 0,10,…,210) and BOTH manifest merges
- *  fired (they take the next two company slots, ops 220 and 230) — the 22→20 shape any
- *  downstream proof depends on. Derivation, not folklore: 22 creates × 10-op cycle
- *  = op 210 for the last create, +10 and +20 for the two merge slots, rounded to the
- *  next full cycle. Fixtures and oracles MUST use this name, never a literal — a
- *  script-cycle change that moves the merges must move this constant in the same
- *  commit, and every dependent count follows automatically. */
+ *  enacted: all 22 companies created and BOTH manifest merges fired — the 22→20 shape
+ *  any downstream proof depends on. Derivation, not folklore (corrected in the F-1c
+ *  fix round — the first version mis-derived 220/230): pendingMerge PREEMPTS the
+ *  slot-0 create as soon as both participants live, so with C-0021 created at op 200,
+ *  merge 1 fires at op 210, C-0022's creation is DISPLACED to op 220, and merge 2
+ *  fires at op 230 (verified against emitted raw positions; demo.sh's chunk
+ *  boundaries encode the same sequence). 240 = op 230 rounded to the next full cycle.
+ *  Fixtures and oracles MUST use this name, never a literal — a script-cycle change
+ *  that moves the merges must move this constant in the same commit, and every
+ *  dependent count follows automatically. */
 export const OPS_UNTIL_MERGES_COMPLETE = 240;
 
 export function createHubStore(opts: HubStoreOptions): HubStore {
