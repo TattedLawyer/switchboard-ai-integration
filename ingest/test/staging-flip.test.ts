@@ -318,3 +318,75 @@ describe("stg_billing__* — the stripefeed envelope arm", () => {
     expect(rows[0]).toMatchObject({ customer_id: "B-2", invoice_id: "I-9" });
   });
 });
+
+// ── F-1c fix round (cold review I-3): a merge event whose SURVIVOR snapshot is missing
+// (its hydration DLQ'd — a named, operator-visible runtime state) drops its edges
+// silently: both consumed companies keep staging from their pre-merge snapshots as two
+// separate stale canonicals, and every structural dbt test stays green because they all
+// key off edges that EXIST. The singular test pinned here makes that shape RED at build
+// time: every company.merge event's newObjectId must resolve to a translatable
+// (non-tombstone) company snapshot. ─────────────────────────────────────────────────────
+describe("assert_merge_survivors_translate — untranslatable merge survivors red the build", () => {
+  const testSql = () => loadModel("tests/assert_merge_survivors_translate.sql");
+
+  it("a merge whose survivor hydrated (the healthy shape) raises nothing", async () => {
+    await insertHubObjectState(pool, {
+      objectType: "company", objectId: 100, eventId: "8101",
+      occurredAt: "2026-07-20T09:00:00.000Z",
+      properties: { name: "DEMO One", domain: "one.example.com", hs_manifest_id: "C-0001" },
+    });
+    await insertHubMergeEvent(pool, {
+      eventId: "8102", occurredAt: "2026-07-20T10:00:00.000Z",
+      primaryObjectId: 100, mergedObjectIds: [121], newObjectId: 150,
+    });
+    await insertHubObjectState(pool, {
+      objectType: "company", objectId: 150, eventId: "8102", eventType: "company.merge",
+      occurredAt: "2026-07-20T10:00:00.000Z", skipRawEvent: true,
+      properties: { name: "DEMO One", domain: "one.example.com", hs_manifest_id: "C-0001", hs_merged_object_ids: "100;121" },
+    });
+    const res = await pool.query(testSql());
+    expect(res.rows).toEqual([]);
+  });
+
+  it("the reviewer's probe shape — consumed snapshots exist, survivor snapshot missing — returns the offending merge event", async () => {
+    // Both consumed objects hydrated while alive; the merge event's own hydration never
+    // landed (DLQ'd), so newObjectId=997 has no snapshot to translate through.
+    await insertHubObjectState(pool, {
+      objectType: "company", objectId: 500, eventId: "8110",
+      occurredAt: "2026-07-20T09:00:00.000Z",
+      properties: { name: "DEMO Five", domain: "five.example.com", hs_manifest_id: "C-0005" },
+    });
+    await insertHubObjectState(pool, {
+      objectType: "company", objectId: 525, eventId: "8111",
+      occurredAt: "2026-07-20T09:30:00.000Z",
+      properties: { name: "DEMO Five Inc", domain: "five.example.com", hs_manifest_id: "C-0025" },
+    });
+    await insertHubMergeEvent(pool, {
+      eventId: "8112", occurredAt: "2026-07-20T10:00:00.000Z",
+      primaryObjectId: 500, mergedObjectIds: [525], newObjectId: 997,
+    });
+    const res = await pool.query(testSql());
+    expect(res.rows).toHaveLength(1);
+    expect(res.rows[0]).toMatchObject({ event_id: "8112", new_object_id: "997" });
+    // And the silent-loss consequence the test exists to catch, stated as data: the
+    // edge really is dropped while both consumed keys keep staging separately.
+    const edges = await pool.query(`select * from (${loadModel("models/identity/merge_edges.sql")}) m`);
+    expect(edges.rows).toEqual([]);
+    const staged = await pool.query(`select company_id from (${loadModel("models/staging/stg_crm__companies.sql")}) m order by company_id`);
+    expect(staged.rows.map((r) => r.company_id)).toEqual(["C-0005", "C-0025"]);
+  });
+
+  it("a survivor whose only snapshot is a TOMBSTONE is equally untranslatable and equally red", async () => {
+    await insertHubMergeEvent(pool, {
+      eventId: "8120", occurredAt: "2026-07-20T10:00:00.000Z",
+      primaryObjectId: 600, mergedObjectIds: [625], newObjectId: 650,
+    });
+    await insertHubObjectState(pool, {
+      objectType: "company", objectId: 650, eventId: "8120", eventType: "company.merge",
+      occurredAt: "2026-07-20T10:00:00.000Z", skipRawEvent: true, tombstone: true,
+    });
+    const res = await pool.query(testSql());
+    expect(res.rows).toHaveLength(1);
+    expect(res.rows[0]).toMatchObject({ event_id: "8120" });
+  });
+});

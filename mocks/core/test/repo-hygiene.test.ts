@@ -71,3 +71,37 @@ describe("repo-wide hygiene (every tracked text file, not just generator output)
     expect(US_PHONE_SHAPE.test("2026-07-22T10:00:00Z")).toBe(false); // ISO dates don't trip it
   });
 });
+
+// F-1c cold-review I-1 guard: chaos.sh survived the CRM retirement with a reference to
+// the deleted mock's LEDGER_PATH_CRM — under `set -u` the expansion aborted only the
+// command SUBSTITUTION's subshell, so every green run printed `unbound variable` on
+// stderr and silently dropped the hubcrm emission-ledger count from the settle line.
+// bash -n cannot see it (it is a runtime expansion) and the scripts must never run
+// locally, so the guard is textual: every LEDGER_PATH_<X> a script EXPANDS must be
+// DEFINED in that same script. Narrow by design — this pins the exact drift class that
+// shipped, not a general shell linter.
+describe("shell scripts: every LEDGER_PATH_<SOURCE> expanded is defined in the same script", () => {
+  const scripts = texts.filter(([f]) => f.startsWith("scripts/") && f.endsWith(".sh"));
+
+  it("scans the three pipeline scripts (guards against a silently empty list)", () => {
+    const names = scripts.map(([f]) => f);
+    for (const expected of ["scripts/demo.sh", "scripts/chaos.sh", "scripts/check-demo.sh"]) {
+      expect(names).toContain(expected);
+    }
+  });
+
+  it("no script expands an undefined LEDGER_PATH_<SOURCE> variable", () => {
+    const offenders: string[] = [];
+    for (const [f, s] of scripts) {
+      const defined = new Set([...s.matchAll(/^(?:export )?(LEDGER_PATH_[A-Z]+)=/gm)].map((m) => m[1]));
+      // Indirect lookups (check-demo's `ledger_var="LEDGER_PATH_${up}"`) resolve from the
+      // ENVIRONMENT the caller exports, not this script's own definitions — skip those;
+      // the guard binds direct `$LEDGER_PATH_X` / `${LEDGER_PATH_X}` expansions.
+      for (const m of s.matchAll(/\$\{?(LEDGER_PATH_[A-Z]+)\b/g)) {
+        if (m[1] === "LEDGER_PATH_") continue;
+        if (!defined.has(m[1])) offenders.push(`${f}: $${m[1]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
