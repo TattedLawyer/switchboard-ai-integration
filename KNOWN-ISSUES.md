@@ -746,12 +746,14 @@ leaves it is gone from the source forever.
   be seen and never accepted. The acknowledgement path needs the same
   record-over-config scoping the listing got. *Owner: phase-2b close, with
   the other CLI-scoping residue.*
-- **A well-formed but unknown `--tenant` UUID silently PASSes** — reconcile
-  over a tenant that has no rows reports a clean empty run, and `gap-ack
-  --list --tenant <unknown>` lists zero gaps, indistinguishable from a healthy
-  tenant. A tenant with zero ingested rows is more likely a typo than a truth;
-  the CLIs should say "tenant has no recorded state" rather than PASS.
-  *Owner: phase-2b close (same CLI-scoping pass).*
+- ~~A well-formed but unknown `--tenant` UUID silently PASSes~~ *Paid (phase-2b
+  close, F8):* an EXPLICITLY named tenant with zero rows across every
+  tenant-scoped table now refuses on both CLIs with shared wording — "no
+  recorded state for tenant …" (`cli/tenant-state.ts`), exit 1 — instead of a
+  clean reconcile PASS / healthy-looking empty gap listing. Flag-absent
+  default-tenant runs are untouched (a fresh deployment legitimately starts
+  empty). Pinned in `bus-cli.test.ts` (unknown-tenant red on both CLIs, RED
+  shown first; sibling refusal wordings excluded per checklist line 5).
 
 ## Numeric & monetary integrity (added with the numeric-integrity wave)
 

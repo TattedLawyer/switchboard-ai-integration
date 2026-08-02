@@ -385,6 +385,31 @@ describe("operator-CLI scoping (debt-burn A5): recorded state over configured sc
     expect(bRun.out).toMatch(/gap-ack/);
   });
 
+  it("a WELL-FORMED but UNKNOWN --tenant refuses on BOTH CLIs with 'no recorded state' — never a clean PASS or an empty listing indistinguishable from health (close F8)", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
+    mock.stream.emit(3);
+    await runCli("src/cli/backfill.ts", baseUrl); // the DEFAULT tenant has state — the DB is live, the tenant is the typo
+    const UNKNOWN = "99999999-9999-4999-8999-999999999999";
+
+    const rec = await runCli("src/cli/reconcile.ts", baseUrl, ["--tenant", UNKNOWN]);
+    expect(rec.code).toBe(1);
+    expect(rec.out).toMatch(/no recorded state for tenant/);
+    expect(rec.out).not.toMatch(/PASS/); // a zero-state tenant must never read as healthy
+    // Cause names itself and excludes its siblings (checklist line 5):
+    expect(rec.out).not.toMatch(/--tenant requires a tenant id/);
+    expect(rec.out).not.toMatch(/ledger-feed/);
+
+    const list = await runCli("src/cli/gap-ack.ts", baseUrl, ["--list", "--tenant", UNKNOWN]);
+    expect(list.code).toBe(1);
+    expect(list.out).toMatch(/no recorded state for tenant/);
+    expect(list.out).not.toMatch(/no gaps recorded/); // the healthy-empty line must not print for a tenant that isn't there
+
+    const ack = await runCli("src/cli/gap-ack.ts", baseUrl, ["--tenant", UNKNOWN, "--source", "casebus", "--id", "1", "--by", "oncall"]);
+    expect(ack.code).toBe(1);
+    expect(ack.out).toMatch(/no recorded state for tenant/);
+  });
+
   it("reconcile --tenant REFUSES ledger-feed sources by name rather than silently answering cross-tenant — their reconcile is not tenant-scoped", async () => {
     const baseUrl = listen(createCasebusApp({ seed: 42 }));
     const res = await runCli("src/cli/reconcile.ts", baseUrl, ["--tenant", TENANT_B], {

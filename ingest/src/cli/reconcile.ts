@@ -11,6 +11,7 @@ import {
   type Connector,
 } from "../connectors/index.js";
 import { gapCrossCheck, type ReportedGapLike } from "./gap-crosscheck.js";
+import { hasRecordedTenantState, noRecordedStateMessage } from "./tenant-state.js";
 import { DEFAULT_TENANT_ID } from "../ingest-event.js";
 import type { ReconcileReport } from "../reconcile.js";
 import type { SheetReconcileReport } from "../connectors/sheet-snapshot.js";
@@ -91,6 +92,14 @@ async function main(): Promise<void> {
         await pool.end();
         process.exit(1);
       }
+    }
+    // Close F8: an EXPLICITLY named tenant this database has never seen must refuse, not
+    // reconcile an empty world to a clean PASS. Flag-absent runs are untouched — a fresh
+    // deployment's default tenant legitimately starts with zero state.
+    if (has("tenant") && !(await hasRecordedTenantState(pool, tenantId))) {
+      console.error(noRecordedStateMessage(tenantId));
+      await pool.end();
+      process.exit(1);
     }
 
     for (const source of enabledSources()) {

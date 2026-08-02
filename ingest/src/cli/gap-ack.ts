@@ -25,6 +25,7 @@ import { getPool } from "../db.js";
 import { enabledSources, isSource } from "../sources.js";
 import { DEFAULT_TENANT_ID } from "../ingest-event.js";
 import { acknowledgeGap, formatGapLedgerRow, listGaps } from "../connectors/index.js";
+import { hasRecordedTenantState, noRecordedStateMessage } from "./tenant-state.js";
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -53,6 +54,14 @@ async function main(): Promise<void> {
   const tenantId = tenantArg ?? DEFAULT_TENANT_ID;
 
   try {
+    // Close F8: same refusal as reconcile's, same wording (checklist line 6). An unknown
+    // explicit tenant listing "zero gaps" reads exactly like a healthy tenant — refuse
+    // before either the listing or the acknowledgement path can answer for it.
+    if (has("tenant") && !(await hasRecordedTenantState(pool, tenantId))) {
+      console.error(noRecordedStateMessage(tenantId));
+      await pool.end();
+      process.exit(1);
+    }
     const source = arg("source");
     if (source !== undefined && !isSource(source)) {
       console.error(`unknown source: ${source}`);
