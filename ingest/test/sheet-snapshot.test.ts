@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import express from "express";
 import type pg from "pg";
 // The REAL mock, in-process — house cross-workspace precedent: backfill.test.ts imports
-// mocks/crm the same way. The connector under test may only speak to it over HTTP
+// the 2a ledger-feed mocks the same way. The connector under test may only speak to it over HTTP
 // (GET /snapshot, the combined atomic read); direct `sheets.sheet.*` calls below are the
 // API/script mutation path the mock provides FOR TESTS (and never fires the trigger).
 import { COL, createRowSource, createSheetsApp, type SheetsApp, type SheetsAppOptions } from "../../mocks/sheets/src/index.js";

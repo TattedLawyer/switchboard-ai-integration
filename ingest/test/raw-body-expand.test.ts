@@ -26,7 +26,7 @@ import { createQueue, enqueueEvent, startWorker } from "../src/queue.js";
 import { pollOnce } from "../src/backfill.js";
 import { quarantineEvent, replayQuarantined, replayAllQuarantined } from "../src/quarantine.js";
 import { ingestEvent } from "../src/ingest-event.js";
-import { createCrmApp } from "../../mocks/crm/src/server.js";
+import { createBillingApp } from "../../mocks/billing/src/server.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -77,7 +77,7 @@ async function pollUntil(cond: () => Promise<boolean>, timeoutMs: number): Promi
 describe("webhook door — wire bytes preserved", () => {
   it("direct path: raw_body is byte-identical to the posted body (not a re-serialization)", async () => {
     const wire = wireFor("evt-rb-direct");
-    const res = await postSigned(createIngestApp(pool), "crm", wire);
+    const res = await postSigned(createIngestApp(pool), "billing", wire);
     expect(res.status).toBe(202);
 
     const row = await pool.query(
@@ -106,7 +106,7 @@ describe("webhook door — wire bytes preserved", () => {
       await startWorker(boss, pool);
 
       const wire = wireFor("evt-rb-queued");
-      const res = await postSigned(app, "crm", wire);
+      const res = await postSigned(app, "billing", wire);
       expect(res.status).toBe(202);
 
       await pollUntil(async () => {
@@ -129,8 +129,8 @@ describe("webhook door — wire bytes preserved", () => {
 describe("poll door — no per-event wire bytes exist, so none are invented", () => {
   it("poll-ingested events have raw_body IS NULL and are otherwise unchanged", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rawbody-poll-"));
-    const crm = createCrmApp({ webhookUrl: "http://127.0.0.1:1", ledgerPath: join(dir, "l.jsonl") });
-    const srv: Server = crm.listen(0);
+    const feed = createBillingApp({ webhookUrl: "http://127.0.0.1:1", ledgerPath: join(dir, "l.jsonl") });
+    const srv: Server = feed.listen(0);
     const port = (srv.address() as { port: number }).port;
     try {
       await fetch(`http://127.0.0.1:${port}/simulate`, {
@@ -138,11 +138,11 @@ describe("poll door — no per-event wire bytes exist, so none are invented", ()
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ count: 5, fault_plan: { seed: 1, dropRate: 1, dupRate: 0, apiErrorRate: 0 } }),
       });
-      const result = await pollOnce(pool, "crm", `http://127.0.0.1:${port}`);
+      const result = await pollOnce(pool, "billing", `http://127.0.0.1:${port}`);
       expect(result.ingested).toBe(5);
 
       const rows = await pool.query(
-        "select raw_body, payload, event_id from raw.raw_events where source = 'crm'",
+        "select raw_body, payload, event_id from raw.raw_events where source = 'billing'",
       );
       expect(rows.rowCount).toBe(5);
       for (const r of rows.rows) {
@@ -160,7 +160,7 @@ describe("poll door — no per-event wire bytes exist, so none are invented", ()
 
 describe("quarantine replay — every attempt leaves a trace (C4)", () => {
   it("replay of a still-invalid row increments attempts and stamps last_attempt_at, each time", async () => {
-    await quarantineEvent(pool, "crm", { event_id: "evt-rb-bad", junk: true }, "schema validation failed: test");
+    await quarantineEvent(pool, "billing", { event_id: "evt-rb-bad", junk: true }, "schema validation failed: test");
     const idRow = await pool.query("select id, attempts, last_attempt_at from ingest.quarantine");
     expect(idRow.rowCount).toBe(1);
     const id = Number(idRow.rows[0].id);
@@ -192,7 +192,7 @@ describe("quarantine replay — every attempt leaves a trace (C4)", () => {
       occurred_at: new Date().toISOString(),
       data: { id: "DEMO-C-0001", name: "DEMO X" },
     };
-    await quarantineEvent(pool, "crm", valid, "operator hold: test");
+    await quarantineEvent(pool, "billing", valid, "operator hold: test");
     const idRow = await pool.query("select id from ingest.quarantine");
     const id = Number(idRow.rows[0].id);
 
@@ -219,7 +219,7 @@ describe("jsonb-unstorable divert path is untouched by the expand phase", () => 
     // \\u0000 in the TS literal = the six-character escape on the wire = an actual NUL after
     // JSON.parse — jsonb-unstorable, diverted BEFORE schema validation and enqueue.
     const wire = `{"event_id":"evt-rb-nul","event_type":"company.updated","occurred_at":"${new Date().toISOString()}","data":{"name":"a\\u0000b"}}`;
-    const res = await postSigned(createIngestApp(pool), "crm", wire);
+    const res = await postSigned(createIngestApp(pool), "billing", wire);
     expect(res.status).toBe(202);
     expect(await res.json()).toEqual({ quarantined: true });
 
@@ -236,7 +236,7 @@ describe("jsonb-unstorable divert path is untouched by the expand phase", () => 
     const depth = 1200; // past MAX_JSONB_NESTING_DEPTH (1000); JSON.parse survives, divert must fire
     const deep = "[".repeat(depth) + "1" + "]".repeat(depth);
     const wire = `{"event_id":"evt-rb-deep","event_type":"company.updated","occurred_at":"${new Date().toISOString()}","data":{"deep":${deep}}}`;
-    const res = await postSigned(createIngestApp(pool), "crm", wire);
+    const res = await postSigned(createIngestApp(pool), "billing", wire);
     expect(res.status).toBe(202);
     expect(await res.json()).toEqual({ quarantined: true });
 
@@ -277,7 +277,7 @@ describe("migration 007: raw_body + quarantine ops + FOR ROLE grants", () => {
       for (const f of ALL.slice(0, 6)) await mpool.query(sql(f));
       // An existing quarantine row: 007 must default its attempts without rewriting it.
       await mpool.query(
-        `insert into ingest.quarantine (source, payload, reason) values ('crm', '{"bogus":true}'::jsonb, 'schema validation failed')`,
+        `insert into ingest.quarantine (source, payload, reason) values ('billing', '{"bogus":true}'::jsonb, 'schema validation failed')`,
       );
 
       // THE C2 SCENARIO: the role executing the migration is NOT switchboard. An unscoped

@@ -5,7 +5,6 @@ import { join } from "node:path";
 import type { Server } from "node:http";
 import type express from "express";
 import { generateManifest, type Profile } from "../../mocks/core/src/index.js";
-import { createCrmApp } from "../../mocks/crm/src/server.js";
 import { createBillingApp } from "../../mocks/billing/src/server.js";
 import { createSupportApp } from "../../mocks/support/src/server.js";
 
@@ -39,17 +38,8 @@ afterEach(() => {
 });
 
 describe("profile threading — the seam is opts.profile, exactly like opts.seed", () => {
-  it("crm serves the requested profile's companies on /companies", async () => {
-    const body = (await getJson(
-      createCrmApp({ ...baseOpts(), profile: "plumbing" }),
-      "/companies?per_page=25",
-    )) as { items: { id: string; name: string }[]; total: number };
-    expect(body.total).toBe(22);
-    expect(body.items.map((c) => c.name)).toEqual(
-      generateManifest(42, "plumbing").crm.companies.map((c) => c.name),
-    );
-    expect(body.items[0].name).toMatch(/Plumbing/);
-  });
+  // (F-1c: the 2a crm mock is retired; hubcrm's profile threading is pinned in its own
+  // 2b describe below — the seam premise holds through the faithful CRM now.)
 
   it("billing serves the requested profile's customers on /customers", async () => {
     const body = (await getJson(
@@ -75,8 +65,6 @@ describe("profile threading — the seam is opts.profile, exactly like opts.seed
 
   it("NO profile means the generic baseline, byte-for-byte — callers that never heard of profiles are untouched", async () => {
     const generic = generateManifest(42);
-    const crm = (await getJson(createCrmApp(baseOpts()), "/companies?per_page=25")) as { items: unknown[] };
-    expect(crm.items).toEqual(JSON.parse(JSON.stringify(generic.crm.companies)));
     const billing = (await getJson(createBillingApp(baseOpts()), "/customers")) as { items: unknown[] };
     expect(billing.items).toEqual(JSON.parse(JSON.stringify(generic.billing.customers)));
     const support = (await getJson(createSupportApp(baseOpts()), "/requesters")) as { items: unknown[] };
@@ -84,7 +72,7 @@ describe("profile threading — the seam is opts.profile, exactly like opts.seed
   });
 
   it("a bad profile name refuses AT STARTUP, naming the valid profiles — the operator sees the answer where the mistake was made", () => {
-    for (const create of [createCrmApp, createBillingApp, createSupportApp]) {
+    for (const create of [createBillingApp, createSupportApp]) {
       expect(() => create({ ...baseOpts(), profile: "logistics" as Profile })).toThrow(
         /unknown profile "logistics".*generic, plumbing, saas, realestate/,
       );

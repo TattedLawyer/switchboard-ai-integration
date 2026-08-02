@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Server } from "node:http";
 import express from "express";
 import type pg from "pg";
-import { createCrmApp } from "../../mocks/crm/src/server.js";
+import { createBillingApp } from "../../mocks/billing/src/server.js";
 import { freshTestDb } from "./helpers/testdb.js";
 import { pollOnce, catchUp } from "../src/backfill.js";
 
@@ -29,8 +29,8 @@ describe("backfill", () => {
     // webhookUrl points at a dead port; combined with dropRate: 1, every push delivery is
     // skipped entirely (never attempted), so all 30 events land only in the ledger and poll
     // is the only recovery path.
-    const crm = createCrmApp({ webhookUrl: "http://127.0.0.1:1", ledgerPath: join(dir, "l.jsonl") });
-    const srv: Server = crm.listen(0);
+    const feed = createBillingApp({ webhookUrl: "http://127.0.0.1:1", ledgerPath: join(dir, "l.jsonl") });
+    const srv: Server = feed.listen(0);
     const port = (srv.address() as { port: number }).port;
     const baseUrl = `http://127.0.0.1:${port}`;
 
@@ -43,16 +43,16 @@ describe("backfill", () => {
       }),
     });
 
-    const total = await catchUp(pool, "crm", baseUrl);
+    const total = await catchUp(pool, "billing", baseUrl);
     expect(total).toBe(30);
 
-    const raw = await pool.query("select count(*)::int as n from raw.raw_events where source = 'crm'");
+    const raw = await pool.query("select count(*)::int as n from raw.raw_events where source = 'billing'");
     expect(raw.rows[0].n).toBe(30);
 
     // Poll-path stored payloads must match push-path payloads byte-for-byte: none of the
-    // CRM feed's pagination/chain fields (seq, prev_hash, hash) should leak into the stored
+    // ledger feed's pagination/chain fields (seq, prev_hash, hash) should leak into the stored
     // payload, since those are ledger transport metadata, not part of the CRM event itself.
-    const payloads = await pool.query("select payload from raw.raw_events where source = 'crm' order by event_id");
+    const payloads = await pool.query("select payload from raw.raw_events where source = 'billing' order by event_id");
     for (const row of payloads.rows) {
       const payload = row.payload;
       expect(payload).not.toHaveProperty("seq");
@@ -62,25 +62,25 @@ describe("backfill", () => {
 
     const cursor = await pool.query(
       "select last_seq from ingest.cursors where source = $1",
-      ["crm"],
+      ["billing"],
     );
     expect(cursor.rows[0].last_seq).toBe("30");
 
-    const second = await catchUp(pool, "crm", baseUrl);
+    const second = await catchUp(pool, "billing", baseUrl);
     expect(second).toBe(0);
 
-    const rawAfter = await pool.query("select count(*)::int as n from raw.raw_events where source = 'crm'");
+    const rawAfter = await pool.query("select count(*)::int as n from raw.raw_events where source = 'billing'");
     expect(rawAfter.rows[0].n).toBe(30);
 
     srv.close();
   });
 
   it("pollOnce throws on non-2xx and leaves cursor untouched", async () => {
-    const crm = createCrmApp({
+    const feed = createBillingApp({
       webhookUrl: "http://127.0.0.1:1",
       ledgerPath: join(dir, "l2.jsonl"),
     });
-    const srv: Server = crm.listen(0);
+    const srv: Server = feed.listen(0);
     const port = (srv.address() as { port: number }).port;
     const baseUrl = `http://127.0.0.1:${port}`;
 
@@ -90,11 +90,11 @@ describe("backfill", () => {
       body: JSON.stringify({ count: 5, fault_plan: { seed: 1, dropRate: 0, dupRate: 0, apiErrorRate: 1 } }),
     });
 
-    await expect(pollOnce(pool, "crm", baseUrl)).rejects.toThrow();
+    await expect(pollOnce(pool, "billing", baseUrl)).rejects.toThrow();
 
     const cursor = await pool.query(
       "select last_seq from ingest.cursors where source = $1",
-      ["crm"],
+      ["billing"],
     );
     expect(cursor.rowCount).toBe(0);
 
@@ -104,11 +104,11 @@ describe("backfill", () => {
   it("overlap guard prevents concurrent backfill runs", async () => {
     const { createBackfillRunner } = await import("../src/main.js");
 
-    const crm = createCrmApp({
+    const feed = createBillingApp({
       webhookUrl: "http://127.0.0.1:1",
       ledgerPath: join(dir, "l3.jsonl"),
     });
-    const srv: Server = crm.listen(0);
+    const srv: Server = feed.listen(0);
     const port = (srv.address() as { port: number }).port;
     const baseUrl = `http://127.0.0.1:${port}`;
 
@@ -130,7 +130,7 @@ describe("backfill", () => {
     };
 
     try {
-      const runBackfill = createBackfillRunner(pool, "crm", baseUrl);
+      const runBackfill = createBackfillRunner(pool, "billing", baseUrl);
 
       // First call should run (no guard triggered)
       const p1 = runBackfill();
@@ -145,7 +145,7 @@ describe("backfill", () => {
       // Check that second invocation was skipped
       // B4: the skip line carries its source — an operator tailing a multi-source
       // service log must know WHICH source's tick coalesced.
-      const skipLog = logs.find((log) => log.includes("[crm] backfill still running, skipping tick"));
+      const skipLog = logs.find((log) => log.includes("[billing] backfill still running, skipping tick"));
       expect(skipLog).toBeTruthy();
     } finally {
       console.log = originalLog;
@@ -179,17 +179,17 @@ describe("the cursor is OURS on the poll path too (debt-burn A9)", () => {
     const srv: Server = app.listen(0);
     const baseUrl = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
 
-    const first = await pollOnce(pool, "crm", baseUrl);
+    const first = await pollOnce(pool, "billing", baseUrl);
     expect(first.ingested).toBe(3);
     // The mechanism under pin: the persisted position is the max seq this process
     // VERIFIED — processed from the page — never the feed's own claim about itself.
-    const cur = await pool.query("select last_seq from ingest.cursors where source = 'crm'");
+    const cur = await pool.query("select last_seq from ingest.cursors where source = 'billing'");
     expect(Number(cur.rows[0].last_seq)).toBe(3);
     expect(first.last_seq).toBe(3);
 
     // And because the cursor told the truth, the drain recovers everything.
-    await catchUp(pool, "crm", baseUrl);
-    const raw = await pool.query("select count(*)::int as n from raw.raw_events where source = 'crm'");
+    await catchUp(pool, "billing", baseUrl);
+    const raw = await pool.query("select count(*)::int as n from raw.raw_events where source = 'billing'");
     expect(raw.rows[0].n).toBe(13);
     srv.close();
   });
@@ -202,8 +202,8 @@ describe("the cursor is OURS on the poll path too (debt-burn A9)", () => {
     const srv: Server = app.listen(0);
     const baseUrl = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
 
-    await expect(pollOnce(pool, "crm", baseUrl, { timeoutMs: 300 })).rejects.toThrow(/timed out after 300ms/);
-    const cur = await pool.query("select last_seq from ingest.cursors where source = 'crm'");
+    await expect(pollOnce(pool, "billing", baseUrl, { timeoutMs: 300 })).rejects.toThrow(/timed out after 300ms/);
+    const cur = await pool.query("select last_seq from ingest.cursors where source = 'billing'");
     expect(cur.rowCount).toBe(0);
     srv.close();
   });
@@ -236,14 +236,14 @@ describe("backfill occurred_at gate (the third door)", () => {
     const srv: Server = feedWith([bad]).listen(0);
     const port = (srv.address() as { port: number }).port;
 
-    await pollOnce(pool, "crm", `http://127.0.0.1:${port}`);
+    await pollOnce(pool, "billing", `http://127.0.0.1:${port}`);
     srv.close();
 
     const raw = await pool.query("select count(*)::int as n from raw.raw_events");
     expect(raw.rows[0].n).toBe(0);
     const q = await pool.query("select source, reason from ingest.quarantine");
     expect(q.rowCount).toBe(1);
-    expect(q.rows[0].source).toBe("crm");
+    expect(q.rows[0].source).toBe("billing");
   });
 
   it("quarantines a well-formed but out-of-window occurred_at that would pin state forever", async () => {
@@ -251,7 +251,7 @@ describe("backfill occurred_at gate (the third door)", () => {
     const srv: Server = feedWith([bad]).listen(0);
     const port = (srv.address() as { port: number }).port;
 
-    await pollOnce(pool, "crm", `http://127.0.0.1:${port}`);
+    await pollOnce(pool, "billing", `http://127.0.0.1:${port}`);
     srv.close();
 
     const raw = await pool.query("select count(*)::int as n from raw.raw_events");
@@ -283,7 +283,7 @@ describe("backfill occurred_at gate (the third door)", () => {
     const srv: Server = app.listen(0);
     const port = (srv.address() as { port: number }).port;
 
-    const result = await pollOnce(pool, "crm", `http://127.0.0.1:${port}`);
+    const result = await pollOnce(pool, "billing", `http://127.0.0.1:${port}`);
     srv.close();
 
     expect(result.ingested).toBe(2);
@@ -301,7 +301,7 @@ describe("backfill occurred_at gate (the third door)", () => {
     expect(q.rows[0].raw_body).toBe(pageText);
 
     // The poison event must not stall the cursor — that would re-poll it forever.
-    const cur = await pool.query("select last_seq from ingest.cursors where source = 'crm'");
+    const cur = await pool.query("select last_seq from ingest.cursors where source = 'billing'");
     expect(Number(cur.rows[0].last_seq)).toBe(3);
   });
 
@@ -311,14 +311,14 @@ describe("backfill occurred_at gate (the third door)", () => {
     const srv: Server = feedWith(events).listen(0);
     const port = (srv.address() as { port: number }).port;
 
-    await pollOnce(pool, "crm", `http://127.0.0.1:${port}`);
+    await pollOnce(pool, "billing", `http://127.0.0.1:${port}`);
     srv.close();
 
     const raw = await pool.query("select event_id from raw.raw_events order by event_id");
     expect(raw.rows.map((r) => r.event_id)).toEqual(["evt-1", "evt-3"]);
     expect((await pool.query("select 1 from ingest.quarantine")).rowCount).toBe(1);
     // A poison event must not stall the cursor — that would re-poll it forever.
-    const cur = await pool.query("select last_seq from ingest.cursors where source = 'crm'");
+    const cur = await pool.query("select last_seq from ingest.cursors where source = 'billing'");
     expect(Number(cur.rows[0].last_seq)).toBe(3);
   });
 });
@@ -352,8 +352,8 @@ describe("catchUp: the rounds budget is loud, and no-progress is structural (the
 
     // maxRounds generous on purpose: the structural check must fire LONG before the
     // budget — a budget-shaped error here would be exactly the misdiagnosis A4 bans.
-    await expect(catchUp(pool, "crm", baseUrl, { maxRounds: 30 })).rejects.toThrow(
-      /crm catchUp made no cursor progress across a non-empty round/,
+    await expect(catchUp(pool, "billing", baseUrl, { maxRounds: 30 })).rejects.toThrow(
+      /billing catchUp made no cursor progress across a non-empty round/,
     );
     srv.close();
   });
@@ -369,11 +369,11 @@ describe("catchUp: the rounds budget is loud, and no-progress is structural (the
     const srv: Server = app.listen(0);
     const baseUrl = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
 
-    await expect(catchUp(pool, "crm", baseUrl, { maxRounds: 3 })).rejects.toThrow(
-      /crm catchUp exceeded maxRounds=3 .*refusing to report a drain it did not finish; state is consistent, re-run to resume from cursor 3/,
+    await expect(catchUp(pool, "billing", baseUrl, { maxRounds: 3 })).rejects.toThrow(
+      /billing catchUp exceeded maxRounds=3 .*refusing to report a drain it did not finish; state is consistent, re-run to resume from cursor 3/,
     );
     // The named cursor is REAL persisted state: a re-run resumes from it.
-    const cur = await pool.query("select last_seq from ingest.cursors where source = 'crm'");
+    const cur = await pool.query("select last_seq from ingest.cursors where source = 'billing'");
     expect(Number(cur.rows[0].last_seq)).toBe(3);
     srv.close();
   });

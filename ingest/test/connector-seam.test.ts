@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
 import type pg from "pg";
-import { createCrmApp } from "../../mocks/crm/src/server.js";
+import { createBillingApp } from "../../mocks/billing/src/server.js";
 import { freshTestDb } from "./helpers/testdb.js";
 import { catchUp } from "../src/backfill.js";
 import { reconcile, verifyLedgerChain } from "../src/reconcile.js";
@@ -45,13 +45,13 @@ afterEach(async () => {
   await cleanup();
 });
 
-async function startCrmMock(count: number): Promise<void> {
+async function startLedgerMock(count: number): Promise<void> {
   dir = mkdtempSync(join(tmpdir(), "seam-"));
-  ledgerPath = join(dir, "ledger-crm.jsonl");
+  ledgerPath = join(dir, "ledger-billing.jsonl");
   // Black-hole webhook + dropRate 1: the push path is deliberately disabled so everything must
   // arrive via the pull path, which is what these tests are about. Same pattern as
   // backfill.test.ts. The ledger still records every event, so it remains the full expectation.
-  const app = createCrmApp({ ledgerPath, webhookUrl: "http://127.0.0.1:1" });
+  const app = createBillingApp({ ledgerPath, webhookUrl: "http://127.0.0.1:1" });
   srv = app.listen(0);
   const port = (srv.address() as { port: number }).port;
   baseUrl = `http://127.0.0.1:${port}`;
@@ -107,23 +107,23 @@ describe("connector seam — every source resolves to a connector", () => {
 
 describe("connector seam — behavior preserving vs the functions it replaces", () => {
   it("catchUp through the connector ingests exactly what the direct call does", async () => {
-    await startCrmMock(12);
+    await startLedgerMock(12);
 
-    const viaConnector = await connectorFor("crm").catchUp(pool, { baseUrl });
+    const viaConnector = await connectorFor("billing").catchUp(pool, { baseUrl });
     expect(viaConnector).toBe(12);
 
     // Cursor is now at the end; a direct call must agree there is nothing left. Same
     // mechanism, same cursor table, same result.
-    const viaDirect = await catchUp(pool, "crm", baseUrl);
+    const viaDirect = await catchUp(pool, "billing", baseUrl);
     expect(viaDirect).toBe(0);
   });
 
   it("reconcile through the connector returns the same report as the direct call", async () => {
-    await startCrmMock(8);
-    await connectorFor("crm").catchUp(pool, { baseUrl });
+    await startLedgerMock(8);
+    await connectorFor("billing").catchUp(pool, { baseUrl });
 
-    const direct = await reconcile(pool, "crm", ledgerPath);
-    const viaConnector = await connectorFor("crm").reconcile(pool, { ledgerPath });
+    const direct = await reconcile(pool, "billing", ledgerPath);
+    const viaConnector = await connectorFor("billing").reconcile(pool, { ledgerPath });
 
     expect(viaConnector.skipped).toBeUndefined();
     expect(viaConnector.integrity.ok).toBe(true);
@@ -133,8 +133,8 @@ describe("connector seam — behavior preserving vs the functions it replaces", 
   });
 
   it("surfaces a broken hash chain as an integrity failure WITHOUT a report — matching cli/reconcile.ts, which refuses to compare against a ledger it cannot trust", async () => {
-    await startCrmMock(4);
-    await connectorFor("crm").catchUp(pool, { baseUrl });
+    await startLedgerMock(4);
+    await connectorFor("billing").catchUp(pool, { baseUrl });
 
     const { writeFileSync, readFileSync } = await import("node:fs");
     const lines = readFileSync(ledgerPath, "utf8").trimEnd().split("\n");
@@ -145,7 +145,7 @@ describe("connector seam — behavior preserving vs the functions it replaces", 
 
     expect(verifyLedgerChain(ledgerPath).ok).toBe(false);
 
-    const result = await connectorFor("crm").reconcile(pool, { ledgerPath });
+    const result = await connectorFor("billing").reconcile(pool, { ledgerPath });
     expect(result.integrity.ok).toBe(false);
     expect(result.report).toBeUndefined();
   });

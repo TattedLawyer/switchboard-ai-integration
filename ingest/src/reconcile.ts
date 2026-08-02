@@ -12,8 +12,9 @@ interface LedgerEntry {
   hash: string;
 }
 
-// Minimal, local reader for the ledger file format written by mocks/crm's ledger.ts.
-// Kept independent of the mocks/crm workspace since ingest's src should not depend on a
+// Minimal, local reader for the ledger file format written by mocks/core's ledger.ts
+// (the 2a mocks' ledgers and hubcrm's F-1c emission ledger both chain through it).
+// Kept independent of the mock workspaces since ingest's src should not depend on a
 // test-only mock service package.
 function readLedger(path: string): LedgerEntry[] {
   if (!existsSync(path)) return [];
@@ -26,9 +27,8 @@ function readLedger(path: string): LedgerEntry[] {
 export const GENESIS_HASH = "0".repeat(64);
 
 // NOTE: DEFAULT_LEDGER_HMAC_KEY is intentionally duplicated in mocks/core/src/ledger.ts
-// — the real implementation; mocks/crm/src/ledger.ts is only a re-export shim, so a
-// sync pointer aimed there would point at nothing. Separate workspace, must not
-// cross-import. Keep both copies in sync if the key or chaining scheme changes.
+// — the real implementation (the retired 2a crm mock's ledger.ts was only a re-export
+// shim). Separate workspace, must not cross-import. Keep both copies in sync if the key or chaining scheme changes.
 // Shared secret keying the ledger's hash chain. Demo-only default, printed in the open —
 // real deployments must set LEDGER_HMAC_KEY to a proper secret held only by the ledger
 // writer and the auditor, kept separate from the log file itself. Without a key, anyone
