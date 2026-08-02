@@ -31,7 +31,9 @@ export DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboar
 docker compose up -d postgres            # DB (host port 5433)
 npm run migrate -w ingest                # idempotent
 PORT=4002 npm run start -w ingest        # receiver+worker+scheduled backfill, all sources
-PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm     LEDGER_PATH=./out/ledger-crm.jsonl     npm run start -w mocks/crm
+PORT=4007 WEBHOOK_URL=http://localhost:4002/webhooks/hubcrm  LEDGER_PATH=./out/ledger-hubcrm.jsonl  npm run start -w mocks/hubcrm
+PORT=4006 npm run start -w mocks/stripefeed   # pull-only: the /v1/events feed is the interface
+PORT=4008 npm run start -w mocks/casebus      # pull-only: the /subscribe stream is the interface
 PORT=4003 WEBHOOK_URL=http://localhost:4002/webhooks/billing LEDGER_PATH=./out/ledger-billing.jsonl npm run start -w mocks/billing
 PORT=4004 WEBHOOK_URL=http://localhost:4002/webhooks/support LEDGER_PATH=./out/ledger-support.jsonl npm run start -w mocks/support
 ```
@@ -49,8 +51,8 @@ are derived artifacts; the build recreates them.
 ## Proofs (run these before trusting anything)
 
 ```bash
-./scripts/demo.sh    # end-to-end: 288 events, 3 sources → ledger=raw=journal equality → identity oracle → report
-./scripts/chaos.sh   # 600 events under seeded faults, all 3 sources → zero-loss reconciliation
+./scripts/demo.sh    # end-to-end on the faithful stack: hubcrm 300 ops + stripefeed 100 + casebus 80 + support 80 → four-paradigm reconcile → identity oracle → report
+./scripts/chaos.sh   # hubcrm 240 ops + billing/support 200 events under seeded faults → per-paradigm reconciliation
 ```
 Both are self-cleaning at start and fail loudly with counts on any mismatch.
 `demo.sh` also runs `scripts/verify-identity.ts`, which set-compares the dbt

@@ -31,7 +31,7 @@ export { BusReplayConnector, CASEBUS_SOURCE, type BusGap, type FallbackPreset } 
 // (Task B) is the third paradigm: an opaque-cursor envelope feed, same
 // construction-time base URL convention as sheets.
 const REGISTRY: Record<Source, () => Connector> = {
-  crm: () => new LedgerFeedConnector("crm"),
+  crm: () => new LedgerFeedConnector("crm"), // legacy lane — mock retired (F-1c), see sources.ts
   billing: () => new LedgerFeedConnector("billing"),
   support: () => new LedgerFeedConnector("support"),
   sheets: () => new SheetSnapshotConnector({ baseUrl: baseUrlFor("sheets") }),

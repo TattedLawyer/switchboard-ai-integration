@@ -63,7 +63,7 @@ describe("source registry", () => {
     // surfaces a snapshot source has no business in uninvited (it has no /events feed
     // to poll). Opting in via INGEST_SOURCES also makes WEBHOOK_SECRET_SHEETS a boot
     // requirement exactly where the source is actually on, and nowhere else.
-    expect(enabledSources()).toEqual(["crm", "billing", "support"]);
+    expect(enabledSources()).toEqual(["billing", "support"]); // F-1c: crm mock retired, no longer default-enabled
     process.env.INGEST_SOURCES = "crm, bogus ,support";
     expect(enabledSources()).toEqual(["crm", "support"]);
     process.env.INGEST_SOURCES = "crm,sheets";

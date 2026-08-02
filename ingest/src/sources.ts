@@ -13,6 +13,12 @@
 // port 4008, INGEST_SOURCES opt-in) and like them deliberately NOT default-enabled. It
 // lands ALONGSIDE the 2a support mock (risk rule: nothing rewritten in place; the
 // staging/warehouse switch is Task F's).
+// F-1c: the 2a crm MOCK is retired (hubcrm is the CRM; the warehouse stages from it).
+// The `crm` literal stays REGISTERED as a legacy ledger-feed lane: raw rows under it may
+// exist in deployed databases, many door/contract suites exercise the generic machinery
+// through it, and removing a Source is a wider spec change that rides the full 2a
+// retirement wave (billing/support mocks' own retirement — the register owns the line).
+// Nothing serves its port and it is no longer default-enabled.
 export const SOURCES = ["crm", "billing", "support", "sheets", "stripefeed", "hubcrm", "casebus"] as const;
 export type Source = (typeof SOURCES)[number];
 
@@ -41,7 +47,10 @@ export function baseUrlFor(source: Source): string {
 // the identical posture: registered, opt-in only, pull-only (a SUBSCRIBER, not a
 // receiver), and opting it in makes WEBHOOK_SECRET_CASEBUS a boot requirement for the
 // same armed-door reason.
-const DEFAULT_ENABLED: readonly Source[] = ["crm", "billing", "support"];
+// F-1c: `crm` left the default — its mock is deleted, so a default deployment polling
+// port 4001 would poll nothing forever. The faithful sources stay opt-in per their
+// documented deployment-surface posture; scripts pin INGEST_SOURCES explicitly.
+const DEFAULT_ENABLED: readonly Source[] = ["billing", "support"];
 
 // Which sources this deployment actually polls/reconciles. Scripts pin this explicitly;
 // code default is the feed trio (see above).
