@@ -201,6 +201,11 @@ docker compose up -d postgres
 DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard npm test
 ```
 
+The fifth paradigm — the spreadsheet-as-CDC connector — is deliberately not in
+`demo.sh`; its proof is its own oracle suite (with the database up, as above):
+`cd ingest && npx vitest run test/sheet-oracle.test.ts test/sheet-mart-oracle.test.ts`
+— drop-heavy convergence, blank-row tolerance, quarantine custody, and the mart joins.
+
 ### One pipeline, three verticals
 
 The core is vertical-agnostic by construction: no mart column is

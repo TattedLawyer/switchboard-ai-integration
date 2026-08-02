@@ -454,6 +454,16 @@ push channel is a latency hint only. These are the honest edges of that design.
   a fresh snapshot anyway). Receiver-only processes still host no runner and
   answer the honest 503; `WEBHOOK_SECRET_SHEETS` stays boot-asserted exactly
   when sheets ∈ `INGEST_SOURCES`.
+- **Blank-row tolerance is CONFIRMED — by the paradigm's own oracle, not by
+  demo integration (phase-close D3 decision, executed as researched).** Sheets
+  deliberately stays out of `demo.sh` (its anchors are the public front door's
+  regression tripwire, declared sacred by an explicit earlier decision; the
+  README now points at the one-command sheets oracle run instead). The
+  tolerance itself is proven where the paradigm is proven: a blank row ingests
+  CLEAN as a field-less upsert — fields absent per the contract's absence
+  rule, nothing quarantined (`ingest/test/sheet-oracle.test.ts`, M2) — and
+  stages with NULL amount/currency by design, counted and refused-not-summed
+  downstream (`ingest/test/sheet-mart-oracle.test.ts`).
 - **Closed:** the supersession counter (A4.1) — content-addressed ids made a
   human's *revert* a permanent duplicate (pipeline served B while the sheet said
   A, reconcile stale forever); re-sightings now salt the id with `-r<n>` derived
