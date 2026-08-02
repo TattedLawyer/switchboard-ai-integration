@@ -437,3 +437,14 @@ describe("F-1c emission ledger (chaos-port prerequisite)", () => {
     expect(store.emittedEvents().length).toBeGreaterThan(0); // and no throw — no path, no file
   });
 });
+
+describe("currency-clear sparsity (close F12 — fidelity to a validated portal)", () => {
+  it("over a fixture-scale run SOME deals lose currency (sparse-null coverage stays) but MOST live deals keep one — the pre-F12 round-robin blanked every staged deal eventually", () => {
+    const store = createHubStore({ seed: 42 });
+    store.simulate(300); // the ci-fixture/demo op count
+    const deals = store.list("deal");
+    const currencyless = deals.filter((d) => d.properties.currency === null);
+    expect(currencyless.length).toBeGreaterThan(0);
+    expect(currencyless.length).toBeLessThan(Math.ceil(deals.length * 0.25));
+  });
+});

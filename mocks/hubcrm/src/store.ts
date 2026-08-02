@@ -90,8 +90,9 @@ export interface HubStoreOptions {
 }
 
 export interface HubStore {
-  /** Run `count` deterministic script ops (creates, one-property changes incl. a currency
-   *  CLEAR, deletions); emitted events queue as pending until deliver(). */
+  /** Run `count` deterministic script ops (creates, one-property changes incl. a
+   *  once-per-five-cycles currency CLEAR — sparse by fidelity, see the slot-7 comment,
+   *  deletions); emitted events queue as pending until deliver(). */
   simulate(count: number): ThinEvent[];
   pending(): ThinEvent[];
   deliver(opts: DeliverOptions): Promise<DeliveryStats>;
@@ -276,8 +277,15 @@ export function createHubStore(opts: HubStoreOptions): HubStore {
   /** The 10-op script cycle. Slot 8 creates a deal and slot 9 deletes it — the
    *  creation event's hydration meets a 404 (deleted-before-fetch, the tombstone
    *  scenario) whenever both land in the same delivery run. Slot 7 CLEARS a deal's
-   *  currency (propertyValue null) so the sparse-null decision is exercised by every
-   *  seeded run, never only by a bespoke test. */
+   *  currency (propertyValue null) once per FIVE cycles so the sparse-null decision is
+   *  exercised by every seeded run, never only by a bespoke test — and only SOME deals
+   *  ever go currency-less (close F12, vendor-verified fidelity): HubSpot has
+   *  server-side validated deal_currency_code since July 2023, so a portal whose
+   *  round-robin eventually blanks EVERY deal's currency (the pre-F12 script — 30 of 30
+   *  fixture deals currency-less, 17/26 demo aggregates refusing with unknown-currency)
+   *  is not a shape a real validated portal exhibits. The refusal machinery is
+   *  untouched; the fix is upstream data fidelity. Off-cycles exercise the same
+   *  one-property change machinery on a working-data property instead. */
   let lastSlot8Deal: number | null = null;
   const step = (): ThinEvent[] => {
     const i = ops++;
@@ -336,7 +344,18 @@ export function createHubStore(opts: HubStoreOptions): HubStore {
       }
       case 7: {
         const d = target("deal");
-        out.push(d ? change("deal", d, "currency", null) : createObject("deal"));
+        if (!d) {
+          out.push(createObject("deal"));
+          break;
+        }
+        // Clear on cycles 2, 7, 12, … (cycle % 5 === 2); working-data change otherwise.
+        // Deterministic in i either way — see the slot comment above for the fidelity
+        // rationale (F12).
+        if (Math.floor(i / 10) % 5 === 2) {
+          out.push(change("deal", d, "currency", null));
+        } else {
+          out.push(change("deal", d, "pipeline_stage", `stage-${1 + (Math.floor(i / 10) % 4)}`));
+        }
         break;
       }
       case 8: {
