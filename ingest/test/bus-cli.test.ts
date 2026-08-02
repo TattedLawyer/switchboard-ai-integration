@@ -535,6 +535,60 @@ describe("the disclosure must survive the incident (cold review I1)", () => {
     expect(res.out).toMatch(/\[crm\] ledger duplicates[^\n]*: 0/);
   });
 
+  it("a reconcile-path gap INSERT failure is CONTAINED per source: standing state + a named FAIL for the thrown source, later sources still print, and record-before-report is unweakened — no report lines, no gap row (close F13, the A2 residue)", async () => {
+    const mock = createCasebusApp({ seed: 42 });
+    const baseUrl = listen(mock);
+    // One PRIOR recorded loss — the standing disclosure that must survive the incident.
+    await recordGap(pool, {
+      tenantId: DEFAULT_TENANT,
+      source: "casebus",
+      cause: "reset",
+      fromEventId: "evt_prior_loss",
+      fromOccurredAt: null,
+      toOccurredAt: null,
+    });
+    // Drive reconcile into its LIVE gap detection (the :538 arrangement): the cursor
+    // dies between backfill and reconcile, so reconcile itself must write the gap row…
+    mock.stream.emit(4, { ageS: 70 * 3600 });
+    await runCli("src/cli/backfill.ts", baseUrl);
+    mock.stream.emit(5);
+    mock.stream.advance(3 * 3600);
+    // …and the write fails: the exact A2-residue incident (a constraint/permission
+    // failure on the one INSERT, not an outage of the SELECTs the disclosure reads).
+    await pool.query(`
+      create function reject_gap_inserts() returns trigger language plpgsql as
+        $$ begin raise exception 'gap_ledger insert refused (test trigger)'; end $$;
+      create trigger t_reject_gap_inserts before insert on ingest.gap_ledger
+        for each row execute function reject_gap_inserts();
+    `);
+
+    const res = await runCli("src/cli/reconcile.ts", baseUrl, [], {
+      INGEST_SOURCES: "casebus,crm",
+      LEDGER_PATH_CRM: "/tmp/close1-f13-empty-ledger-does-not-exist.jsonl",
+    });
+
+    expect(res.code).toBe(1);
+    // The thrown source names its own failure mode (checklist line 5)…
+    expect(res.out).toMatch(/\[casebus\] FAIL: reconcile threw before returning a report/);
+    expect(res.out).toMatch(/gap_ledger insert refused \(test trigger\)/);
+    // …excluding its siblings' wording:
+    expect(res.out).not.toMatch(/reconciliation found discrepancies/);
+    expect(res.out).not.toMatch(/transient/i);
+    // The standing disclosure survives the throw (checklist line 4):
+    expect(res.out).toMatch(/PERMANENT DATA LOSS/);
+    expect(res.out).toContain("evt_prior_loss");
+    expect(res.out).toMatch(/UNACKNOWLEDGED/);
+    expect(res.out).toMatch(/gap-ack/);
+    // Record-before-report is UNWEAKENED: nothing was reported for the thrown source —
+    // no window/bucket lines — and no gap row was written for the failed detection.
+    expect(res.out).not.toMatch(/\[casebus\] retained window/);
+    const rows = await listGaps(pool, DEFAULT_TENANT, "casebus");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].fromEventId).toBe("evt_prior_loss");
+    // LATER sources still print — the class this fix exists to kill:
+    expect(res.out).toMatch(/\[crm\] PASS/);
+  });
+
   it("a gap detected DURING the run is labelled as such, so 'standing' means what it says", async () => {
     const mock = createCasebusApp({ seed: 42 });
     const baseUrl = listen(mock);

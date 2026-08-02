@@ -102,25 +102,21 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
-    for (const source of enabledSources()) {
-      const connector = connectorForTenant(source, tenantId);
-
-      // Which losses were already on the record BEFORE this run. Taken as ids rather than
-      // by comparing timestamps because `detected_at` is the DATABASE clock and this is
-      // the app clock; an id-set diff needs no clock at all.
-      const priorGapIds = new Set((await listGaps(pool, tenantId, source)).map((g) => g.id));
-
-      const result = await connector.reconcile(pool);
-
-      // ── the durable disclosure, printed BEFORE any degraded-path exit ──────────────
-      //
-      // Cold review I1: this read used to sit below the `skipped` and `!integrity.ok`
-      // continues, so a source that was unreachable or unreadable printed its live
-      // failure and NOTHING about the permanent losses already on its record — at exactly
-      // the moment an operator is reading this output. The gate still held (exit nonzero),
-      // but the disclosure is the point of the ledger: a row nobody prints is a row nobody
-      // acts on. A standing loss is a fact about the past; it is not contingent on whether
-      // the source answered the phone today.
+    // ── the durable disclosure, printed BEFORE any degraded-path exit ────────────────
+    //
+    // Cold review I1: this read used to sit below the `skipped` and `!integrity.ok`
+    // continues, so a source that was unreachable or unreadable printed its live
+    // failure and NOTHING about the permanent losses already on its record — at exactly
+    // the moment an operator is reading this output. The gate still held (exit nonzero),
+    // but the disclosure is the point of the ledger: a row nobody prints is a row nobody
+    // acts on. A standing loss is a fact about the past; it is not contingent on whether
+    // the source answered the phone today. Hoisted to a helper at close (F13) so the
+    // per-source CATCH below discloses the identical record when reconcile() throws —
+    // one shape, two callers, the two outputs cannot drift (checklist line 6).
+    const discloseStandingGaps = async (
+      source: Source,
+      priorGapIds: Set<number>,
+    ): Promise<{ ledgerGaps: Awaited<ReturnType<typeof listGaps>>; unacknowledged: Awaited<ReturnType<typeof listGaps>> }> => {
       const ledgerGaps = await listGaps(pool, tenantId, source);
       const unacknowledged = ledgerGaps.filter((g) => g.acknowledgedAt === null);
       if (ledgerGaps.length > 0) {
@@ -145,6 +141,46 @@ async function main(): Promise<void> {
             "accepted the loss, record it:\n" +
             `  node --import tsx src/cli/gap-ack.ts --source ${source} --id <n> --by <operator> --note "why"${tenantFlag}`,
         );
+      }
+      return { ledgerGaps, unacknowledged };
+    };
+
+    for (const source of enabledSources()) {
+      const connector = connectorForTenant(source, tenantId);
+
+      // Which losses were already on the record BEFORE this run. Taken as ids rather than
+      // by comparing timestamps because `detected_at` is the DATABASE clock and this is
+      // the app clock; an id-set diff needs no clock at all.
+      const priorGapIds = new Set((await listGaps(pool, tenantId, source)).map((g) => g.id));
+
+      // Close F13 (the A2 residue): a throw out of reconcile() — deliberately including
+      // the fail-loud gap_ledger INSERT failure (A2's record-before-report verdict, kept:
+      // the connector must never report a loss it could not record) — used to land in
+      // this CLI's top-level catch and kill the run before LATER sources printed their
+      // standing state: disclosure-dies-during-an-incident, through the database door.
+      // A1's per-source containment shape, applied to the write path: the throw is
+      // contained to this source, its standing record is still disclosed (from the
+      // ledger the SELECTs can still read — an INSERT failure is not an outage of them),
+      // its live read is voided loudly, and the loop continues.
+      let result;
+      try {
+        result = await connector.reconcile(pool);
+      } catch (err) {
+        const { unacknowledged } = await discloseStandingGaps(source, priorGapIds);
+        if (unacknowledged.length > 0) allClean = false;
+        console.log(
+          `[${source}] FAIL: reconcile threw before returning a report — ` +
+            `${err instanceof Error ? err.message : String(err)}. Nothing was reported for this ` +
+            "source and no gap row was written by the failed detection (record-before-report); " +
+            "the standing record above is the durable ledger's. Later sources continue.",
+        );
+        reconciledCount++;
+        allClean = false;
+        continue;
+      }
+
+      const { ledgerGaps, unacknowledged } = await discloseStandingGaps(source, priorGapIds);
+      if (unacknowledged.length > 0) {
         // The gate is the ledger's, not the live read's: an unacknowledged permanent loss
         // reds the run even when this source was skipped or unreadable this time.
         allClean = false;

@@ -683,22 +683,19 @@ leaves it is gone from the source forever.
   behavior was the correct behavior. Now remarked at both `recordGap` sites in
   `bus-replay.ts` and pinned in `bus-replay.test.ts`: insert fails ⇒ run
   fails, cursor not advanced, no gap row; the next healthy run re-detects.
-- **A2 residue — the RECONCILE-path `recordGap` throw still suppresses later
-  sources' disclosures.** Mechanism: a gap_ledger insert failure inside
-  `BusReplayConnector.reconcile()` (the live-gap detection block,
-  `bus-replay.ts`) throws out of `reconcile()` — deliberate fail-loud for the
-  write itself (A2's verdict; a DB write failure is not source transport) —
-  but the reconcile CLI's standing-loss disclosure block runs *after*
-  `reconcile()` returns, so the throw lands in the CLI's top-level catch and
-  kills the run before LATER sources print their standing state: the same
-  disclosure-dies-during-an-incident class A1 fixed for probe failures,
-  through the database door. Blast radius is bounded (exit 1, nothing
-  half-written, and a gap_ledger insert failure usually means the same DB the
-  disclosure reads would fail too — but not always: a constraint or
-  permission error on the one INSERT is not an outage of the SELECTs).
-  Commented at the site. *Owner: phase-2b close* (no earlier slice owns
-  `bus-replay.ts` again; the fix wants A1's per-source containment shape
-  applied to the write path without weakening A2's record-before-report rule).
+- ~~A2 residue — the RECONCILE-path `recordGap` throw still suppresses later
+  sources' disclosures~~ *Paid (phase-2b close, F13):* A1's per-source
+  containment shape now wraps `connector.reconcile()` in the CLI — a throw
+  (deliberately including the fail-loud gap INSERT failure, A2's verdict kept:
+  the connector never reports a loss it could not record) is contained to its
+  source, which still discloses its standing ledger record (an INSERT failure
+  is not an outage of the SELECTs), voids its live read with a named FAIL, and
+  lets every later source print. The disclosure block was hoisted into one
+  helper used by both the normal path and the catch, so the two outputs cannot
+  drift. Pinned both directions in `bus-cli.test.ts` (trigger-forced INSERT
+  failure: standing loss + named FAIL + later source's PASS all print, exit 1,
+  no report lines for the thrown source, no gap row written; RED shown first —
+  the shipped CLI died at its top-level catch with later sources silent).
 
 ### Deferred minors from the debt-burn cold pass and Task E (each carries an owner, or is a disclosed standing limit)
 
