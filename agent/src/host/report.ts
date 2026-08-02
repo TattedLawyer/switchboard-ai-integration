@@ -83,6 +83,13 @@ export async function generateMondayReport(
     // money() already refuses the figure; the Flags cell must name the refusal instead of
     // contradicting it with "ok" — and the watch list must carry the entity.
     if (a["has_mixed_currency"] === true) f.push("mixed currencies — totals refused");
+    // Wave 5 (Task G): the Unlikely Value counters land WITH their consumption — a mart
+    // term shipped in the same task is never the catch-all's to cover. One message with
+    // the COMPLETE payment+invoice count (the I1 lesson: a preempting branch must tell
+    // the whole truth), in its own words (checklist line 5 — no sibling cause borrowed).
+    const unlikelyRows = num(a, "unlikely_amount_payment_count") + num(a, "unlikely_amount_invoice_count");
+    if (unlikelyRows > 0)
+      f.push(`${unlikelyRows} implausibly large amount(s): ${num(a, "unlikely_amount_payment_count")} payment / ${num(a, "unlikely_amount_invoice_count")} invoice`);
     // CATCH-ALL (the structural fix — three rounds of this defect class prove the report's
     // component enumeration will always lag the mart): after all specific checks, any
     // FUTURE OR-term added to the mart's has_data_warnings reaches the watch list here

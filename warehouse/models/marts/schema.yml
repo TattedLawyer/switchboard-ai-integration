@@ -52,12 +52,32 @@ models:
       - name: csat_score_count
         description: Count of usable (non-NULL) CSAT scores — the base size under avg_csat (F3 addendum).
         data_tests: [not_null]
+      - name: unlikely_amount_payment_count
+        description: >
+          Payment rows whose amount exceeds the contract's plausible ceiling (Kimball
+          Unlikely Value flag, Wave 5) — the row-grain is_unlikely_amount from
+          stg_billing__payments, entity-rolled. Flagged for human attention, never
+          refused: the amounts stay in every figure. Bound from the emitted
+          numeric_bounds seed, consistency-pinned to the contract.
+        data_tests: [not_null]
+      - name: unlikely_amount_invoice_count
+        description: >
+          Invoice rows whose amount exceeds the contract's plausible ceiling — same
+          Unlikely Value machinery as the payment counter, invoice side
+          (stg_billing__invoices.is_unlikely_amount). Flagged, never refused.
+        data_tests: [not_null]
       - name: has_data_warnings
         description: >
           Kimball audit-dimension coarse warning (Design Tip #164) — true when ANY honesty
-          signal fired (unusable amounts, mixed or unknown currency, unusable CSAT scores):
-          a tread-cautiously indicator, not a diagnosis; the specific columns are the why.
-          Kimball's Data Supplied Flag is deliberately absent — switchboard refuses, never
-          imputes. An Unlikely Value flag (plausibleMax at row grain) is a registered
-          follow-up, currently only a dbt warn test.
+          signal fired (unusable amounts, mixed or unknown currency, unusable CSAT scores,
+          unlikely amounts): a tread-cautiously indicator, not a diagnosis; the specific
+          columns are the why. Of Kimball's canonical audit flags: the Unlikely Value flag
+          is LIVE since Wave 5 (unlikely_amount_* counters, row grain in staging); the
+          Data Supplied flag is deliberately absent — switchboard refuses instead of
+          imputing, and the refusal is enforced by assert_no_mixed_currency_totals plus
+          the L5/L3 pins in mart-currency.test.ts and mart-missing-vs-zero.test.ts, so an
+          imputation-disclosure flag would be dead surface; the Out-of-Bounds flag is
+          deliberately absent at mart grain — out-of-bounds values cannot reach the mart
+          (L1 door quarantine), and the invariant tests assert_csat_in_scale +
+          assert_amounts_non_negative red the build if that enforcement decays.
         data_tests: [not_null]

@@ -105,13 +105,19 @@ billing as (
            sum(i.amount_cents)                     as total_invoiced_cents,
            sum(i.amount_cents) filter (where i.status = 'paid') as total_paid_cents,
            count(distinct i.invoice_id) filter (where i.status = 'created')    as open_invoice_count,
-           count(*) filter (where i.invoice_id is not null and i.amount_cents is null) as null_amount_invoice_count
+           count(*) filter (where i.invoice_id is not null and i.amount_cents is null) as null_amount_invoice_count,
+           -- Wave 5: rows the staging Unlikely Value flag marked (above the contract's
+           -- plausible ceiling, via the emitted numeric_bounds seed). The filter is
+           -- NULL-safe on the LEFT JOIN's null-extended no-invoice row.
+           count(*) filter (where i.is_unlikely_amount) as unlikely_amount_invoice_count
     from billing_link bl
     left join {{ ref('stg_billing__invoices') }} i on i.customer_id = bl.customer_id
     group by bl.entity_id
 ),
 payments as (
-    select bl.entity_id, count(*) filter (where p.status = 'failed') as failed_payment_count
+    select bl.entity_id, count(*) filter (where p.status = 'failed') as failed_payment_count,
+           -- Wave 5: same Unlikely Value roll-up as the billing CTE, payment side.
+           count(*) filter (where p.is_unlikely_amount) as unlikely_amount_payment_count
     from billing_link bl
     join {{ ref('stg_billing__payments') }} p on p.customer_id = bl.customer_id
     group by bl.entity_id
@@ -229,11 +235,25 @@ select
     -- is its base size and null_score_count discloses how many rows the average skipped.
     coalesce(c.null_score_count, 0)        as null_score_count,
     coalesce(c.csat_score_count, 0)        as csat_score_count,
+    -- Wave 5 (Task G): Kimball's Unlikely Value flag, entity-rolled — rows whose amounts
+    -- exceed the contract's plausible ceiling (flag derived at row grain in staging from
+    -- the emitted numeric_bounds seed). Flagged for human attention, NEVER refused: the
+    -- amounts stay in every sum above (pinned — flagged-is-not-refused, mart-currency).
+    coalesce(p.unlikely_amount_payment_count, 0) as unlikely_amount_payment_count,
+    coalesce(b.unlikely_amount_invoice_count, 0) as unlikely_amount_invoice_count,
     -- Kimball Design Tip #164 (audit dimension): ONE coarse warning — "tread cautiously" —
     -- with the precise columns above as the why. The OR of every honesty signal; extend it
     -- when a new signal lands (each trigger is pinned independently in mart-currency tests,
-    -- so forgetting fails CI). Kimball's Data Supplied Flag is deliberately absent:
-    -- switchboard never imputes, it refuses — there is no estimator to disclose.
+    -- so forgetting fails CI). Of Kimball's canonical audit flags: the Unlikely Value
+    -- flag is LIVE since Wave 5 (the unlikely_amount_* terms below); the Data Supplied
+    -- flag is deliberately absent — switchboard never imputes, it refuses, and the
+    -- refusal is enforced machinery, not a slogan (assert_no_mixed_currency_totals +
+    -- the L5 refusal pins in mart-currency.test.ts; the L3 missing-is-not-zero pins in
+    -- mart-missing-vs-zero.test.ts) — an imputation-disclosure flag with no imputer
+    -- would be dead surface; the Out-of-Bounds flag is deliberately absent AT THIS
+    -- GRAIN because out-of-bounds values cannot REACH the mart — the ingest door
+    -- quarantines them (L1) and the invariant tests assert_csat_in_scale +
+    -- assert_amounts_non_negative red the build if that enforcement ever decays.
     (   (coalesce(d.null_amount_deal_count, 0) + coalesce(b.null_amount_invoice_count, 0)
           + coalesce(sh.null_amount_sheet_count, 0)) > 0
      or coalesce(b.billing_currency_is_mixed, false) or coalesce(d.deal_currency_is_mixed, false)
@@ -241,6 +261,8 @@ select
      or coalesce(b.null_currency_invoice_rows, 0) > 0 or coalesce(d.null_currency_deal_rows, 0) > 0
      or coalesce(sh.null_currency_sheet_rows, 0) > 0
      or coalesce(c.null_score_count, 0) > 0
+     or coalesce(p.unlikely_amount_payment_count, 0) > 0
+     or coalesce(b.unlikely_amount_invoice_count, 0) > 0
     )                                      as has_data_warnings
 from entities e
 left join deals d    on d.entity_id = e.entity_id

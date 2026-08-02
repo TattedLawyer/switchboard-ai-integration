@@ -71,6 +71,10 @@ const HEALTH_COLUMNS = [
   "sheet_currency",
   "null_amount_sheet_count",
   "null_currency_sheet_count",
+  // Wave 5 (Task G): the Unlikely Value counters — the precise "why" behind the
+  // has_data_warnings term they feed (flagged for attention, never refused).
+  "unlikely_amount_payment_count",
+  "unlikely_amount_invoice_count",
 ].join(", ");
 
 export function createMcpServer(pool: pg.Pool): McpServer {
