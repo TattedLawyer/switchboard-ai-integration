@@ -739,13 +739,14 @@ leaves it is gone from the source forever.
   The cross-check is honest for stripefeed and self-consistent-by-construction
   for the bus; either give the bus arm an independent derivation or narrow the
   printed claim to the stripefeed arm. *Owner: phase-2b close.*
-- **A gap recorded on a source later removed from the SOURCES registry is
-  listable but unacknowledgeable** — the debt-burn listing fix made such gaps
-  visible (flagged as not-currently-enabled), but `gap-ack --source <removed>`
-  refuses at the `isSource` gate before reaching the ledger, so the loss can
-  be seen and never accepted. The acknowledgement path needs the same
-  record-over-config scoping the listing got. *Owner: phase-2b close, with
-  the other CLI-scoping residue.*
+- ~~A gap recorded on a source later removed from the SOURCES registry is
+  listable but unacknowledgeable~~ *Paid (phase-2b close, F9):* the `isSource`
+  gate in `gap-ack` now falls back to the RECORDED ledger — a `--source` with
+  gap rows for the tenant is a source of record whatever the registry says
+  today, so the loss can be listed under its name AND accepted; only a source
+  unknown to BOTH the registry and the ledger refuses as a typo. Pinned in
+  `bus-cli.test.ts` (removed-source gap acknowledged end to end; typo still
+  refused; RED shown first).
 - ~~A well-formed but unknown `--tenant` UUID silently PASSes~~ *Paid (phase-2b
   close, F8):* an EXPLICITLY named tenant with zero rows across every
   tenant-scoped table now refuses on both CLIs with shared wording — "no

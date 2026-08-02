@@ -385,6 +385,39 @@ describe("operator-CLI scoping (debt-burn A5): recorded state over configured sc
     expect(bRun.out).toMatch(/gap-ack/);
   });
 
+  it("a gap recorded on a source REMOVED from the SOURCES registry is listable AND acknowledgeable — record outranks config on the ack path, as the listing already got; a source unknown to BOTH stays refused (close F9)", async () => {
+    const baseUrl = listen(createCasebusApp({ seed: 42 }));
+    // A loss recorded under a source that is no longer (or never was) a registry
+    // literal — the exact row the isSource gate made visible-but-unacceptable.
+    await recordGap(pool, {
+      tenantId: DEFAULT_TENANT,
+      source: "zendesk",
+      cause: "retention",
+      fromEventId: "evt_removed_source_loss",
+      fromOccurredAt: null,
+      toOccurredAt: null,
+    });
+
+    // Listing narrowed BY the removed source works (record over config)…
+    const list = await runCli("src/cli/gap-ack.ts", baseUrl, ["--list", "--source", "zendesk"]);
+    expect(list.code).toBe(0);
+    expect(list.out).toContain("evt_removed_source_loss");
+
+    // …and the loss can be ACCEPTED, not just seen.
+    const gapId = (await listGaps(pool, DEFAULT_TENANT, "zendesk"))[0].id;
+    const acked = await runCli("src/cli/gap-ack.ts", baseUrl, [
+      "--source", "zendesk", "--id", String(gapId), "--by", "oncall", "--note", "vendor lane retired; loss accepted",
+    ]);
+    expect(acked.code).toBe(0);
+    expect(acked.out).toMatch(/acknowledged gap #/);
+    expect((await listGaps(pool, DEFAULT_TENANT, "zendesk"))[0].acknowledgedAt).not.toBeNull();
+
+    // A source unknown to BOTH the registry and the recorded ledger is still a typo — refused.
+    const typo = await runCli("src/cli/gap-ack.ts", baseUrl, ["--list", "--source", "zendeks"]);
+    expect(typo.code).toBe(1);
+    expect(typo.out).toMatch(/unknown source/);
+  });
+
   it("a WELL-FORMED but UNKNOWN --tenant refuses on BOTH CLIs with 'no recorded state' — never a clean PASS or an empty listing indistinguishable from health (close F8)", async () => {
     const mock = createCasebusApp({ seed: 42 });
     const baseUrl = listen(mock);

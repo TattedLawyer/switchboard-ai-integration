@@ -64,10 +64,24 @@ async function main(): Promise<void> {
     }
     const source = arg("source");
     if (source !== undefined && !isSource(source)) {
-      console.error(`unknown source: ${source}`);
-      console.error(USAGE);
-      await pool.end();
-      process.exit(1);
+      // Record over config on the ACK path too (close F9): the listing learned this in
+      // debt-burn A5, but the isSource gate here still made a loss on a source since
+      // removed from the registry visible-but-unacceptable — seen forever, accepted
+      // never. A source with recorded gap rows for this tenant is a real source of
+      // record whatever the registry says today; only a source unknown to BOTH the
+      // registry AND the recorded ledger is a typo, and refuses as before.
+      const recorded = await pool.query(
+        "select 1 from ingest.gap_ledger where tenant_id = $1 and source = $2 limit 1",
+        [tenantId, source],
+      );
+      if (recorded.rowCount === 0) {
+        console.error(
+          `unknown source: ${source} — not in the SOURCES registry, and no gap is recorded under it for this tenant`,
+        );
+        console.error(USAGE);
+        await pool.end();
+        process.exit(1);
+      }
     }
 
     if (has("list") || (!has("id") && !has("by"))) {
