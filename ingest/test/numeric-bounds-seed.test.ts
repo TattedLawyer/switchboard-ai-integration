@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -90,6 +90,30 @@ describe("no warehouse SQL re-types a contract bound (the hand-copy class is clo
       const sql = warehouseText(p);
       expect(sql, p).toContain("ref('numeric_bounds')");
       expect(sql, p).not.toContain("99999999");
+    }
+  });
+
+  it("NO .sql anywhere under warehouse/ re-types a bound literal — tree-wide sweep, so a NEW model cannot reopen the hand-copy class (close F6; the named-file checks above pin the positive shape, this pins the whole tree's negative)", () => {
+    // target/ holds dbt's COMPILED copies of these same files (a legitimate literal there
+    // is just the seed's own rendering); everything else under warehouse/ is source text.
+    const skipDirs = new Set(["target", "logs", "dbt_packages"]);
+    const sqlFiles: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          if (!skipDirs.has(entry.name)) walk(join(dir, entry.name));
+        } else if (entry.name.endsWith(".sql")) {
+          sqlFiles.push(join(dir, entry.name));
+        }
+      }
+    };
+    walk(WAREHOUSE_DIR);
+    // The sweep must be sweeping something, or a moved directory turns it vacuous.
+    expect(sqlFiles.length).toBeGreaterThanOrEqual(15);
+    for (const p of sqlFiles) {
+      const sql = readFileSync(p, "utf8");
+      expect(sql, `${p} re-types the plausibleMax literal — join ref('numeric_bounds') instead`).not.toContain("99999999");
+      expect(sql, `${p} re-types the csat scale — read the seed's scale bounds instead`).not.toMatch(/between\s+1\s+and\s+5/i);
     }
   });
 });
