@@ -4,9 +4,9 @@
 -- record minted as the result — neither input survives under its own object id).
 --
 -- BOTH inputs map to the survivor: every id in mergedObjectIds AND primaryObjectId gets
--- an edge toward newObjectId, so the walk strands no id — the winner's old record is as
--- consumed as the merged-away one (its snapshot goes 404-stale; the survivor carries
--- hs_merged_object_ids naming both).
+-- an edge toward newObjectId — the winner's old record is as consumed as the merged-away
+-- one (its snapshot goes 404-stale; the survivor carries hs_merged_object_ids naming
+-- both).
 --
 -- TRANSLATION (same commit as the staging identity decision — stg_crm__companies.sql):
 -- staging keys companies by hs_manifest_id, so edges are TRANSLATED from the event's
@@ -15,10 +15,20 @@
 --   · the winner's translated edge is a SELF-edge (its business key IS the survivor's)
 --     and is excluded — a self-edge would read as a cycle to the walk's guard while
 --     saying nothing; the id it "maps" is already terminal.
---   · a consumed object that was never hydrated while alive has no snapshot and thus no
---     translatable edge — and by the same token it never staged, so no walk starts
---     there and nothing strands. (The fixture/demo pump cadence hydrates every object
---     within its creation cycle, so in the shipped compositions every edge translates.)
+--   · a missing snapshot drops the untranslatable edge, and THE TWO SIDES ARE NOT
+--     SYMMETRIC (cold review I-3 corrected this header's earlier "strands no id"
+--     claim, which argued only one of them):
+--       CONSUMED side — harmless by construction: an object never hydrated while alive
+--       never staged, so no walk starts there and nothing strands;
+--       SURVIVOR side — harmful and NOT self-limiting: if newObjectId has no
+--       translatable snapshot (hydration DLQ'd; tombstone-only), this model drops the
+--       merge's edges while both consumed companies KEEP staging from their pre-merge
+--       snapshots as two separate stale canonicals. That named degraded state is
+--       therefore a RED BUILD, not a silence: tests/assert_merge_survivors_translate.sql
+--       fails on any company.merge event whose survivor cannot translate. Repair (the
+--       DLQ'd hydration re-armed) shares the register's reconcile-driven-repair line —
+--       see KNOWN-ISSUES. (The fixture/demo pump cadence hydrates every object within
+--       its creation cycle, so the shipped compositions never enter this state.)
 --
 -- Still derived, deterministic, batch-recomputed over the full raw SET every build
 -- (raw is never rewritten), and still one edge per from_id: latest merge event wins by

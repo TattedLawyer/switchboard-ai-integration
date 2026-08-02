@@ -179,7 +179,7 @@ while (( $(date +%s) - settle_start < SETTLE_TIMEOUT_S )); do
   sleep 1
 done
 $settled || { echo "FAIL: push-path did not settle within ${SETTLE_TIMEOUT_S}s (raw=$(raw_count) pending=$(queue_pending): $(queue_breakdown))"; exit 1; }
-echo "    settled: raw=$(raw_count) queue_pending=$(queue_pending) (ledgers: crm=$(ledger_line_count "$LEDGER_PATH_CRM") billing=$(ledger_line_count "$LEDGER_PATH_BILLING") support=$(ledger_line_count "$LEDGER_PATH_SUPPORT") events emitted by simulate)"
+echo "    settled: raw=$(raw_count) queue_pending=$(queue_pending) (ledgers: hubcrm=$(ledger_line_count "$LEDGER_PATH_HUBCRM") billing=$(ledger_line_count "$LEDGER_PATH_BILLING") support=$(ledger_line_count "$LEDGER_PATH_SUPPORT") events emitted by simulate)"
 
 if [[ "$SKIP_BACKFILL" == "1" ]]; then
   echo "6/8 SKIPPED (CHAOS_SKIP_BACKFILL=1) — leaving dropped events unrecovered and hubcrm un-hydrated on purpose"
