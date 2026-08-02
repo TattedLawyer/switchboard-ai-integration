@@ -134,14 +134,19 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   as a space — in BOTH languages (shared `normalizeCompanyName` in mocks/core;
   identical SQL expression in `identity_resolution.sql`), vector-pinned in
   `ingest/test/normalizer-vectors.test.ts`.
-- **Email evidence is byte-exact, and the arms disagree on even that** *(cold
-  review M-3; Task F normalized names/domains, deliberately not emails)*.
-  Tier-1 joins raw email strings verbatim (support `SuppliedEmail`, billing
-  `email`, `crm_emails`) while the sheets arm lower-trims — so a real-world
-  `John@Acme.example.com` intake under-merges to manual review rather than resolving.
-  Conservative direction, carried over from 2a, but the asymmetry is real and
-  this file previously read as if normalization here were "paid." Owner:
-  **phase-2b close (identity-quality pass)**.
+- ~~Email evidence is byte-exact, and the arms disagree on even that~~ *(cold
+  review M-3)* *Paid (phase-2b close, F15 — the promised identity-quality
+  pass):* one shared rule at every email evidence edge —
+  `nullif(lower(trim(email)), '')` in `identity_resolution.sql` (crm_emails +
+  billing/support source_entities arms; sheets always had it) with the TS half
+  `normalizeEmail` in mocks/core — vector-pinned like the name normalizer
+  (`EMAIL_NORMALIZATION_VECTORS`, end-to-end tier-1 per vector in BOTH join
+  directions, RED shown first: mixed-case under-merged on the shipped SQL).
+  Deliberate scope: lower-trim only — SMTP's case-sensitive-local-part edge is
+  accepted (a collision routes to manual-review tiers, never a silent merge,
+  and the pre-fix under-merge of ordinary mixed-case mail was the larger real
+  error); no plus-tag/dot aliasing rules, which are provider-specific and
+  would manufacture false merges.
 - **TS↔SQL normalizer divergence outside the pinned vectors** *(cold review
   M-4)*. JS `\s` matches the full Unicode space class; Postgres `\s` is
   effectively `[[:space:]]` — a name carrying e.g. an em-space collapses in TS

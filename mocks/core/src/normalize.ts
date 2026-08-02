@@ -69,3 +69,30 @@ export function normalizeCompanyName(raw: string): string {
 export function normalizeDomain(raw: string): string {
   return raw.toLowerCase().replace(/^www\./, "");
 }
+
+/** The pinned email vectors (close F15 — the identity-quality pass). Each is a
+ *  real-world intake shape the byte-exact tier-1 join under-merged to manual review:
+ *  mixed case from a human typing a form, whitespace from a copy-paste. */
+export const EMAIL_NORMALIZATION_VECTORS: readonly NormalizationVector[] = [
+  { label: "mixed-case local part + domain (the M-3 example)", input: "John@Acme.example.com", expected: "john@acme.example.com" },
+  { label: "surrounding whitespace (copy-paste intake)", input: "  ops@ridge.example.com ", expected: "ops@ridge.example.com" },
+  { label: "already normal — the rule is idempotent", input: "amy@summit.example.com", expected: "amy@summit.example.com" },
+];
+
+/** Normalize an email for identity comparison (close F15): lower-trim, the rule the
+ *  sheets arm always applied, now THE shared rule for every evidence arm. MUST stay
+ *  semantically identical to the SQL expression in identity_resolution.sql —
+ *  nullif(lower(trim(email)), '') at every email evidence edge; the per-vector
+ *  agreement pins in ingest/test/normalizer-vectors.test.ts red on drift.
+ *
+ *  Deliberate scope note (labeled inference, recorded with the fix): SMTP permits
+ *  case-SENSITIVE local parts, so two distinct real mailboxes could in principle
+ *  collide under lowering — but such a collision lands in evidence tiers that route
+ *  ambiguity to manual review rather than silently merging, and the pre-fix state
+ *  (ordinary mixed-case emails under-merging to manual review) was the larger real
+ *  error. No plus-tag stripping, no dot-collapsing: those are provider-specific
+ *  aliasing rules, not case normalization, and inventing them would manufacture
+ *  false merges. */
+export function normalizeEmail(raw: string): string {
+  return raw.trim().toLowerCase();
+}

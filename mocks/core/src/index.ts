@@ -1,8 +1,10 @@
 export { prng } from "./prng.js";
 export {
   NORMALIZATION_VECTORS,
+  EMAIL_NORMALIZATION_VECTORS,
   normalizeCompanyName,
   normalizeDomain,
+  normalizeEmail,
   type NormalizationVector,
 } from "./normalize.js";
 export {

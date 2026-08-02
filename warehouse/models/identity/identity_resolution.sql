@@ -17,9 +17,15 @@ crm_emails as (
     -- Both arms are LATEST-STATE staging views (L2-G7): owner_email comes from
     -- stg_crm__companies, never a raw full-history scan — a replaced owner email must age
     -- out with the state that carried it, not remain tier-1 evidence forever.
-    select email, company_id from {{ ref('stg_crm__contacts') }}
+    -- Close F15 (identity-quality pass): ONE shared email rule at EVERY evidence edge —
+    -- nullif(lower(trim(email)), '') — this CTE and every source_entities arm (the
+    -- sheets arm always had it). Tier-1 joins used to be byte-exact here, so a
+    -- real-world mixed-case intake under-merged to manual review. TS half:
+    -- normalizeEmail in mocks/core/src/normalize.ts (change both or neither —
+    -- ingest/test/normalizer-vectors.test.ts pins the pair per email vector).
+    select nullif(lower(trim(email)), '') as email, company_id from {{ ref('stg_crm__contacts') }}
     union
-    select owner_email as email, company_id
+    select nullif(lower(trim(owner_email)), '') as email, company_id
     from {{ ref('stg_crm__companies') }}
     where owner_email is not null
 ),
@@ -81,10 +87,14 @@ sheets_clients as (
     order by client_key, detected_at desc, received_at desc, row_key desc
 ),
 source_entities as (
-    select 'billing' as source, customer_id as source_entity_id, email, domain, name
+    -- Email evidence normalized per the shared F15 rule (see crm_emails); the sheets
+    -- arm's rows arrive already normalized by sheets_clients above.
+    select 'billing' as source, customer_id as source_entity_id,
+           nullif(lower(trim(email)), '') as email, domain, name
     from {{ ref('stg_billing__customers') }}
     union all
-    select distinct 'support', requester_id, requester_email, domain, company_name
+    select distinct 'support', requester_id,
+           nullif(lower(trim(requester_email)), ''), domain, company_name
     from {{ ref('stg_support__tickets') }}
     union all
     select 'sheets', client_key, email, domain, name from sheets_clients

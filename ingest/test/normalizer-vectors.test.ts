@@ -154,3 +154,61 @@ describe("tier-2 end-to-end per vector: RAW company name vs NORMALIZED entity na
     },
   );
 });
+
+// ── Close F15: the shared EMAIL rule, vector-pinned like the name normalizer ────────────
+//
+// Tier-1 email joins were byte-exact (support SuppliedEmail, billing email, crm_emails)
+// while the sheets arm lower-trimmed — a real-world "John@Acme.example.com" intake
+// under-merged to manual review instead of resolving. One rule now, at every evidence
+// edge: nullif(lower(trim(email)), '') in SQL, normalizeEmail (lower-trim) in TS.
+
+import { EMAIL_NORMALIZATION_VECTORS, normalizeEmail } from "@switchboard/mock-core";
+
+describe("pinned email vectors — TS side (normalizeEmail, the shared rule's TS half)", () => {
+  it.each(EMAIL_NORMALIZATION_VECTORS)("$label: $input → $expected", ({ input, expected }) => {
+    expect(normalizeEmail(input)).toBe(expected);
+  });
+});
+
+describe("tier-1 end-to-end per email vector: a RAW-variant email on EITHER side of the join still resolves tier 1 — both email evidence edges run the shared rule (close F15)", () => {
+  beforeEach(createFixtures);
+
+  it.each(EMAIL_NORMALIZATION_VECTORS)(
+    "$label: raw variant on the ENTITY side ('$input') tier-1 matches a normal CRM email",
+    async ({ input, expected }) => {
+      await pool.query("insert into tmp_ir_companies values ('C-1', 'Acme Group', 'acme.example.com', 'C-1')");
+      await pool.query("insert into tmp_ir_crm_emails values ($1, 'C-1')", [expected]);
+      await pool.query(
+        "insert into tmp_support_tickets values ('R-1', $1, 'nowhere.example.com', 'Some Unrelated Name')",
+        [input],
+      );
+      const rows = (await pool.query(RESOLUTION_SQL)).rows.filter(
+        (r) => r.source === "support" && r.source_entity_id === "R-1",
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].matched_tier).toBe(1);
+      expect(rows[0].resolved_entity_id).toBe("C-1");
+      // The evidence string carries the NORMALIZED form — auditable, and proof the rule
+      // ran at the edge rather than the join getting lucky.
+      expect(rows[0].match_evidence).toBe(`email=${expected}`);
+    },
+  );
+
+  it.each(EMAIL_NORMALIZATION_VECTORS)(
+    "$label: raw variant on the CRM side ('$input') tier-1 matches a normal entity email",
+    async ({ input, expected }) => {
+      await pool.query("insert into tmp_ir_companies values ('C-1', 'Acme Group', 'acme.example.com', 'C-1')");
+      await pool.query("insert into tmp_ir_crm_emails values ($1, 'C-1')", [input]);
+      await pool.query(
+        "insert into tmp_support_tickets values ('R-1', $1, 'nowhere.example.com', 'Some Unrelated Name')",
+        [expected],
+      );
+      const rows = (await pool.query(RESOLUTION_SQL)).rows.filter(
+        (r) => r.source === "support" && r.source_entity_id === "R-1",
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].matched_tier).toBe(1);
+      expect(rows[0].resolved_entity_id).toBe("C-1");
+    },
+  );
+});
