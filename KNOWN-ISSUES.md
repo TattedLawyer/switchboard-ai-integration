@@ -762,14 +762,24 @@ leaves it is gone from the source forever.
   a bad value to one NULL instead of a dead build. If those casts were ever removed as
   "redundant with the contract", this is what breaks. By design; disclosed so it stays a
   decision rather than becoming an assumption.
-- **`plausibleMax` for payments is borrowed from Stripe's 8-digit charge bound.** It is
-  derived for a Stripe-shaped processor and arbitrary for anything else, which is why
-  exceeding it only ever WARNs (dbt `assert_amounts_plausible`) and never rejects — a
-  genuine large payment must never fail a build or quarantine.
-- **Numeric bounds exist twice: TypeScript contract and dbt test SQL.** The contract file is
-  the declared source of truth and every SQL test repeating a bound carries a pointer
-  comment, but nothing mechanically diffs them. A changed bound updated in one place only
-  is detectable by reading, not by CI. *Scheduled: hardening batch.*
+- **`plausibleMax` is borrowed from Stripe's 8-digit charge bound.** It is derived for a
+  Stripe-shaped processor and arbitrary for anything else, which is why exceeding it
+  only ever WARNs and never rejects — a genuine large amount must never fail a build or
+  quarantine. Since Wave 5 (Task G) the above-bound rows are also FLAGGED at row grain
+  (`is_unlikely_amount` on the payments/invoices staging models — invoices carry the
+  bound `invoice.finalized` has declared since Task B), rolled up per entity
+  (`unlikely_amount_payment_count` / `unlikely_amount_invoice_count`), and OR'd into
+  `has_data_warnings`; the dbt warn surface (`assert_amounts_plausible`) now reads that
+  flag. Flagged is still never refused: the amounts stay in every sum.
+- ~~Numeric bounds exist twice: TypeScript contract and dbt test SQL~~ *Paid (2b Task
+  G):* the contract's quantitative bounds are now EMITTED to dbt as the
+  `numeric_bounds` seed (`scripts/generate-numeric-bounds-seed.ts`, committed generated
+  file per the free-email-seed precedent), the staging flag and both invariant-reading
+  tests join the seed instead of re-typing values, and the consistency pins in
+  `ingest/test/numeric-bounds-seed.test.ts` mechanically red the suite on any
+  contract⇄seed drift (row-wise both directions, plus byte-wise against the emitter).
+  `assert_csat_in_scale` got a loud-when-bound-missing shape so a vanished seed row can
+  never turn the invariant vacuous.
 - **Cross-currency refusal is deliberately conservative at the deal grain.** Whether an
   entity's deals "mix currencies" is judged across ALL its deals, while the guarded sum is
   open-deals-only — so a closed EUR deal NULLs an otherwise pure-USD open-pipeline sum.
