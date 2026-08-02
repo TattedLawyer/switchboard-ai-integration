@@ -15,7 +15,10 @@ seeds:
       warehouse inputs stay reviewable tree state. Consumers: the staging
       is_unlikely_amount flag (stg_billing__payments / stg_billing__invoices),
       assert_amounts_plausible (warn surface), assert_csat_in_scale (hard invariant,
-      loud-when-bound-missing shape).
+      loud-when-bound-missing shape). Two rows (payment.succeeded / payment.failed)
+      currently have NO consuming staging surface — their 2a lane retired at Task F;
+      they render the contract verbatim and go live again only if a payments lane
+      returns (retirement of the declarations themselves is register-owned).
     config:
       column_types:
         plausible_max: bigint
