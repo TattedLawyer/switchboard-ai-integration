@@ -445,8 +445,10 @@ const createMartFixtures = async (db: pg.Pool): Promise<void> => {
       status text, solved_at timestamptz, sla_due_at timestamptz
     );
     create table tmp_deals (deal_id text, company_id text, status text, amount_cents bigint, currency text);
-    create table tmp_invoices (invoice_id text, customer_id text, amount_cents bigint, status text, currency text);
-    create table tmp_payments (customer_id text, status text);
+    create table tmp_invoices (invoice_id text, customer_id text, amount_cents bigint, status text, currency text,
+      is_unlikely_amount boolean not null default false);
+    create table tmp_payments (customer_id text, status text,
+      is_unlikely_amount boolean not null default false);
     create table tmp_csat (ticket_id text, score int);
     create table tmp_sheet_rows (
       row_key text primary key, client_email text, client_name text, company_name text,

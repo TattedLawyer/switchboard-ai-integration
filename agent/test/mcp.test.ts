@@ -40,7 +40,10 @@ beforeAll(async () => {
            -- A6 parity: the sheets source's mart columns reach the tool too.
            true as has_sheets, 2::bigint as sheet_row_count,
            30000::bigint as sheet_amount_cents, 'USD'::text as sheet_currency,
-           0::bigint as null_amount_sheet_count, 0::bigint as null_currency_sheet_count
+           0::bigint as null_amount_sheet_count, 0::bigint as null_currency_sheet_count,
+           -- Wave 5 (Task G): the Unlikely Value counters behind the has_data_warnings
+           -- OR term reach the tool too.
+           0::bigint as unlikely_amount_payment_count, 0::bigint as unlikely_amount_invoice_count
   `);
   await pool.query(`
     create or replace view ${SCHEMA}.stg_crm__companies as
@@ -91,6 +94,9 @@ describe("MCP server", () => {
       sheet_currency: "USD",
       null_amount_sheet_count: "0",
       null_currency_sheet_count: "0",
+      // Wave 5 parity: the Unlikely Value counters reach the tool.
+      unlikely_amount_payment_count: "0",
+      unlikely_amount_invoice_count: "0",
     });
   });
 

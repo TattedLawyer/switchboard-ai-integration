@@ -34,8 +34,10 @@ beforeEach(async () => {
       status text, solved_at timestamptz, sla_due_at timestamptz
     );
     create table tmp_deals (deal_id text, company_id text, status text, amount_cents bigint, currency text);
-    create table tmp_invoices (invoice_id text, customer_id text, amount_cents bigint, status text, currency text);
-    create table tmp_payments (customer_id text, status text);
+    create table tmp_invoices (invoice_id text, customer_id text, amount_cents bigint, status text, currency text,
+      is_unlikely_amount boolean not null default false);
+    create table tmp_payments (customer_id text, status text,
+      is_unlikely_amount boolean not null default false);
     create table tmp_csat (ticket_id text, score int);
     -- A6 mechanical: customer_360 gained ref('stg_sheets__rows'); empty fixture only —
     -- the sheet column pins live in sheet-mart-oracle.test.ts.
@@ -179,8 +181,8 @@ describe("customer_360 — missing amount is not zero (L3)", () => {
 
     // Chain the REAL staging model (raw → latest-state, L2 safe cast) into the mart fixture.
     await pool.query(`
-      insert into tmp_invoices (invoice_id, customer_id, amount_cents, status, currency)
-      select invoice_id, customer_id, amount_cents, status, currency
+      insert into tmp_invoices (invoice_id, customer_id, amount_cents, status, currency, is_unlikely_amount)
+      select invoice_id, customer_id, amount_cents, status, currency, is_unlikely_amount
       from (${loadModel("models/staging/stg_billing__invoices.sql", { numeric_bounds: "numeric_bounds" })}) s
     `);
     // Sanity: staging really did pick the newer row and NULL its amount.
