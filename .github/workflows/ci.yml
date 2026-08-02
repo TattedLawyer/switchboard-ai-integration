@@ -10,10 +10,18 @@ on:
 # Task F ride-along (register): `github.ref` alone did NOT dedupe across event types —
 # a PR-branch commit runs as `refs/heads/<branch>` (push) AND `refs/pull/<n>/merge`
 # (pull_request), two different refs, so the double-run B7 targeted survived between
-# events (bitten live: the burn-wave PR run, 2026-08-01). Keying on the PR's HEAD
-# branch when the event carries one collapses both events onto the same group.
+# events (bitten live: the burn-wave PR run, 2026-08-01).
+# Task G, SECOND attempt (register): F's fix
+# (`github.event.pull_request.head.ref || github.ref`) STILL did not collapse the pair,
+# observed live on the F push — the push event has no pull_request payload, so its arm
+# falls through to `github.ref` = `refs/heads/<branch>`, while the PR event's
+# `pull_request.head.ref` is the BARE `<branch>`: two spellings, two groups, both runs
+# executed. Fix: normalize BOTH sides to the bare branch name — `github.head_ref` is
+# the bare head branch on pull_request events (empty otherwise), `github.ref_name` is
+# the bare branch on push events — so both events of one commit share one group.
+# Expected on the next PR-branch push: ONE surviving CI run (the sibling cancelled).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   suite:
