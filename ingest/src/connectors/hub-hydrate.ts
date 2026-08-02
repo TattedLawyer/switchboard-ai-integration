@@ -673,26 +673,7 @@ export class HubHydrateConnector implements Connector {
   /** One boss per run, stopped in finally — the replay-CLI precedent. The DLQ is a
    *  durable dead-letter STORE (send + findJobs), never worked by a consumer. */
   private async withBoss<T>(fn: (boss: PgBoss) => Promise<T>): Promise<T> {
-    const connectionString = this.opts.databaseUrl ?? process.env.DATABASE_URL;
-    if (!connectionString) {
-      throw new Error("hub-hydrate needs a database url for its hydration DLQ (databaseUrl option or DATABASE_URL)");
-    }
-    const boss = new PgBoss({ connectionString });
-    boss.on("error", (err) => {
-      console.error(JSON.stringify({ pgboss: "error", message: err instanceof Error ? err.message : String(err) }));
-    });
-    await boss.start();
-    try {
-      // createQueue is an ON CONFLICT DO NOTHING insert, so options passed to it are
-      // silently ignored for a queue that already exists (queue.ts learned this the hard
-      // way). updateQueue after it is the house upsert — without it, a queue created by
-      // an earlier build would keep the 14-day default forever.
-      await boss.createQueue(HYDRATE_DLQ, DLQ_QUEUE_OPTIONS);
-      await boss.updateQueue(HYDRATE_DLQ, DLQ_QUEUE_OPTIONS);
-      return await fn(boss);
-    } finally {
-      await boss.stop();
-    }
+    return withHydrationDlqBoss(this.opts.databaseUrl ?? process.env.DATABASE_URL, fn);
   }
 
   private async dlqSend(boss: PgBoss, tenantId: string, entry: HydrationDlqEntry): Promise<void> {
@@ -701,24 +682,92 @@ export class HubHydrateConnector implements Connector {
     // (tenant_id, source, event_id) — two tenants legitimately receive the same vendor
     // event id, and a bare-id key let one tenant's dead letter suppress the other's event
     // into invisible limbo (review F2).
-    await boss.send(HYDRATE_DLQ, { ...entry, tenant_id: tenantId }, { singletonKey: `${tenantId}:${entry.event_id}` });
+    await sendToHydrationDlq(boss, tenantId, entry);
   }
 
-  /** The DLQ as ONE TENANT sees it. Scoped in the query (`data @> {tenant_id}`), never
-   *  filtered afterwards, so a count and a listing can never disagree. */
+  /** The DLQ as ONE TENANT sees it. */
   private async dlqList(boss: PgBoss, tenantId: string): Promise<HydrationDlqEntry[]> {
-    const jobs = await boss.findJobs<HydrationDlqEntry & { tenant_id?: string }>(HYDRATE_DLQ, {
-      data: { tenant_id: tenantId },
-    });
-    // Same state reading as fetchDlq (queue.ts): a never-worked queue's live jobs sit in
-    // 'created' (or 'retry' after a replay tool touches them).
-    return jobs
-      .filter((j) => j.state === "created" || j.state === "retry")
-      .map(({ data: { tenant_id: _tenant, ...entry } }) => entry)
-      .sort((a, b) => a.event_id.localeCompare(b.event_id));
+    return (await listHydrationDlqJobs(boss, tenantId)).map(({ jobId: _jobId, ...entry }) => entry);
   }
 
   private async dlqEventIds(boss: PgBoss, tenantId: string): Promise<Set<string>> {
     return new Set((await this.dlqList(boss, tenantId)).map((d) => d.event_id));
   }
+}
+
+// ── hydration-DLQ module surface (close D2: shared by the pump above and the re-arm
+//    CLI, so the two can never read the queue differently) ───────────────────────────────
+
+/** One boss per run, stopped in finally — the replay-CLI precedent. */
+export async function withHydrationDlqBoss<T>(
+  connectionString: string | undefined,
+  fn: (boss: PgBoss) => Promise<T>,
+): Promise<T> {
+  if (!connectionString) {
+    throw new Error("hub-hydrate needs a database url for its hydration DLQ (databaseUrl option or DATABASE_URL)");
+  }
+  const boss = new PgBoss({ connectionString });
+  boss.on("error", (err) => {
+    console.error(JSON.stringify({ pgboss: "error", message: err instanceof Error ? err.message : String(err) }));
+  });
+  await boss.start();
+  try {
+    // createQueue is an ON CONFLICT DO NOTHING insert, so options passed to it are
+    // silently ignored for a queue that already exists (queue.ts learned this the hard
+    // way). updateQueue after it is the house upsert — without it, a queue created by
+    // an earlier build would keep the 14-day default forever.
+    await boss.createQueue(HYDRATE_DLQ, DLQ_QUEUE_OPTIONS);
+    await boss.updateQueue(HYDRATE_DLQ, DLQ_QUEUE_OPTIONS);
+    return await fn(boss);
+  } finally {
+    await boss.stop();
+  }
+}
+
+/** See dlqSend above for the singletonKey rationale (tenant + event_id). */
+export async function sendToHydrationDlq(boss: PgBoss, tenantId: string, entry: HydrationDlqEntry): Promise<void> {
+  await boss.send(HYDRATE_DLQ, { ...entry, tenant_id: tenantId }, { singletonKey: `${tenantId}:${entry.event_id}` });
+}
+
+/** A DLQ entry WITH its pg-boss job id — the handle the re-arm CLI deletes by. */
+export interface HydrationDlqJob extends HydrationDlqEntry {
+  jobId: string;
+}
+
+/** The DLQ as ONE TENANT sees it. Scoped in the query (`data @> {tenant_id}`), never
+ *  filtered afterwards, so a count and a listing can never disagree. */
+export async function listHydrationDlqJobs(boss: PgBoss, tenantId: string): Promise<HydrationDlqJob[]> {
+  const jobs = await boss.findJobs<HydrationDlqEntry & { tenant_id?: string }>(HYDRATE_DLQ, {
+    data: { tenant_id: tenantId },
+  });
+  // Same state reading as fetchDlq (queue.ts): a never-worked queue's live jobs sit in
+  // 'created' (or 'retry' after a replay tool touches them).
+  return jobs
+    .filter((j) => j.state === "created" || j.state === "retry")
+    .map(({ id, data: { tenant_id: _tenant, ...entry } }) => ({ jobId: id, ...entry }))
+    .sort((a, b) => a.event_id.localeCompare(b.event_id));
+}
+
+/**
+ * Re-arm ONE dead-lettered hydration (close D2, mechanism ruled at close): the DLQ row is
+ * what makes the pump skip an event (`dlqEventIds`), so CONSUMING it — boss.deleteJob, the
+ * documented pump-retry path and the same primitive replayDlq uses after handling a job —
+ * is what re-arms the fetch on the next hydration cycle. pg-boss `retry()` is deliberately
+ * NOT used: its UPDATE is gated on state = 'failed' (plans.retryJobs), and this store's
+ * jobs live in 'created' — retry() would be a silent no-op, and a 'retry'-state row would
+ * STILL be skipped by the pump's listing (demonstrated: swapping this deleteJob for
+ * retry() reds the re-arm CLI suite). Returns the consumed entry (the caller must print
+ * it: deletion destroys the row, so the printed trace is the audit record), or null when
+ * no entry matches this tenant + event id.
+ */
+export async function rearmHydrationDlq(
+  boss: PgBoss,
+  tenantId: string,
+  eventId: string,
+): Promise<HydrationDlqJob | null> {
+  const jobs = await listHydrationDlqJobs(boss, tenantId);
+  const job = jobs.find((j) => j.event_id === eventId);
+  if (job === undefined) return null;
+  await boss.deleteJob(HYDRATE_DLQ, job.jobId);
+  return job;
 }

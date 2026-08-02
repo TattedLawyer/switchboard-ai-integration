@@ -564,10 +564,19 @@ fetched afterwards. Three stated limits of the paradigm itself:
   contract — quarantined with a named reason, never silently stored) is
   dead-lettered to the pg-boss queue `hydrate-hubcrm-dlq` and never re-fetched
   automatically. It is printed loudly by both CLIs and the service log and
-  listed with reasons by reconcile, but a replay mechanism (re-arm a DLQ'd
-  event for another fetch) is register-owned follow-up. Until it lands, the
-  operator's path is: fix the vendor-side object, then delete the DLQ job so
-  the pump retries (RUNBOOK). "Terminal" is retention-backed, not aspirational:
+  listed with reasons by reconcile. ~~a replay mechanism (re-arm a DLQ'd event
+  for another fetch) is register-owned follow-up~~ *Paid (phase-2b close, D2's
+  close half):* the operator path is now the first-class re-arm CLI
+  (`npm run hydrate-rearm -w ingest` — tenant-scoped `--list`, re-arm exactly
+  one `--id`; RUNBOOK has the workflow). Re-arm consumes the DLQ row (deletion
+  is the mechanism — the pump skips whatever the DLQ lists, and pg-boss
+  `retry()` is a no-op on this store's `'created'` jobs, demonstrated in the
+  CLI suite), and the CLI prints the full consumed entry + counts as the audit
+  trace, since the row is destroyed. Pinned end-to-end in
+  `ingest/test/hydrate-rearm-cli.test.ts`: a healed vendor object alone
+  changes nothing (the terminal premise, kept as the negative control); after
+  re-arm the pump really re-fetches and hydrates; bogus ids and cross-tenant
+  ids refuse loudly. "Terminal" is retention-backed, not aspirational:
   the queue sets `retentionSeconds` explicitly (~68 years, the longest span
   pg-boss's int4 column can express) because the default is 14 days, after
   which the job is deleted and the event falls back into *no* state — reconcile
@@ -613,8 +622,13 @@ Deliberate remainders, each bounded and owned:
   hubcrm section above). The chaos green path therefore drives hubcrm through
   its RECOVERABLE weather (duplicates, holdovers, shuffle, bounded
   redelivery); injected permanent drops belong to the RED mode
-  (`CHAOS_SKIP_BACKFILL=1`), where reconcile must name the loss. A
-  reconcile-driven repair pump is register-owned follow-up.
+  (`CHAOS_SKIP_BACKFILL=1`), where reconcile must name the loss.
+  **SPLIT at phase-2b close (D2):** the register line's two halves now have
+  separate fates — the operator-invoked DLQ **re-arm** landed at close
+  (`hydrate-rearm` CLI; the merge-survivor recovery path below uses it), while
+  the **reconcile-driven repair pump** (automated re-arm/repair) stays
+  **Phase 3**, deliberately: automated repair wants the approval-queue spine
+  (operator-approved actions with audit semantics), not a close-scope daemon.
 - **A merge whose survivor snapshot is missing is a RED BUILD, not a repair**
   *(cold review I-3, F-1c fix round)*. `merge_edges` translates through
   snapshots, and the two miss directions are not symmetric: a consumed-side
@@ -623,11 +637,13 @@ Deliberate remainders, each bounded and owned:
   tombstone-only — would drop the merge's edges while both consumed companies
   keep staging as two separate stale canonicals. That shape is now DETECTED
   loudly (`warehouse/tests/assert_merge_survivors_translate.sql` fails the
-  dbt build naming the event) but not auto-repaired: recovery is re-arming
-  the DLQ'd hydration, which is the SAME register line as the
-  reconcile-driven repair pump above (same mechanism, same owner). The
-  `merge_edges.sql` header states the asymmetry; the shipped fixture/demo
-  pump cadence never enters the state.
+  dbt build naming the event) and — since the phase-2b close D2 split — its
+  recovery has an operator surface: re-arm the merge event's DLQ'd hydration
+  with `hydrate-rearm --id <event_id>` and run the pump (RUNBOOK); the
+  AUTOMATED half (reconcile-driven repair) remains Phase 3 on the
+  approval-queue spine, per the split recorded above. The `merge_edges.sql`
+  header states the asymmetry; the shipped fixture/demo pump cadence never
+  enters the state.
 
 ## Support event-bus source (casebus) — the 72-hour window and the stream reset (2b Task D)
 

@@ -278,13 +278,21 @@ Operational notes:
   itself** — one permanently-broken vendor object must not fail every
   reconcile forever (the stripefeed quarantine precedent). It is printed by
   the backfill CLI and service log (`HYDRATION DLQ: …` on stderr) and listed
-  with reasons by reconcile. Recovery today: fix the object vendor-side, then
-  delete the DLQ job (pg-boss queue `hydrate-hubcrm-dlq`) so the pump
-  re-fetches; a first-class replay command is register-owned follow-up. The
-  queue's retention is set explicitly (~68 years) rather than taking pg-boss's
-  14-day default, so a dead letter never expires out from under you — which
-  also means **the DLQ only shrinks when an operator clears it**. Watch its
-  depth (`select count(*) from pgboss.job where name = 'hydrate-hubcrm-dlq'`);
+  with reasons by reconcile. Recovery (phase-2b close): fix the object
+  vendor-side, then re-arm the dead letter with the first-class command —
+  `npm run hydrate-rearm -w ingest -- --list [--tenant <uuid>]` to see a
+  tenant's dead letters, `-- --id <event_id> [--tenant <uuid>]` to re-arm
+  exactly one. Re-arming consumes the DLQ row (that is what un-skips the
+  event) and the pump re-fetches on its next cycle; the CLI prints the full
+  consumed entry (event, object, recorded failure reason) and counts — that
+  printed trace is the audit record, since the row itself is destroyed. A
+  bogus id or another tenant's id refuses loudly; nothing is ever re-armed
+  silently. (Deleting the pg-boss job by hand still works but leaves no
+  trace; prefer the command.) The queue's retention is set explicitly
+  (~68 years) rather than taking pg-boss's 14-day default, so a dead letter
+  never expires out from under you — which also means **the DLQ only shrinks
+  when an operator clears it**. Watch its depth
+  (`select count(*) from pgboss.job where name = 'hydrate-hubcrm-dlq'`);
   a growing count is a vendor object nobody has fixed yet, not queue lag.
 - **Reading a hubcrm reconcile report**: `object store` = live objects right
   now (the paradigm's ledger-equivalent), `raw` = thin events ever ingested,
