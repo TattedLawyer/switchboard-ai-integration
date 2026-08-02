@@ -7,15 +7,23 @@ import { getPool } from "./db.js";
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
 
+/** Advisory-lock identity for concurrent-boot serialization (close F14). Two-int32 form
+ *  of pg_advisory_lock; the keyspace is per-database, so parallel test databases never
+ *  contend. Values are ASCII 'SWBC'/'MIGR' — arbitrary but stable, and tests import
+ *  THIS constant so the guarded key and the asserted key cannot drift. */
+export const MIGRATION_LOCK_KEYS = [0x53574243, 0x4d494752] as const;
+
 export interface AppliedMigration {
   filename: string;
   checksum: string;
   applied_at: Date;
 }
 
-/** What this database believes it has applied, in filename order. */
-export async function appliedMigrations(pool: pg.Pool): Promise<AppliedMigration[]> {
-  const res = await pool.query(
+/** What this database believes it has applied, in filename order. Accepts a checked-out
+ *  client too, because the guarded section below must do ALL its reads and writes on the
+ *  one connection that holds the advisory lock. */
+export async function appliedMigrations(db: pg.Pool | pg.PoolClient): Promise<AppliedMigration[]> {
+  const res = await db.query(
     "select filename, checksum, applied_at from ingest.schema_migrations order by filename",
   );
   return res.rows as AppliedMigration[];
@@ -35,10 +43,52 @@ export async function appliedMigrations(pool: pg.Pool): Promise<AppliedMigration
  * are real needs at real scale and pretending to solve them here would be worse than the gap.
  */
 export async function runMigrations(pool: pg.Pool): Promise<void> {
+  // ── Concurrent-boot serialization (close F14, researched) ─────────────────────────────
+  // Two replicas booting against the same fresh database race this runner; 003's
+  // `drop … cascade` makes that a real hazard, not cosmetic churn. The guard is a
+  // SESSION-level pg_advisory_lock — chosen over pg_advisory_xact_lock deliberately,
+  // because a transaction-level lock would force one transaction around the whole run
+  // and change the per-file retry semantics below (each file recorded only after it
+  // succeeds; a mid-file failure is retried next boot).
+  //
+  // THE LOCK MUST LIVE ON ONE DEDICATED CLIENT. This runner used to issue every
+  // statement through pool.query, and successive pool.query calls may execute on
+  // DIFFERENT pooled connections — a session lock taken that way binds to whichever
+  // connection served that single call, and protects nothing that follows (a silent
+  // no-op, the research's key finding). So: one pool.connect(), lock at entry, the
+  // ENTIRE guarded section on that client, try/finally unlock; if the unlock cannot be
+  // confirmed the client is DESTROYED rather than returned, so session end releases the
+  // lock as the backstop and a pooled-but-still-locked connection can never deadlock
+  // the next boot.
+  //
+  // Disclosed caveat: if a transaction-pooling proxy (e.g. PgBouncer, whose feature
+  // table marks session advisory locks "Never" compatible with transaction pooling) is
+  // ever put in front of this database, a session-level lock here silently stops
+  // locking — revisit the mechanism then. Nothing in this stack runs one today.
+  const client = await pool.connect();
+  let destroyClient = false;
+  try {
+    await client.query("select pg_advisory_lock($1, $2)", [...MIGRATION_LOCK_KEYS]);
+    try {
+      await runMigrationsOn(client);
+    } finally {
+      try {
+        await client.query("select pg_advisory_unlock($1, $2)", [...MIGRATION_LOCK_KEYS]);
+      } catch {
+        destroyClient = true; // unlock unconfirmed — end the session instead of pooling it
+      }
+    }
+  } finally {
+    client.release(destroyClient);
+  }
+}
+
+/** The guarded body: every statement on the ONE client that holds the advisory lock. */
+async function runMigrationsOn(client: pg.PoolClient): Promise<void> {
   // Bootstrap: the tracking table cannot itself be tracked, so it is created idempotently on
   // every run. `ingest` may not exist yet on a virgin database.
-  await pool.query("create schema if not exists ingest");
-  await pool.query(`
+  await client.query("create schema if not exists ingest");
+  await client.query(`
     create table if not exists ingest.schema_migrations (
       filename   text primary key,
       checksum   text not null,
@@ -47,7 +97,7 @@ export async function runMigrations(pool: pg.Pool): Promise<void> {
   `);
 
   const seen = new Map(
-    (await appliedMigrations(pool)).map((m) => [m.filename, m.checksum] as const),
+    (await appliedMigrations(client)).map((m) => [m.filename, m.checksum] as const),
   );
 
   for (const file of readdirSync(MIGRATIONS_DIR).sort()) {
@@ -69,17 +119,17 @@ export async function runMigrations(pool: pg.Pool): Promise<void> {
       continue; // already applied, unchanged — skip
     }
 
-    await pool.query(sql);
+    await client.query(sql);
     // Recorded only AFTER the migration succeeds, so a failure mid-file leaves it unrecorded
     // and it is retried on the next start rather than being assumed done.
-    await pool.query(
+    await client.query(
       "insert into ingest.schema_migrations (filename, checksum) values ($1, $2) " +
         "on conflict (filename) do update set checksum = excluded.checksum",
       [file, checksum],
     );
   }
 
-  await grantAgentReadOnly(pool);
+  await grantAgentReadOnly(client);
 }
 
 // The analytics schema name is runtime config (DBT_SCHEMA), so its grants can't live in
@@ -89,7 +139,7 @@ export async function runMigrations(pool: pg.Pool): Promise<void> {
 // same identifier gate before landing in FOR ROLE position.
 const SCHEMA_RE = /^[a-z_][a-z0-9_]*$/;
 
-async function grantAgentReadOnly(pool: pg.Pool): Promise<void> {
+async function grantAgentReadOnly(pool: pg.Pool | pg.PoolClient): Promise<void> {
   const schema = process.env.DBT_SCHEMA ?? "public_analytics";
   if (!SCHEMA_RE.test(schema)) {
     throw new Error(`invalid DBT_SCHEMA "${schema}": must match ${SCHEMA_RE}`);

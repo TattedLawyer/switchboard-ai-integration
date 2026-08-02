@@ -357,13 +357,22 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   file is skipped (`:69`), a changed applied file **throws** naming the file
   (`:59-68` — refuse-on-drift), and a file is recorded only after success
   (`:72-79`), so a mid-file failure retries instead of being assumed done.
-  **Narrowed entry — the half that is NOT paid:** migrations take no advisory
-  lock, so concurrent boots of two replicas can still race `runMigrations`;
-  migration 003's `drop table … cascade` makes that a real hazard on any
-  database where 003 is not yet recorded (fresh environments), not cosmetic
-  churn. *Owner: phase-2b close (advisory lock, with the documented PgBouncer
-  caveat — transaction-pooling breaks session advisory locks, so the
-  mechanism needs its own researched RED, not a drive-by).*
+  ~~Narrowed entry — the advisory-lock half~~ *Paid (phase-2b close, F14, with
+  the owed researched RED):* `runMigrations` now serializes concurrent boots
+  with a session-level `pg_advisory_lock` taken on ONE dedicated checked-out
+  client and held for the entire guarded section — the research's key finding
+  was that the old `pool.query`-per-statement runner made a naive pool-level
+  lock a silent no-op (the lock binds to whichever pooled connection served
+  that one call). Session-level over `pg_advisory_xact_lock` deliberately:
+  per-file record-after-success retry semantics are preserved. try/finally
+  unlock; an unconfirmable unlock destroys the client so session end releases
+  the lock (no pooled-but-locked connection can deadlock the next boot).
+  Pinned in `migration-tracking.test.ts` (a second boot BLOCKS while the lock
+  is held and proceeds on release — RED shown first against the lockless
+  runner; release pinned on success AND failure). Disclosed caveat, unchanged:
+  a transaction-pooling proxy (PgBouncer marks session advisory locks "Never"
+  compatible with transaction pooling) would silently disable this lock —
+  nothing in this stack runs one today; revisit the mechanism if one appears.
 - ~~Env parsing foot-guns *(audit)* — `PORT`/`BACKFILL_INTERVAL_MS` go
   through bare `Number()` (a typo yields `NaN`, and `setInterval(fn, NaN)`
   fires every ~1ms), and an unrecognized `INGEST_ROLE` silently means "do
