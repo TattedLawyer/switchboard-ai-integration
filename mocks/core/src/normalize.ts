@@ -37,9 +37,20 @@ export const NORMALIZATION_VECTORS: readonly NormalizationVector[] = [
   // The SUSPECTED divergences (JS \s = full Unicode space class vs PG's regex space
   // class; .toLowerCase() vs lower() on non-ASCII uppercase) were probed on the pinned
   // stack (postgres:16-alpine, en_US.utf8, the compose AND CI image): both classes
-  // AGREE there, so these vectors pin the agreement. A deployment on a C-locale
-  // database, where both classes genuinely diverge, reds the SQL-side vector suite
-  // loudly instead of drifting silently.
+  // AGREE there, so these vectors pin the agreement.
+  //
+  // The tripwire claim is NOT symmetric across the two classes, and the close review
+  // (2026-08-02, C-locale scratch db, lc_collate/lc_ctype = C) measured which is which:
+  //   class 2 (non-ASCII uppercase) is a REAL tripwire — under C the SQL side yields
+  //     'cafÉ group' against this oracle's 'café group', so a C-locale deployment reds
+  //     the SQL-side vector suite loudly instead of drifting silently.
+  //   class 1 (em-space) is NOT — it collapses to 'acme group' under BOTH locales, and
+  //     no locale reachable on this stack made JS \s and PG's regex space class differ
+  //     on U+2003. Its tripwire is vacuous; it is still worth pinning because it FIXES
+  //     the class as agreement (a future regex change on either side reds it), but it
+  //     buys no locale coverage. Annotated rather than "fixed": manufacturing a
+  //     divergence would mean inventing a character class neither engine actually
+  //     disagrees on.
   { label: "em-space (U+2003) collapses like a space in BOTH languages (M-4 class 1, F16)", input: "Acme\u2003Group", expected: "acme group" },
   { label: "non-ASCII uppercase lowers in BOTH languages (M-4 class 2, F16)", input: "CAF\u00C9 GROUP Inc.", expected: "caf\u00E9 group" },
   // DOCUMENTED RESIDUAL DIVERGENCE (F16, at-the-vector per the close research; probed

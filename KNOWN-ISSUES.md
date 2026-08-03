@@ -153,9 +153,13 @@ tenant's data, but it will still merge two tenants' *entities* downstream.
   uppercase "CAFÉ"), and the RED run refuted the suspicion on the pinned
   stack — postgres:16-alpine runs en_US.utf8 (compose AND CI), where PG's
   regex space class matches U+2003 and `lower()` agrees with `.toLowerCase()`
-  on the accented class, so the vectors pin AGREEMENT and a future C-locale
-  deployment (where both classes genuinely diverge) reds the SQL-side suite
-  loudly. One residual divergence found and documented AT the vector
+  on the accented class, so the vectors pin AGREEMENT. The C-locale tripwire
+  covers ONE of the two classes, measured not assumed (close review, C-locale
+  scratch db): the accented vector genuinely diverges there (SQL `cafÉ group`
+  vs the TS oracle's `café group`) and reds the SQL-side suite loudly, while
+  the em-space vector collapses identically under BOTH locales — that vector
+  fixes its class as agreement but buys no locale coverage, and is annotated
+  as such at the vector. One residual divergence found and documented AT the vector
   (mocks/core `normalize.ts`): Turkish İ (U+0130) lowers to 2 code points in
   JS, 1 in PG — locale-honest, surfaces as a loud verify-identity tier
   mismatch, deliberately not special-cased.
