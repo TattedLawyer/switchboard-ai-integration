@@ -8,6 +8,47 @@ too — open an issue.
 Severity is about *carrying cost*, not embarrassment: HIGH items can corrupt or
 hide state; MED items degrade operations; LOW items are rough edges.
 
+## How this file is organised (restructured at the phase-2b close)
+
+The file previously conflated three different species of entry, which made
+healthy disclosure read like rot. They are now separated:
+
+- **[Part I — Design disclosures](#part-i--design-disclosures)** — permanent,
+  by-design limits. Vendor retention windows, at-least-once duplicates, paradigm
+  loss boundaries, the limits of a synthetic repo. **These will never be
+  "fixed"**, because there is nothing to fix: they are properties of the world
+  the system integrates with, and hiding them would be the defect. Where an
+  entry's behavior is pinned by a test, the test is named.
+- **[Part II — Open defects](#part-ii--open-defects)** — real debt. Every entry
+  carries an **owner** (a phase, or an explicitly unscheduled trigger) and, where
+  one exists, a target.
+- **[Part III — Paid](#part-iii--paid)** — the struck history, kept for the
+  record. Reading what was wrong, and what fixed it, is the point of keeping it.
+
+### Scoreboard
+
+Counted by hand against this file at commit `f4c2c0f` (2026-08-02, phase-2b
+close):
+
+| | Count |
+|---|---|
+| **Open defects** | **20** — Phase 3: 3 · Phase 4: 7 · unscheduled: 10 |
+| **Design disclosures** | 46 |
+| **Paid** (struck entries) | 38, plus the cosmetic/low list |
+
+Counting method, so the numbers are reproducible: top-level list items per part.
+Part II holds 24 top-level bullets, four of which are the *paid* sub-items of the
+multi-tenancy entry (kept in place because the open half is unreadable without
+them) — 24 − 4 = the 20 open defects above.
+
+**Standing rule.** The open count must be **net-lower at each phase close**, and
+**any item deferred twice is escalated by name** in the close report rather than
+being re-stamped a third time. Three items in Part II carry a re-stamp already
+(marked *(re-stamped)*); a further deferral of any of them is an escalation, not
+a bookkeeping edit. "Unscheduled" is an honest owner only when the entry names
+the **trigger** that would schedule it — an entry that can name neither a phase
+nor a trigger does not belong in this file.
+
 **Provenance note (2a.3):** this register was originally written from a
 *reliability* frame. In July 2026 an independent audit (a fresh model session,
 read-only, given the code and told to treat this file as claims under audit)
@@ -16,7 +57,19 @@ serious gaps this file missed entirely — they appear below, marked *(audit)*.
 The 2a.3 hardening wave paid the cheap ones and disclosed the rest. A register
 is only useful if it's re-read from frames its authors didn't start with.
 
+---
+
+# Part I — Design disclosures
+
+Permanent, by-design limits. **Nothing in this part is scheduled to be fixed.**
+Each entry is either a property of the vendor paradigm being integrated, a
+deliberate conservative choice, or a stated limit of a synthetic repository.
+They are listed so that a reader can tell the difference between a system that
+does not know its edges and one that publishes them.
+
+
 ## Known-failing invariants (deliberately not in the green suite)
+
 
 The fast-check property suite pins only invariants that hold. One that does
 NOT hold yet is excluded on purpose — a green checkmark that hides a known
@@ -38,386 +91,20 @@ red would be worse than the bug:
 was fixed in 2a.2 (RED tests first, parse-guard in both verifier copies,
 truncation-totality property 6 in the green suite).
 
-## Multi-tenancy: the ingest layer is tenant-scoped; the analytics layer is NOT (partially paid)
-
-**Paid (migration 006).** The audit's highest-severity finding was cross-tenant
-data *loss*: `raw_events` uniqueness was `(source, event_id)`, so two tenants'
-vendors both emitting `evt-1` silently dropped the second and reported it as a
-successful de-duplication. That is closed:
-
-- Uniqueness is now `(tenant_id, source, event_id)` — exactly-once is preserved
-  *within* a tenant, and the same id from two businesses becomes two rows.
-- `tenant_id` is present and indexed on `raw.raw_events`, `ingest.ingest_journal`
-  (né `ingest.outbox`, renamed in migration 011), `ingest.quarantine` and
-  `ingest.cursors`. Cursors are keyed
-  `(tenant_id, source)`: a shared cursor would let one tenant's progress skip
-  another's events permanently.
-- A tenant is **required, never defaulted** — supplying it explicitly-but-empty
-  throws rather than silently substituting the default tenant.
-- Row-level security is enabled **and forced** on all four tables. Note the
-  reason `FORCE` alone was not enough here: PostgreSQL documents that
-  *"superusers and roles with the `BYPASSRLS` attribute always bypass the row
-  security system"*, and this project's `switchboard` role is a superuser. So
-  006 also creates a non-superuser `switchboard_app` role, and the isolation
-  test proves the boundary **through that role** — it fails if pointed back at
-  the superuser. "We enabled RLS" is not a claim worth making otherwise.
-
-**Still open, and it is the larger half:**
-
-- **The analytics layer has no tenant partition.** Staging models, the identity
-  tiers, and `customer_360` are unchanged. Two clients' "Acme Group /
-  acme.com" would still merge into one entity — cleanly, with audit evidence,
-  and **no ambiguity flag**, because the over-merge guard fires when one key
-  maps to *multiple* canonicals and each tenant contributes exactly one. It is
-  an over-merge guard, not a boundary guard. `customer_360` would sum both
-  clients' revenue. Retrofitting means a partition in every join predicate and
-  group-by across ~14 models.
-- **The RLS policy permits access when no tenant context is set.** That is what
-  keeps migrations, reconcile, dbt and the single-tenant demo working — but it
-  means RLS here guards against cross-tenant leaks in tenant-scoped code paths,
-  not against an application role that simply declines to set the context.
-  Closing it needs a policy with no fallback branch on a dedicated role.
-- **One `WEBHOOK_SECRET_<SOURCE>` per source**, so tenant B's secret is tenant
-  A's secret. Per-tenant-per-source secrets are the fix.
-- **No caller-identity model for the agent** — the read-only role is not
-  tenant-scoped, so the report worker sees all tenants.
-
-Until the analytics half lands, treat this as **single-tenant with a
-tenant-safe ingest floor**: the pipeline will no longer destroy a second
-tenant's data, but it will still merge two tenants' *entities* downstream.
-
-## Identity resolution (HIGH interest)
-
-- ~~`occurred_at` ordered as text and unvalidated at ingest~~ *Paid (2a.2):*
-  ISO-8601 gate at both raw doors, `timestamptz` ordering. *Extended (2a.3):*
-  the gate now also bounds occurred_at to **[now-30d, now+5m]** — a
-  well-formed-but-absurd timestamp (`9999-12-31`, vendor clock bugs) previously
-  pinned an entity's latest-state forever, undislodgeable by any later correct
-  event *(audit)*. Out-of-window events quarantine, never drop.
-- ~~Multi-tuple entities can straddle ambiguity guards~~ *Paid (2b Task F):*
-  every tier's over-merge guard now groups by **entity** (source,
-  source_entity_id) across ALL of the entity's evidence — never by (entity,
-  evidence-key) — so a requester whose tickets carry two clean tuples matching
-  two different canonicals demotes to manual review exactly like a single
-  ambiguous tuple always did, at both tiers. The live-reproduced 2026-07-31
-  shapes (tier-2 two-clean-tuples; tier-1 different-emails bypassing
-  `tier1_ambiguous`) are pinned as plain green tests in
-  `ingest/test/identity-straddle.test.ts`, shown red against the pre-fix SQL;
-  boundary companions pin that corroborating evidence (multiple tuples, one
-  canonical) still resolves at its tier. Evidence strings for the new
-  cross-group case name the count of conflicting tuples/emails.
-- ~~Tier 2 is unsafe on free-email domains~~ *(audit)* *Paid (2b Task F):*
-  the free-email blocklist (dbt seed `free_email_domains`, provenance on the
-  seed schema) now demotes any tier-2 match whose domain evidence is a free
-  provider to manual review with the provider named — never a silent merge of
-  two unrelated gmail businesses, and never a bare `unmatched` that hides
-  that a match occurred. Free evidence is no-signal: it neither resolves nor
-  conflicts (corporate evidence beside it still resolves); exact-address
-  tier-1 evidence stays provider-blind. The sheets arm's orphan-derived
-  domains run through the same gate. The normalizer legal-name variants
-  (trailing comma, `Co`/`PLLC`, `&`/`and`, double spaces) are fixed in the
-  shared normalizer pair, vector-pinned. *(F-1)* The list is now VENDORED —
-  13k+ domains from the exact-pinned `free-email-domains` npm package (MIT,
-  NOTICE) via a committed generator (`scripts/generate-free-email-seed.ts`)
-  that validates shape and refuses example-universe entries; the committed
-  CSV's content is pinned (canonical-provider sentinels, well-formedness) and
-  the demotion is exercised through the REAL list, closing the F-core
-  review's vacuity finding. Upstream includes disposable/webmail hosts —
-  deliberately kept: neither category identifies a company, and a listed-
-  domain match demotes to a human, never drops data.
-- ~~A merge event targeting a nonexistent company mints a phantom canonical~~
-  *Paid (2a.2):* `assert_canonical_targets_exist` dbt test + unit test proving
-  the detection fires.
-- ~~`crm_emails` reads full raw history~~ *Paid (2a.2):* latest-state only.
-- ~~Unicode confusables under-merge silently~~ *Paid (2b Task F):* the pinned
-  normalizer now NFC-normalizes, deletes zero-width characters, and reads NBSP
-  as a space — in BOTH languages (shared `normalizeCompanyName` in mocks/core;
-  identical SQL expression in `identity_resolution.sql`), vector-pinned in
-  `ingest/test/normalizer-vectors.test.ts`.
-- ~~Email evidence is byte-exact, and the arms disagree on even that~~ *(cold
-  review M-3)* *Paid (phase-2b close, F15 — the promised identity-quality
-  pass):* one shared rule at every email evidence edge —
-  `nullif(lower(trim(email)), '')` in `identity_resolution.sql` (crm_emails +
-  billing/support source_entities arms; sheets always had it) with the TS half
-  `normalizeEmail` in mocks/core — vector-pinned like the name normalizer
-  (`EMAIL_NORMALIZATION_VECTORS`, end-to-end tier-1 per vector in BOTH join
-  directions, RED shown first: mixed-case under-merged on the shipped SQL).
-  Deliberate scope: lower-trim only — SMTP's case-sensitive-local-part edge is
-  accepted (a collision routes to manual-review tiers, never a silent merge,
-  and the pre-fix under-merge of ordinary mixed-case mail was the larger real
-  error); no plus-tag/dot aliasing rules, which are provider-specific and
-  would manufacture false merges.
-- ~~TS↔SQL normalizer divergence outside the pinned vectors~~ *(cold review
-  M-4)* *Paid (phase-2b close, F16 — vectors first, then the truth):* both
-  suspected classes are now vector-pinned (em-space U+2003; non-ASCII
-  uppercase "CAFÉ"), and the RED run refuted the suspicion on the pinned
-  stack — postgres:16-alpine runs en_US.utf8 (compose AND CI), where PG's
-  regex space class matches U+2003 and `lower()` agrees with `.toLowerCase()`
-  on the accented class, so the vectors pin AGREEMENT. The C-locale tripwire
-  covers ONE of the two classes, measured not assumed (close review, C-locale
-  scratch db): the accented vector genuinely diverges there (SQL `cafÉ group`
-  vs the TS oracle's `café group`) and reds the SQL-side suite loudly, while
-  the em-space vector collapses identically under BOTH locales — that vector
-  fixes its class as agreement but buys no locale coverage, and is annotated
-  as such at the vector. One residual divergence found and documented AT the vector
-  (mocks/core `normalize.ts`): Turkish İ (U+0130) lowers to 2 code points in
-  JS, 1 in PG — locale-honest, surfaces as a loud verify-identity tier
-  mismatch, deliberately not special-cased.
-
-## Security posture (updated 2a.3)
-
-- ~~Every secret fell back silently to a constant published in this repo~~
-  *Paid (2a.3)* *(audit — critical):* `secretForSource` and the ledger HMAC
-  key now **fail closed** with an actionable error; the demo defaults exist
-  only behind an explicit `ALLOW_DEV_SECRETS=1`, and the ingest service
-  asserts all required secrets at boot (one aggregated error). Git history
-  was checked clean of real secrets.
-- ~~No replay protection~~ *Paid (2a.3):* signatures are now
-  `t=<seconds>,sha256=<hmac over t.body>` with a ±300s window (the
-  Stripe/Slack/HubSpot consensus). The timestamp is signed material —
-  re-stamping a captured header fails. Within-window replays are absorbed by
-  `(source, event_id)` idempotent dedup.
-- ~~"Read-only agent" was a naming convention~~ *Paid (2a.3):* the report/MCP
-  pool connects as `switchboard_agent`, a role Postgres limits to SELECT on
-  the analytics schema — no raw/ingest access at all. Pinned by tests that
-  assert the *database* refuses writes (42501). Previously the pool was the
-  app superuser and the `READ_TOOLS` allowlist was the only barrier *(audit)*.
-- **JSON parsing precedes HMAC verification** *(audit)* — `express.json()`
-  runs before the route's signature check, so unauthenticated bytes reach the
-  parser (malformed JSON + no signature → 400, not 401). Verification itself
-  is byte-correct (the parser's verify hook captures exact bytes). A test
-  comment used to claim the opposite ordering; it was corrected and the actual
-  order is now pinned by its own test. Moving verification into middleware
-  ahead of the parser is the stricter design; deferred as low-priority — the
-  parser surface is `express.json` with an explicit 100kb limit.
-  *Narrowed (debt-burn B8):* the parser no longer precedes ROUTING — body
-  handling is route-scoped with source validation first, so a request to an
-  unknown `:source` answers 404 with the parser never run (it previously
-  asserted a nonexistent endpoint's opinion of the body: 400/413/415). Only
-  requests addressed to a source that exists reach the parser now, with the
-  pinned 400/413/415 semantics unchanged for them. The parse-before-AUTH
-  half above still stands as stated.
-- **The allowlist gates tool NAMES, not behavior** — rewriting the body of the
-  one read-only tool would pass every current test. The database role (above)
-  is the backstop that makes this bounded. Full behavioral evaluation and the
-  approval-gated write action are Phase 3 scope (OWASP LLM06 "complete
-  mediation" is the design reference: authorization enforced downstream, never
-  by the model's own choices).
-- **Prompt-injection surface is unmitigated** *(audit)* — entity names/domains
-  flow verbatim into the report prompt. Blast radius today is a wrong
-  paragraph in a Markdown file (the risk table is computed deterministically
-  and sits beside the narrative); this MUST be closed before Phase 3 grants
-  any write action.
-- **Secrets live in environment variables** — right-sized for this phase, but
-  env vars are readable by all of a process's children and can leak into
-  dumps; a real deployment should use a secret manager.
-
-## Ingestion & reliability (MED)
-
-- ~~The demo/chaos scripts leak their mock server processes~~ *Paid (debt-burn
-  B2); CI-confirmed 2026-08-01 — the chaos workflow ran green with the new
-  group-kill traps on the wave head.* The cleanup traps used to `kill` the
-  `npm` process they started, but `npm run` spawns through a shell and does not
-  reap its grandchild on SIGTERM ([npm/cli#6684](https://github.com/npm/cli/issues/6684)),
-  so a `node` listener could outlive the script and hold its port — what
-  contaminated the first CI chaos run. Both scripts now enable job control
-  (`set -m`: every backgrounded pipeline becomes its own process group) and the
-  traps kill the GROUP (`kill -- -PGID`), reaping the npm→sh→node chain —
-  mechanism live-verified on macOS with a grandchild chain. The entry's
-  original fix suggestion was itself refuted by research: `setsid` does not
-  exist on macOS and `pkill -P` matches direct children only. The freshness/
-  instance guards stay as the second line of defense (their `lsof` guidance
-  remains the stale-state recovery path), and chaos+demo remain separate CI
-  jobs. Final confirmation is the next CI chaos run — the scripts must not run
-  in shared local environments.
-- ~~`alter default privileges` in the migrations is not scoped `FOR ROLE`~~ *Paid in
-  full (2b migration 007 + debt-burn B9):* the static grants for the default
-  `public_analytics` schema were `FOR ROLE`-scoped in 007 (catalog-proven under a
-  split-role migrator), and the *runtime* grant in `migrate.ts` (`grantAgentReadOnly`,
-  which handles `DBT_SCHEMA` overrides) is now scoped too — `FOR ROLE $DBT_ROLE`, a
-  new identifier-gated env var naming the role dbt connects as, with the docs'
-  membership precondition surfaced as a clear error and role existence checked
-  (pinned in `grant-role-scope.test.ts`, membership case under a non-superuser
-  migrator). `DBT_ROLE` unset preserves the old unscoped behavior for existing
-  deployments and logs the limitation at migrate time (wording pinned). Also note:
-  007's scoped grant requires the migrator to be a member of `switchboard` — a
-  missing membership fails loudly at migrate time.
-- ~~`replayAllQuarantined` records no attempt~~ *Paid (2b, migration 007):* quarantine rows
-  now carry `attempts` and `last_attempt_at`, recorded on every replay attempt (recorded
-  *before* the outcome on purpose: a crash can overcount attempts, never undercount — the
-  forever-crashing rows this feature exists to expose are exactly the ones that must never
-  show zero). The original text for the record: a permanently-unreplayable row was retried
-  forever and quarantine depth could never drop, and an operator could not answer the
-  question dead-letter handling exists to answer: *has this been tried, and can it safely
-  be replayed?* Still open alongside it: nothing alerts on quarantine depth (listed under
-  operations below).
-- ~~`/simulate` has no explicit start index, so which events a mock emits depends
-  on a process-lifetime counter rather than on the request~~ *Paid (debt-burn
-  B3):* `/simulate` now takes an optional `start_index` (0-based script index
-  of the batch's first event), making emission a pure function of the request
-  — identical explicit-index requests emit the same events **by identity**
-  (seq/id/type/data) across a server restart (pinned in
-  `mocks/core/test/source-app.test.ts`; `occurred_at` and hashes stay
-  wall-clock, so the guarantee is event-identity purity, not byte purity —
-  the pin says exactly this). The explicit-index
-  arm was chosen over `/reset` because a reset reintroduces exactly the shared
-  mutable state being removed (research §B3). Default no-index behavior is
-  byte-identical to before, and the process counter never rewinds below its
-  high-water mark, so a shared ledger file keeps the chain verifier's
-  strictly-increasing `seq` — a guarantee that is serial-only: a concurrent
-  explicit-index request racing the counter could mint colliding seqs, which
-  the ledger verifier's uniqueness predicate now catches loudly downstream
-  (cold-pass note; the mocks are driven serially everywhere in this repo).
-  The freshness assertions in demo.sh/chaos.sh
-  remain as the second line of defense.
-- ~~The backfill poll path still trusts the feed's cursor~~ *Paid (debt-burn
-  A9):* the cursor now advances only to the max seq ACTUALLY processed from
-  the page (ingested, duplicate, or quarantined — never the feed-supplied
-  `last_seq`, with a monotonic no-rewind guard), so an overstating feed's gap
-  is re-polled instead of silently skipped; and the fetch carries the sibling
-  connectors' per-attempt `AbortSignal.timeout` (L1-G4), so a black-holed feed
-  is a bounded named failure with the cursor untouched. Pinned in
-  `backfill.test.ts` (lying feed recovered in full; 300ms bounded timeout).
-- ~~The ledger hash chain doesn't enforce `seq` monotonicity or event-id
-  uniqueness — a restarted mock forks the logical stream and still
-  verifies~~ (that fork now breaks the chain at its line). *Paid in full
-  (debt-burn A6, to the Task D report's spec):* both
-  `verifyLedgerChain` copies now enforce `seq` strictly increasing and
-  `event_id` unique with `{ ok: false, brokenAt }`, the cross-copy drift test
-  runs both copies over identical predicate fixtures, and `reconcile()` counts
-  `ledgerDuplicates` instead of collapsing them in the Set (printed and gated
-  by the CLI). Details of the original entry kept below for the record.
-  - **Paid in Task D, for the bus source only:** the casebus stream's replay-id
-    position is monotone **across resets** (a reset clears retained events but
-    never rewinds the position counter), so a pre-reset cursor can never be
-    silently revalidated by a later event; replay ids are unique by
-    construction; and at-least-once duplicate delivery is pinned as
-    absorbed-and-counted end to end (`bus-replay-oracle.test.ts` oracle 2).
-    That removes the "replay makes duplicate seq real" hazard *for that
-    source* — it does not touch the ledger verifier.
-  - ~~Still outstanding: the verifier half (both copies, cross-copy drift
-    coverage, and the `ledgerIds` Set collapse in `reconcile()`)~~ *Paid
-    (debt-burn A6)* — see above; nothing of this entry remains with Task F.
-- **Three connector-layer Minors were deliberately deferred at 2b Task D's
-  review, and are recorded here rather than only in a task report** (which is
-  the failure mode the L1-G7 entry above exists to correct). The review
-  endorsed each skip; what follows is the decision, not a rediscovery list.
-  *Owner: phase-2b close.*
-  - ~~`BusReplayConnector.catchUp` has no `has_more`-with-empty-batch structural
-    check, though its own `reconcile` does one screen away~~ *Paid (debt-burn
-    A4, with its own RED as demanded):* catchUp now fails immediately and by
-    name on an empty batch carrying `has_more:true` (no cursor progress ⇒
-    structurally unterminating), instead of spinning to a `maxRounds`
-    exhaustion misdiagnosed as depth; the maxRounds pin itself now runs against
-    an honestly-deep stream.
-  - ~~`StripeFeedReconcileReport.gaps` is still populated (from the ledger) but no
-    longer read by the reconcile CLI~~ *Paid (debt-burn A3):* the remove arm was
-    eliminated (AIP-180 — removing a public field is a breaking change, and the
-    Task B oracle reads it); the CLI now consumes `gaps` (stripefeed AND bus) as
-    a cross-check against the ledger rows it prints — agreement printed even at
-    zero, disagreement a named red + nonzero exit (`cli/gap-crosscheck.ts`).
-  - ~~`gap-ack --list` without `--source` iterates `enabledSources()`, so a gap
-    recorded against a source not currently in `INGEST_SOURCES` is invisible~~
-    *Paid (debt-burn A5, in the one considered pass this entry asked for):*
-    `--list` now defaults to ALL recorded gap state for the tenant, rows tagged
-    with their source and not-currently-enabled sources flagged (disclosure,
-    not noise); `--source` narrows; `--tenant` landed on both CLIs in the same
-    pass (see the tenancy entry below).
-- ~~The door-enumeration comment in `ingest/src/event-schema.ts` is stale~~
-  *Paid (debt-burn, B12 rider + review fix):* the bus-replay door joined the
-  enumeration as this entry asked — and the review's grep of
-  `eventSchema.safeParse` call sites then found **hub-hydrate** (Task C's
-  door) also missing, now added. The enumeration matches the grep at head:
-  seven doors (webhook, quarantine replay, backfill poll, sheet-snapshot,
-  stripe-feed, hub-hydrate, bus-replay).
-- ~~`ingest.outbox` has no consumer *(audit)* — written in the hot ingest
-  transaction, `processed_at` never set, grows one row per event forever,
-  *named* for a transactional-outbox pattern the system doesn't implement~~
-  *Paid (debt-burn B10, rename+cap arm):* the implement arm was eliminated —
-  the pattern's authority (microservices.io) requires a message relay
-  publishing to a broker with consumers, and none of those exists here (dbt
-  reads `raw` directly; durability is pg-boss's), so a relay would publish to
-  nobody. Migration 011 renames the table to what it is —
-  `ingest.ingest_journal`, an in-transaction ingest audit row and the demo's
-  equality counter — drops the never-set `processed_at` (the relay's column),
-  and bounds growth with a 30-day TTL enforced by an on-insert trigger (TTL
-  over a size cap: a row cap would silently shorten the equality window under
-  load; reasoning in the migration). Pinned in `ingest-journal.test.ts`; the
-  migration comment records that a real outbox becomes warranted only when a
-  downstream consumer exists (Phase 3/4).
-- **`reconcile()` is unbounded in memory** *(audit)* — full event-id set and
-  full parsed ledger in memory; the headline reliability proof OOMs before
-  the documented ledger ceiling bites. Fine at demo scale; listed in
-  scaling-ceilings now.
-- ~~Unstorable quarantined rows have no replay path~~ *Partially paid (2a.3):*
-  `npm run quarantine` now lists and replays quarantined rows through the
-  ingest gate. jsonb-unstorable rows (NUL / lone surrogates / extreme depth)
-  still report `still-invalid` by design — the event store is jsonb too;
-  `replay --sanitize` (explicit, logged, operator-approved transform) remains
-  planned — **re-stamped at phase-2b close (F11): Phase 4** (2b closed without
-  it; it rides the same Phase-4 raw-contract step that makes jsonb-unstorable
-  rows storable in the first place).
-- ~~Oversized bodies return 500, not 413~~ *Paid (2a.3):* 413 with an explicit
-  100kb limit; non-JSON content types now 415 instead of a downstream 500.
-  (Upgraded from "cosmetic": to a real vendor, 500 means *retry me* — Stripe
-  retries up to 3 days, HubSpot 10 times over 24h — so the wrong status turns
-  one bad payload into a sustained retry storm.)
-- **Nothing alerts on quarantine depth** — the CLI makes it *visible*
-  (`--list`), but nothing pages. *Scheduled: Phase 4 monitoring.*
-- ~~No migration tracking table — every start re-runs all migration files~~
-  *Struck as stale (debt-burn B11/V2) — the tracking half was already paid and
-  this entry contradicted the "What production would require" §3, which
-  records it as paid:* `ingest.schema_migrations` exists with per-file sha256
-  checksums (`migrate.ts:41-47` DDL, `:53-55` hashing), an applied-unchanged
-  file is skipped (`:69`), a changed applied file **throws** naming the file
-  (`:59-68` — refuse-on-drift), and a file is recorded only after success
-  (`:72-79`), so a mid-file failure retries instead of being assumed done.
-  ~~Narrowed entry — the advisory-lock half~~ *Paid (phase-2b close, F14, with
-  the owed researched RED):* `runMigrations` now serializes concurrent boots
-  with a session-level `pg_advisory_lock` taken on ONE dedicated checked-out
-  client and held for the entire guarded section — the research's key finding
-  was that the old `pool.query`-per-statement runner made a naive pool-level
-  lock a silent no-op (the lock binds to whichever pooled connection served
-  that one call). Session-level over `pg_advisory_xact_lock` deliberately:
-  per-file record-after-success retry semantics are preserved. try/finally
-  unlock; an unconfirmable unlock destroys the client so session end releases
-  the lock (no pooled-but-locked connection can deadlock the next boot).
-  Pinned in `migration-tracking.test.ts` (a second boot BLOCKS while the lock
-  is held and proceeds on release — RED shown first against the lockless
-  runner; release pinned on success AND failure). Disclosed caveat, unchanged:
-  a transaction-pooling proxy (PgBouncer marks session advisory locks "Never"
-  compatible with transaction pooling) would silently disable this lock —
-  nothing in this stack runs one today; revisit the mechanism if one appears.
-- ~~Env parsing foot-guns *(audit)* — `PORT`/`BACKFILL_INTERVAL_MS` go
-  through bare `Number()` (a typo yields `NaN`, and `setInterval(fn, NaN)`
-  fires every ~1ms), and an unrecognized `INGEST_ROLE` silently means "do
-  nothing"~~ *Paid (debt-burn B1):* boot config now goes through a strict
-  hand-rolled parser (`ingest/src/config.ts`, envalid semantics without the
-  dependency): integer + range for `PORT` (1–65535) and
-  `BACKFILL_INTERVAL_MS` (1–2147483647, setInterval's documented clamp
-  boundary), whitelist for `INGEST_ROLE` — any invalid value is a boot
-  refusal naming the variable, the rejected value, and what is accepted
-  (wording pinned in `config.test.ts`; a typo can no longer become a ~1ms
-  hot loop or a role that silently does nothing).
-
 ## Spreadsheet source (sheets) — dispositions from the A-slice (2b)
+
 
 The sheet-snapshot connector treats a mutable grid as a CDC source: events are
 manufactured from row content, reconcile re-reads the sheet's own truth, and the
 push channel is a latency hint only. These are the honest edges of that design.
 
-- **Column reorder is UNPROVEN against a real sheet.** The mock models header
-  *renames* only — column positions never move — so no test can exercise a
-  reorder. The connector is built for it anyway (the carried landmine rule:
-  positions are resolved by header *name* on every fetch and never cached), so
-  reorder is expected-safe by construction, but that expectation has never met a
-  real spreadsheet. *Owner: first real-Sheets engagement; verify before trusting.*
 - **The mock's trigger quota is a lifetime budget, not a daily one.** Real Apps
   Script refreshes its trigger budget on a day boundary; the mock has no day
   rollover, so after `dailyQuota` posts its channel is silent *forever*. This is
   the conservative side — the connector experiences a strictly worse channel than
   reality — and reconcile-first cycles are what carry it. No fix scheduled; the
   pessimism is the point.
+
 - **The trigger channel is lossy by design and blind to API writes** (documented:
   "Script executions and API requests don't cause triggers to run", and Apps
   Script gives no delivery guarantee). Any write from another tool, a future
@@ -425,6 +112,7 @@ push channel is a latency hint only. These are the honest edges of that design.
   documented fact, not debt: **reconcile against the sheet's own rows is the
   correctness guarantee**; the nudge door only shortens latency. Proven by the
   drop-heavy oracle test (85% loss, convergence anyway).
+
 - **Per-sheet secrets are a low-trust model.** `WEBHOOK_SECRET_SHEETS` follows
   the house per-source scheme, but on a real engagement the signer is an
   Apps-Script trigger holding the secret in script properties — readable by every
@@ -433,33 +121,13 @@ push channel is a latency hint only. These are the honest edges of that design.
   low-trust-holder consequences are engagement-side work. Treat a sheets secret
   as cheap to rotate and worth nothing beyond nudge forgery (a forged nudge can
   only trigger an early read of the sheet's own truth).
-- **`deriveState` is O(full history), and history only grows.** Both of its
-  queries (latest-per-row and the supersession counts) scan every sheet event
-  ever ingested — every edit *and* every revert appends forever, so per-cycle
-  cost grows monotonically. Registered: (a) near-term, a functional index on
-  `(tenant_id, source, (payload->'data'->>'row_key'), id)` serves both queries;
-  (b) the structural ceiling (compaction / materialized latest-state) belongs to
-  the Phase-4 raw-contract step, not the connector. Trigger: a sheets lane past
-  ~10⁵ events or measured catchUp latency regression.
+
 - **A still-garbage row re-quarantines every cycle.** The diff re-attempts any
   row whose raw state mismatches the sheet, so a row a human left broken adds one
   quarantine entry per catchUp until the cell is fixed. Quarantine *depth*
   therefore overstates distinct bad rows on this lane — triage by distinct
   `row_key`/`content_hash`, and see the RUNBOOK's fix-the-cell workflow.
-- ~~The long-running service's backfill loop is still feed-shaped~~ *Paid (A7):*
-  the interval runner now routes every enabled source through
-  `connectorFor(source).catchUp` — the feed trio's behavior is pinned unchanged
-  (regression tests in `service-wiring.test.ts`), and an opted-in sheets source
-  runs snapshot catchUp cycles instead of 404ing `/events` once a minute.
-- ~~No process hosts the nudge door yet~~ *Paid (A7, with the loop above — the
-  deliberate sequencing this bullet promised):* `main.ts` now wires the sheets
-  interval runner into `createIngestApp` as the nudge hook whenever sheets is
-  enabled in a worker/all-role process, so a signed nudge runs an early catchUp
-  through the same overlap guard as the loop (a nudge during a running cycle
-  coalesces — skipped, never queued: the stateless connector's next cycle reads
-  a fresh snapshot anyway). Receiver-only processes still host no runner and
-  answer the honest 503; `WEBHOOK_SECRET_SHEETS` stays boot-asserted exactly
-  when sheets ∈ `INGEST_SOURCES`.
+
 - **Blank-row tolerance is CONFIRMED — by the paradigm's own oracle, not by
   demo integration (phase-close D3 decision, executed as researched).** Sheets
   deliberately stays out of `demo.sh` (its anchors are the public front door's
@@ -470,12 +138,14 @@ push channel is a latency hint only. These are the honest edges of that design.
   rule, nothing quarantined (`ingest/test/sheet-oracle.test.ts`, M2) — and
   stages with NULL amount/currency by design, counted and refused-not-summed
   downstream (`ingest/test/sheet-mart-oracle.test.ts`).
+
 - **Closed:** the supersession counter (A4.1) — content-addressed ids made a
   human's *revert* a permanent duplicate (pipeline served B while the sheet said
   A, reconcile stale forever); re-sightings now salt the id with `-r<n>` derived
   statelessly from raw, and the ABA soak pins convergence after every cycle.
 
 ## Billing feed source (stripefeed) — the 30-day retention boundary (2b Task B)
+
 
 The Stripe-style feed retains events for **30 days** (research-verified; the
 mock models it with a seeded clock). That window is a *stated data-loss
@@ -492,18 +162,21 @@ second admitted loss class, reported with bounds rather than papered over.
   `created` — via `catchUpWithReport` and the reconcile report (`gaps`,
   `cause: "retention"`). A backfill target older than 30 days is the same
   story: the feed cannot serve it, and no amount of retrying changes that.
+
 - **Gap reports ARE durable (resolved in 2b Task D).** They used to live only in
   the detecting process's memory, which made reconcile-as-gate timing-dependent.
   Migration 010 added `ingest.gap_ledger`; both loss-bearing connectors write it,
   and reconcile reports from the table. A catchUp-then-exit process followed by a
   fresh reconcile process now re-reports the loss. See the casebus section below
   for the acknowledgement workflow that governs both sources.
+
 - **Aged-out raw rows are metabolism, not anomalies.** Reconcile counts raw
   events older than the feed's earliest retained event as `agedOutRaw`
   (ingested, then aged out — the point of ingestion) and reserves `extra` for
   the real anomaly: a raw event *inside* the retained window that the feed no
   longer serves. The two are separable only by that time boundary; an event
   exactly at the boundary second is classified conservatively as `extra`.
+
 - **Behavior change to shipped Task B, disclosed here at phase close (the
   register's owed visibility, F4):** a feed envelope with a malformed
   `created` timestamp used to make reconcile REFUSE the whole window
@@ -521,6 +194,7 @@ second admitted loss class, reported with bounds rather than papered over.
   review-response commit, invisible to a register reader.
 
 ## CRM thin-webhook source (hubcrm) — metadata-only push + hydration (2b Task C)
+
 
 The HubSpot-style source delivers **metadata-only** webhook batches (up to 100
 events per request, ordering not guaranteed, 10 retries over 24 hours and then
@@ -557,12 +231,14 @@ fetched afterwards. Three stated limits of the paradigm itself:
   *recoverable* by the connector. Recovery is an operator decision (vendor-side
   re-send, or accepting the gap); deriving events from the store would be
   fabricating history and is deliberately not done.
+
 - **Hydrated snapshots are FETCH-time state, not notify-time state (D7).** A
   mutation landing between the webhook and the fetch means an event's snapshot
   can be newer than the event itself; two events for the same object can carry
   identical snapshots. This is a fact of the vendor's design, stored honestly
   (`ingest.hydrated_snapshots.fetched_at` says when we looked); sequencing is
   governed by staging's occurred_at-wins ordering, never by snapshot content.
+
 - **The hydration DLQ is terminal until an operator acts.** An event whose
   object fetch exhausts its bounded retries (or whose snapshot fails the field
   contract — quarantined with a named reason, never silently stored) is
@@ -592,6 +268,7 @@ fetched afterwards. Three stated limits of the paradigm itself:
 
 ## The faithful-source end-state (2b Task F-1c) — what remains 2a, and why
 
+
 The warehouse now stages **only from the faithful sources**: the CRM arm from
 hubcrm hydrated snapshots (merge lineage from `company.merge` events — both
 merge inputs map to the NEW survivor, translated into the business-key space
@@ -608,20 +285,24 @@ Deliberate remainders, each bounded and owned:
   `stg_support__csat` (`csat.recorded`). Its ticket lifecycle events still
   land in raw but no model consumes them (declared-but-unconsumed is the
   registry's permitted direction).
+
 - **The 2a billing mock remains in the repo but feeds no model and runs in no
   demo/CI composition except chaos**, where it (with support) is the
   ledger-feed paradigm's zero-loss actor — drops recovered by feed backfill,
   the story the faithful window paradigms cannot tell.
+
 - **The `evt-N` sweep is complete on the CRM side** (the minting died with the
   deleted mock) and **bounded on the billing/support side**: `evt-N` ids are
   minted only by `mocks/core/src/source-app.ts` for those two lanes, nothing
   reads them as ordinals anywhere (the ordinal tiebreak retired in Task C),
   and the remainder retires with the mocks themselves.
+
 - **The `crm` Source literal is a registered, mock-less legacy lane**
   (`ingest/src/sources.ts`): no longer default-enabled, nothing serves its
   port; removing the literal is a wider spec change (raw rows under it may
   exist in deployed databases; many door/contract suites exercise the generic
   machinery through it) that rides the full 2a retirement wave.
+
 - **Permanent hubcrm webhook loss remains detected-not-recovered** (see the
   hubcrm section above). The chaos green path therefore drives hubcrm through
   its RECOVERABLE weather (duplicates, holdovers, shuffle, bounded
@@ -633,6 +314,7 @@ Deliberate remainders, each bounded and owned:
   the **reconcile-driven repair pump** (automated re-arm/repair) stays
   **Phase 3**, deliberately: automated repair wants the approval-queue spine
   (operator-approved actions with audit semantics), not a close-scope daemon.
+
 - **A merge whose survivor snapshot is missing is a RED BUILD, not a repair**
   *(cold review I-3, F-1c fix round)*. `merge_edges` translates through
   snapshots, and the two miss directions are not symmetric: a consumed-side
@@ -650,6 +332,7 @@ Deliberate remainders, each bounded and owned:
   enters the state.
 
 ## Support event-bus source (casebus) — the 72-hour window and the stream reset (2b Task D)
+
 
 The event-bus paradigm is a stream you **subscribe** to. It retains events for
 **72 hours** (research-verified against the vendor's durability docs; the mock
@@ -672,6 +355,7 @@ leaves it is gone from the source forever.
   be a fabricated diagnosis. Disclosed limit: an org that moves instances and
   keeps the same stream identity would be misreported as `retention`. The
   bounds and the loss itself are unaffected; only the cause label is.
+
 - **Recovery is EARLIEST by default, and that is a deliberate loss-minimizing
   choice.** LATEST would abandon everything still retained but not yet
   ingested, converting an already-permanent bounded loss into a larger one.
@@ -680,6 +364,7 @@ leaves it is gone from the source forever.
   knowable far edge for the gap. A deployment can configure LATEST; when it
   does, the gap honestly reports a NULL far edge, because "everything up to
   now" has no near bound.
+
 - **At-least-once delivery means duplicates are normal, not faults.** The same
   event arrives more than once, sometimes under the same replay id. It is
   absorbed by `(tenant, source, event_id)` and **counted** in the catch-up
@@ -687,6 +372,7 @@ leaves it is gone from the source forever.
   would be indistinguishable from a bug.
 
 ### The durable gap ledger and the acknowledgement workflow (both loss-bearing sources)
+
 
 `ingest.gap_ledger` (migration 010) records every admitted permanent loss for
 **both** stripefeed and casebus: cause, bounds, detection time, acknowledgement.
@@ -699,130 +385,21 @@ leaves it is gone from the source forever.
   is not closing, hiding, or resolving; it records that a named human saw the
   loss and accepted it. A *new* gap after an acknowledgement reds the run
   again — acknowledging one loss never blanket-silences the next.
+
 - **The operator path is a CLI**, `src/cli/gap-ack.ts` (`--list`, or
   `--source … --id … --by … --note …`), not documented SQL: the act needs an
   operator identity, `acknowledged_by` should not be whatever database role a
   psql session used, and a documented UPDATE invites a WHERE-clause slip that
   acknowledges every open gap at once. The tool cannot express that.
+
 - **One loss is one row**, keyed `(tenant, source, cause, from_event_id)`, so a
   once-a-minute backfill loop re-detecting the same loss does not manufacture a
   row per tick. On re-detection the original row is returned untouched: the far
   edge is not refreshed (that would quietly widen a loss that never grew) and
   an acknowledgement is not cleared.
-- ~~Disclosed limit — tenancy on the operator surfaces~~ *Paid (debt-burn A5):*
-  both CLIs now take `--tenant` — gap-ack scopes its listing and its
-  acknowledgement, reconcile constructs every tenant-capable connector scoped
-  to the named tenant and reads/gates that tenant's gap ledger — with the
-  default-tenant behavior unchanged when the flag is absent (pinned with a
-  non-default tenant in `bus-cli.test.ts`). One honest residue: the
-  ledger-feed paradigm's reconcile compares a whole raw lane against one
-  ledger file and is **not** tenant-scoped, so reconcile `--tenant` refuses
-  ledger-feed sources by name rather than answering cross-tenant.
 
-### Deferred minors from the Task D review (owners assigned)
+## Numeric & monetary integrity — by design
 
-- ~~The reconcile integrity probe can throw instead of judging~~ *Paid (debt-burn
-  A1):* `replayIdIsServed` is now classified AWS-SDK-style — only the vendor's
-  documented corrupted-cursor rejection is a verdict (gap path unchanged); any
-  other probe failure is transient transport and becomes
-  `integrity: { ok: false }` for that source only, with its own wording, **no
-  gap row filed**, standing-loss disclosure and later sources intact (pinned
-  both directions in `bus-replay.test.ts` and `bus-cli.test.ts`).
-- ~~A status frame that omits `stream_id` can bind a new cursor to the old
-  stream identity~~ *Paid (2b Task F):* the mock gained its honest knob
-  (`omitStreamIdInStatusFrames`, budget consumed only by frames actually
-  rendered), and the simulated RED corrected this entry's own direction claim
-  (the standing simulate-don't-reason rule): the coalesce resurrected a
-  PREVIOUS stream's identity, so the next ordinary age-out compared stale-old
-  vs current and mislabeled **retention as `reset`** — not reset as retention
-  (that direction is the separate, documented conservative unknown-identity
-  path). Fix: `setCursor` writes the identity verbatim (NULL = "unobserved"),
-  and the connector binds only identity observed DURING THE RUN (a mid-run
-  omitting frame keeps the run's carry; a blind run binds NULL). Pinned both
-  directions plus the boundary in `bus-replay.test.ts`; reconcile's mid-scan
-  carry matches.
-- ~~A ledger-insert failure in the corrupted-cursor path now fails the
-  backfill — an unremarked failure-mode change with no test naming it~~ *Paid
-  (debt-burn A2):* research (WAL record-before-act) resolved the open
-  loud-vs-forward decision to **fail loud, on purpose** — the accidental
-  behavior was the correct behavior. Now remarked at both `recordGap` sites in
-  `bus-replay.ts` and pinned in `bus-replay.test.ts`: insert fails ⇒ run
-  fails, cursor not advanced, no gap row; the next healthy run re-detects.
-- ~~A2 residue — the RECONCILE-path `recordGap` throw still suppresses later
-  sources' disclosures~~ *Paid (phase-2b close, F13):* A1's per-source
-  containment shape now wraps `connector.reconcile()` in the CLI — a throw
-  (deliberately including the fail-loud gap INSERT failure, A2's verdict kept:
-  the connector never reports a loss it could not record) is contained to its
-  source, which still discloses its standing ledger record (an INSERT failure
-  is not an outage of the SELECTs), voids its live read with a named FAIL, and
-  lets every later source print. The disclosure block was hoisted into one
-  helper used by both the normal path and the catch, so the two outputs cannot
-  drift. Pinned both directions in `bus-cli.test.ts` (trigger-forced INSERT
-  failure: standing loss + named FAIL + later source's PASS all print, exit 1,
-  no report lines for the thrown source, no gap row written; RED shown first —
-  the shipped CLI died at its top-level catch with later sources silent).
-
-### Deferred minors from the debt-burn cold pass and Task E (each carries an owner, or is a disclosed standing limit)
-
-- ~~The service log sits outside the compile-time consumption contract~~
-  *Paid (2b Task F):* `createBackfillRunner` in `main.ts` now carries the
-  same per-kind rest-destructure wall as the two CLIs (`satisfies
-  Record<string, never>` over the base plus all four widened catch-up
-  shapes), so checklist line 1's THIRD surface is compile-enforced — a
-  phantom field planted on `StripeFeedCatchUpReport` errors in both
-  `cli/backfill.ts` AND `main.ts` (demonstrated in the Task F report). The
-  wall also surfaced two genuine service-log gaps it exists to catch: sheets
-  `degradations` and hub `hydrated`/`tombstoned` were consumed by the old
-  base-shape read and printed nowhere — both now print (loud channel for
-  degradations; quiet-when-zero work line for hydration counts).
-- ~~The profile seam reaches the three 2a mocks only; the four 2b mocks are
-  deaf to it~~ *Paid (2b Task F-1):* sheets (`seed.ts`/`sheet.ts`/
-  `editor.ts`), stripefeed (`feed.ts`), hubcrm (`store.ts`), and casebus
-  (`stream.ts`) now accept `profile` through the same seam as the 2a mocks
-  — one optional option, threaded to `generateManifest`, generic by default,
-  refusing unknown names at construction with the valid set — so a profiled
-  full stack keeps cross-system domain correlation coherent. Pinned per mock
-  (content IS the profile's manifest; refusal is loud) in
-  `ingest/test/profile-threading.test.ts`. Profile selection is still
-  programmatic only (no script/env threads one) — unchanged, and now safe
-  either way.
-- **Profile flavor-word vetting is review-enforced, not machine-enforced** —
-  the per-profile hygiene scans catch real email/domain shapes, but a real
-  brand name used as a flavor word would pass (plant-verified in the Task E
-  review). The limit is stated at the `ProfileContent` comment; content edits
-  need human vetting against real-world names. *Standing limit, disclosed —
-  no fix scheduled; machine-enforcing "is this a real company" is not
-  tractable here.*
-
-- ~~The bus arm of the gaps-vs-ledger cross-check printed a claim it could not
-  discriminate~~ *Paid (phase-2b close, F10, claim-narrowing arm):* the bus
-  arm's PASS line now says what it is — "gap cross-check (structural): the bus
-  report's gaps are the ledger's own rows — self-consistency, not an
-  independent derivation" — while the stripefeed arm keeps the real
-  "report agrees with the durable gap ledger" claim (its report derives gaps
-  independently). The comparison still runs on both arms as defense in depth;
-  an independent bus derivation remains real design work, deliberately not
-  done at close (nothing now overclaims while it doesn't exist). Pinned in
-  `bus-cli.test.ts` (structural wording positive, independent-claim wording
-  negative, both zero-gap and gap-bearing runs).
-- ~~A gap recorded on a source later removed from the SOURCES registry is
-  listable but unacknowledgeable~~ *Paid (phase-2b close, F9):* the `isSource`
-  gate in `gap-ack` now falls back to the RECORDED ledger — a `--source` with
-  gap rows for the tenant is a source of record whatever the registry says
-  today, so the loss can be listed under its name AND accepted; only a source
-  unknown to BOTH the registry and the ledger refuses as a typo. Pinned in
-  `bus-cli.test.ts` (removed-source gap acknowledged end to end; typo still
-  refused; RED shown first).
-- ~~A well-formed but unknown `--tenant` UUID silently PASSes~~ *Paid (phase-2b
-  close, F8):* an EXPLICITLY named tenant with zero rows across every
-  tenant-scoped table now refuses on both CLIs with shared wording — "no
-  recorded state for tenant …" (`cli/tenant-state.ts`), exit 1 — instead of a
-  clean reconcile PASS / healthy-looking empty gap listing. Flag-absent
-  default-tenant runs are untouched (a fresh deployment legitimately starts
-  empty). Pinned in `bus-cli.test.ts` (unknown-tenant red on both CLIs, RED
-  shown first; sibling refusal wordings excluded per checklist line 5).
-
-## Numeric & monetary integrity (added with the numeric-integrity wave)
 
 - **The ingest contract cannot help rows that never pass a door.** The numeric contract
   (`ingest/src/numeric-contract.ts`) gates the webhook, replay, and backfill paths via the
@@ -831,6 +408,7 @@ leaves it is gone from the source forever.
   a bad value to one NULL instead of a dead build. If those casts were ever removed as
   "redundant with the contract", this is what breaks. By design; disclosed so it stays a
   decision rather than becoming an assumption.
+
 - **`plausibleMax` is borrowed from Stripe's 8-digit charge bound.** It is derived for a
   Stripe-shaped processor and arbitrary for anything else, which is why exceeding it
   only ever WARNs and never rejects — a genuine large amount must never fail a build or
@@ -840,6 +418,7 @@ leaves it is gone from the source forever.
   (`unlikely_amount_payment_count` / `unlikely_amount_invoice_count`), and OR'd into
   `has_data_warnings`; the dbt warn surface (`assert_amounts_plausible`) now reads that
   flag. Flagged is still never refused: the amounts stay in every sum.
+
 - **A green `dbt build` in CI means "ERROR=0 and WARN=1", not "no warnings".** The CI
   fixture deliberately seeds one above-bound charge (close F7) so the unlikely-value
   surface is proven to fire end-to-end in the built warehouse rather than passing
@@ -855,21 +434,7 @@ leaves it is gone from the source forever.
   live: forcing a second warn left `dbt build` at exit 0 and redded the gate. Adding a
   legitimate new warn-severity expectation means editing the contract file — deliberate,
   reviewed, and visible in the diff, which is the point.
-- ~~Numeric bounds exist twice: TypeScript contract and dbt test SQL~~ *Paid (2b Task
-  G):* the contract's quantitative bounds are now EMITTED to dbt as the
-  `numeric_bounds` seed (`scripts/generate-numeric-bounds-seed.ts`, committed generated
-  file per the free-email-seed precedent), the staging flag and both invariant-reading
-  tests join the seed instead of re-typing values, and the consistency pins in
-  `ingest/test/numeric-bounds-seed.test.ts` mechanically red the suite on any
-  contract⇄seed drift (row-wise both directions, plus byte-wise against the emitter).
-  `assert_csat_in_scale` got a loud-when-bound-missing shape so a vanished seed row can
-  never turn the invariant vacuous.
-- **Cross-currency refusal is deliberately conservative at the deal grain.** Whether an
-  entity's deals "mix currencies" is judged across ALL its deals, while the guarded sum is
-  open-deals-only — so a closed EUR deal NULLs an otherwise pure-USD open-pipeline sum.
-  Over-refusal only: no cross-currency number can ever be emitted, and all-USD data is
-  unaffected. The precise fix (`count(distinct currency) filter (where status = 'open')`)
-  is known and deferred until a real multi-currency source exists to test against.
+
 - **Currency is now validated at the door (Phase 2b Task A2).** The field contract
   declares `currency` on the four money-bearing types: present-but-malformed quarantines
   the whole event with a reason naming the field (replayable like any quarantined event);
@@ -880,6 +445,7 @@ leaves it is gone from the source forever.
   registered follow-up, **owner stamped at phase-2b close (R11): Phase 4
   hardening / the next contract-touching slice** (dormant until a real vendor
   exercises the door; previously unowned, which was the only defect).
+
 - **Legacy rows with NO currency field no longer sum at all.** Any NULL-currency row
   (never carried, or — on doorless rows — malformed and nulled at staging) refuses its
   source's money sums:
@@ -896,48 +462,32 @@ leaves it is gone from the source forever.
   stamped at phase-2b close (R11): Phase 4 hardening / the next
   contract-touching slice (dormant until a currencyless source lands;
   previously unowned).*
+
 - **An error-severity numeric test failure halts the mart refresh.** dbt skips downstream
   models when a staging test fails at severity error, so one NULL amount that reaches
   staging stops `customer_360` rebuilding until someone looks. Loud by design — with the
   ingest contract active, a NULL there means enforcement decayed or a doorless row appeared
   — but operationally it is a stop-the-line switch, not a warning light.
+
 - **`pg_input_is_valid` requires PostgreSQL 16+.** Compose, CI, and the docs all pin
   Postgres 16; a deployment on 15 or older fails at `dbt build` with an undefined-function
   error in every staging model that guards a cast.
 
-## Architecture (decided, scheduled)
+## Security, tooling and content — standing limits
 
-- **The raw store is stricter than the wire.** `raw_events.payload` is jsonb,
-  which rejects content valid JSON can carry; today's quarantine divert is the
-  mitigation. Decided end-state — **re-stamped at phase-2b close (F11)**: the
-  2b-D decision took the expand-now arm only, and the raw CONTRACT step
-  (**text-first raw** + **claim-check enqueue**, which dissolves this class
-  entirely) moved to **Phase 4**; 2b closed without it, and this label
-  previously still promised it "Phase 2b".
-- ~~Mirrored SQL in tests is synced by discipline~~ *Paid (2a.3), with a
-  correction:* this file previously said a mechanical CI diff was "in
-  progress". That check **did not exist**, and could never have worked — the
-  mirrors were deliberately non-identical (ref→fixture substitutions). Worse,
-  the audit found one mirror had **already drifted** (`like 'company.%'` vs
-  the model's `= 'company.updated'`, under a comment claiming to be "the
-  exact" query), so three ordering invariants were being proven against a
-  query not in production. The fix is stronger than detection: all four
-  mirrored SQL strings were deleted and the tests now **load the real model
-  text from disk** (`loadModel`, refs → fixtures) — drift is structurally
-  impossible, and re-introducing the audit's exact drift turns the suite red
-  (demonstrated in the 2a.3 commit).
-- ~~HMAC/ledger helpers duplicated across workspaces, cross-compat "by
-  construction"~~ *Corrected and paid (2a.3):* the previous wording here
-  overstated what the tests proved — the "cross-compat" tests wrote with a
-  *third, test-local copy* of the algorithm and never imported the mock, so
-  the mock-side copies could drift with every test green (only the nightly
-  chaos workflow would have caught it). The
-  tests now import the REAL mock functions; mutating the mock's hashing turns
-  7 tests red (demonstrated). The `src` copies remain intentionally duplicated
-  — **re-stamped at phase-2b close (F11): the shared package did not land in
-  2b** (`ingest/src/hmac.ts` and `mocks/core/src/hmac.ts` both live at head);
-  it is **Phase 4** consolidation work, and the cross-compat tests above are
-  what hold the pair together until then.
+
+- **Secrets live in environment variables** — right-sized for this phase, but
+  env vars are readable by all of a process's children and can leak into
+  dumps; a real deployment should use a secret manager.
+
+- **Profile flavor-word vetting is review-enforced, not machine-enforced** —
+  the per-profile hygiene scans catch real email/domain shapes, but a real
+  brand name used as a flavor word would pass (plant-verified in the Task E
+  review). The limit is stated at the `ProfileContent` comment; content edits
+  need human vetting against real-world names. *Standing limit, disclosed —
+  no fix scheduled; machine-enforcing "is this a real company" is not
+  tractable here.*
+
 - **Version-fragile dependencies are now pinned** *(audit)* — `pg-boss` exact
   at 12.26.1 (four documented behaviors depend on its *internals*, which
   semver does not cover) and the MCP SDK exact (the registration guard casts
@@ -948,6 +498,7 @@ leaves it is gone from the source forever.
   is the v5 types line, not removal.
 
 ## Process honesty
+
 
 - **Moving to real runners found three defects a green local suite could not.**
   For most of this project's life the workflows were committed and locally
@@ -985,13 +536,16 @@ leaves it is gone from the source forever.
     infrastructure rather than trusting the developer's laptop.
   - An earlier version of this list got two of these wrong. It was corrected
     against the run IDs above, which is what publishing them is for.
+
 - **"Written test-first" is narrated, not provable** for early phases.
   Hardening work since 2a.2 commits the failing test before the fix so git
   history carries the proof (RED→GREEN pairs).
+
 - **The agent's action-safety surface is thin by design at this phase** — one
   read-only tool, protocol-level rejection of everything else, and (2a.3) a
   database role that cannot write. The approval-gated write action and
   behavioral safety evaluation are Phase 3 scope.
+
 - **What the demo does NOT prove:** reconcile proves id-set parity, not
   payload parity (a source that mutated an event's `data` and re-delivered
   under the same id reconciles clean); and in production the vendor is the
@@ -999,6 +553,7 @@ leaves it is gone from the source forever.
   (see `docs/real-connector-delta.md`).
 
 ## What production would require (scoping, not backlog)
+
 
 Disclosed deliberately: these are *client-blocking*, not blocking for this project's
 current scope,
@@ -1012,12 +567,14 @@ and none is started. Effort classes are estimates by the maintainer.
    authority mandates it). Note the 2a.3 least-privilege work is a
    *prerequisite* either way: RLS is silently inert for table owners and
    superusers, which is exactly what the app role was.
+
 2. **One real vendor connector (6–9 weeks; 2–3 per vendor after).** OAuth2
    token lifecycle, opaque cursors (the bigint watermark doesn't survive
    contact with HubSpot/Stripe/Zendesk pagination), thin-event hydration
    inside the queue worker, per-vendor signature schemes (every real one signs
    a timestamp — the 2a.3 scheme gives that somewhere to land), backoff that
    honors `Retry-After`, and fetch timeouts.
+
 3. **Operations.** ~~Postgres volume + rehearsed restore~~ and ~~migration
    tracking~~ are **paid**: the database now lives in a named volume, and
    `scripts/verify-durability.sh` proves — by executing it — that data survives
@@ -1031,16 +588,720 @@ and none is started. Effort classes are estimates by the maintainer.
    correlation ids, and metrics + alerts on queue/DLQ/quarantine depth and
    backfill last-success age (the backfill can die permanently while logging a
    reassuring line every 60s).
+
 4. **The automation surface (3–5 weeks + agent loop).** Action/intent objects,
    an approval queue, outbound idempotency keys, an agent-action audit log,
    and injection defense — the OWASP LLM06 architecture. Nothing here exists;
    it is Phase 3 by design, and the current report worker is a summarizer, not
    an agent (the README says so).
+
 5. **End-user surface (4–8 weeks).** Scheduler, delivery channel, auth,
    approval UI. Today's user surface is a Markdown file on the operator's
    disk.
 
+---
+
+# Part II — Open defects
+
+Real debt. Every entry names an **owner**. Where the owner is *unscheduled*, the
+entry names the **trigger** that would schedule it — an unscheduled item with no
+trigger is not a disclosure, it is a shrug, and does not belong here.
+
+
+## Multi-tenancy: the ingest layer is tenant-scoped; the analytics layer is NOT (partially paid)
+
+
+**Paid (migration 006).** The audit's highest-severity finding was cross-tenant
+data *loss*: `raw_events` uniqueness was `(source, event_id)`, so two tenants'
+vendors both emitting `evt-1` silently dropped the second and reported it as a
+successful de-duplication. That is closed:
+
+- Uniqueness is now `(tenant_id, source, event_id)` — exactly-once is preserved
+  *within* a tenant, and the same id from two businesses becomes two rows.
+
+- `tenant_id` is present and indexed on `raw.raw_events`, `ingest.ingest_journal`
+  (né `ingest.outbox`, renamed in migration 011), `ingest.quarantine` and
+  `ingest.cursors`. Cursors are keyed
+  `(tenant_id, source)`: a shared cursor would let one tenant's progress skip
+  another's events permanently.
+
+- A tenant is **required, never defaulted** — supplying it explicitly-but-empty
+  throws rather than silently substituting the default tenant.
+
+- Row-level security is enabled **and forced** on all four tables. Note the
+  reason `FORCE` alone was not enough here: PostgreSQL documents that
+  *"superusers and roles with the `BYPASSRLS` attribute always bypass the row
+  security system"*, and this project's `switchboard` role is a superuser. So
+  006 also creates a non-superuser `switchboard_app` role, and the isolation
+  test proves the boundary **through that role** — it fails if pointed back at
+  the superuser. "We enabled RLS" is not a claim worth making otherwise.
+
+**Still open, and it is the larger half.** All four sub-items share one owner:
+
+- **The analytics layer has no tenant partition.** Staging models, the identity
+  tiers, and `customer_360` are unchanged. Two clients' "Acme Group /
+  acme.com" would still merge into one entity — cleanly, with audit evidence,
+  and **no ambiguity flag**, because the over-merge guard fires when one key
+  maps to *multiple* canonicals and each tenant contributes exactly one. It is
+  an over-merge guard, not a boundary guard. `customer_360` would sum both
+  clients' revenue. Retrofitting means a partition in every join predicate and
+  group-by across ~14 models.
+
+  *Owner: unscheduled — the isolation-model decision in Part I §"What production would require" 1 gates all four. Trigger: the first multi-tenant engagement, or any deployment serving a second business from one instance.*
+
+- **The RLS policy permits access when no tenant context is set.** That is what
+  keeps migrations, reconcile, dbt and the single-tenant demo working — but it
+  means RLS here guards against cross-tenant leaks in tenant-scoped code paths,
+  not against an application role that simply declines to set the context.
+  Closing it needs a policy with no fallback branch on a dedicated role.
+
+  *Owner: unscheduled — same decision, same trigger as above.*
+
+- **One `WEBHOOK_SECRET_<SOURCE>` per source**, so tenant B's secret is tenant
+  A's secret. Per-tenant-per-source secrets are the fix.
+
+  *Owner: unscheduled — same decision, same trigger as above.*
+
+- **No caller-identity model for the agent** — the read-only role is not
+  tenant-scoped, so the report worker sees all tenants.
+
+
+
+  *Owner: unscheduled — same decision, same trigger as above.*
+
+Until the analytics half lands, treat this as **single-tenant with a
+tenant-safe ingest floor**: the pipeline will no longer destroy a second
+tenant's data, but it will still merge two tenants' *entities* downstream.
+
+## Security posture — open
+
+
+- **JSON parsing precedes HMAC verification** *(audit)* — `express.json()`
+  runs before the route's signature check, so unauthenticated bytes reach the
+  parser (malformed JSON + no signature → 400, not 401). Verification itself
+  is byte-correct (the parser's verify hook captures exact bytes). A test
+  comment used to claim the opposite ordering; it was corrected and the actual
+  order is now pinned by its own test. Moving verification into middleware
+  ahead of the parser is the stricter design; deferred as low-priority — the
+  parser surface is `express.json` with an explicit 100kb limit.
+  *Narrowed (debt-burn B8):* the parser no longer precedes ROUTING — body
+  handling is route-scoped with source validation first, so a request to an
+  unknown `:source` answers 404 with the parser never run (it previously
+  asserted a nonexistent endpoint's opinion of the body: 400/413/415). Only
+  requests addressed to a source that exists reach the parser now, with the
+  pinned 400/413/415 semantics unchanged for them. The parse-before-AUTH
+  half above still stands as stated.
+
+  *Owner: unscheduled — deliberately low priority: the parser surface is `express.json` with an explicit 100kb limit, and the parse-before-ROUTING half was closed in debt-burn B8. Trigger: any change that widens the body-parsing surface, or a real vendor whose signature scheme needs pre-parse access to raw bytes.*
+
+- **The allowlist gates tool NAMES, not behavior** — rewriting the body of the
+  one read-only tool would pass every current test. The database role (above)
+  is the backstop that makes this bounded. Full behavioral evaluation and the
+  approval-gated write action are Phase 3 scope (OWASP LLM06 "complete
+  mediation" is the design reference: authorization enforced downstream, never
+  by the model's own choices).
+
+  *Owner: Phase 3 — behavioral evaluation lands with the approval-gated write action.*
+
+- **Prompt-injection surface is unmitigated** *(audit)* — entity names/domains
+  flow verbatim into the report prompt. Blast radius today is a wrong
+  paragraph in a Markdown file (the risk table is computed deterministically
+  and sits beside the narrative); this MUST be closed before Phase 3 grants
+  any write action.
+
+  *Owner: Phase 3 — and it is a **blocker** for it: this MUST be closed before any write action is granted.*
+
+## Ingestion, operations and architecture — open
+
+
+- **`reconcile()` is unbounded in memory** *(audit)* — full event-id set and
+  full parsed ledger in memory; the headline reliability proof OOMs before
+  the documented ledger ceiling bites. Fine at demo scale; listed in
+  scaling-ceilings now.
+
+  *Owner: unscheduled — bounded by the documented ceiling in `docs/scaling-ceilings.md`; harmless at demo scale. Trigger: any lane whose raw volume approaches the ledger ceiling already recorded there, or the first non-demo deployment of reconcile.*
+
+- ~~Unstorable quarantined rows have no replay path~~ *Partially paid (2a.3):*
+  `npm run quarantine` now lists and replays quarantined rows through the
+  ingest gate. jsonb-unstorable rows (NUL / lone surrogates / extreme depth)
+  still report `still-invalid` by design — the event store is jsonb too;
+  `replay --sanitize` (explicit, logged, operator-approved transform) remains
+  planned — **re-stamped at phase-2b close (F11): Phase 4** (2b closed without
+  it; it rides the same Phase-4 raw-contract step that makes jsonb-unstorable
+  rows storable in the first place).
+
+  *Owner: Phase 4 *(re-stamped — was "Phase 2b" until the F11 truth pass)*. It rides the same Phase-4 raw-contract step that makes jsonb-unstorable rows storable in the first place.*
+
+- **Nothing alerts on quarantine depth** — the CLI makes it *visible*
+  (`--list`), but nothing pages. *Scheduled: Phase 4 monitoring.*
+
+  *Owner: Phase 4 monitoring.*
+
+- **The raw store is stricter than the wire.** `raw_events.payload` is jsonb,
+  which rejects content valid JSON can carry; today's quarantine divert is the
+  mitigation. Decided end-state — **re-stamped at phase-2b close (F11)**: the
+  2b-D decision took the expand-now arm only, and the raw CONTRACT step
+  (**text-first raw** + **claim-check enqueue**, which dissolves this class
+  entirely) moved to **Phase 4**; 2b closed without it, and this label
+  previously still promised it "Phase 2b".
+
+  *Owner: Phase 4 *(re-stamped — the 2b-D decision took the expand arm only; this label previously still promised "Phase 2b")*.*
+
+- **Column reorder is UNPROVEN against a real sheet.** The mock models header
+  *renames* only — column positions never move — so no test can exercise a
+  reorder. The connector is built for it anyway (the carried landmine rule:
+  positions are resolved by header *name* on every fetch and never cached), so
+  reorder is expected-safe by construction, but that expectation has never met a
+  real spreadsheet. *Owner: first real-Sheets engagement; verify before trusting.*
+
+  *Owner: unscheduled — first real-Sheets engagement. Trigger: pointing the connector at a real spreadsheet; verify before trusting it.*
+
+- **`deriveState` is O(full history), and history only grows.** Both of its
+  queries (latest-per-row and the supersession counts) scan every sheet event
+  ever ingested — every edit *and* every revert appends forever, so per-cycle
+  cost grows monotonically. Registered: (a) near-term, a functional index on
+  `(tenant_id, source, (payload->'data'->>'row_key'), id)` serves both queries;
+  (b) the structural ceiling (compaction / materialized latest-state) belongs to
+  the Phase-4 raw-contract step, not the connector. Trigger: a sheets lane past
+  ~10⁵ events or measured catchUp latency regression.
+
+  *Owner: near-term half (the functional index) unscheduled with a stated trigger — a sheets lane past ~10⁵ events or a measured catchUp latency regression; structural half (compaction / materialized latest-state) Phase 4, with the raw-contract step.*
+
+- **Cross-currency refusal is deliberately conservative at the deal grain.** Whether an
+  entity's deals "mix currencies" is judged across ALL its deals, while the guarded sum is
+  open-deals-only — so a closed EUR deal NULLs an otherwise pure-USD open-pipeline sum.
+  Over-refusal only: no cross-currency number can ever be emitted, and all-USD data is
+  unaffected. The precise fix (`count(distinct currency) filter (where status = 'open')`)
+  is known and deferred until a real multi-currency source exists to test against.
+
+  *Owner: unscheduled — the precise fix is known and written down. Trigger: a real multi-currency source to test against. Over-refusal only until then; no wrong number can be emitted.*
+
+## Open halves of entries that live in Part I
+
+These four are open work whose *context* is a design disclosure, so the full
+explanation stays where it belongs in Part I and only the open half is counted
+here. They are listed by name so the scoreboard is countable without reading the
+whole file.
+
+- **Reconcile-driven hydration repair pump** (automated re-arm/repair for
+  DLQ'd hubcrm hydrations). The operator-invoked half shipped at the 2b close as
+  the `hydrate-rearm` CLI; the automated half was deliberately split off,
+  because automated repair wants the approval-queue spine rather than a
+  close-scope daemon. Context: Part I, faithful-source end-state.
+
+  *Owner: Phase 3 — on the approval-queue spine.*
+- **ISO-4217 currency allowlist at the door.** The field contract's
+  `^[A-Z]{3}$` pattern admits plausible fakes like `"ABC"`. Context: Part I,
+  numeric & monetary integrity.
+
+  *Owner: Phase 4 hardening / the next contract-touching slice (R11). Dormant
+  until a real vendor exercises the door.*
+- **Connector-level `default_currency` config.** A source that legitimately
+  sends no currency should get a per-source declared default at the
+  connector/config layer, not a lenient mart. Context: Part I, numeric &
+  monetary integrity.
+
+  *Owner: Phase 4 hardening / the next contract-touching slice (R11). Dormant
+  until a currencyless source lands.*
+- **Shared HMAC/ledger package.** `ingest/src/hmac.ts` and
+  `mocks/core/src/hmac.ts` both live at head; the cross-compat tests (which now
+  import the REAL mock functions) are what hold the pair together until they are
+  consolidated. Context: Part III, architecture.
+
+  *Owner: Phase 4 *(re-stamped — the shared package did not land in 2b)*.*
+
+## Cosmetic residues that are still genuinely open
+
+- **Migration 001-recreate / 003-drop churn at startup.** Cosmetic noise on every
+  boot; nothing depends on it.
+
+  *Owner: unscheduled. Trigger: the Phase-4 raw-contract step, which rewrites
+  this area anyway.*
+- **Agent test files assign `DBT_SCHEMA` at module top-level and share one
+  database** — order-dependent by construction, benign today *(audit)*.
+
+  *Owner: unscheduled. Trigger: the first observed order-dependent failure, or
+  any parallelisation of the agent workspace's suite.*
+
+---
+
+# Part III — Paid
+
+The struck history, kept for the record. Each entry keeps its original wording
+and its *Paid (…)* provenance, because what was wrong — and what actually fixed
+it — is the part worth reading.
+
+## Identity resolution
+
+
+- ~~`occurred_at` ordered as text and unvalidated at ingest~~ *Paid (2a.2):*
+  ISO-8601 gate at both raw doors, `timestamptz` ordering. *Extended (2a.3):*
+  the gate now also bounds occurred_at to **[now-30d, now+5m]** — a
+  well-formed-but-absurd timestamp (`9999-12-31`, vendor clock bugs) previously
+  pinned an entity's latest-state forever, undislodgeable by any later correct
+  event *(audit)*. Out-of-window events quarantine, never drop.
+
+- ~~Multi-tuple entities can straddle ambiguity guards~~ *Paid (2b Task F):*
+  every tier's over-merge guard now groups by **entity** (source,
+  source_entity_id) across ALL of the entity's evidence — never by (entity,
+  evidence-key) — so a requester whose tickets carry two clean tuples matching
+  two different canonicals demotes to manual review exactly like a single
+  ambiguous tuple always did, at both tiers. The live-reproduced 2026-07-31
+  shapes (tier-2 two-clean-tuples; tier-1 different-emails bypassing
+  `tier1_ambiguous`) are pinned as plain green tests in
+  `ingest/test/identity-straddle.test.ts`, shown red against the pre-fix SQL;
+  boundary companions pin that corroborating evidence (multiple tuples, one
+  canonical) still resolves at its tier. Evidence strings for the new
+  cross-group case name the count of conflicting tuples/emails.
+
+- ~~Tier 2 is unsafe on free-email domains~~ *(audit)* *Paid (2b Task F):*
+  the free-email blocklist (dbt seed `free_email_domains`, provenance on the
+  seed schema) now demotes any tier-2 match whose domain evidence is a free
+  provider to manual review with the provider named — never a silent merge of
+  two unrelated gmail businesses, and never a bare `unmatched` that hides
+  that a match occurred. Free evidence is no-signal: it neither resolves nor
+  conflicts (corporate evidence beside it still resolves); exact-address
+  tier-1 evidence stays provider-blind. The sheets arm's orphan-derived
+  domains run through the same gate. The normalizer legal-name variants
+  (trailing comma, `Co`/`PLLC`, `&`/`and`, double spaces) are fixed in the
+  shared normalizer pair, vector-pinned. *(F-1)* The list is now VENDORED —
+  13k+ domains from the exact-pinned `free-email-domains` npm package (MIT,
+  NOTICE) via a committed generator (`scripts/generate-free-email-seed.ts`)
+  that validates shape and refuses example-universe entries; the committed
+  CSV's content is pinned (canonical-provider sentinels, well-formedness) and
+  the demotion is exercised through the REAL list, closing the F-core
+  review's vacuity finding. Upstream includes disposable/webmail hosts —
+  deliberately kept: neither category identifies a company, and a listed-
+  domain match demotes to a human, never drops data.
+
+- ~~A merge event targeting a nonexistent company mints a phantom canonical~~
+  *Paid (2a.2):* `assert_canonical_targets_exist` dbt test + unit test proving
+  the detection fires.
+
+- ~~`crm_emails` reads full raw history~~ *Paid (2a.2):* latest-state only.
+
+- ~~Unicode confusables under-merge silently~~ *Paid (2b Task F):* the pinned
+  normalizer now NFC-normalizes, deletes zero-width characters, and reads NBSP
+  as a space — in BOTH languages (shared `normalizeCompanyName` in mocks/core;
+  identical SQL expression in `identity_resolution.sql`), vector-pinned in
+  `ingest/test/normalizer-vectors.test.ts`.
+
+- ~~Email evidence is byte-exact, and the arms disagree on even that~~ *(cold
+  review M-3)* *Paid (phase-2b close, F15 — the promised identity-quality
+  pass):* one shared rule at every email evidence edge —
+  `nullif(lower(trim(email)), '')` in `identity_resolution.sql` (crm_emails +
+  billing/support source_entities arms; sheets always had it) with the TS half
+  `normalizeEmail` in mocks/core — vector-pinned like the name normalizer
+  (`EMAIL_NORMALIZATION_VECTORS`, end-to-end tier-1 per vector in BOTH join
+  directions, RED shown first: mixed-case under-merged on the shipped SQL).
+  Deliberate scope: lower-trim only — SMTP's case-sensitive-local-part edge is
+  accepted (a collision routes to manual-review tiers, never a silent merge,
+  and the pre-fix under-merge of ordinary mixed-case mail was the larger real
+  error); no plus-tag/dot aliasing rules, which are provider-specific and
+  would manufacture false merges.
+
+- ~~TS↔SQL normalizer divergence outside the pinned vectors~~ *(cold review
+  M-4)* *Paid (phase-2b close, F16 — vectors first, then the truth):* both
+  suspected classes are now vector-pinned (em-space U+2003; non-ASCII
+  uppercase "CAFÉ"), and the RED run refuted the suspicion on the pinned
+  stack — postgres:16-alpine runs en_US.utf8 (compose AND CI), where PG's
+  regex space class matches U+2003 and `lower()` agrees with `.toLowerCase()`
+  on the accented class, so the vectors pin AGREEMENT. The C-locale tripwire
+  covers ONE of the two classes, measured not assumed (close review, C-locale
+  scratch db): the accented vector genuinely diverges there (SQL `cafÉ group`
+  vs the TS oracle's `café group`) and reds the SQL-side suite loudly, while
+  the em-space vector collapses identically under BOTH locales — that vector
+  fixes its class as agreement but buys no locale coverage, and is annotated
+  as such at the vector. One residual divergence found and documented AT the vector
+  (mocks/core `normalize.ts`): Turkish İ (U+0130) lowers to 2 code points in
+  JS, 1 in PG — locale-honest, surfaces as a loud verify-identity tier
+  mismatch, deliberately not special-cased.
+
+## Security posture
+
+
+- ~~Every secret fell back silently to a constant published in this repo~~
+  *Paid (2a.3)* *(audit — critical):* `secretForSource` and the ledger HMAC
+  key now **fail closed** with an actionable error; the demo defaults exist
+  only behind an explicit `ALLOW_DEV_SECRETS=1`, and the ingest service
+  asserts all required secrets at boot (one aggregated error). Git history
+  was checked clean of real secrets.
+
+- ~~No replay protection~~ *Paid (2a.3):* signatures are now
+  `t=<seconds>,sha256=<hmac over t.body>` with a ±300s window (the
+  Stripe/Slack/HubSpot consensus). The timestamp is signed material —
+  re-stamping a captured header fails. Within-window replays are absorbed by
+  `(source, event_id)` idempotent dedup.
+
+- ~~"Read-only agent" was a naming convention~~ *Paid (2a.3):* the report/MCP
+  pool connects as `switchboard_agent`, a role Postgres limits to SELECT on
+  the analytics schema — no raw/ingest access at all. Pinned by tests that
+  assert the *database* refuses writes (42501). Previously the pool was the
+  app superuser and the `READ_TOOLS` allowlist was the only barrier *(audit)*.
+
+## Ingestion & reliability
+
+
+- ~~The demo/chaos scripts leak their mock server processes~~ *Paid (debt-burn
+  B2); CI-confirmed 2026-08-01 — the chaos workflow ran green with the new
+  group-kill traps on the wave head.* The cleanup traps used to `kill` the
+  `npm` process they started, but `npm run` spawns through a shell and does not
+  reap its grandchild on SIGTERM ([npm/cli#6684](https://github.com/npm/cli/issues/6684)),
+  so a `node` listener could outlive the script and hold its port — what
+  contaminated the first CI chaos run. Both scripts now enable job control
+  (`set -m`: every backgrounded pipeline becomes its own process group) and the
+  traps kill the GROUP (`kill -- -PGID`), reaping the npm→sh→node chain —
+  mechanism live-verified on macOS with a grandchild chain. The entry's
+  original fix suggestion was itself refuted by research: `setsid` does not
+  exist on macOS and `pkill -P` matches direct children only. The freshness/
+  instance guards stay as the second line of defense (their `lsof` guidance
+  remains the stale-state recovery path), and chaos+demo remain separate CI
+  jobs. Final confirmation is the next CI chaos run — the scripts must not run
+  in shared local environments.
+
+- ~~`alter default privileges` in the migrations is not scoped `FOR ROLE`~~ *Paid in
+  full (2b migration 007 + debt-burn B9):* the static grants for the default
+  `public_analytics` schema were `FOR ROLE`-scoped in 007 (catalog-proven under a
+  split-role migrator), and the *runtime* grant in `migrate.ts` (`grantAgentReadOnly`,
+  which handles `DBT_SCHEMA` overrides) is now scoped too — `FOR ROLE $DBT_ROLE`, a
+  new identifier-gated env var naming the role dbt connects as, with the docs'
+  membership precondition surfaced as a clear error and role existence checked
+  (pinned in `grant-role-scope.test.ts`, membership case under a non-superuser
+  migrator). `DBT_ROLE` unset preserves the old unscoped behavior for existing
+  deployments and logs the limitation at migrate time (wording pinned). Also note:
+  007's scoped grant requires the migrator to be a member of `switchboard` — a
+  missing membership fails loudly at migrate time.
+
+- ~~`replayAllQuarantined` records no attempt~~ *Paid (2b, migration 007):* quarantine rows
+  now carry `attempts` and `last_attempt_at`, recorded on every replay attempt (recorded
+  *before* the outcome on purpose: a crash can overcount attempts, never undercount — the
+  forever-crashing rows this feature exists to expose are exactly the ones that must never
+  show zero). The original text for the record: a permanently-unreplayable row was retried
+  forever and quarantine depth could never drop, and an operator could not answer the
+  question dead-letter handling exists to answer: *has this been tried, and can it safely
+  be replayed?* Still open alongside it: nothing alerts on quarantine depth (listed under
+  operations below).
+
+- ~~`/simulate` has no explicit start index, so which events a mock emits depends
+  on a process-lifetime counter rather than on the request~~ *Paid (debt-burn
+  B3):* `/simulate` now takes an optional `start_index` (0-based script index
+  of the batch's first event), making emission a pure function of the request
+  — identical explicit-index requests emit the same events **by identity**
+  (seq/id/type/data) across a server restart (pinned in
+  `mocks/core/test/source-app.test.ts`; `occurred_at` and hashes stay
+  wall-clock, so the guarantee is event-identity purity, not byte purity —
+  the pin says exactly this). The explicit-index
+  arm was chosen over `/reset` because a reset reintroduces exactly the shared
+  mutable state being removed (research §B3). Default no-index behavior is
+  byte-identical to before, and the process counter never rewinds below its
+  high-water mark, so a shared ledger file keeps the chain verifier's
+  strictly-increasing `seq` — a guarantee that is serial-only: a concurrent
+  explicit-index request racing the counter could mint colliding seqs, which
+  the ledger verifier's uniqueness predicate now catches loudly downstream
+  (cold-pass note; the mocks are driven serially everywhere in this repo).
+  The freshness assertions in demo.sh/chaos.sh
+  remain as the second line of defense.
+
+- ~~The backfill poll path still trusts the feed's cursor~~ *Paid (debt-burn
+  A9):* the cursor now advances only to the max seq ACTUALLY processed from
+  the page (ingested, duplicate, or quarantined — never the feed-supplied
+  `last_seq`, with a monotonic no-rewind guard), so an overstating feed's gap
+  is re-polled instead of silently skipped; and the fetch carries the sibling
+  connectors' per-attempt `AbortSignal.timeout` (L1-G4), so a black-holed feed
+  is a bounded named failure with the cursor untouched. Pinned in
+  `backfill.test.ts` (lying feed recovered in full; 300ms bounded timeout).
+
+- ~~The ledger hash chain doesn't enforce `seq` monotonicity or event-id
+  uniqueness — a restarted mock forks the logical stream and still
+  verifies~~ (that fork now breaks the chain at its line). *Paid in full
+  (debt-burn A6, to the Task D report's spec):* both
+  `verifyLedgerChain` copies now enforce `seq` strictly increasing and
+  `event_id` unique with `{ ok: false, brokenAt }`, the cross-copy drift test
+  runs both copies over identical predicate fixtures, and `reconcile()` counts
+  `ledgerDuplicates` instead of collapsing them in the Set (printed and gated
+  by the CLI). Details of the original entry kept below for the record.
+  - **Paid in Task D, for the bus source only:** the casebus stream's replay-id
+    position is monotone **across resets** (a reset clears retained events but
+    never rewinds the position counter), so a pre-reset cursor can never be
+    silently revalidated by a later event; replay ids are unique by
+    construction; and at-least-once duplicate delivery is pinned as
+    absorbed-and-counted end to end (`bus-replay-oracle.test.ts` oracle 2).
+    That removes the "replay makes duplicate seq real" hazard *for that
+    source* — it does not touch the ledger verifier.
+  - ~~Still outstanding: the verifier half (both copies, cross-copy drift
+    coverage, and the `ledgerIds` Set collapse in `reconcile()`)~~ *Paid
+    (debt-burn A6)* — see above; nothing of this entry remains with Task F.
+
+- **Three connector-layer Minors were deliberately deferred at 2b Task D's
+  review, and are recorded here rather than only in a task report** (which is
+  the failure mode the L1-G7 entry above exists to correct). The review
+  endorsed each skip; what follows is the decision, not a rediscovery list.
+  *Owner: phase-2b close.*
+  - ~~`BusReplayConnector.catchUp` has no `has_more`-with-empty-batch structural
+    check, though its own `reconcile` does one screen away~~ *Paid (debt-burn
+    A4, with its own RED as demanded):* catchUp now fails immediately and by
+    name on an empty batch carrying `has_more:true` (no cursor progress ⇒
+    structurally unterminating), instead of spinning to a `maxRounds`
+    exhaustion misdiagnosed as depth; the maxRounds pin itself now runs against
+    an honestly-deep stream.
+  - ~~`StripeFeedReconcileReport.gaps` is still populated (from the ledger) but no
+    longer read by the reconcile CLI~~ *Paid (debt-burn A3):* the remove arm was
+    eliminated (AIP-180 — removing a public field is a breaking change, and the
+    Task B oracle reads it); the CLI now consumes `gaps` (stripefeed AND bus) as
+    a cross-check against the ledger rows it prints — agreement printed even at
+    zero, disagreement a named red + nonzero exit (`cli/gap-crosscheck.ts`).
+  - ~~`gap-ack --list` without `--source` iterates `enabledSources()`, so a gap
+    recorded against a source not currently in `INGEST_SOURCES` is invisible~~
+    *Paid (debt-burn A5, in the one considered pass this entry asked for):*
+    `--list` now defaults to ALL recorded gap state for the tenant, rows tagged
+    with their source and not-currently-enabled sources flagged (disclosure,
+    not noise); `--source` narrows; `--tenant` landed on both CLIs in the same
+    pass (see the tenancy entry below).
+
+- ~~The door-enumeration comment in `ingest/src/event-schema.ts` is stale~~
+  *Paid (debt-burn, B12 rider + review fix):* the bus-replay door joined the
+  enumeration as this entry asked — and the review's grep of
+  `eventSchema.safeParse` call sites then found **hub-hydrate** (Task C's
+  door) also missing, now added. The enumeration matches the grep at head:
+  seven doors (webhook, quarantine replay, backfill poll, sheet-snapshot,
+  stripe-feed, hub-hydrate, bus-replay).
+
+- ~~`ingest.outbox` has no consumer *(audit)* — written in the hot ingest
+  transaction, `processed_at` never set, grows one row per event forever,
+  *named* for a transactional-outbox pattern the system doesn't implement~~
+  *Paid (debt-burn B10, rename+cap arm):* the implement arm was eliminated —
+  the pattern's authority (microservices.io) requires a message relay
+  publishing to a broker with consumers, and none of those exists here (dbt
+  reads `raw` directly; durability is pg-boss's), so a relay would publish to
+  nobody. Migration 011 renames the table to what it is —
+  `ingest.ingest_journal`, an in-transaction ingest audit row and the demo's
+  equality counter — drops the never-set `processed_at` (the relay's column),
+  and bounds growth with a 30-day TTL enforced by an on-insert trigger (TTL
+  over a size cap: a row cap would silently shorten the equality window under
+  load; reasoning in the migration). Pinned in `ingest-journal.test.ts`; the
+  migration comment records that a real outbox becomes warranted only when a
+  downstream consumer exists (Phase 3/4).
+
+- ~~Oversized bodies return 500, not 413~~ *Paid (2a.3):* 413 with an explicit
+  100kb limit; non-JSON content types now 415 instead of a downstream 500.
+  (Upgraded from "cosmetic": to a real vendor, 500 means *retry me* — Stripe
+  retries up to 3 days, HubSpot 10 times over 24h — so the wrong status turns
+  one bad payload into a sustained retry storm.)
+
+- ~~No migration tracking table — every start re-runs all migration files~~
+  *Struck as stale (debt-burn B11/V2) — the tracking half was already paid and
+  this entry contradicted the "What production would require" §3, which
+  records it as paid:* `ingest.schema_migrations` exists with per-file sha256
+  checksums (`migrate.ts:41-47` DDL, `:53-55` hashing), an applied-unchanged
+  file is skipped (`:69`), a changed applied file **throws** naming the file
+  (`:59-68` — refuse-on-drift), and a file is recorded only after success
+  (`:72-79`), so a mid-file failure retries instead of being assumed done.
+  ~~Narrowed entry — the advisory-lock half~~ *Paid (phase-2b close, F14, with
+  the owed researched RED):* `runMigrations` now serializes concurrent boots
+  with a session-level `pg_advisory_lock` taken on ONE dedicated checked-out
+  client and held for the entire guarded section — the research's key finding
+  was that the old `pool.query`-per-statement runner made a naive pool-level
+  lock a silent no-op (the lock binds to whichever pooled connection served
+  that one call). Session-level over `pg_advisory_xact_lock` deliberately:
+  per-file record-after-success retry semantics are preserved. try/finally
+  unlock; an unconfirmable unlock destroys the client so session end releases
+  the lock (no pooled-but-locked connection can deadlock the next boot).
+  Pinned in `migration-tracking.test.ts` (a second boot BLOCKS while the lock
+  is held and proceeds on release — RED shown first against the lockless
+  runner; release pinned on success AND failure). Disclosed caveat, unchanged:
+  a transaction-pooling proxy (PgBouncer marks session advisory locks "Never"
+  compatible with transaction pooling) would silently disable this lock —
+  nothing in this stack runs one today; revisit the mechanism if one appears.
+
+- ~~Env parsing foot-guns *(audit)* — `PORT`/`BACKFILL_INTERVAL_MS` go
+  through bare `Number()` (a typo yields `NaN`, and `setInterval(fn, NaN)`
+  fires every ~1ms), and an unrecognized `INGEST_ROLE` silently means "do
+  nothing"~~ *Paid (debt-burn B1):* boot config now goes through a strict
+  hand-rolled parser (`ingest/src/config.ts`, envalid semantics without the
+  dependency): integer + range for `PORT` (1–65535) and
+  `BACKFILL_INTERVAL_MS` (1–2147483647, setInterval's documented clamp
+  boundary), whitelist for `INGEST_ROLE` — any invalid value is a boot
+  refusal naming the variable, the rejected value, and what is accepted
+  (wording pinned in `config.test.ts`; a typo can no longer become a ~1ms
+  hot loop or a role that silently does nothing).
+
+## Spreadsheet source (sheets)
+
+
+- ~~The long-running service's backfill loop is still feed-shaped~~ *Paid (A7):*
+  the interval runner now routes every enabled source through
+  `connectorFor(source).catchUp` — the feed trio's behavior is pinned unchanged
+  (regression tests in `service-wiring.test.ts`), and an opted-in sheets source
+  runs snapshot catchUp cycles instead of 404ing `/events` once a minute.
+
+- ~~No process hosts the nudge door yet~~ *Paid (A7, with the loop above — the
+  deliberate sequencing this bullet promised):* `main.ts` now wires the sheets
+  interval runner into `createIngestApp` as the nudge hook whenever sheets is
+  enabled in a worker/all-role process, so a signed nudge runs an early catchUp
+  through the same overlap guard as the loop (a nudge during a running cycle
+  coalesces — skipped, never queued: the stateless connector's next cycle reads
+  a fresh snapshot anyway). Receiver-only processes still host no runner and
+  answer the honest 503; `WEBHOOK_SECRET_SHEETS` stays boot-asserted exactly
+  when sheets ∈ `INGEST_SOURCES`.
+
+## Support event-bus source (casebus), the gap ledger, and the Task D review minors
+
+
+- ~~Disclosed limit — tenancy on the operator surfaces~~ *Paid (debt-burn A5):*
+  both CLIs now take `--tenant` — gap-ack scopes its listing and its
+  acknowledgement, reconcile constructs every tenant-capable connector scoped
+  to the named tenant and reads/gates that tenant's gap ledger — with the
+  default-tenant behavior unchanged when the flag is absent (pinned with a
+  non-default tenant in `bus-cli.test.ts`). One honest residue: the
+  ledger-feed paradigm's reconcile compares a whole raw lane against one
+  ledger file and is **not** tenant-scoped, so reconcile `--tenant` refuses
+  ledger-feed sources by name rather than answering cross-tenant.
+
+- ~~The reconcile integrity probe can throw instead of judging~~ *Paid (debt-burn
+  A1):* `replayIdIsServed` is now classified AWS-SDK-style — only the vendor's
+  documented corrupted-cursor rejection is a verdict (gap path unchanged); any
+  other probe failure is transient transport and becomes
+  `integrity: { ok: false }` for that source only, with its own wording, **no
+  gap row filed**, standing-loss disclosure and later sources intact (pinned
+  both directions in `bus-replay.test.ts` and `bus-cli.test.ts`).
+
+- ~~A status frame that omits `stream_id` can bind a new cursor to the old
+  stream identity~~ *Paid (2b Task F):* the mock gained its honest knob
+  (`omitStreamIdInStatusFrames`, budget consumed only by frames actually
+  rendered), and the simulated RED corrected this entry's own direction claim
+  (the standing simulate-don't-reason rule): the coalesce resurrected a
+  PREVIOUS stream's identity, so the next ordinary age-out compared stale-old
+  vs current and mislabeled **retention as `reset`** — not reset as retention
+  (that direction is the separate, documented conservative unknown-identity
+  path). Fix: `setCursor` writes the identity verbatim (NULL = "unobserved"),
+  and the connector binds only identity observed DURING THE RUN (a mid-run
+  omitting frame keeps the run's carry; a blind run binds NULL). Pinned both
+  directions plus the boundary in `bus-replay.test.ts`; reconcile's mid-scan
+  carry matches.
+
+- ~~A ledger-insert failure in the corrupted-cursor path now fails the
+  backfill — an unremarked failure-mode change with no test naming it~~ *Paid
+  (debt-burn A2):* research (WAL record-before-act) resolved the open
+  loud-vs-forward decision to **fail loud, on purpose** — the accidental
+  behavior was the correct behavior. Now remarked at both `recordGap` sites in
+  `bus-replay.ts` and pinned in `bus-replay.test.ts`: insert fails ⇒ run
+  fails, cursor not advanced, no gap row; the next healthy run re-detects.
+
+- ~~A2 residue — the RECONCILE-path `recordGap` throw still suppresses later
+  sources' disclosures~~ *Paid (phase-2b close, F13):* A1's per-source
+  containment shape now wraps `connector.reconcile()` in the CLI — a throw
+  (deliberately including the fail-loud gap INSERT failure, A2's verdict kept:
+  the connector never reports a loss it could not record) is contained to its
+  source, which still discloses its standing ledger record (an INSERT failure
+  is not an outage of the SELECTs), voids its live read with a named FAIL, and
+  lets every later source print. The disclosure block was hoisted into one
+  helper used by both the normal path and the catch, so the two outputs cannot
+  drift. Pinned both directions in `bus-cli.test.ts` (trigger-forced INSERT
+  failure: standing loss + named FAIL + later source's PASS all print, exit 1,
+  no report lines for the thrown source, no gap row written; RED shown first —
+  the shipped CLI died at its top-level catch with later sources silent).
+
+## Debt-burn cold pass and Task E minors
+
+
+- ~~The service log sits outside the compile-time consumption contract~~
+  *Paid (2b Task F):* `createBackfillRunner` in `main.ts` now carries the
+  same per-kind rest-destructure wall as the two CLIs (`satisfies
+  Record<string, never>` over the base plus all four widened catch-up
+  shapes), so checklist line 1's THIRD surface is compile-enforced — a
+  phantom field planted on `StripeFeedCatchUpReport` errors in both
+  `cli/backfill.ts` AND `main.ts` (demonstrated in the Task F report). The
+  wall also surfaced two genuine service-log gaps it exists to catch: sheets
+  `degradations` and hub `hydrated`/`tombstoned` were consumed by the old
+  base-shape read and printed nowhere — both now print (loud channel for
+  degradations; quiet-when-zero work line for hydration counts).
+
+- ~~The profile seam reaches the three 2a mocks only; the four 2b mocks are
+  deaf to it~~ *Paid (2b Task F-1):* sheets (`seed.ts`/`sheet.ts`/
+  `editor.ts`), stripefeed (`feed.ts`), hubcrm (`store.ts`), and casebus
+  (`stream.ts`) now accept `profile` through the same seam as the 2a mocks
+  — one optional option, threaded to `generateManifest`, generic by default,
+  refusing unknown names at construction with the valid set — so a profiled
+  full stack keeps cross-system domain correlation coherent. Pinned per mock
+  (content IS the profile's manifest; refusal is loud) in
+  `ingest/test/profile-threading.test.ts`. Profile selection is still
+  programmatic only (no script/env threads one) — unchanged, and now safe
+  either way.
+
+- ~~The bus arm of the gaps-vs-ledger cross-check printed a claim it could not
+  discriminate~~ *Paid (phase-2b close, F10, claim-narrowing arm):* the bus
+  arm's PASS line now says what it is — "gap cross-check (structural): the bus
+  report's gaps are the ledger's own rows — self-consistency, not an
+  independent derivation" — while the stripefeed arm keeps the real
+  "report agrees with the durable gap ledger" claim (its report derives gaps
+  independently). The comparison still runs on both arms as defense in depth;
+  an independent bus derivation remains real design work, deliberately not
+  done at close (nothing now overclaims while it doesn't exist). Pinned in
+  `bus-cli.test.ts` (structural wording positive, independent-claim wording
+  negative, both zero-gap and gap-bearing runs).
+
+- ~~A gap recorded on a source later removed from the SOURCES registry is
+  listable but unacknowledgeable~~ *Paid (phase-2b close, F9):* the `isSource`
+  gate in `gap-ack` now falls back to the RECORDED ledger — a `--source` with
+  gap rows for the tenant is a source of record whatever the registry says
+  today, so the loss can be listed under its name AND accepted; only a source
+  unknown to BOTH the registry and the ledger refuses as a typo. Pinned in
+  `bus-cli.test.ts` (removed-source gap acknowledged end to end; typo still
+  refused; RED shown first).
+
+- ~~A well-formed but unknown `--tenant` UUID silently PASSes~~ *Paid (phase-2b
+  close, F8):* an EXPLICITLY named tenant with zero rows across every
+  tenant-scoped table now refuses on both CLIs with shared wording — "no
+  recorded state for tenant …" (`cli/tenant-state.ts`), exit 1 — instead of a
+  clean reconcile PASS / healthy-looking empty gap listing. Flag-absent
+  default-tenant runs are untouched (a fresh deployment legitimately starts
+  empty). Pinned in `bus-cli.test.ts` (unknown-tenant red on both CLIs, RED
+  shown first; sibling refusal wordings excluded per checklist line 5).
+
+## Numeric & monetary integrity
+
+
+- ~~Numeric bounds exist twice: TypeScript contract and dbt test SQL~~ *Paid (2b Task
+  G):* the contract's quantitative bounds are now EMITTED to dbt as the
+  `numeric_bounds` seed (`scripts/generate-numeric-bounds-seed.ts`, committed generated
+  file per the free-email-seed precedent), the staging flag and both invariant-reading
+  tests join the seed instead of re-typing values, and the consistency pins in
+  `ingest/test/numeric-bounds-seed.test.ts` mechanically red the suite on any
+  contract⇄seed drift (row-wise both directions, plus byte-wise against the emitter).
+  `assert_csat_in_scale` got a loud-when-bound-missing shape so a vanished seed row can
+  never turn the invariant vacuous.
+
+## Architecture
+
+
+- ~~Mirrored SQL in tests is synced by discipline~~ *Paid (2a.3), with a
+  correction:* this file previously said a mechanical CI diff was "in
+  progress". That check **did not exist**, and could never have worked — the
+  mirrors were deliberately non-identical (ref→fixture substitutions). Worse,
+  the audit found one mirror had **already drifted** (`like 'company.%'` vs
+  the model's `= 'company.updated'`, under a comment claiming to be "the
+  exact" query), so three ordering invariants were being proven against a
+  query not in production. The fix is stronger than detection: all four
+  mirrored SQL strings were deleted and the tests now **load the real model
+  text from disk** (`loadModel`, refs → fixtures) — drift is structurally
+  impossible, and re-introducing the audit's exact drift turns the suite red
+  (demonstrated in the 2a.3 commit).
+
+- ~~HMAC/ledger helpers duplicated across workspaces, cross-compat "by
+  construction"~~ *Corrected and paid (2a.3):* the previous wording here
+  overstated what the tests proved — the "cross-compat" tests wrote with a
+  *third, test-local copy* of the algorithm and never imported the mock, so
+  the mock-side copies could drift with every test green (only the nightly
+  chaos workflow would have caught it). The
+  tests now import the REAL mock functions; mutating the mock's hashing turns
+  7 tests red (demonstrated). The `src` copies remain intentionally duplicated
+  — **re-stamped at phase-2b close (F11): the shared package did not land in
+  2b** (`ingest/src/hmac.ts` and `mocks/core/src/hmac.ts` both live at head);
+  it is **Phase 4** consolidation work, and the cross-compat tests above are
+  what hold the pair together until then.
+
 ## Cosmetic / low
+
 
 ~~`fetchDlq`/`replayDlq` cap at 10 per invocation~~ *Paid (debt-burn A7):*
 both drain the full queue in one invocation (drain-by-default per the AWS-CLI
