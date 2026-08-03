@@ -102,6 +102,9 @@ async function main() {
   // true on one payments row; assert_amounts_plausible WARNS with exactly that row)
   // instead of passing vacuously on all-plausible amounts. Flagged is never refused —
   // the row stays in every sum — so every equality/aggregate check is unmoved.
+  // The permanent WARN this creates is the project's green criterion, pinned as data in
+  // scripts/dbt-warn-contract.ts and enforced by scripts/verify-dbt-warns.ts after the
+  // dbt step (dbt exits 0 on warnings, so this one would otherwise mask a second).
   const chargeBound = NUMERIC_CONTRACT["charge.succeeded"].amount_cents.plausibleMax;
   if (chargeBound === undefined) throw new Error("charge.succeeded declares no plausibleMax — the F7 fixture row needs one");
   const feed = createStripeFeedApp({ seed: 42, amountCentsAt: { 2: chargeBound + 1 } });

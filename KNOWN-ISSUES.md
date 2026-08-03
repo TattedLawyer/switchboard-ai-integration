@@ -836,6 +836,21 @@ leaves it is gone from the source forever.
   (`unlikely_amount_payment_count` / `unlikely_amount_invoice_count`), and OR'd into
   `has_data_warnings`; the dbt warn surface (`assert_amounts_plausible`) now reads that
   flag. Flagged is still never refused: the amounts stay in every sum.
+- **A green `dbt build` in CI means "ERROR=0 and WARN=1", not "no warnings".** The CI
+  fixture deliberately seeds one above-bound charge (close F7) so the unlikely-value
+  surface is proven to fire end-to-end in the built warehouse rather than passing
+  vacuously, so `dbt build` reports `PASS=97 WARN=1 ERROR=0 TOTAL=98` forever, naming
+  `assert_amounts_plausible` and row `DEMO-CH-0001`. dbt exits 0 on warnings, so that
+  permanent warn could mask a second one — `assert_unusable_amounts_flagged` is also
+  warn-severity and currently 0 rows. The criterion is therefore MECHANICAL, not prose:
+  `scripts/verify-dbt-warns.ts` runs after the dbt step and set-compares dbt's own
+  `run_results.json` warn set and per-test row counts against
+  `scripts/dbt-warn-contract.ts`, plus the flagged row's identity against the test's
+  stored failures (`store_failures: true`). It fails on an extra warn, a missing
+  expected warn (F7 decaying back to vacuous), or a different flagged row. Confirmed
+  live: forcing a second warn left `dbt build` at exit 0 and redded the gate. Adding a
+  legitimate new warn-severity expectation means editing the contract file — deliberate,
+  reviewed, and visible in the diff, which is the point.
 - ~~Numeric bounds exist twice: TypeScript contract and dbt test SQL~~ *Paid (2b Task
   G):* the contract's quantitative bounds are now EMITTED to dbt as the
   `numeric_bounds` seed (`scripts/generate-numeric-bounds-seed.ts`, committed generated

@@ -70,11 +70,27 @@ jobs:
       - name: dbt build + data tests
         # dbt-core co-pinned exactly (phase-close F3) — same pin, same rationale as
         # warehouse/Dockerfile: dbt-postgres alone lets dbt-core float across majors.
+        #
+        # GREEN CRITERION FOR THIS STEP IS NOT "dbt exited 0". dbt exits 0 on warnings,
+        # and this build is EXPECTED to report exactly one:
+        #
+        #     ERROR=0, WARN=1 — assert_amounts_plausible, row DEMO-CH-0001
+        #
+        # The CI fixture deliberately seeds one above-bound charge (close F7) so the
+        # unlikely-value warn surface is proven to fire end-to-end in the built
+        # warehouse instead of passing vacuously. A SECOND warn would therefore hide
+        # behind this one, so the step below asserts the warn set exactly — do not read
+        # this step's green tick as "no warnings".
         run: |
           pip install dbt-postgres==1.11.0 dbt-core==1.12.0
           cd warehouse && dbt build --profiles-dir .
         env:
           DBT_HOST: localhost
           DBT_PORT: "5433"
+      - name: verify dbt warn set is exactly the expected one
+        # Reads dbt's own run_results.json (complete warn set + per-test row counts) and
+        # assert_amounts_plausible's stored failures (row identity). Fails on an extra
+        # warn, a missing expected warn, or a different flagged row.
+        run: npx tsx scripts/verify-dbt-warns.ts
       - name: verify identity resolution against manifest
         run: npx tsx scripts/verify-identity.ts

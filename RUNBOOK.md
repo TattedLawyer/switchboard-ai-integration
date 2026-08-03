@@ -60,6 +60,15 @@ Both are self-cleaning at start and fail loudly with counts on any mismatch.
 `demo.sh` also runs `scripts/verify-identity.ts`, which set-compares the dbt
 identity layer and `customer_360` against the seed manifest's planned match matrix.
 
+**A green `dbt build` here is `ERROR=0, WARN=1` — not "no warnings".** The fixture
+universe permanently trips one warn-severity test on purpose (`assert_amounts_plausible`,
+row `DEMO-CH-0001`) so that surface is proven to fire instead of passing vacuously; the
+expected total is `PASS=97 WARN=1 ERROR=0 TOTAL=98`. Because dbt exits 0 on warnings, do
+NOT read the step's green tick as "clean" — CI runs `scripts/verify-dbt-warns.ts` right
+after `dbt build`, which fails if the warn set is anything other than exactly that test
+and exactly that row (extra warn, missing warn, or different row). If you see a second
+warning locally, that is a real signal; the gate will red on it in CI.
+
 Contributors: any change to a connector, CLI, or the service log is bound by the
 seven-line standing checklist in
 [docs/operator-surface-checklist.md](docs/operator-surface-checklist.md).
