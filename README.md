@@ -279,6 +279,10 @@ deterministic template fallback when `ANTHROPIC_API_KEY` is unset).
   per-source secrets, merge semantics, CI split)
 - [Identity-resolution ADR](docs/adr/identity-resolution.md) — why deterministic
   tiers and not ML, and how merges collapse without rewriting raw
+- [Connector-paradigms ADR](docs/adr/connector-paradigms.md) — the four paradigms,
+  why each mock is faithful to a documented vendor behavior, and the honest
+  fidelity deltas (no OAuth, HTTP/JSON where the vendor uses gRPC, the two
+  disclosed merge-modeling inferences)
 - Journals — what was planned vs. what actually happened, including the misses:
   [Phase 0](docs/log/phase0.md) · [Phase 1](docs/log/phase1.md) ·
   [Phase 2a](docs/log/phase2a.md)
