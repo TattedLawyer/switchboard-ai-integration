@@ -3,6 +3,11 @@
 Operational procedures for the demo stack. Everything here is runnable on a clean
 clone with Docker (colima or Docker Desktop) and Node ≥22.
 
+Two conventions used throughout: `npm run <x> -w ingest` runs from the **repo
+root**, while the `node --import tsx src/cli/<x>.ts` form (used for `gap-ack`,
+which is the one operator CLI with no npm script) runs from **`ingest/`** — which
+is also the form `gap-ack` prints when reconcile tells you to run it.
+
 ## Environment
 
 | Variable | Default | Used by |
@@ -23,6 +28,8 @@ clone with Docker (colima or Docker Desktop) and Node ≥22.
 | `DBT_SCHEMA` | `public_analytics` | agent, report worker |
 | `DBT_ROLE` | unset → migrate keeps the unscoped default-privilege grant (bound to the migrator's own role) and logs the limitation. Set it to the role dbt connects as and migrate scopes the agent grant `FOR ROLE` — required whenever dbt and the migrator use different roles, or dbt's rebuilt tables silently lose the agent's SELECT. The migrator must be a member of the role (checked, clear error otherwise) | ingest migrate (`grantAgentReadOnly`) |
 | `DBT_PORT` | `5432` (CI sets `5433`) | dbt profile (host port of Postgres) |
+| `DBT_HOST` / `DBT_USER` / `DBT_PASSWORD` / `DBT_DBNAME` | `localhost` / `switchboard` / `switchboard` / `switchboard` (`warehouse/profiles.yml`) — the dev defaults are the compose container's; set them for anything real | dbt profile |
+| `BACKFILL_INTERVAL_MS` | `60000`. Range-checked 1–2147483647 (`setInterval`'s documented clamp boundary); a non-integer or out-of-range value refuses boot naming the variable | ingest scheduled backfill/hydration-pump loop |
 
 ## Start / stop
 
@@ -105,12 +112,24 @@ seven-line standing checklist in
   periodically: `select reason, count(*) from ingest.quarantine group by 1;` —
   nothing alerts on this table yet (tracked debt), so a growing count is only
   visible if someone looks.
-- **Integrity doubt:** `npm run reconcile -w ingest` — for each source in
-  `INGEST_SOURCES` with a `LEDGER_PATH_<SOURCE>` set, verifies that ledger's hash
-  chain, then set-compares ledger vs `raw.raw_events where source = ...` and
-  reports missing/extra/duplicates per source. Exit is nonzero if **any**
-  reconciled source has discrepancies (sources without a ledger path are skipped
-  and say so).
+- **Integrity doubt:** `npm run reconcile -w ingest` — routes **every** source in
+  `INGEST_SOURCES` through its own paradigm's connector, so what it verifies
+  differs per source and each report says which:
+  - *ledger-feed* (`billing`, `support`, and the F-1c hubcrm emission ledger):
+    verifies that ledger's hash chain, then set-compares ledger vs
+    `raw.raw_events where source = ...` and reports missing/extra/duplicates. An
+    enabled ledger-feed source with no `LEDGER_PATH_<SOURCE>` **FAILS** naming
+    the missing variable; the literal `skip` is the explicit opt-out.
+  - *the four faithful paradigms*: no ledger file and no hash chain — the
+    source's own current truth (sheet rows, retained feed window, object store,
+    retained bus window) is compared against raw. See each source's section
+    below for how to read its report.
+
+  Exit is nonzero if **any** reconciled source has discrepancies. A throw from
+  one source is contained to that source: it prints a named FAIL and its standing
+  gap disclosures, and every later source still reports (close F13). Note that
+  reconcile **writes** for the two loss-bearing sources — see *Admitted permanent
+  losses* below.
 - **`manual_review` triage** (identity layer): rows in
   `public_analytics.manual_review` are external entities (billing customers,
   support requesters) that matched no CRM company — each row carries its
@@ -418,7 +437,9 @@ disclosed condition. **Acknowledging is not fixing.** It records that a named
 human saw the loss and accepted it. A *new* gap reds the run again.
 
 `--by` is required: an anonymous acknowledgement of permanent data loss is
-refused. Both CLIs operate on the default tenant (see KNOWN-ISSUES).
+refused; `--note` is optional. Both CLIs take `--tenant <uuid>`; without it they
+operate on the default tenant, and an explicitly-named tenant with no recorded
+state anywhere refuses rather than reporting a clean empty result (close F8).
 
 ## Backup and restore
 
@@ -469,7 +490,7 @@ backup timestamp and now — not unbounded ledger replay from empty.
 | Symptom | Cause / fix |
 |---|---|
 | `docker: command not found` / daemon errors | colima not running: `colima start`; compose plugin registered via `~/.docker/config.json` `cliPluginsExtraDirs` |
-| Ports 4001/4002/4003/4004/4005/5433 busy | `lsof -ti:4001,4002,4003,4004,4005 \| xargs kill`; another Postgres on 5433 → change compose mapping |
+| Ports 4002–4008 / 5433 busy | `lsof -ti:4002,4003,4004,4005,4006,4007,4008 \| xargs kill`; another Postgres on 5433 → change compose mapping. (4001 is the retired 2a crm mock's port — nothing should be listening there) |
 | demo/chaos FAIL with count mismatch | Worker not draining — check ingest logs; the scripts' bounded waits print both counts on timeout |
 | 401 on every webhook for one source | `WEBHOOK_SECRET_<SOURCE>` mismatch between that mock and ingest environments (each source verifies with its own secret — check the right one) |
 | 401s that appear only under load or across machines | Signature replay window (±300s, 2a.3): the timestamp is signed, so sender/receiver clocks more than 5 minutes apart reject valid traffic — check NTP/clock sync |
