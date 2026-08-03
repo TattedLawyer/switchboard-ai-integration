@@ -13,7 +13,9 @@ systems don't share information. So every week, someone spends hours copying dat
 between screens to answer basic questions like *"which customers are we about to
 lose?"* — and the answer is stale by the time it's assembled.
 
-Switchboard is a working demonstration of the fix, built end-to-end by one engineer:
+Switchboard is a working demonstration of the fix (how it was built — one engineer
+directing an agent fleet under an evidence-gated process — is described in
+[How this was built](#how-this-was-built), because the process is part of the claim):
 
 1. **Connect** the three systems so information flows automatically instead of by hand.
 2. **Clean and combine** the data so there's one trustworthy record per customer —
@@ -37,7 +39,40 @@ a scan of every tracked file in the repo for real-looking emails or PII-shaped
 records. Real client work can't be published, so this project shows the same
 engineering on data you can inspect freely.
 
-## What's built and working today (Phases 0–2a)
+## The horizontal thesis: one pipeline, many businesses
+
+Every vendor integration looks bespoke from the outside. It isn't. Strip the
+branding away and there are a small number of *paradigms* — ways a system agrees
+to tell you that something changed — and each one has its own failure mode.
+Switchboard implements four of them against one unchanged reliability spine:
+
+| Paradigm | Modelled on | What it hands you | Its loss boundary |
+|---|---|---|---|
+| **Spreadsheet snapshot-diff CDC** | Google Sheets + Apps Script | a mutable grid; changes are inferred by re-reading it | the push channel is lossy and blind to API writes — reconcile against the sheet's own rows is the guarantee |
+| **Cursor-paged envelope feed** | Stripe `/v1/events` | an opaque cursor over a retained window | 30-day retention: fall further behind and the events are gone from the source |
+| **Thin webhook + hydration** | HubSpot | metadata-only batches; the record must be fetched afterwards | a notification that exhausts its retries is unrecoverable — detected, never re-pulled |
+| **Subscribe / replay event stream** | Salesforce Pub/Sub | a subscription with a replay cursor | 72-hour window, plus stream resets that can kill a cursor of any age |
+
+(A fifth, the 2a seq-ordered ledger feed, remains in the repo as the chaos
+proof's oracle — it is the one paradigm real vendors don't offer, which is why it
+is used to *test* the spine rather than to make claims about vendors.)
+
+What that buys a reader in plain language: **the expensive part of an
+integration is not the vendor — it's the reliability machinery underneath it,
+and that machinery is written once.** Adding a source means writing a connector
+that speaks its paradigm; queueing, dead-lettering, quarantine, cursors,
+exactly-once storage, reconciliation and identity resolution are already there
+and do not change. The same is true vertically: no mart column is
+industry-specific, so the same pipeline serves a plumbing contractor, a SaaS
+company, or a brokerage — three profiles ship in the repo and are demonstrated
+[below](#one-pipeline-three-verticals).
+
+Each paradigm also *admits what it cannot do*. Two of the four can lose data
+permanently by the vendor's own design; the pipeline reports those losses with
+bounds and refuses to pass until a named human accepts them, rather than
+reporting a clean run.
+
+## What's built and working today (Phases 0–2b)
 
 - **Simulated business systems across four integration paradigms** — a
   HubSpot-style thin-webhook CRM (metadata-only batches + a hydration pump), a
@@ -60,11 +95,11 @@ engineering on data you can inspect freely.
   a value published in this repo.
 - **An ingestion service built for failure, now source-agnostic:** one
   `/webhooks/:source` endpoint with a **per-source HMAC secret**
-  (`WEBHOOK_SECRET_CRM|_BILLING|_SUPPORT` — a billing event signed with the CRM
-  secret is rejected, by test) and **timestamped signatures with a ±5-minute
+  (`WEBHOOK_SECRET_<SOURCE>`, one per registered source — a billing event signed
+  with another source's secret is rejected, by test) and **timestamped signatures with a ±5-minute
   replay window** (the timestamp is signed material, so a captured request can't
   be re-stamped — the same scheme Stripe, Slack, and HubSpot converge on), a
-  single raw event store with `(source, event_id)` exactly-once storage,
+  single raw event store with `(tenant_id, source, event_id)` exactly-once storage,
   **per-source retry queues with per-source dead-letter lanes** and replay tools
   for both the DLQ and the quarantine, a quarantine for malformed data (nothing
   delivered is ever dropped, and event timestamps are bounded to a sanity window
@@ -87,7 +122,8 @@ engineering on data you can inspect freely.
   follow-to-terminal with a cycle guard; dbt tests assert no cycles and all
   chains terminate). Design rationale: [identity-resolution ADR](docs/adr/identity-resolution.md).
 - **A unified `customer_360` mart:** one row per resolved entity joining deals,
-  invoices, payments, tickets, SLA breaches, and CSAT across all three systems.
+  invoices, payments, tickets, SLA breaches, CSAT and spreadsheet rows across all
+  four ingest lanes.
   Entities visible only in billing or support still get a row, **flagged
   incomplete** — more useful than hiding them.
 - **An identity-correctness oracle:** the seed manifest plans, per entity, exactly
@@ -100,8 +136,8 @@ engineering on data you can inspect freely.
 - A worker that generates the Monday revenue-risk report — with a timeout and
   fallback so the report generates even when the AI service is down, and per-call
   cost logging.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 799 tests, the
-  dbt build (89 build steps: models, seeds and data tests), the agent
+- **CI:** the `ci` workflow runs on every push — typecheck, all 857 tests, the
+  dbt build (98 build steps: 15 models, 2 seeds, 81 data tests), the agent
   action-safety eval, and the identity oracle, against a real Postgres service
   container
   ([`ci.yml`](.github/workflows/ci.yml)). The heavier chaos + demo proof runs on
@@ -115,7 +151,7 @@ engineering on data you can inspect freely.
   on a slow machine, and a leftover mock server inherited across steps sharing a
   process table. Each is narrated with its run ID in the
   [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
-- 799 automated tests, green in CI and locally — including a seeded
+- 857 automated tests, green in CI and locally — including a seeded
   property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety under
   arbitrary torn writes. Test-first is provable from git history for hardening
@@ -139,25 +175,93 @@ engineering on data you can inspect freely.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 799 tests green across nine workspaces (incl. 6 seeded fast-check properties); 89/89 dbt build steps (models, seeds and data tests) |
+| Suite | `npm test` + dbt | 857 tests green across nine workspaces (incl. 6 seeded fast-check properties); 98 dbt build steps (15 models, 2 seeds, 81 data tests) — `PASS=97 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
 
 ## What's coming (built in phases, in public)
 
-- **Phase 2b — Vendor fidelity:** vendor-faithful mock API shapes (HubSpot-style
-  thin events + hydration, Stripe-style payloads), an event-bus-paradigm source
-  (subscribe + replay-cursor instead of webhooks), and vertical demo datasets.
 - **Phase 3 — Agent depth:** one carefully-bounded write action behind human
   approval with a full audit trail, plus an evaluation suite for report quality.
 - **Phase 4 — Operations:** monitoring dashboards, alerting, a live deployment,
   and a demo video.
 
+## How this was built
+
+One engineer, directing a fleet of AI coding agents under an evidence-gated
+process. That is worth stating plainly, because "built end-to-end by one
+engineer" would be the same species of overstatement this repo's
+[known-issues ledger](KNOWN-ISSUES.md) exists to refuse. The engineering claim
+here is not that a human typed every line; it is that **nothing was allowed to
+land on the strength of an agent's own account of it.**
+
+The loop, per unit of work:
+
+1. **Brief** — a written task brief stating the requirement, the risk rules, and
+   what would count as evidence.
+2. **Implementer** — an agent builds it and writes a report.
+3. **Framed review** — a second agent reviews against the brief and the spec.
+4. **Fix loop** — findings answered, with the fix's own evidence.
+5. **Cold, unframed review** — before every push, a *fresh* reviewer is given the
+   repository and a commit range, **barred from this project's own briefs,
+   reports and reviews**, and instructed to attack the claims rather than confirm
+   them. All of it is in the repo: `.superpowers/sdd/` carries **33 task briefs,
+   52 reports, 24 framed per-task reviews, 11 cold-review documents (10 distinct
+   cold reviews plus one fix response), and 79 commit-range diff packages** —
+   counted at commit `6a82842`.
+
+Cold review earns its place by what it actually caught. Three findings, none of
+which a framed reviewer had produced:
+
+- **A disclosure that died during the exact incident it existed for.** A source
+  that was both unreachable *and* carrying an unacknowledged permanent data-loss
+  gap printed the unreachable error and nothing else — no loss line, no
+  acknowledgement prompt. The exit code still failed, so the *gate* held while the
+  *human* got nothing. The implementer's own note on it: "that is the failure
+  mode migration 010 exists to prevent, and I had put the read below the two
+  `continue`s myself." The class recurred often enough to be named in the
+  phase-close sweep as the phase's most-recurring defect species.
+- **A fix whose test passed with *and without* the fix.** A pin placed its
+  fixture outside the window where the bug lives, so buggy and fixed code both
+  answered identically — while the report claimed it "pins exactly this." That
+  incident is why every later task brief carries a standing rule to
+  **revert-check every new pin**, and why later reports carry an explicit
+  "revert-check evidence" table: the fix is reverted and the test must go red.
+  Honest limit: that discipline is documented per-pin from the mid-phase A-slice
+  onward and comprehensively from Task E; for earlier work it is narrated, not
+  proven. Two further vacuous pins were caught the same way, including a CI data
+  test that had been passing because no fixture row could ever trip it.
+- **Real company names shipped as synthetic data.** The SaaS vertical profile's
+  invented "flavor words" included two exact matches for real (defunct)
+  companies. The reviewer found them with citations — against a rule the same
+  range had written itself two files earlier. Replaced with vetted inventions.
+
+Two other cold reviews reported that a range **broke its own CI gate** (the
+reviewer reproduced the CI composition on a scratch database rather than taking
+the green local suite's word), and that a task's **headline deliverable was
+unreachable from every shipped operator surface** while the runbook claimed it
+was reported. Both were true.
+
+Fixes were researched before they were written, not after. Four research
+documents in `.superpowers/sdd/` (`close-fix-research.md`,
+`debt-burn-research.md`, `f2-wire-research.md`, `market-unification-research.md`)
+carry per-claim citations to primary sources actually opened — PostgreSQL,
+AWS, GitHub Actions, Stripe, HubSpot and Salesforce developer documentation,
+RFCs, and vendor knowledge bases — with a stated adversarial method (each
+candidate fix treated as a hypothesis, with a refutation attempted before it was
+endorsed) and with failed fetches disclosed inline rather than quietly dropped.
+
+What this does *not* claim: that the process is free of misses. Several of the
+findings above were caught late, after the work had already been reported
+complete by an agent and accepted by a framed review. The argument for the
+process is that they were caught *at all*, in public, and written down — which
+is the same argument this repository makes about its data.
+
 ## For engineers
 
-**Architecture (current):** three chaos-oracle mock sources (shared
+**Architecture (current):** six mock source servers across five paradigms (shared
 `@switchboard/mock-core`: PRNG faults, HMAC signing, keyed hash-chain ledger,
 correlated seed manifest) → Express 5/TypeScript ingest (`/webhooks/:source`,
 per-source HMAC verify, per-source pg-boss queues + DLQs, per-source cursors) →
-single `raw.raw_events` (`(source, event_id)` unique) → dbt: 8 staging views
+single `raw.raw_events` (`(tenant_id, source, event_id)` unique) → dbt: 9 staging views
 (`distinct on` latest-state, event-time ordered) → identity layer (`merge_edges` →
 recursive canonical walk → 3-tier `identity_resolution` with provenance →
 `manual_review` incremental) → `customer_360` mart → MCP server (official TS SDK,
@@ -201,7 +305,7 @@ docker compose up -d postgres
 DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard npm test
 ```
 
-The fifth paradigm — the spreadsheet-as-CDC connector — is deliberately not in
+The spreadsheet-as-CDC connector is deliberately not in
 `demo.sh`; its proof is its own oracle suite (with the database up, as above):
 `cd ingest && npx vitest run test/sheet-oracle.test.ts test/sheet-mart-oracle.test.ts`
 — drop-heavy convergence, blank-row tolerance, quarantine custody, and the mart joins.
