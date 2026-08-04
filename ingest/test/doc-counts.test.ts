@@ -20,6 +20,7 @@ import {
   deriveRegisterCounts,
   readScoreboard,
   readmeTestCounts,
+  sumSuiteLog,
 } from "../../scripts/doc-counts.js";
 
 const repoFile = (rel: string): string =>
@@ -73,5 +74,55 @@ describe("README's test-count claims", () => {
     // scripts/verify-doc-counts.ts and runs in CI against the real `npm test` log.
     // What IS checkable here is that README says where its number comes from.
     expect(readme).toContain("scripts/verify-doc-counts.ts");
+  });
+});
+
+describe("sumSuiteLog reads the log CI actually produces", () => {
+  // The gate went green locally and red in CI on 1ae95ea with "no \"Tests N passed\"
+  // lines — this is not a full npm test log". The lines were there. Vitest colorizes
+  // when it thinks it has a TTY-ish reporter, so CI's raw bytes were
+  // `Tests \x1b[22m \x1b[1m\x1b[32m59 passed\x1b[39m…` and the pattern could not span
+  // the escape sequences. A verifier that only parses ONE of the two shapes its input
+  // comes in is not a gate; it is a coin flip on an environment detail.
+  //
+  // Fixed by stripping ANSI before matching rather than by forcing NO_COLOR in the
+  // workflow: the workflow fix leaves the parser fragile for anyone who pipes a
+  // colorized log into it, which is the ordinary way a human reproduces a CI failure.
+  const plain = [
+    " Test Files  6 passed (6)",
+    "      Tests  59 passed (59)",
+    "   Start at  09:14:02",
+    " Test Files  41 passed (41)",
+    "      Tests  1 failed | 677 passed (678)",
+  ].join("\n");
+
+  // The same two summaries as vitest actually emits them with colour on, transcribed
+  // from the CI log of run 1ae95ea. `\x1b` rather than a raw 0x1b byte only so the
+  // sample stays visible in a diff — it is the same string at runtime. Transcribed
+  // rather than generated from the parser's own notion of an escape, so the sample
+  // cannot drift into agreeing with the parser by construction.
+  const colorized = [
+    " \x1b[2mTest Files\x1b[22m  \x1b[1m\x1b[32m6 passed\x1b[39m\x1b[22m\x1b[90m (6)\x1b[39m",
+    "      \x1b[2mTests\x1b[22m  \x1b[1m\x1b[32m59 passed\x1b[39m\x1b[22m\x1b[90m (59)\x1b[39m",
+    "   \x1b[2mStart at\x1b[22m  09:14:02",
+    " \x1b[2mTest Files\x1b[22m  \x1b[1m\x1b[32m41 passed\x1b[39m\x1b[22m\x1b[90m (41)\x1b[39m",
+    "      \x1b[2mTests\x1b[22m  \x1b[1m\x1b[31m1 failed\x1b[39m\x1b[90m | \x1b[39m\x1b[1m\x1b[32m677 passed\x1b[39m\x1b[22m\x1b[90m (678)\x1b[39m",
+  ].join("\n");
+
+  it("sums a plain (non-TTY) log", () => {
+    expect(sumSuiteLog(plain)).toBe(59 + 1 + 677);
+  });
+
+  it("sums a colorized log to the SAME total — colour is not information", () => {
+    expect(sumSuiteLog(colorized)).toBe(sumSuiteLog(plain));
+  });
+
+  it("still fails closed on a log with no count lines at all", () => {
+    // Load-bearing: verify-doc-counts.ts turns a zero sum into an exit-1 with a message
+    // naming the cause. If stripping ANSI ever made garbage parse as some number, the
+    // gate would start comparing README against noise instead of refusing to answer.
+    expect(sumSuiteLog("")).toBe(0);
+    expect(sumSuiteLog("npm error code ELIFECYCLE\nTests are cool\n")).toBe(0);
+    expect(sumSuiteLog("\x1b[1m\x1b[32mnothing here\x1b[39m\x1b[22m")).toBe(0);
   });
 });

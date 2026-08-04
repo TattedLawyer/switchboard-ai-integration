@@ -119,9 +119,21 @@ export function readmeTestCounts(markdown: string): number[] {
  *  total cannot be measured from inside the suite, so this reads the real run's log —
  *  the same summation the merge reviewer did by hand with grep+awk. */
 export function sumSuiteLog(log: string): number {
+  // ANSI first. Vitest colorizes its summary depending on the environment, so the SAME
+  // run yields `Tests  59 passed (59)` locally and
+  // `Tests \x1b[22m \x1b[1m\x1b[32m59 passed\x1b[39m…` in CI — escape sequences land
+  // between `Tests` and the digits and inside `N passed` itself, so a pattern written
+  // against the plain shape matches neither. On 1ae95ea that made the gate report "no
+  // \"Tests N passed\" lines" against a log that was full of them: a parser that reads
+  // one of its input's two shapes reports an environment detail as a documentation lie.
+  // Stripped here rather than suppressed at the producer (NO_COLOR in the workflow) so
+  // that a human piping a colorized log into this by hand gets the same answer CI does.
+  // Matches the CSI form (ESC `[` params… final byte), which covers every SGR colour and
+  // style code vitest emits. Anchored on the ESC, so bracketed prose in a log is safe.
+  const plain = log.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "");
   // Both summary shapes: "Tests  59 passed (59)" and "Tests  1 failed | 677 passed (678)".
   // Counting only the `passed` half would make a RED run silently undercount and read as
   // a README that drifted — the wrong-shaped failure pointing at the wrong cause.
-  const matches = [...log.matchAll(/Tests\s+(?:(\d+) failed \| )?(\d+) passed/g)];
+  const matches = [...plain.matchAll(/Tests\s+(?:(\d+) failed \| )?(\d+) passed/g)];
   return matches.reduce((s, m) => s + Number(m[1] ?? 0) + Number(m[2]), 0);
 }
