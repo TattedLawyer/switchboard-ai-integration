@@ -27,19 +27,36 @@ healthy disclosure read like rot. They are now separated:
 
 ### Scoreboard
 
-Counted by hand against this file at commit `f4c2c0f` (2026-08-02, phase-2b
-close):
+**Derived from this file, not counted by hand** — `scripts/doc-counts.ts` holds the
+derivation, `ingest/test/doc-counts.test.ts` reds when this table and the file
+disagree, and `scripts/verify-doc-counts.ts` runs the same check in CI. The numbers
+below are true at whatever commit you are reading, because a commit that changes them
+without changing this table does not go green.
 
-| | Count |
-|---|---|
-| **Open defects** | **20** — Phase 3: 3 · Phase 4: 7 · unscheduled: 10 |
-| **Design disclosures** | 46 |
-| **Paid** (struck entries) | 38, plus the cosmetic/low list |
+| | Count | Derivation |
+|---|---|---|
+| **Open defects** | **31** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Design disclosures** | **40** | Part I top-level bullets |
+| **Paid** (struck entries) | **37** | Part III struck bullets, plus the cosmetic/low list |
 
-Counting method, so the numbers are reproducible: top-level list items per part.
-Part II holds 24 top-level bullets, four of which are the *paid* sub-items of the
-multi-tenancy entry (kept in place because the open half is unreadable without
-them) — 24 − 4 = the 20 open defects above.
+Why the owner predicate rather than a subtraction: Part II's own entry rule is that
+every open entry names an owner, so the four *paid* sub-items of the multi-tenancy
+entry (kept in place because the open half is unreadable without them) fall out of the
+count on their own. The previous method — "24 top-level bullets − 4 paid sub-items =
+20" — was a hand-maintained arithmetic that nothing enforced.
+
+> **Escalation, recorded rather than absorbed (gate-H C1).** The published count was
+> **20** and the true count at the phase-2b close range's head is **31**. That is a
+> rise, and the standing rule below forbids one. It happened because `aef7e10` added
+> twelve top-level bullets to Part II in a single commit and did not recount, and
+> because the provenance line named commit `f4c2c0f` — which predates the three-part
+> restructure entirely (`git show f4c2c0f:KNOWN-ISSUES.md | grep -c "Part II"` → 0), so
+> the method could not be reapplied by anyone who tried. The rise is **disclosure, not
+> regression**: every one of the added entries is an individually-accurate finding from
+> the close waves and the cold passes, and none of them is new breakage. It is recorded
+> here by name because absorbing it into a stale headline is precisely the failure this
+> file exists to prevent. The rule's next test is the phase-3 close, from a baseline of
+> 31.
 
 **Standing rule.** The open count must be **net-lower at each phase close**, and
 **any item deferred twice is escalated by name** in the close report rather than
@@ -628,7 +645,12 @@ successful de-duplication. That is closed:
 - A tenant is **required, never defaulted** — supplying it explicitly-but-empty
   throws rather than silently substituting the default tenant.
 
-- Row-level security is enabled **and forced** on all four tables. Note the
+- Row-level security is enabled **and forced** on all six tenant-scoped tables —
+  the four above plus `ingest.hydrated_snapshots` (migration 009) and
+  `ingest.gap_ledger` (migration 010), each with its own `tenant_isolation`
+  policy; `ingest/src/cli/tenant-state.ts` enumerates the same six. (Gate-H M1:
+  this said "all four tables" after 009 and 010 had already widened it — the
+  register understating its own coverage.) Note the
   reason `FORCE` alone was not enough here: PostgreSQL documents that
   *"superusers and roles with the `BYPASSRLS` attribute always bypass the row
   security system"*, and this project's `switchboard` role is a superuser. So
@@ -684,6 +706,15 @@ default scope. Every one of those requires a tenant as an argument, so a
 tenant-less write is a compile error rather than a silent write to the nil
 tenant, and `connectorFor` refuses an empty one at runtime.
 
+One deliberate exception, which the sentence above used to paper over (gate-H M2):
+`unwrapJob` (`ingest/src/queue.ts:101-120`) accepts both a tenant-less job envelope
+and a bare pre-2b-D4 event, and falls back to the process's tenant at **runtime**.
+That is a rolling-deploy tolerance, not an oversight — a job enqueued by the old
+code must still be drainable by the new worker, and the alternative is dropping
+in-flight work at deploy time. It is not silent: both fallbacks `console.warn`.
+So for the worker and DLQ-replay hops the accurate claim is "loud runtime fallback",
+not "compile error"; for every other hop in the list the compile-error claim stands.
+
 The first version of this sentence was wrong and is worth recording as such: the
 push half was threaded and the **pull** half was not, which on a deployment that
 actually set the variable would have stopped hubcrm hydration entirely and
@@ -737,6 +768,12 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   exempts from RLS regardless of FORCE; the agent connects as a non-superuser but
   never sets the context, so the policy's permissive branch admits every row.
 
+  *Owner: unscheduled — gated by the same isolation-model decision as the
+  multi-tenancy entry above (Part I §"What production would require" 1): making RLS
+  live means running the service, CLIs and dbt as a non-superuser that sets
+  `switchboard.tenant_id` on every connection. Trigger: the first multi-tenant
+  engagement, or any deployment that declines to run as the `switchboard` superuser.*
+
 - **The pg-boss schema carries no tenant column and no RLS** *(panel SEC-I1,
   deferred half)* — unlike every other ingest table. The job envelope now carries
   the tenant (CLOSE-3), which closes the reassignment path; the storage-level
@@ -757,6 +794,12 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   loopback bind is not reachable from the ingest container — changing the bind at
   close would break the one-command demo for a synthetic-data harness.
 
+  *Owner: unscheduled — the fix (loopback bind + a shared-secret header on
+  `/simulate`) is a compose-topology change, not a code change, and buys nothing while
+  the mocks exist only to feed a synthetic demo. Trigger: any run of the mocks outside
+  a private compose network, or a host where the demo shares a network with anything
+  else.*
+
 - **Payload custody outside the database is unencrypted and un-tenant-scoped**
   *(panel SEC-M4)* — four surfaces: `out/ledger-*.jsonl` (full event payloads),
   `out/backups` (unencrypted whole-cluster dumps), the quarantine CLI's reason
@@ -765,11 +808,22 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   vendor data enters the repo. On a real engagement these are PII at rest and PII
   on a terminal.
 
+  *Owner: unscheduled — encryption at rest for the ledger and backup artifacts, and a
+  redaction mode for the two CLIs, are four separate surfaces with four different right
+  answers, and all four are no-ops on synthetic data. Trigger: the first engagement
+  that puts real vendor payloads through this pipeline — which is also the trigger for
+  the deletion/GDPR design in `docs/gdpr-erasure-design.md`.*
+
 - **Secrets are delivered as environment variables** — OWASP's secrets-management
   guidance is blunt that environment variables are "generally accessible to all
   processes and may be included in logs or system dumps", and recommends against
   them unless other methods are not possible. Stated here rather than
   re-architected at close.
+
+  *Owner: unscheduled — a secrets-manager integration is a deployment-target decision
+  (the right client differs per platform) and there is no target to decide against
+  while the repo's deployment surface is `docker compose` on a developer host. Trigger:
+  a real deployment target, whose platform names the manager.*
 
 - **JSON parsing precedes HMAC verification** *(audit)* — `express.json()`
   runs before the route's signature check, so unauthenticated bytes reach the
