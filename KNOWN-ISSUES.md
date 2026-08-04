@@ -689,6 +689,70 @@ from data that is correctly attributed rather than from a nil-tenant pile.
 
 ## Security posture — open
 
+- **`switchboard_app` is minted by migration 006 with a password equal to its
+  own name** *(panel SEC-I3)* — and holds `select, insert, update, delete` on
+  every table in `raw` and `ingest`, plus default privileges for future tables.
+  That is a credential which does not vary per installation (CWE-1392), and
+  because the RLS policy is permissive when no tenant context is set, the role
+  sees every tenant at once. Anyone who can reach the Postgres port with
+  `switchboard_app:switchboard_app` has read/write on raw events, raw bodies,
+  quarantined payloads, cursors, the gap ledger and hydrated snapshots.
+  **Narrowed at CLOSE-3:** `APP_DB_PASSWORD` now overrides it (`migrate.ts`,
+  same shape `AGENT_DB_PASSWORD` gives the agent role — migration 006 is applied
+  and immutable, so the override lives in the migrator), the rotation note
+  migration 005 carries is written down beside it, and `scripts/restore.sh`
+  documents its `if not exists` as a guarantee so recovery cannot reset a
+  rotated credential. The literal remains the documented local-dev value; the
+  migration is deliberately not fail-closed, because `npm run migrate` is on the
+  one-command demo path and breaking it buys nothing in this posture.
+
+  *Still open: narrowing the grant to least privilege. Owner: unscheduled —
+  a behaviour-changing privilege edit the isolation test depends on, separable
+  from the credential defect, which was the urgent half.*
+
+- **Row level security is inert at runtime** *(panel SEC-I2)* — the policies on
+  the tenant-scoped tables are enabled AND forced, and the isolation test proves
+  the boundary through `switchboard_app`. But that is a proven capability of the
+  schema, not a live control on the running system: **no shipped code path
+  connects as `switchboard_app` or sets `switchboard.tenant_id`, so RLS is inert
+  at runtime today.** The service, migrations, CLIs, connectors and reconcile all
+  connect via `DATABASE_URL` as the `switchboard` superuser, which PostgreSQL
+  exempts from RLS regardless of FORCE; the agent connects as a non-superuser but
+  never sets the context, so the policy's permissive branch admits every row.
+
+- **The pg-boss schema carries no tenant column and no RLS** *(panel SEC-I1,
+  deferred half)* — unlike every other ingest table. The job envelope now carries
+  the tenant (CLOSE-3), which closes the reassignment path; the storage-level
+  treatment does not follow it.
+
+  *Owner: unscheduled — `pgboss.job` is a library-owned PARTITIONED table whose
+  DDL comes from the vendored `plans.js`, and pg-boss ships `detectSchemaDrift()`
+  specifically to flag divergence from what the library expects. Our own columns
+  or policies there invite drift reports against an exact-pinned dependency.
+  Trigger: revisit if pg-boss is replaced or unpinned.*
+
+- **The mock vendors are unauthenticated and bind all interfaces** *(panel
+  SEC-M3)* — `/simulate`, `/events` and `/subscribe` on ports 4002-4008 take no
+  credential, and each mock `app.listen(port)` binds `0.0.0.0` while holding the
+  signing secrets. Anyone on the host network can drive a mock into signing and
+  delivering events the ingest door accepts as authentic. Disclosed rather than
+  fixed: the mocks run as sibling containers on the compose demo path, where a
+  loopback bind is not reachable from the ingest container — changing the bind at
+  close would break the one-command demo for a synthetic-data harness.
+
+- **Payload custody outside the database is unencrypted and un-tenant-scoped**
+  *(panel SEC-M4)* — four surfaces: `out/ledger-*.jsonl` (full event payloads),
+  `out/backups` (unencrypted whole-cluster dumps), the quarantine CLI's reason
+  printing, and the hydrate-rearm CLI's deliberate full-entry audit print. All
+  synthetic today, and `repo-hygiene.test.ts` mechanically enforces that no real
+  vendor data enters the repo. On a real engagement these are PII at rest and PII
+  on a terminal.
+
+- **Secrets are delivered as environment variables** — OWASP's secrets-management
+  guidance is blunt that environment variables are "generally accessible to all
+  processes and may be included in logs or system dumps", and recommends against
+  them unless other methods are not possible. Stated here rather than
+  re-architected at close.
 
 - **JSON parsing precedes HMAC verification** *(audit)* — `express.json()`
   runs before the route's signature check, so unauthenticated bytes reach the

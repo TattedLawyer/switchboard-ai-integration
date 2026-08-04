@@ -36,6 +36,12 @@ is also the form `gap-ack` prints when reconcile tells you to run it.
 
 ```bash
 export DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard
+# LOCAL DEMO ONLY. Secrets fail closed, so without either this or a real
+# WEBHOOK_SECRET_HUBCRM/_STRIPEFEED/_CASEBUS/_SUPPORT the next command's service
+# refuses to boot naming every missing one. Exported here, deliberately and visibly,
+# rather than shipped pre-set in .env.example — that is what keeps README's
+# "a production deploy that forgets to set them refuses to start" true.
+export ALLOW_DEV_SECRETS=1
 docker compose up -d postgres            # DB (host port 5433)
 npm run migrate -w ingest                # idempotent
 # INGEST_SOURCES pinned explicitly: the code default is billing,support only (F-1c),

@@ -130,6 +130,45 @@ async function runMigrationsOn(client: pg.PoolClient): Promise<void> {
   }
 
   await grantAgentReadOnly(client);
+  await applyAppRolePassword(client);
+}
+
+/**
+ * SEC-I3. Migration 006 mints `switchboard_app` with `login password 'switchboard_app'` —
+ * a credential that does not vary per installation, which is CWE-1392's exact shape, and
+ * the role holds select/insert/update/delete on every table in `raw` and `ingest`. The
+ * literal is the LOCAL DEV value (same class as the committed compose password); this is
+ * the override, in the same place and of the same shape as `AGENT_DB_PASSWORD` gives the
+ * agent role — 006 itself is applied and immutable, so the override lives here.
+ *
+ * Deliberately NOT fail-closed. CWE-1392 rates "prohibit a value that does not vary per
+ * installation" higher than "let the administrator change it", and a migration that
+ * refuses to run without a new secret would be the stricter reading — but `npm run migrate`
+ * is on the one-command demo path, and breaking that buys nothing in the single-tenant
+ * demo posture. Migration 005 already set the internal precedent for exactly this trade.
+ *
+ * ROTATION (the note migration 005 carries and 006 does not): to rotate, either set
+ * APP_DB_PASSWORD and re-run migrate, or
+ *
+ *     alter role switchboard_app password '<new secret>';
+ *
+ * A rotation done that way is NOT reset by re-migration when APP_DB_PASSWORD is unset —
+ * this function only acts when the variable is set — and `scripts/restore.sh` creates the
+ * role only `if not exists`, so recovery does not reset it either.
+ *
+ * Deferred with the wave (see KNOWN-ISSUES): narrowing the grant from
+ * `select,insert,update,delete on all tables in raw, ingest` to least privilege. That is a
+ * behaviour-changing privilege edit the isolation test depends on, and it is separable
+ * from the credential defect, which is the urgent half.
+ */
+async function applyAppRolePassword(pool: pg.Pool | pg.PoolClient): Promise<void> {
+  const password = process.env.APP_DB_PASSWORD;
+  if (password === undefined || password === "") return;
+  // Parameterised placeholders are not allowed in ALTER ROLE, so the value is quoted with
+  // the server's own literal quoter rather than string-concatenated.
+  await pool.query("select format('alter role switchboard_app password %L', $1::text) as stmt", [password])
+    .then((res) => pool.query(res.rows[0].stmt as string));
+  console.log("[migrate] switchboard_app password set from APP_DB_PASSWORD");
 }
 
 // The analytics schema name is runtime config (DBT_SCHEMA), so its grants can't live in
