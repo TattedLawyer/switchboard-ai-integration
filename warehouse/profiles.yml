@@ -4,11 +4,22 @@ switchboard:
     dev:
       type: postgres
       host: "{{ env_var('DBT_HOST', 'localhost') }}"
-      # 5433, not 5432 (gate-H M7): docker-compose.yml publishes 5433 and DATABASE_URL
-      # defaults to it, so a manual `dbt build` with DBT_PORT unset used to target
-      # whatever happened to be on 5432 — and on a developer host with a
-      # switchboard/switchboard database there, it built a warehouse in the wrong
-      # cluster and exited 0. CI sets DBT_PORT explicitly either way.
+      # TWO CONTEXTS, TWO PORTS — do not "fix" one by changing this default.
+      #
+      #   HOST side (this default's only job): a manual `dbt build` from your shell, and
+      #     CI's dbt step, which runs on the runner and sets DBT_PORT=5433 explicitly.
+      #     docker-compose.yml publishes postgres as 5433:5432 and DATABASE_URL defaults
+      #     to 5433, so 5433 is right here. It used to default to 5432 (gate-H M7): a
+      #     manual run with DBT_PORT unset then targeted whatever was on 5432, and on a
+      #     developer host with a switchboard/switchboard database there it built a
+      #     warehouse in the WRONG CLUSTER and exited 0.
+      #   CONTAINER side: `docker compose run --rm dbt build` reaches postgres over the
+      #     compose network, where it listens on 5432 and the host's 5433 publication does
+      #     not exist. That service sets DBT_PORT: "5432" itself, in docker-compose.yml —
+      #     which is the sweep this default's move to 5433 originally missed, killing the
+      #     chaos workflow's demo job with "port 5433 failed: Connection refused".
+      #
+      # Pinned both ways by ingest/test/dbt-port-contract.test.ts.
       port: "{{ env_var('DBT_PORT', '5433') | as_number }}"
       user: "{{ env_var('DBT_USER', 'switchboard') }}"
       password: "{{ env_var('DBT_PASSWORD', 'switchboard') }}"

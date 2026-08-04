@@ -21,6 +21,16 @@ services:
     profiles: ["tools"]
     environment:
       DBT_HOST: postgres
+      # 5432, NOT the 5433 above. This service reaches postgres over the compose network,
+      # where the container listens on its own 5432 — `5433:5432` is a HOST publication and
+      # does not exist inside the network. Stated explicitly rather than left to
+      # warehouse/profiles.yml's default, whose default is the host port (5433) and is right
+      # for the other context: a manual `dbt build` from the developer's shell. Leaving this
+      # unset is what broke the chaos workflow's demo job on 1ae95ea —
+      # `connection to server at "postgres" (172.18.0.2), port 5433 failed: Connection
+      # refused` — after gate-H M7 correctly moved that default to 5433 for the host case.
+      # Every real context names its own port; the default covers only manual host runs.
+      DBT_PORT: "5432"
       DBT_USER: switchboard
       DBT_PASSWORD: switchboard
       DBT_DBNAME: switchboard
