@@ -35,7 +35,7 @@ without changing this table does not go green.
 
 | | Count | Derivation |
 |---|---|---|
-| **Open defects** | **31** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Open defects** | **40** | Part II top-level bullets that name an `Owner:` and are not struck |
 | **Design disclosures** | **40** | Part I top-level bullets |
 | **Paid** (struck entries) | **37** | Part III struck bullets, plus the cosmetic/low list |
 
@@ -46,7 +46,8 @@ count on their own. The previous method — "24 top-level bullets − 4 paid sub
 20" — was a hand-maintained arithmetic that nothing enforced.
 
 > **Escalation, recorded rather than absorbed (gate-H C1).** The published count was
-> **20** and the true count at the phase-2b close range's head is **31**. That is a
+> **20**; the true count when the derivation was first run was **31**, and it is **40**
+> after this gate's own cold pass filed its nine deferrals below. That is a
 > rise, and the standing rule below forbids one. It happened because `aef7e10` added
 > twelve top-level bullets to Part II in a single commit and did not recount, and
 > because the provenance line named commit `f4c2c0f` — which predates the three-part
@@ -55,8 +56,10 @@ count on their own. The previous method — "24 top-level bullets − 4 paid sub
 > regression**: every one of the added entries is an individually-accurate finding from
 > the close waves and the cold passes, and none of them is new breakage. It is recorded
 > here by name because absorbing it into a stale headline is precisely the failure this
-> file exists to prevent. The rule's next test is the phase-3 close, from a baseline of
-> 31.
+> file exists to prevent. The same is true of the nine gate-H deferrals: an entry filed
+> here is a defect that was FOUND, and a review that finds nine and files nine leaves the
+> repo more honest than it was, not less correct. The rule's next test is the phase-3
+> close, from a baseline of **40** — and it is now a mechanical test, not a promise.
 
 **Standing rule.** The open count must be **net-lower at each phase close**, and
 **any item deferred twice is escalated by name** in the close report rather than
@@ -419,8 +422,11 @@ leaves it is gone from the source forever.
 
 
 - **The ingest contract cannot help rows that never pass a door.** The numeric contract
-  (`ingest/src/numeric-contract.ts`) gates the webhook, replay, and backfill paths via the
-  shared event schema — but rows already in `raw` from before the contract, direct inserts,
+  (`ingest/src/numeric-contract.ts`) gates all SEVEN doors via the shared event schema —
+  the webhook door, quarantine replay, the backfill poll, and the sheet-snapshot,
+  stripe-feed, hub-hydrate and bus-replay connectors (gate-H M4: this said "the webhook,
+  replay, and backfill paths" long after the four connector doors joined, which is
+  precisely the staleness `event-schema.ts:49-51` carries an explicit warning about) — but rows already in `raw` from before the contract, direct inserts,
   and any future historical import are covered only by the staging safe-casts, which degrade
   a bad value to one NULL instead of a dead build. If those casts were ever removed as
   "redundant with the contract", this is what breaks. By design; disclosed so it stays a
@@ -861,6 +867,137 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   *Owner: Phase 3 — and it is a **blocker** for it: this MUST be closed before any write action is granted.*
 
 ## Ingestion, operations and architecture — open
+
+- **A sheets mapped column that disappears is invisible to the gate surface**
+  *(gate-H I5)* — a mapped column vanishing from the sheet header produces a
+  degradation entry on the **catch-up** report (printed by `backfill` on stderr,
+  which exits 0) and nothing at all on the reconcile report, which has no
+  degradation channel: `SheetReconcileReport` carries `stale`, `degradations`
+  exists on `SheetCatchUpReport` only. After one catchUp cycle the new events carry
+  the truncated content and reconcile recomputes hashes through the SAME truncated
+  mapping, so both sides agree and it prints `PASS: raw latest-state matches the
+  sheet exactly`. Permanent field loss, gate green. Within the drift window the
+  rows read `stale` — "present on both sides, content differs" — which sends the
+  operator to cell-level triage for what is a mapping failure (operator-surface
+  checklist line 5's failure mode). Adjacent to, but not covered by, the existing
+  "column reorder is UNPROVEN against a real sheet" entry.
+
+  *Owner: CLOSE-4. Fix: a degradation channel on the reconcile report — which means
+  a new field on a report shape, therefore all three exhaustive-consumption switches,
+  therefore its own RED. Mitigating meanwhile: `sheets` is opt-in, deliberately out
+  of `demo.sh` and absent from the CI fixture, so no shipped proof depends on it.*
+
+- **A disabled source's webhook door stays armed** *(gate-H I11)* —
+  `server.ts` admits any source in the registry (`isSource`), and `queue.ts`
+  registers workers and scans DLQs over `SOURCES`, not `enabledSources()`;
+  `enabledSources()` gates only backfill/hydration and reconcile. On any non-default
+  `INGEST_SOURCES` that gives two conditions. With the secret still configured,
+  `/webhooks/<disabled-source>` keeps accepting and ingesting into a lane **no
+  backfill and no reconcile covers** — ingest with no zero-loss surface behind it.
+  With the secret absent, `secretForSource` throws inside the handler, the catch-all
+  answers 500 and logs server-side on **every anonymous POST** — the prober-noise
+  class the sheets nudge door was fixed for, whose fix comment asserts "the event
+  doors never had this shape because their secrets are boot-asserted exactly when
+  their source is enabled", which is false for a *disabled* source's still-mounted
+  door.
+
+  *Owner: CLOSE-4, and it is the one on this list with a security edge. Fix: mount
+  event doors over `enabledSources()` and answer 404 for a registered-but-disabled
+  source, mirroring the nudge door's absence-shaped refusal. Reason for deferral: it
+  changes the status code a deployment's vendors see for a source it turned off, so
+  it needs its own RED across all three cases (enabled, disabled-with-secret,
+  disabled-without) rather than a drive-by at a close.*
+
+- **`DBT_SCHEMA` is a reader-side alias that reads like a deployment knob**
+  *(gate-H I10)* — `agent/src/host/schema.ts`, `ingest/src/migrate.ts`,
+  `scripts/verify-identity.ts` and the MCP/report SQL all honour it;
+  `warehouse/profiles.yml` (`schema: public`) plus `dbt_project.yml`
+  (`+schema: analytics`) make dbt build into `public_analytics` unconditionally, dbt
+  is never passed the variable, and nothing in CI sets it. Set it to anything else
+  and migrate creates and grants on an empty schema while dbt fills the old one and
+  every reader queries the empty one. No test can catch it: `db-privileges.test.ts`
+  and `mcp.test.ts` set `DBT_SCHEMA` and then create and populate that schema
+  themselves, so they pass either way. RUNBOOK now says plainly that dbt does not
+  follow it; that is the disclosure, not the fix.
+
+  *Owner: CLOSE-4. Fix: decompose the variable so dbt gets it too — the profile's
+  `schema:` and the project's `+schema:` compose into it, so honouring one env var
+  end to end means changing both plus every reader's default. Reason for deferral:
+  it moves warehouse files, so it cannot land without a dbt live-fire on every
+  affected surface, and the failure it prevents is a misconfiguration nobody has
+  made.*
+
+- **The hubcrm emission ledger is written by the mock and verified by no shipped
+  surface** *(gate-H I9, code half)* — `mocks/hubcrm/src/main.ts` genuinely writes
+  the chained emission ledger `LEDGER_PATH_HUBCRM` names, drops included, and
+  `verifyLedgerChain` is called from exactly one place (`connectors/ledger-feed.ts`)
+  which hubcrm does not route through. So the F-1c artifact exists and nothing reads
+  it. RUNBOOK and `.env.example` now say so rather than implying a fail-closed rule
+  that does not apply to this source.
+
+  *Owner: unscheduled. Fix: either a hubcrm-side chain verification on the emission
+  ledger, or stop writing it. Trigger: any work that gives hub-hydrate a second
+  oracle, or a real HubSpot connector, whichever comes first — both decide whether
+  the artifact is worth keeping.*
+
+- **The operator scripts hardcode the database while honouring `DATABASE_URL` for
+  the app** *(gate-H M5)* — `scripts/check-demo.sh` exports `DATABASE_URL`
+  (respecting an override) and then runs `docker compose exec -T postgres psql -U
+  switchboard -tAc …` with no `-d`, resolving to the default `switchboard` database
+  regardless: the oracle can be evaluated against a different database than the
+  pipeline wrote. Same pattern in `demo.sh`, `chaos.sh`, `backup.sh` and
+  `verify-durability.sh`, and sharpest in `restore.sh`, which truncates and restores
+  the hardcoded database with no reference to `DATABASE_URL` at all.
+
+  *Owner: CLOSE-4. Reason for deferral: `demo.sh` and `chaos.sh` cannot be run under
+  the close's hard rules (port conflict with a concurrent session), so a change to
+  the scripts' database resolution cannot be verified where it would break — the same
+  reason the exit-code scheme is deferred, and the same standard.*
+
+- **`scripts/verify-dbt-warns.ts` cannot follow `DBT_DBNAME`/`DBT_HOST`** *(gate-H
+  M8)* — it reads stored failures over `DATABASE_URL` from a literal
+  `public_dbt_test__audit`, while dbt wrote via the `DBT_*` profile. If the two
+  disagree, the gate inspects a database dbt never touched and reports the absence as
+  "store_failures must stay on" — a correct-shaped failure pointing at the wrong
+  cause. Benign in CI, where both resolve to the same database.
+
+  *Owner: CLOSE-4. Fix: resolve the audit schema's connection from the same `DBT_*`
+  variables the profile uses, and fail naming the mismatch rather than the symptom.
+  Trigger: any deployment that separates the app database from the warehouse one.*
+
+- **`INGEST_ROLE=worker` demands door secrets it can never use** *(gate-H M9)* —
+  `main.ts` runs `assertWebhookSecrets(enabledSources())` before the role split, so a
+  worker-only process — no `app`, no `/webhooks/*` — refuses to boot without
+  `WEBHOOK_SECRET_*`. Reads against the role split RUNBOOK documents.
+
+  *Owner: CLOSE-4. Fix: assert door secrets only on the roles that mount doors.
+  Reason for deferral: fail-closed-on-secrets is a rule worth being careful about
+  relaxing, and the RED has to prove the receiver role still fails closed.*
+
+- **`INGEST_SOURCES` typos and empty values are silent** *(gate-H M10)* —
+  `sources.ts` uses `?? DEFAULT`, which fires only on `undefined`, then
+  `.filter(isSource)`, which drops unknown entries. `INGEST_SOURCES=hubcrm,stripfeed`
+  runs one source; `INGEST_SOURCES=` runs zero — no runners, no reconcile coverage,
+  no error — while the doors stay open (the entry above). `config.ts` states the
+  opposite doctrine for every other variable: "unset or empty → the default; present
+  and invalid → throw at boot, naming the variable". This one does not use
+  `choiceFromEnv`, and `sources.test.ts` pins the tolerance as intended behaviour, so
+  no test will ever object.
+
+  *Owner: CLOSE-4. Fix: route it through `choiceFromEnv`'s doctrine and rewrite the
+  pin that currently blesses the tolerance. Reason for deferral: changing a pin from
+  "asserts X" to "asserts not-X" is a deliberate decision that needs its own RED and
+  its own reasoning, not a rider on a fix wave.*
+
+- **Ephemeral test databases leak with no sweeper** *(gate-H M11, hygiene)* —
+  `ingest/test/helpers/testdb.ts` has a careful, idempotent, termination-proof
+  `cleanup()`, but nothing reclaims `switchboard_test_*` databases from a run that
+  was SIGKILLed, and a review found three standing on the dev instance.
+
+  *Owner: unscheduled. Fix: a sweeper that drops `switchboard_test_*` databases older
+  than a threshold, run from the suite's global setup. Trigger: the first time a
+  developer's instance runs out of connections or disk because of it — hygiene, not
+  correctness, and a sweeper that drops databases has its own foot-gun.*
 
 - **The exit-code scheme is not applied** *(panel OPS-I6 + OPS-I2 + OPS-C2's
   config class + OPS-M4)* — every non-zero exit from every CLI is `1`, so a
@@ -1336,10 +1473,12 @@ it — is the part worth reading.
   *Struck as stale (debt-burn B11/V2) — the tracking half was already paid and
   this entry contradicted the "What production would require" §3, which
   records it as paid:* `ingest.schema_migrations` exists with per-file sha256
-  checksums (`migrate.ts:41-47` DDL, `:53-55` hashing), an applied-unchanged
-  file is skipped (`:69`), a changed applied file **throws** naming the file
-  (`:59-68` — refuse-on-drift), and a file is recorded only after success
-  (`:72-79`), so a mid-file failure retries instead of being assumed done.
+  checksums (`migrate.ts:92-97` DDL, `:105` hashing), an applied-unchanged
+  file is skipped (`:119`), a changed applied file **throws** naming the file
+  (`:109-118` — refuse-on-drift), and a file is recorded only after success
+  (`:125-129`), so a mid-file failure retries instead of being assumed done.
+  (Gate-H M3: every line citation here was dead — F14, inside this same range,
+  moved the body into `runMigrationsOn` and did not restamp the entry it edited.)
   ~~Narrowed entry — the advisory-lock half~~ *Paid (phase-2b close, F14, with
   the owed researched RED):* `runMigrations` now serializes concurrent boots
   with a session-level `pg_advisory_lock` taken on ONE dedicated checked-out

@@ -59,7 +59,17 @@ jobs:
       - name: migrate
         run: npm run migrate -w ingest
       - name: workspace test suites (incl. gating action-safety eval)
-        run: npm test
+        # Teed, because the next step needs the per-workspace counts this prints.
+        # pipefail so a red suite is still a red step through the pipe.
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/suite.log
+      # Gate-H C1/I1: the two published headline numbers (README's test count and
+      # KNOWN-ISSUES' scoreboard) are checked against the things they describe. Both
+      # were wrong at the phase-2b close — 857 vs 883, and 20 open defects vs 31 — for
+      # the same reason: a number a human maintains beside a thing a machine changes.
+      - name: verify README + KNOWN-ISSUES counts against reality
+        run: npx tsx scripts/verify-doc-counts.ts --suite-log /tmp/suite.log
       - name: seed pipeline fixture for dbt
         run: npx tsx scripts/ci-fixture.ts
       # B7: pin the interpreter instead of riding whatever python the runner image ships

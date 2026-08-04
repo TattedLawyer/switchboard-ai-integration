@@ -4,7 +4,12 @@ switchboard:
     dev:
       type: postgres
       host: "{{ env_var('DBT_HOST', 'localhost') }}"
-      port: "{{ env_var('DBT_PORT', '5432') | as_number }}"
+      # 5433, not 5432 (gate-H M7): docker-compose.yml publishes 5433 and DATABASE_URL
+      # defaults to it, so a manual `dbt build` with DBT_PORT unset used to target
+      # whatever happened to be on 5432 — and on a developer host with a
+      # switchboard/switchboard database there, it built a warehouse in the wrong
+      # cluster and exited 0. CI sets DBT_PORT explicitly either way.
+      port: "{{ env_var('DBT_PORT', '5433') | as_number }}"
       user: "{{ env_var('DBT_USER', 'switchboard') }}"
       password: "{{ env_var('DBT_PASSWORD', 'switchboard') }}"
       dbname: "{{ env_var('DBT_DBNAME', 'switchboard') }}"
