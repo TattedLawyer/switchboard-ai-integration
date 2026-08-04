@@ -2,7 +2,7 @@ import express from "express";
 import type pg from "pg";
 import { jsonbUnstorableReason, quarantineEvent } from "./quarantine.js";
 import { ingestEvent } from "./ingest-event.js";
-import { secretForSource, verifySignature } from "./hmac.js";
+import { classifyRejection, secretForSource, verifySignature } from "./hmac.js";
 import { isSource, type Source } from "./sources.js";
 import { eventSchema, type SourceEvent } from "./event-schema.js";
 import { handleHubcrmBatch } from "./connectors/hub-hydrate.js";
@@ -133,6 +133,17 @@ export function createIngestApp(
       const rawBody = (req as express.Request & { rawBody?: string }).rawBody ?? "";
       const signature = req.header("x-switchboard-signature");
       if (!verifySignature(rawBody, signature, secretForSource(source))) {
+        // OPS-I3: a 401 used to be invisible on our side. Secret rotation on one side
+        // only, clock skew past the ±300s window, or a misconfigured vendor endpoint
+        // produced a source that simply went quiet — and the RUNBOOK's Common-failures
+        // rows ("401 on every webhook for one source") were written from the far side of
+        // a signal this repo did not emit. Known trade, disclosed rather than unnoticed:
+        // an unauthenticated prober can mint unbounded log volume here. A per-source
+        // counter with periodic summary emission is the proportionate answer at real
+        // volume; it is more machinery than a close wave should carry.
+        console.warn(
+          `[ingest] 401 rejecting ${source} webhook: ${classifyRejection(rawBody, signature, secretForSource(source))}`,
+        );
         return res.status(401).json({ error: "invalid signature" });
       }
       // Task C: hubcrm delivers BATCHES (≤100 metadata-only events per request — the
@@ -159,6 +170,12 @@ export function createIngestApp(
       // that RangeErrors on deep nesting), and for the rest it preserves the wire bytes exactly.
       const unstorable = jsonbUnstorableReason(req.body);
       if (unstorable !== null) {
+        // OPS-I1: the door quarantined in total silence — HTTP 202 to the vendor (so its
+        // delivery dashboard stayed green), nothing in the service log, and a growing
+        // table. A source that starts emitting a bad field on EVERY event could not be
+        // detected today and could not be alerted on tomorrow, because there was no line
+        // to grep. The gaps, hydration-DLQ and sheets paths all report from this process.
+        console.warn(`[ingest] quarantined ${source} event at the door: ${unstorable}`);
         await quarantineEvent(pool, source, req.body, unstorable, rawBody, deploymentTenantId);
         return res.status(202).json({ quarantined: true });
       }
@@ -171,6 +188,10 @@ export function createIngestApp(
         const reason = detail
           ? `schema validation failed: ${detail.path.join(".")} — ${detail.message}`
           : "schema validation failed";
+        const eventId = typeof (req.body as { event_id?: unknown })?.event_id === "string"
+          ? (req.body as { event_id: string }).event_id
+          : "<none>";
+        console.warn(`[ingest] quarantined ${source} event ${eventId} at the door: ${reason}`);
         await quarantineEvent(pool, source, req.body, reason, rawBody, deploymentTenantId);
         return res.status(202).json({ quarantined: true });
       }

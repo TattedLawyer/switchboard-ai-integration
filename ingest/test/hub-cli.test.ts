@@ -183,3 +183,51 @@ describe("service log — the loop consumes the report, not just a number", () =
     expect(logged).toMatch(/hubcrm/);
   });
 });
+
+// CLOSE-3 — OPS-I5 and OPS-M1: two lines that were true and misleading.
+describe("the pump's zero cycle and the cursorless paradigm's incident line", () => {
+  it("OPS-I5: a cycle that contacted nothing SAYS it contacted nothing, instead of reporting a clean zero that reads as a reachability check", async () => {
+    // A live store, but raw holds nothing awaiting hydration — so the pump does no work
+    // and, critically, never touches the store. Before this, the line was
+    // "hydrated 0 snapshot(s), 0 tombstone(s) … from <url>", which is indistinguishable
+    // from a healthy quiet hour with a dead object store behind it.
+    const probe = createHubcrmApp({ seed: 77 });
+    const res = await runCli("src/cli/backfill.ts", listen(probe.app));
+    expect(res.code).toBe(0);
+    expect(res.out).toContain("was NOT contacted this cycle");
+    expect(res.out).toContain("reachability is unproven");
+    // Still says what it DID do — the honest zero is added to the report, not swapped for it.
+    expect(res.out).toContain("hydrated 0 snapshot(s)");
+  });
+
+  it("OPS-M1: a source with no cursor is told to re-run, not to 'resume from cursor 0' — a fabricated position printed during an incident", async () => {
+    // The sheets paradigm re-reads the whole grid every cycle and writes no ingest.cursors
+    // row at all. Drive its backfill against a dead base URL so the failure branch runs.
+    const res = await new Promise<{ code: number; out: string }>((resolve, reject) => {
+      execFile(
+        process.execPath,
+        ["--import", "tsx", "src/cli/backfill.ts"],
+        {
+          cwd: INGEST_DIR,
+          timeout: 30_000,
+          env: {
+            ...process.env,
+            DATABASE_URL: dbUrl,
+            INGEST_SOURCES: "sheets",
+            // Nothing listening: the connector fails and the incident line prints.
+            SHEETS_BASE_URL: "http://127.0.0.1:1",
+            ALLOW_DEV_SECRETS: "1",
+          },
+        },
+        (err, stdout, stderr) => {
+          if (err && typeof err.code !== "number") return reject(err);
+          resolve({ code: err ? (err.code as number) : 0, out: `${stdout}\n${stderr}` });
+        },
+      );
+    });
+    expect(res.out).toContain("backfill[sheets] failed");
+    expect(res.out).toContain("this paradigm keeps no cursor");
+    // The exact fabrication the finding names must be gone.
+    expect(res.out).not.toContain("resume from cursor 0");
+  });
+});

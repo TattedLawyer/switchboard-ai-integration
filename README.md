@@ -105,7 +105,7 @@ reporting a clean run.
   delivered is ever dropped, and event timestamps are bounded to a sanity window
   so a vendor clock bug can't permanently pin an entity's state), and per-source
   cursor backfill that catches anything webhooks lose.
-- **A zero-data-loss proof you can run:** `./scripts/chaos.sh` drives all three
+- **A runnable zero-loss check:** `./scripts/chaos.sh` drives all three
   chaos sources under injected failures simultaneously — the thin-webhook CRM
   through its own weather (duplicated requests, cross-batch holdovers,
   within-batch shuffle, a bounded redelivery budget) and the two ledger-feed
@@ -113,7 +113,15 @@ reporting a clean run.
   clean under its own paradigm's oracle: object store vs raw thin events vs
   hydrated snapshots for the CRM, tamper-evident log vs raw for the feeds
   (the settle wait is backoff-aware and bounded at 240s so retry-backoff
-  spikes finish instead of flaking).
+  spikes finish instead of flaking). It has a negative control that must FAIL —
+  `CHAOS_SKIP_BACKFILL=1` is required to red — which is what separates a check
+  from a green light. Two limits the headline used to omit, both already in
+  KNOWN-ISSUES and now stated where the claim is made: reconcile proves **id-set
+  parity, not payload parity**, and the oracle is a ledger written by **this
+  codebase**, whereas in production the vendor is the oracle. It was called "a
+  zero-data-loss proof" here; a proof's strength is bounded by its oracle, and a
+  headline stronger than the register beneath it is the one credibility failure a
+  repo whose pitch is disclosure discipline cannot afford.
 - **Identity resolution** (dbt): three deterministic tiers — exact email match,
   then normalized domain + company name, then a `manual_review` queue (never a
   silent guess) — with **every resolved link recording which tier matched and the

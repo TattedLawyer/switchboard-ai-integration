@@ -22,6 +22,13 @@ on:
 # impossible rather than defending against it; the fresh_wait guard in both scripts is
 # the second line.
 # They are also independent, so running them in parallel is free.
+# SEC-M2: neither workflow uses GITHUB_TOKEN, so neither should inherit the repository or
+# organisation default scope. Defence in depth, not an open hole — chaos.yml is
+# `pull_request` (not `pull_request_target`), label-gated, and fork tokens are read-only
+# with no secrets referenced.
+permissions:
+  contents: read
+
 jobs:
   chaos:
     if: github.event_name != 'pull_request' || github.event.label.name == 'run-chaos'
@@ -32,7 +39,15 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - name: chaos reconciliation (seeded fault plan)
-        run: CHAOS_SEED="${{ github.event.inputs.fault_seed || '7' }}" ./scripts/chaos.sh
+        # SEC-M1: the dispatch input goes through an `env:` mapping, never straight into the
+        # `run:` line. An ${{ }} expression is substituted BEFORE the shell parses the line,
+        # so a quote in the input breaks out into command position. Dispatch requires repo
+        # write access, which bounds the impact — but this is the pattern GitHub's own
+        # hardening guidance says to use, and a script-injection shape on a public repo is a
+        # bad look regardless of exploitability.
+        env:
+          CHAOS_SEED: ${{ github.event.inputs.fault_seed || '7' }}
+        run: ./scripts/chaos.sh
       - name: diagnose on failure
         if: failure()
         run: |

@@ -110,6 +110,21 @@ async function main(): Promise<void> {
               `${tombstoned} tombstone(s) (thin events arrive by webhook push; ` +
               `catchUp is the hydration pump)${quarantineNote} from ${baseUrl}`,
           );
+          // OPS-I5: a zero line on a scheduled surface READS as "I checked". It does not.
+          // The pump only contacts the object store when raw holds events awaiting
+          // hydration, so an outage, a revoked token, a wrong HUBCRM_BASE_URL and a vendor
+          // that silently stopped pushing all present as a clean affirmative zero —
+          // indistinguishable from a healthy quiet hour. Truth is not the standard here;
+          // non-misleading is. (A real per-cycle liveness probe is the better answer and is
+          // deferred: adding a network call to every scheduled cycle changes the failure
+          // semantics of the whole scheduled path.)
+          if (hydrated === 0 && tombstoned === 0 && hydrationPending === 0) {
+            console.log(
+              `backfill[${source}]: no events were awaiting hydration — the object store at ` +
+                `${baseUrl} was NOT contacted this cycle, so its reachability is unproven ` +
+                "(run reconcile to actually test it)",
+            );
+          }
           if (hydrationDlq > 0) {
             console.error(
               `[${source}] HYDRATION DLQ: ${hydrationDlq} event(s) dead-lettered this run — ` +
@@ -158,10 +173,21 @@ async function main(): Promise<void> {
           [source],
         );
         const row = endRes.rows[0] as { last_seq?: unknown; last_event_id?: string | null } | undefined;
-        const cursor = row?.last_event_id ?? String(Number(row?.last_seq ?? 0));
+        // OPS-M1: the same class the comment above records as already fixed once, surviving
+        // for the paradigm that has NO cursor. The sheet-snapshot connector re-reads the
+        // whole grid every cycle, so "resume from cursor 0" is a fabricated position printed
+        // during an incident — this repo's own stated anti-pattern. Suppress the clause
+        // rather than invent a number: a re-run is still the right advice, it just does not
+        // resume from anywhere.
+        const cursor =
+          row?.last_event_id ?? (row?.last_seq === undefined || row?.last_seq === null ? null : String(Number(row.last_seq)));
         // B4: prefixed in this file's own house style — the line prints mid-incident,
         // in a loop over sources, where an anonymous cursor is actively misleading.
-        console.log(`backfill[${source}]: state is consistent; re-run to resume from cursor ${cursor}`);
+        console.log(
+          cursor === null
+            ? `backfill[${source}]: state is consistent; re-run to retry (this paradigm keeps no cursor — a full re-read, not a resume)`
+            : `backfill[${source}]: state is consistent; re-run to resume from cursor ${cursor}`,
+        );
       } catch (cursorErr) {
         console.error(`backfill[${source}] could not read cursor:`, cursorErr);
       }

@@ -23,6 +23,11 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+# SEC-M2: nothing in this workflow uses GITHUB_TOKEN, so it should not inherit the
+# repository or organisation default scope.
+permissions:
+  contents: read
+
 jobs:
   suite:
     runs-on: ubuntu-latest
