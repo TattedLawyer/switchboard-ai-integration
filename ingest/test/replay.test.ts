@@ -4,6 +4,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { createQueue, enqueueEvent, startWorker, fetchDlq, replayDlq } from "../src/queue.js";
 import type { SourceEvent } from "../src/server.js";
 import { PgBoss } from "pg-boss";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -49,18 +50,18 @@ describe("replayDlq", () => {
         },
       } as unknown as pg.Pool;
 
-      await startWorker(boss, poisonPool);
+      await startWorker(boss, poisonPool, { tenantId: DEFAULT_TENANT_ID });
 
       // Use a NON-crm source so the test proves replayDlq re-ingests under the job's own
       // source (a hardcoded "crm" would fail this assertion).
       const event = ev("evt-replay-1");
-      await enqueueEvent(boss, "billing", event);
+      await enqueueEvent(boss, "billing", event, { tenantId: DEFAULT_TENANT_ID });
 
       // Bounded poll (≤20s) for the job to land in the DLQ.
       const deadline = Date.now() + 20000;
       let dlqJob: { source: string; id: string; data: SourceEvent } | undefined;
       while (Date.now() < deadline) {
-        const dlqJobs = await fetchDlq(boss);
+        const dlqJobs = await fetchDlq(boss, DEFAULT_TENANT_ID);
         dlqJob = dlqJobs.find((j) => j.data.event_id === event.event_id);
         if (dlqJob) break;
         await new Promise((resolve) => setTimeout(resolve, 200));
@@ -76,7 +77,7 @@ describe("replayDlq", () => {
       expect(preResult.rows[0].n).toBe(0);
 
       // Replay with the HEALTHY pool.
-      const result = await replayDlq(boss, pool);
+      const result = await replayDlq(boss, pool, DEFAULT_TENANT_ID);
       expect(result).toEqual({ replayed: 1, failed: 0 });
 
       // Raw row now exists — under the job's source, not a hardcoded one.
@@ -88,7 +89,7 @@ describe("replayDlq", () => {
       expect(postResult.rows[0].source).toBe("billing");
 
       // DLQ job was consumed: a second fetch does not return it again.
-      const dlqAfter = await fetchDlq(boss);
+      const dlqAfter = await fetchDlq(boss, DEFAULT_TENANT_ID);
       expect(dlqAfter.find((j) => j.data.event_id === event.event_id)).toBeUndefined();
     } finally {
       await boss.stop();

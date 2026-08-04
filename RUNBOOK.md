@@ -22,6 +22,7 @@ is also the form `gap-ack` prints when reconcile tells you to run it.
 | `LEDGER_PATH_HUBCRM` / `_BILLING` / `_SUPPORT` | unset → reconcile FAILS naming the missing var (fail-closed); the literal `skip` opts the source out explicitly. `_HUBCRM` names the F-1c emission-side ledger (every event the store emits, chained — drops included); the 2a billing/support feed ledgers are unchanged | reconcile CLI (per-source ledger lookup) |
 | `INGEST_SOURCES` | `billing,support` (F-1c: `crm` left the default — its mock is retired and nothing serves port 4001). `sheets`, `stripefeed`, `hubcrm` and `casebus` are registered but **opt-in**; set them explicitly for anything real — in particular `hubcrm` MUST be enabled on the service that should run its hydration pump, or webhooks land with no snapshots and the warehouse CRM arm stays empty. Every script pins this variable explicitly | which sources ingest polls/reconciles (scripts pin it explicitly) |
 | `CRM_BASE_URL` / `BILLING_BASE_URL` / `SUPPORT_BASE_URL` / `SHEETS_BASE_URL` / `STRIPEFEED_BASE_URL` / `HUBCRM_BASE_URL` / `CASEBUS_BASE_URL` | `http://localhost:4001` / `4003` / `4004` / `4005` / `4006` / `4007` / `4008` (`crm` is the retired mock's legacy lane — nothing serves 4001; see KNOWN-ISSUES' end-state note) | backfill CLI (sheets: the snapshot API; stripefeed: the `/v1/events` cursor feed; hubcrm: the object store; casebus: the `/subscribe` event stream) |
+| `SWITCHBOARD_TENANT_ID` | unset → the default tenant `00000000-…-0000`. The ONE tenant this deployment's webhook doors, queue envelope and worker write under, resolved once at boot; a non-uuid refuses boot naming the variable. One deployment serves one configured tenant — this is not a tenant selector and nothing routes on it | ingest doors, queue envelope, worker, DLQ replay |
 | `INGEST_ROLE` | `all` (`receiver` \| `worker` \| `all`; anything else refuses boot naming the variable — same for a non-integer `PORT`/`BACKFILL_INTERVAL_MS`) | ingest main |
 | `CHAOS_SEED` | `7` | chaos.sh fault-plan seed (CI feeds it as a workflow input; reproduce a red run by re-entering its seed) |
 | `ANTHROPIC_API_KEY` | unset → deterministic report (risk table + watch list; a one-line notice replaces the AI narrative) | agent report |
@@ -98,7 +99,15 @@ seven-line standing checklist in
   `source`. Operator CLI (2a.3): `npm run quarantine -w ingest -- --list` shows
   pending rows; `npm run quarantine -w ingest -- --replay <id>` replays one;
   `npm run quarantine -w ingest` sweeps everything pending (each row re-validates
-  through the same ingest gate — unfixable rows stay put and are counted). Note:
+  through the same ingest gate — unfixable rows stay put and are counted).
+  **Tenant scoping (CLOSE-3):** `--list` and the sweep take an optional
+  `[--tenant <uuid>]` and default to the default tenant, exactly like `gap-ack`,
+  `hydrate-rearm` and `reconcile` — a bare `--tenant` refuses, and a named tenant
+  with no recorded state anywhere refuses rather than reporting a clean zero. The
+  depth line names the tenant it counted. `--replay <id>` takes no `--tenant`:
+  the row carries its own `tenant_id` and replay re-ingests under it, so neither
+  the sweep nor a single replay can relocate a payload into another tenant's lane
+  (they both could before). Note:
   *unsigned* requests are rejected 401, never quarantined. Since the
   numeric-integrity wave, schema-failure reasons name the offending field (e.g.
   `schema validation failed: data.amount_cents — amount_cents must be a storable

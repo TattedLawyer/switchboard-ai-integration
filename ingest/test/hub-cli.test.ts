@@ -8,6 +8,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { expectParadigmIntegrityLine } from "./helpers/operator-surface.js";
 import { createIngestApp } from "../src/server.js";
 import { createHubcrmApp, type HubcrmApp } from "../../mocks/hubcrm/src/index.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Task C pair 4 — the STANDING CHECKLIST (born from Gate-H 4-for-4, binding): every new
 // result field the connector produces is CONSUMED AND PRINTED by the shipped operator
@@ -67,7 +68,7 @@ function runCli(script: "src/cli/backfill.ts" | "src/cli/reconcile.ts", baseUrl:
 }
 
 async function deliver(hub: HubcrmApp): Promise<void> {
-  const doorUrl = listen(createIngestApp(pool));
+  const doorUrl = listen(createIngestApp(pool, DEFAULT_TENANT_ID));
   const stats = await hub.store.deliver({ webhookUrl: `${doorUrl}/webhooks/hubcrm` });
   if (stats.failedBatches > 0) throw new Error("test delivery failed");
 }
@@ -122,7 +123,7 @@ describe("reconcile CLI — paradigm-honest integrity + every bucket printed", (
 
     // The 10-retries-then-gone loss: mutations whose webhooks never arrive.
     hub.store.simulate(20);
-    const doorUrl = listen(createIngestApp(pool));
+    const doorUrl = listen(createIngestApp(pool, DEFAULT_TENANT_ID));
     await hub.store.deliver({ webhookUrl: `${doorUrl}/webhooks/hubcrm`, faultPlan: { seed: 1, dropRate: 1 } });
 
     const res = await runCli("src/cli/reconcile.ts", baseUrl);

@@ -5,6 +5,7 @@ import express from "express";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { createHubcrmApp, OPS_UNTIL_MERGES_COMPLETE, type HubcrmApp } from "../../mocks/hubcrm/src/index.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Task C pair 3 — the SECOND ORACLE (D7): under chaos, every thin event that reached raw
 // ends in exactly ONE of three states — hydrated snapshot, tombstone (a snapshot-table
@@ -46,7 +47,7 @@ async function connector(baseUrl: string) {
 }
 
 async function deliver(hub: HubcrmApp, faultSeed?: number): Promise<void> {
-  const doorUrl = listen(createIngestApp(pool));
+  const doorUrl = listen(createIngestApp(pool, DEFAULT_TENANT_ID));
   await hub.store.deliver({
     webhookUrl: `${doorUrl}/webhooks/hubcrm`,
     batchSize: 20,
@@ -147,7 +148,7 @@ describe("the hydration trichotomy under chaos", () => {
     // Now: mutations whose webhooks are ALL dropped (the 10-retries-then-gone loss).
     const before = hub.store.emittedEvents().length;
     hub.store.simulate(20);
-    const doorUrl = listen(createIngestApp(pool));
+    const doorUrl = listen(createIngestApp(pool, DEFAULT_TENANT_ID));
     await hub.store.deliver({
       webhookUrl: `${doorUrl}/webhooks/hubcrm`,
       faultPlan: { seed: 1, dropRate: 1 }, // everything lost

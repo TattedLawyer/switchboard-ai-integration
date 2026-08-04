@@ -50,3 +50,38 @@ export function choiceFromEnv<T extends string>(
 /** setInterval's documented usable range: Node clamps delays <1, >2147483647, or NaN
  *  to 1ms — so this bound is where "big interval" turns into "hot loop". */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/** The tenant that pre-tenancy data and single-tenant deployments (the demo) belong to.
+ *  Defined here rather than imported from ingest-event.ts so this module stays a leaf. */
+const DEFAULT_TENANT = "00000000-0000-0000-0000-000000000000";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * SEC-C1: the ONE tenant this deployment's push doors speak for, resolved once at boot
+ * and passed explicitly from there down. Deliberately NOT a payload claim and NOT derived
+ * from the signing secret.
+ *
+ * Why config and not the wire: the three vendors whose webhook contracts were read for
+ * this decision (Stripe Connect, GitHub Apps, Slack Events) all keep the signing secret at
+ * APP/ENDPOINT scope and put the tenant INSIDE the authenticated delivery — Stripe's
+ * top-level `account`, GitHub's `installation` property, Slack's `team_id`. A
+ * secret-as-tenant-identifier design is therefore not the industry pattern, and adopting
+ * the payload-claim pattern would mean inventing a tenant claim in our own mocks' wire
+ * format and then trusting it — a product decision the isolation model has not made.
+ *
+ * So: one configured tenant per deployment. The SHAPE this gives the code — "tenant is an
+ * argument, resolved at the edge" — is the shape every multi-tenant option later plugs
+ * into; what changes then is only this resolver. Migration target when the isolation model
+ * is decided: read the tenant from the authenticated delivery, as the three vendors above do.
+ */
+export function resolveDeploymentTenant(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.SWITCHBOARD_TENANT_ID;
+  if (raw === undefined || raw === "") return DEFAULT_TENANT;
+  if (!UUID_RE.test(raw)) {
+    throw new Error(
+      `invalid SWITCHBOARD_TENANT_ID "${raw}": must be a uuid (the tenant every door on this deployment writes under)`,
+    );
+  }
+  return raw;
+}

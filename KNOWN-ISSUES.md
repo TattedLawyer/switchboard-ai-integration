@@ -669,9 +669,23 @@ successful de-duplication. That is closed:
 
   *Owner: unscheduled — same decision, same trigger as above.*
 
-Until the analytics half lands, treat this as **single-tenant with a
-tenant-safe ingest floor**: the pipeline will no longer destroy a second
-tenant's data, but it will still merge two tenants' *entities* downstream.
+The honest one-line version of where this stands, corrected at CLOSE-3 (the
+previous wording — "single-tenant with a tenant-safe ingest floor" — read as a
+claim about ingress that was false for the two push doors, which carried no
+tenant at all, and for the two remediation paths that reassigned tenancy to the
+default): **one deployment serves one configured tenant, and the tenant it is
+configured with is carried faithfully end to end.** `SWITCHBOARD_TENANT_ID` is
+resolved once at boot; every door, the queue envelope, the store and both
+quarantine replay paths now require a tenant as an argument, so a tenant-less
+write is a compile error rather than a silent write to the nil tenant. The
+analytics layer below is still unpartitioned and will merge two tenants'
+*entities* if two tenants' data ever reaches one database.
+
+This is **not** a multi-tenant product and none of the above claims one. The
+isolation model — per-client deployment versus multi-tenant SaaS — is an open
+product decision; nothing in the code routes, registers or selects between
+tenants, and the tenant plumbing exists so that whichever model is chosen starts
+from data that is correctly attributed rather than from a nil-tenant pile.
 
 ## Security posture — open
 

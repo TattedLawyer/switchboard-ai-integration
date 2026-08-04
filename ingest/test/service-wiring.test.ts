@@ -8,6 +8,7 @@ import { createIngestApp } from "../src/server.js";
 import { signBody, assertWebhookSecrets } from "../src/hmac.js";
 import { enabledSources, type Source } from "../src/sources.js";
 import { createBackfillRunner } from "../src/main.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Task A7 — service wiring: the long-running service's interval loop routes through the
 // connector seam, and the nudge door gets a real host. One RED→GREEN pair, four
@@ -244,7 +245,7 @@ describe("A7 obligation 3 — nudge hosting through the service wiring", () => {
     const { baseUrl } = recordedSheet();
     process.env.SHEETS_BASE_URL = baseUrl;
     const wiring = createServiceWiring(pool, ["sheets"]);
-    const ingestUrl = listen(createIngestApp(pool, { sheetsNudge: wiring.sheetsNudge }));
+    const ingestUrl = listen(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: wiring.sheetsNudge }));
     const body = JSON.stringify({
       sheet_id: "sheet-test",
       range: "A2:I2",

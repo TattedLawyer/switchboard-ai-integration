@@ -12,7 +12,7 @@ import type { SheetCatchUpReport } from "./connectors/sheet-snapshot.js";
 import type { StripeFeedCatchUpReport } from "./connectors/stripe-feed.js";
 import type { BusReplayCatchUpReport } from "./connectors/bus-replay.js";
 import type { HubHydrationReport } from "./connectors/hub-hydrate.js";
-import { choiceFromEnv, intFromEnv, MAX_TIMER_DELAY_MS } from "./config.js";
+import { choiceFromEnv, intFromEnv, MAX_TIMER_DELAY_MS, resolveDeploymentTenant } from "./config.js";
 
 const pool = getPool();
 // B1: strict boot parsing (config.ts) — a typo'd PORT/interval/role is a boot refusal
@@ -206,6 +206,10 @@ async function main() {
   // Fail closed at boot, not on first request: one aggregated error naming every
   // missing secret (A2). Demo/local runs opt in via ALLOW_DEV_SECRETS=1.
   assertWebhookSecrets(enabledSources());
+  // SEC-C1: the ONE tenant this deployment's doors write under, resolved once, here, at
+  // boot — not per request, not from a payload claim, not from the signing secret. Threaded
+  // explicitly into every door and onto the queue envelope from this single point.
+  const deploymentTenantId = resolveDeploymentTenant();
 
   let boss: PgBoss | undefined;
   let app: express.Express | undefined;
@@ -233,14 +237,14 @@ async function main() {
   if (isReceiver) {
     // Create the HTTP receiver app with queue integration
     const enqueue = boss
-      ? async (source: Source, event: SourceEvent, rawBody: string): Promise<void> => {
+      ? async (source: Source, event: SourceEvent, rawBody: string, tenantId: string): Promise<void> => {
           // Route each event onto its own source's queue; the wire bytes ride the job
           // envelope so the worker can store raw_body (2b-D4 expand).
-          await enqueueEvent(boss!, source, event, rawBody);
+          await enqueueEvent(boss!, source, event, { tenantId, rawBody });
         }
       : undefined;
 
-    app = createIngestApp(pool, { enqueue, sheetsNudge: wiring?.sheetsNudge });
+    app = createIngestApp(pool, deploymentTenantId, { enqueue, sheetsNudge: wiring?.sheetsNudge });
     server = app.listen(port, () =>
       console.log(`ingest receiver listening on :${port} (role: ${ingestRole})`)
     );
@@ -248,7 +252,7 @@ async function main() {
 
   if (isWorker && boss) {
     // Start the per-source workers
-    await startWorker(boss, pool);
+    await startWorker(boss, pool, { tenantId: deploymentTenantId });
     console.log(`ingest worker started (role: ${ingestRole})`);
   }
 

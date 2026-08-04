@@ -13,11 +13,23 @@ export type { SourceEvent };
 
 export function createIngestApp(
   pool: pg.Pool,
+  /**
+   * SEC-C1: the tenant THIS deployment's doors speak for, resolved once at boot by
+   * `resolveDeploymentTenant()` and passed explicitly from there. Required, so a
+   * tenant-less door is a compile error rather than a silent nil-tenant write.
+   *
+   * Migration target when the isolation model is decided: Stripe Connect, GitHub Apps and
+   * Slack all keep the signing secret at app/endpoint scope and carry the tenant INSIDE
+   * the authenticated delivery (`account` / `installation` / `team_id`). Resolving the
+   * tenant per-request from the verified body replaces only this argument's source — the
+   * shape below ("tenant is an argument, resolved at the edge") does not change.
+   */
+  deploymentTenantId: string,
   // rawBody: the exact request text of the webhook delivery, threaded to the queue so the
   // worker can store it (2b-D4 expand). Always jsonb-storable by the time enqueue is
   // reached: unstorable payloads divert to quarantine BEFORE this callback fires.
   opts?: {
-    enqueue?: (source: Source, event: SourceEvent, rawBody: string) => Promise<void>;
+    enqueue?: (source: Source, event: SourceEvent, rawBody: string, tenantId: string) => Promise<void>;
     /** A5: the sheets nudge runner hook. Wiring it means "this process hosts a sheets
      *  connector; an authenticated nudge may trigger its early catchUp". Processes that
      *  don't host one leave it unset and the nudge door answers 503 (see below).
@@ -131,7 +143,7 @@ export function createIngestApp(
       // divert → schema gate → quarantine or ingest). Vendor knowledge stays in
       // connectors/hub-hydrate.ts; batch-fatal is forbidden there by construction.
       if (source === "hubcrm") {
-        const outcome = await handleHubcrmBatch(pool, req.body, rawBody);
+        const outcome = await handleHubcrmBatch(pool, req.body, rawBody, deploymentTenantId);
         return res.status(outcome.status).json(outcome.body);
       }
       // Unstorable divert: a U+0000 (the \u0000 escape) or a lone UTF-16 surrogate (the \ud800
@@ -147,7 +159,7 @@ export function createIngestApp(
       // that RangeErrors on deep nesting), and for the rest it preserves the wire bytes exactly.
       const unstorable = jsonbUnstorableReason(req.body);
       if (unstorable !== null) {
-        await quarantineEvent(pool, source, req.body, unstorable, rawBody);
+        await quarantineEvent(pool, source, req.body, unstorable, rawBody, deploymentTenantId);
         return res.status(202).json({ quarantined: true });
       }
       const parsed = eventSchema.safeParse(req.body);
@@ -159,7 +171,7 @@ export function createIngestApp(
         const reason = detail
           ? `schema validation failed: ${detail.path.join(".")} — ${detail.message}`
           : "schema validation failed";
-        await quarantineEvent(pool, source, req.body, reason, rawBody);
+        await quarantineEvent(pool, source, req.body, reason, rawBody, deploymentTenantId);
         return res.status(202).json({ quarantined: true });
       }
       // 2b-D4 expand: this door HOLDS the wire bytes (rawBody, verified above against the
@@ -167,9 +179,9 @@ export function createIngestApp(
       // parsed.data (schema-shaped); raw_body is the request text itself — the two are
       // deliberately NOT derivable from each other.
       if (opts?.enqueue) {
-        await opts.enqueue(source, parsed.data, rawBody);
+        await opts.enqueue(source, parsed.data, rawBody, deploymentTenantId);
       } else {
-        await ingestEvent(pool, source, parsed.data, { rawBody });
+        await ingestEvent(pool, source, parsed.data, { tenantId: deploymentTenantId, rawBody });
       }
       res.status(202).json({ stored: true });
     } catch (err) {

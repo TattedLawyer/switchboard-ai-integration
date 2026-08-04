@@ -16,6 +16,7 @@ import pg from "pg";
 import { getPool } from "../ingest/src/db.js";
 import { runMigrations } from "../ingest/src/migrate.js";
 import { createIngestApp } from "../ingest/src/server.js";
+import { DEFAULT_TENANT_ID } from "../ingest/src/ingest-event.js";
 import { catchUp } from "../ingest/src/backfill.js";
 import { createSupportApp } from "../mocks/support/src/server.js";
 import { createSheetsApp, COL } from "../mocks/sheets/src/index.js";
@@ -66,7 +67,7 @@ async function main() {
   rmSync("out/ci", { recursive: true, force: true });
   mkdirSync("out/ci", { recursive: true });
 
-  const ingestSrv = createIngestApp(pool).listen(0); // no enqueue → direct synchronous ingest
+  const ingestSrv = createIngestApp(pool, DEFAULT_TENANT_ID).listen(0); // no enqueue → direct synchronous ingest
   const ingestPort = (ingestSrv.address() as { port: number }).port;
 
   // ── hubcrm: thin webhook batches through the REAL door, hydration pump interleaved ──

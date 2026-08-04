@@ -124,7 +124,9 @@ export async function handleHubcrmBatch(
   // batch text: wider than the event, but byte-exact, and preservation is the point
   // exactly there.
   rawBody: string,
-  tenantId: string = DEFAULT_TENANT_ID,
+  // SEC-C1: REQUIRED. The default let the webhook door omit it, so every pushed hubcrm
+  // batch landed on the nil tenant no matter which tenant's vendor sent it.
+  tenantId: string,
 ): Promise<HubBatchOutcome> {
   if (!Array.isArray(body)) {
     return {

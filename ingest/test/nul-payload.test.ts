@@ -4,6 +4,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { quarantineEvent } from "../src/quarantine.js";
 import { secretForSource, signBody } from "../src/hmac.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -34,7 +35,7 @@ const postSigned = async (port: number, rawBody: string) =>
 describe("NUL-bearing payloads are quarantined, never 500'd, never dropped", () => {
 
   it("schema-VALID signed payload with \\u0000 in a field → 202 quarantined, payload preserved, no raw row", async () => {
-    const app = createIngestApp(pool);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
     const srv = app.listen(0);
     const port = (srv.address() as { port: number }).port;
 
@@ -72,7 +73,7 @@ describe("NUL-bearing payloads are quarantined, never 500'd, never dropped", () 
   });
 
   it("schema-FAILING signed payload with \\u0000 → 202 quarantined (quarantine itself is NUL-safe)", async () => {
-    const app = createIngestApp(pool);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
     const srv = app.listen(0);
     const port = (srv.address() as { port: number }).port;
 
@@ -97,7 +98,7 @@ describe("NUL-bearing payloads are quarantined, never 500'd, never dropped", () 
     // A NUL payload handed to pg-boss would throw at boss.send (jsonb) before any persistence.
     // The app must divert to quarantine first, so the enqueue hook must never see it.
     let enqueued = 0;
-    const app = createIngestApp(pool, {
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID, {
       enqueue: async () => {
         enqueued++;
       },
@@ -130,7 +131,7 @@ describe("NUL-bearing payloads are quarantined, never 500'd, never dropped", () 
   it("quarantineEvent itself does not throw on a NUL-bearing payload (defense in depth)", async () => {
     const payload = { event_id: "evt-nul-direct", data: { note: "\u0000" } };
     await expect(
-      quarantineEvent(pool, "crm", payload, "test: direct NUL quarantine"),
+      quarantineEvent(pool, "crm", payload, "test: direct NUL quarantine", undefined, DEFAULT_TENANT_ID),
     ).resolves.toBeUndefined();
 
     const q = await pool.query(
@@ -141,7 +142,7 @@ describe("NUL-bearing payloads are quarantined, never 500'd, never dropped", () 
   });
 
   it("non-NUL payloads are unaffected: literal backslash-u0000 TEXT (not a real NUL) still stores normally", async () => {
-    const app = createIngestApp(pool);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
     const srv = app.listen(0);
     const port = (srv.address() as { port: number }).port;
 
@@ -181,7 +182,7 @@ describe("NUL-bearing payloads are quarantined, never 500'd, never dropped", () 
 // healthy, and the payload is never silently dropped.
 describe("deep nesting and lone surrogates never 500, never drop a signed payload", () => {
   it("deeply-nested (999, at the depth bound) NUL-free payload takes the NORMAL path → 202 stored in raw.raw_events, NOT quarantined", async () => {
-    const app = createIngestApp(pool);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
     const srv = app.listen(0);
     const port = (srv.address() as { port: number }).port;
 
@@ -220,7 +221,7 @@ describe("deep nesting and lone surrogates never 500, never drop a signed payloa
 
   it("lone-surrogate payload → 202 quarantined, raw_body round-trips, no raw row, enqueue never called", async () => {
     let enqueued = 0;
-    const app = createIngestApp(pool, {
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID, {
       enqueue: async () => {
         enqueued++;
       },
@@ -265,7 +266,7 @@ describe("deep nesting and lone surrogates never 500, never drop a signed payloa
   it("quarantineEvent itself does not throw on a lone-surrogate payload (defense in depth)", async () => {
     const payload = { event_id: "evt-surrogate-direct", data: { note: "dangling \udc00 low" } };
     await expect(
-      quarantineEvent(pool, "crm", payload, "test: direct lone-surrogate quarantine"),
+      quarantineEvent(pool, "crm", payload, "test: direct lone-surrogate quarantine", undefined, DEFAULT_TENANT_ID),
     ).resolves.toBeUndefined();
 
     const q = await pool.query(
@@ -284,7 +285,7 @@ describe("deep nesting and lone surrogates never 500, never drop a signed payloa
       toJSON: () => ({ event_id: "evt-sneaky-1", note: "hidden \u0000 nul" }),
     };
     await expect(
-      quarantineEvent(pool, "crm", sneaky, "test: walker-miss fallback"),
+      quarantineEvent(pool, "crm", sneaky, "test: walker-miss fallback", undefined, DEFAULT_TENANT_ID),
     ).resolves.toBeUndefined();
 
     const q = await pool.query(
@@ -317,7 +318,7 @@ describe("depth-capped payloads are quarantined as raw text, never 500'd, never 
     // Direct-ingest mode on purpose: this is the reviewer's reproduction — the stringify at the
     // raw_events insert is the call that RangeErrors. (Queue mode dies the same way inside
     // boss.send's jsonb write; the divert point below is upstream of both.)
-    const app = createIngestApp(pool);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
     const srv = app.listen(0);
     const port = (srv.address() as { port: number }).port;
 
@@ -349,7 +350,7 @@ describe("depth-capped payloads are quarantined as raw text, never 500'd, never 
   });
 
   it("boundary, over side: 1000 nested arrays (one container past the bound) → 202 quarantined", async () => {
-    const app = createIngestApp(pool);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
     const srv = app.listen(0);
     const port = (srv.address() as { port: number }).port;
 
@@ -379,7 +380,7 @@ describe("depth-capped payloads are quarantined as raw text, never 500'd, never 
     const sneaky = { toJSON: () => ({ event_id: "evt-rangeerr-1", nested: deep }) };
     const rawText = '{"marker":"evt-rangeerr-1-raw-text"}';
     await expect(
-      quarantineEvent(pool, "crm", sneaky, "test: stringify RangeError net", rawText),
+      quarantineEvent(pool, "crm", sneaky, "test: stringify RangeError net", rawText, DEFAULT_TENANT_ID),
     ).resolves.toBeUndefined();
 
     const q = await pool.query(
@@ -391,7 +392,7 @@ describe("depth-capped payloads are quarantined as raw text, never 500'd, never 
   });
 
   it("pin: well-formed astral-plane pairs (emoji) in a KEY and a VALUE are NOT false-positived → 202 stored", async () => {
-    const app = createIngestApp(pool);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
     const srv = app.listen(0);
     const port = (srv.address() as { port: number }).port;
 

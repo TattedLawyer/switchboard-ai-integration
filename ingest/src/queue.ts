@@ -79,6 +79,18 @@ export async function createQueue(
 export interface IngestJob {
   event: SourceEvent;
   rawBody: string | null;
+  /**
+   * SEC-I1. Without this field the queue was a tenant-ERASING seam: whatever tenant the
+   * enqueuing door believed in was gone by the time the worker wrote. That leak was latent
+   * only because the doors carried no tenant either (SEC-C1) — which is exactly why the
+   * envelope had to land in the SAME change as the doors. A tenant-aware door over a
+   * tenant-blind queue is strictly worse than either defect alone: it manufactures a
+   * silent reassignment on every queued event that cannot happen today.
+   *
+   * Optional on the WIRE (see unwrapJob) purely for rolling-deploy tolerance; required on
+   * every path that constructs one.
+   */
+  tenantId: string;
 }
 
 // Expand-phase tolerance: during a rolling deploy an old receiver can still enqueue BARE
@@ -86,27 +98,48 @@ export interface IngestJob {
 // DLQ). Unwrap both shapes; a bare event simply has no wire bytes. `event` cannot collide
 // with real event content: enqueued events are schema-parsed, and the zod object strips
 // unknown keys, so a stored SourceEvent never has an `event` property.
-function unwrapJob(data: IngestJob | SourceEvent): { event: SourceEvent; rawBody: string | null } {
+function unwrapJob(
+  data: IngestJob | SourceEvent,
+  // The deployment tenant this process was configured with, used ONLY for jobs enqueued
+  // before the envelope carried one. Never a silent substitution — see the warn below.
+  fallbackTenantId: string,
+  context: string,
+): { event: SourceEvent; rawBody: string | null; tenantId: string } {
   if (typeof data === "object" && data !== null && "event" in data) {
-    const job = data as IngestJob;
-    return { event: job.event, rawBody: job.rawBody ?? null };
+    const job = data as Partial<IngestJob> & { event: SourceEvent };
+    if (!job.tenantId) {
+      console.warn(
+        `[ingest] ${context}: queued job carries no tenant (enqueued before SEC-I1) — attributing it to the configured deployment tenant ${fallbackTenantId}`,
+      );
+    }
+    return { event: job.event, rawBody: job.rawBody ?? null, tenantId: job.tenantId || fallbackTenantId };
   }
-  return { event: data as SourceEvent, rawBody: null };
+  console.warn(
+    `[ingest] ${context}: bare queued event with no envelope (pre-2b-D4) — attributing it to the configured deployment tenant ${fallbackTenantId}`,
+  );
+  return { event: data as SourceEvent, rawBody: null, tenantId: fallbackTenantId };
 }
 
 export async function enqueueEvent(
   boss: PgBoss,
   source: Source,
   event: SourceEvent,
-  rawBody?: string
+  // SEC-I1: required, so a tenant-less enqueue is a compile error. rawBody rides in the
+  // same object rather than as a trailing positional, so no call site can transpose them.
+  opts: { tenantId: string; rawBody?: string }
 ): Promise<void> {
-  const job: IngestJob = { event, rawBody: rawBody ?? null };
+  if (!opts.tenantId) {
+    throw new Error("tenant is required: refusing to enqueue with an empty tenantId");
+  }
+  const job: IngestJob = { event, rawBody: opts.rawBody ?? null, tenantId: opts.tenantId };
   await boss.send(queueName(source), job, {
     // Use queue-level defaults, but can be overridden per job if needed
   });
 }
 
 interface WorkerOptions {
+  /** SEC-I1: the deployment tenant, used only for envelope-less legacy jobs (see unwrapJob). */
+  tenantId: string;
   batchSize?: number;
   pollingIntervalSeconds?: number;
 }
@@ -114,7 +147,7 @@ interface WorkerOptions {
 export async function startWorker(
   boss: PgBoss,
   pool: pg.Pool,
-  workerOpts?: WorkerOptions
+  workerOpts: WorkerOptions
 ): Promise<string[]> {
   // Demo-appropriate cadence: pg-boss defaults (batchSize 1, pollingIntervalSeconds 2)
   // process events one at a time roughly every ~1.6-2s, which makes a 50-event demo
@@ -122,8 +155,8 @@ export async function startWorker(
   // a handful of seconds instead. Purely a throughput knob — does not touch retry
   // semantics (retryLimit/retryDelay/retryBackoff stay on the queue, set in createQueue).
   const options = {
-    batchSize: workerOpts?.batchSize ?? 10,
-    pollingIntervalSeconds: workerOpts?.pollingIntervalSeconds ?? 0.5,
+    batchSize: workerOpts.batchSize ?? 10,
+    pollingIntervalSeconds: workerOpts.pollingIntervalSeconds ?? 0.5,
   };
 
   // One worker per source queue; each keeps running after this function returns.
@@ -146,8 +179,12 @@ export async function startWorker(
         const results: JobResult[] = [];
         for (const job of jobs) {
           try {
-            const { event, rawBody } = unwrapJob(job.data as IngestJob | SourceEvent);
-            await ingestEvent(pool, source, event, rawBody !== null ? { rawBody } : undefined);
+            const { event, rawBody, tenantId } = unwrapJob(
+              job.data as IngestJob | SourceEvent,
+              workerOpts.tenantId,
+              `worker ${queueName(source)}`,
+            );
+            await ingestEvent(pool, source, event, rawBody !== null ? { tenantId, rawBody } : { tenantId });
             results.push({ id: job.id, status: "completed" });
           } catch (err) {
             results.push({
@@ -166,8 +203,10 @@ export async function startWorker(
 }
 
 export async function fetchDlq(
-  boss: PgBoss
-): Promise<{ source: Source; id: string; data: SourceEvent; rawBody: string | null }[]> {
+  boss: PgBoss,
+  /** SEC-I1: the deployment tenant, used only for envelope-less legacy DLQ jobs. */
+  fallbackTenantId: string
+): Promise<{ source: Source; id: string; data: SourceEvent; rawBody: string | null; tenantId: string }[]> {
   // Aggregate ALL pending jobs across every source's DLQ, tagging each with its source.
   // Drain-by-default (debt-burn A7, the AWS-CLI pagination contract): exhaustive
   // retrieval is the default and truncation must never be silent — the old 10-cap made
@@ -177,7 +216,7 @@ export async function fetchDlq(
   // Note: In pg-boss, a DLQ is just another queue, so we query each directly.
   // Jobs are unwrapped from the IngestJob envelope so callers keep seeing the event as
   // `data` (the CLI prints event_id/event_type from it); the wire bytes ride alongside.
-  const aggregated: { source: Source; id: string; data: SourceEvent; rawBody: string | null }[] = [];
+  const aggregated: { source: Source; id: string; data: SourceEvent; rawBody: string | null; tenantId: string }[] = [];
   for (const source of SOURCES) {
     const jobs = await boss.findJobs<IngestJob | SourceEvent>(dlqName(source));
 
@@ -188,8 +227,8 @@ export async function fetchDlq(
     // This is a peek (read-only via findJobs), so jobs remain fetchable for the replay CLI.
     for (const job of jobs) {
       if (job.state === "created" || job.state === "retry") {
-        const { event, rawBody } = unwrapJob(job.data);
-        aggregated.push({ source, id: job.id, data: event, rawBody });
+        const { event, rawBody, tenantId } = unwrapJob(job.data, fallbackTenantId, `dlq ${dlqName(source)}`);
+        aggregated.push({ source, id: job.id, data: event, rawBody, tenantId });
       }
     }
   }
@@ -198,9 +237,11 @@ export async function fetchDlq(
 
 export async function replayDlq(
   boss: PgBoss,
-  pool: pg.Pool
+  pool: pg.Pool,
+  /** SEC-I1: the deployment tenant, used only for envelope-less legacy DLQ jobs. */
+  fallbackTenantId: string
 ): Promise<{ replayed: number; failed: number }> {
-  const dlqJobs = await fetchDlq(boss);
+  const dlqJobs = await fetchDlq(boss, fallbackTenantId);
 
   let replayed = 0;
   let failed = 0;
@@ -211,7 +252,14 @@ export async function replayDlq(
       // here is safe even in the edge case where the original job actually succeeded before
       // dead-lettering. The wire bytes travel with the job envelope, so a DLQ replay stores
       // the same raw_body a first-attempt success would have.
-      await ingestEvent(pool, job.source, job.data, job.rawBody !== null ? { rawBody: job.rawBody } : undefined);
+      // The job's OWN tenant, carried on the envelope — a DLQ replay must not become the
+      // second cross-tenant write path with C2's shape.
+      await ingestEvent(
+        pool,
+        job.source,
+        job.data,
+        job.rawBody !== null ? { tenantId: job.tenantId, rawBody: job.rawBody } : { tenantId: job.tenantId },
+      );
 
       // Consume the DLQ job so it isn't replayed again. fetchDlq() peeks jobs via findJobs() —
       // it does NOT fetch/lease them the way boss.work()/boss.fetch() do, so these jobs are still

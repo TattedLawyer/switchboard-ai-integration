@@ -25,7 +25,7 @@ import { signBody } from "../src/hmac.js";
 import { createQueue, enqueueEvent, startWorker } from "../src/queue.js";
 import { pollOnce } from "../src/backfill.js";
 import { quarantineEvent, replayQuarantined, replayAllQuarantined } from "../src/quarantine.js";
-import { ingestEvent } from "../src/ingest-event.js";
+import { ingestEvent, DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { createBillingApp } from "../../mocks/billing/src/server.js";
 
 let pool: pg.Pool;
@@ -77,7 +77,7 @@ async function pollUntil(cond: () => Promise<boolean>, timeoutMs: number): Promi
 describe("webhook door — wire bytes preserved", () => {
   it("direct path: raw_body is byte-identical to the posted body (not a re-serialization)", async () => {
     const wire = wireFor("evt-rb-direct");
-    const res = await postSigned(createIngestApp(pool), "billing", wire);
+    const res = await postSigned(createIngestApp(pool, DEFAULT_TENANT_ID), "billing", wire);
     expect(res.status).toBe(202);
 
     const row = await pool.query(
@@ -98,12 +98,12 @@ describe("webhook door — wire bytes preserved", () => {
     );
     const boss = await createQueue(connectionString);
     try {
-      const app = createIngestApp(pool, {
+      const app = createIngestApp(pool, DEFAULT_TENANT_ID, {
         enqueue: async (source: Source, event: SourceEvent, rawBody: string): Promise<void> => {
-          await enqueueEvent(boss, source, event, rawBody);
+          await enqueueEvent(boss, source, event, { tenantId: DEFAULT_TENANT_ID, rawBody });
         },
       });
-      await startWorker(boss, pool);
+      await startWorker(boss, pool, { tenantId: DEFAULT_TENANT_ID });
 
       const wire = wireFor("evt-rb-queued");
       const res = await postSigned(app, "billing", wire);
@@ -160,7 +160,7 @@ describe("poll door — no per-event wire bytes exist, so none are invented", ()
 
 describe("quarantine replay — every attempt leaves a trace (C4)", () => {
   it("replay of a still-invalid row increments attempts and stamps last_attempt_at, each time", async () => {
-    await quarantineEvent(pool, "billing", { event_id: "evt-rb-bad", junk: true }, "schema validation failed: test");
+    await quarantineEvent(pool, "billing", { event_id: "evt-rb-bad", junk: true }, "schema validation failed: test", undefined, DEFAULT_TENANT_ID);
     const idRow = await pool.query("select id, attempts, last_attempt_at from ingest.quarantine");
     expect(idRow.rowCount).toBe(1);
     const id = Number(idRow.rows[0].id);
@@ -192,11 +192,11 @@ describe("quarantine replay — every attempt leaves a trace (C4)", () => {
       occurred_at: new Date().toISOString(),
       data: { id: "DEMO-C-0001", name: "DEMO X" },
     };
-    await quarantineEvent(pool, "billing", valid, "operator hold: test");
+    await quarantineEvent(pool, "billing", valid, "operator hold: test", undefined, DEFAULT_TENANT_ID);
     const idRow = await pool.query("select id from ingest.quarantine");
     const id = Number(idRow.rows[0].id);
 
-    const result = await replayAllQuarantined(pool, ingestEvent);
+    const result = await replayAllQuarantined(pool, ingestEvent, DEFAULT_TENANT_ID);
     expect(result).toEqual({ replayed: 1, stillInvalid: 0 });
 
     const after = await pool.query(
@@ -219,7 +219,7 @@ describe("jsonb-unstorable divert path is untouched by the expand phase", () => 
     // \\u0000 in the TS literal = the six-character escape on the wire = an actual NUL after
     // JSON.parse — jsonb-unstorable, diverted BEFORE schema validation and enqueue.
     const wire = `{"event_id":"evt-rb-nul","event_type":"company.updated","occurred_at":"${new Date().toISOString()}","data":{"name":"a\\u0000b"}}`;
-    const res = await postSigned(createIngestApp(pool), "billing", wire);
+    const res = await postSigned(createIngestApp(pool, DEFAULT_TENANT_ID), "billing", wire);
     expect(res.status).toBe(202);
     expect(await res.json()).toEqual({ quarantined: true });
 
@@ -236,7 +236,7 @@ describe("jsonb-unstorable divert path is untouched by the expand phase", () => 
     const depth = 1200; // past MAX_JSONB_NESTING_DEPTH (1000); JSON.parse survives, divert must fire
     const deep = "[".repeat(depth) + "1" + "]".repeat(depth);
     const wire = `{"event_id":"evt-rb-deep","event_type":"company.updated","occurred_at":"${new Date().toISOString()}","data":{"deep":${deep}}}`;
-    const res = await postSigned(createIngestApp(pool), "billing", wire);
+    const res = await postSigned(createIngestApp(pool, DEFAULT_TENANT_ID), "billing", wire);
     expect(res.status).toBe(202);
     expect(await res.json()).toEqual({ quarantined: true });
 

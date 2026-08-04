@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
-import { ingestEvent } from "../src/ingest-event.js";
+import { ingestEvent, DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import type { SourceEvent } from "../src/server.js";
 
 // B10 (debt-burn): ingest.outbox was NAMED for the transactional-outbox pattern and
@@ -61,8 +61,8 @@ describe("B10: ingest.ingest_journal — the honest name, still the equality cou
   });
 
   it("equality basis unchanged: one journal row per accepted event, none for a duplicate", async () => {
-    expect(await ingestEvent(pool, "crm", event("evt-j1"))).toBe("inserted");
-    expect(await ingestEvent(pool, "crm", event("evt-j1"))).toBe("duplicate");
+    expect(await ingestEvent(pool, "crm", event("evt-j1"), { tenantId: DEFAULT_TENANT_ID })).toBe("inserted");
+    expect(await ingestEvent(pool, "crm", event("evt-j1"), { tenantId: DEFAULT_TENANT_ID })).toBe("duplicate");
     const rows = await pool.query(
       "select count(*)::int as n from ingest.ingest_journal where event_id = 'evt-j1'",
     );
@@ -75,7 +75,7 @@ describe("B10: ingest.ingest_journal — the honest name, still the equality cou
       `insert into ingest.ingest_journal (tenant_id, source, event_id, created_at)
        values ('00000000-0000-0000-0000-000000000000', 'crm', 'evt-ancient', now() - interval '31 days')`,
     );
-    expect(await ingestEvent(pool, "crm", event("evt-j2"))).toBe("inserted");
+    expect(await ingestEvent(pool, "crm", event("evt-j2"), { tenantId: DEFAULT_TENANT_ID })).toBe("inserted");
     const ancient = await pool.query(
       "select count(*)::int as n from ingest.ingest_journal where event_id = 'evt-ancient'",
     );

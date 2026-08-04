@@ -8,7 +8,7 @@ import type pg from "pg";
 // API/script mutation path the mock provides FOR TESTS (and never fires the trigger).
 import { COL, createRowSource, createSheetsApp, type SheetsApp, type SheetsAppOptions } from "../../mocks/sheets/src/index.js";
 import { freshTestDb } from "./helpers/testdb.js";
-import { ingestEvent } from "../src/ingest-event.js";
+import { ingestEvent, DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { SheetSnapshotConnector } from "../src/connectors/sheet-snapshot.js";
 import { canonicalStringify } from "../src/connectors/sheet-canonical.js";
 import type { SourceEvent } from "../src/event-schema.js";
@@ -525,7 +525,7 @@ describe("A4.1 — supersession counter: a human's undo must land", () => {
       event_id: `sheet-${rk}-${hashA}-r1`,
       occurred_at: new Date().toISOString(),
     };
-    expect(await ingestEvent(pool, "sheets", orphan, { rawBody: canonicalStringify(orphan) })).toBe("inserted");
+    expect(await ingestEvent(pool, "sheets", orphan, { tenantId: DEFAULT_TENANT_ID, rawBody: canonicalStringify(orphan) })).toBe("inserted");
 
     // Self-healing: raw latest already equals the sheet — nothing new for that row.
     expect(await c.catchUp(pool)).toBe(0);

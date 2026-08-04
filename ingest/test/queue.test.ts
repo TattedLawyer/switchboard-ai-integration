@@ -4,6 +4,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { createQueue, enqueueEvent, startWorker, fetchDlq, replayDlq, queueName, dlqName } from "../src/queue.js";
 import type { SourceEvent } from "../src/server.js";
 import { PgBoss } from "pg-boss";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -51,8 +52,8 @@ describe("pg-boss queue", () => {
     const boss = await createQueue(connectionString);
     try {
       const event = ev("evt-queue-1");
-      await enqueueEvent(boss, "crm", event);
-      await startWorker(boss, pool);
+      await enqueueEvent(boss, "crm", event, { tenantId: DEFAULT_TENANT_ID });
+      await startWorker(boss, pool, { tenantId: DEFAULT_TENANT_ID });
 
       // Poll for raw row (bounded 10s)
       const deadline = Date.now() + 10000;
@@ -101,16 +102,16 @@ describe("pg-boss queue", () => {
         },
       } as unknown as pg.Pool;
 
-      await startWorker(boss, poisonPool);
+      await startWorker(boss, poisonPool, { tenantId: DEFAULT_TENANT_ID });
 
       const event = ev("evt-poison-4");
-      await enqueueEvent(boss, "crm", event);
+      await enqueueEvent(boss, "crm", event, { tenantId: DEFAULT_TENANT_ID });
 
       // Bounded poll (≤20s, no fixed sleeps) for the job to land in the DLQ.
       const deadline = Date.now() + 20000;
       let dlqJob: { id: string; data: SourceEvent } | undefined;
       while (Date.now() < deadline) {
-        const dlqJobs = await fetchDlq(boss);
+        const dlqJobs = await fetchDlq(boss, DEFAULT_TENANT_ID);
         dlqJob = dlqJobs.find((j) => j.data.event_id === event.event_id);
         if (dlqJob) break;
         await new Promise((resolve) => setTimeout(resolve, 200));
@@ -137,9 +138,9 @@ describe("pg-boss queue", () => {
     const boss = await createQueue(connectionString);
     try {
       // healthy pool; enqueue one billing + one crm event
-      await enqueueEvent(boss, "billing", ev("evt-b1"));
-      await enqueueEvent(boss, "crm", ev("evt-c1"));
-      await startWorker(boss, pool);
+      await enqueueEvent(boss, "billing", ev("evt-b1"), { tenantId: DEFAULT_TENANT_ID });
+      await enqueueEvent(boss, "crm", ev("evt-c1"), { tenantId: DEFAULT_TENANT_ID });
+      await startWorker(boss, pool, { tenantId: DEFAULT_TENANT_ID });
       await pollUntil(async () => {
         const n = await pool.query("select count(*)::int as n from raw.raw_events");
         return n.rows[0].n === 2;
@@ -174,14 +175,14 @@ describe("pg-boss queue", () => {
         },
       } as unknown as pg.Pool;
 
-      await startWorker(boss, poisonPool);
+      await startWorker(boss, poisonPool, { tenantId: DEFAULT_TENANT_ID });
 
       const event = ev("evt-poison-billing-1");
-      await enqueueEvent(boss, "billing", event);
+      await enqueueEvent(boss, "billing", event, { tenantId: DEFAULT_TENANT_ID });
 
       let dlqJobs: Awaited<ReturnType<typeof fetchDlq>> = [];
       await pollUntil(async () => {
-        dlqJobs = await fetchDlq(boss);
+        dlqJobs = await fetchDlq(boss, DEFAULT_TENANT_ID);
         return dlqJobs.some((j) => j.data.event_id === event.event_id);
       }, 20_000);
 
@@ -254,14 +255,14 @@ describe("pg-boss queue", () => {
       // Enqueue all three BEFORE starting the worker so its first fetch picks them up as ONE
       // batch (startWorker's default batchSize is 10), with the poison sandwiched between the
       // healthy events.
-      await enqueueEvent(boss, "crm", ev(healthyIds[0]));
-      await enqueueEvent(boss, "crm", ev(poisonId));
-      await enqueueEvent(boss, "crm", ev(healthyIds[1]));
-      await startWorker(boss, selectivePool);
+      await enqueueEvent(boss, "crm", ev(healthyIds[0]), { tenantId: DEFAULT_TENANT_ID });
+      await enqueueEvent(boss, "crm", ev(poisonId), { tenantId: DEFAULT_TENANT_ID });
+      await enqueueEvent(boss, "crm", ev(healthyIds[1]), { tenantId: DEFAULT_TENANT_ID });
+      await startWorker(boss, selectivePool, { tenantId: DEFAULT_TENANT_ID });
 
       // Wait for the poison job to exhaust retries and land in the DLQ.
       await pollUntil(async () => {
-        const dlqJobs = await fetchDlq(boss);
+        const dlqJobs = await fetchDlq(boss, DEFAULT_TENANT_ID);
         return dlqJobs.some((j) => j.data.event_id === poisonId);
       }, 20_000);
 
@@ -277,7 +278,7 @@ describe("pg-boss queue", () => {
       expect(attempts.get(poisonId)).toBe(2);
 
       // The DLQ holds ONLY the poison event — healthy co-batched events never dead-letter.
-      const dlqJobs = await fetchDlq(boss);
+      const dlqJobs = await fetchDlq(boss, DEFAULT_TENANT_ID);
       expect(dlqJobs.map((j) => j.data.event_id)).toEqual([poisonId]);
     } finally {
       await boss.stop();
@@ -297,10 +298,10 @@ describe("pg-boss queue", () => {
           throw new Error("Pool is poisoned");
         },
       } as unknown as pg.Pool;
-      await startWorker(boss, poisonPool);
+      await startWorker(boss, poisonPool, { tenantId: DEFAULT_TENANT_ID });
 
       const ids = Array.from({ length: 12 }, (_, i) => `evt-drain-${String(i + 1).padStart(2, "0")}`);
-      for (const id of ids) await enqueueEvent(boss, "crm", ev(id));
+      for (const id of ids) await enqueueEvent(boss, "crm", ev(id), { tenantId: DEFAULT_TENANT_ID });
 
       // Wait on the DATABASE, not on fetchDlq — the defect under test is precisely that
       // fetchDlq under-reports, so polling it for 12 would never terminate.
@@ -314,16 +315,16 @@ describe("pg-boss queue", () => {
 
       // The AWS-CLI contract (research A7): exhaustive retrieval is the DEFAULT; a
       // silently-capped listing makes an operator read a false "done" on an 11+ queue.
-      const all = await fetchDlq(boss);
+      const all = await fetchDlq(boss, DEFAULT_TENANT_ID);
       expect(all).toHaveLength(12);
       expect(new Set(all.map((j) => j.data.event_id))).toEqual(new Set(ids));
 
       // And one replay invocation drains everything — with a healthy pool this time.
-      const result = await replayDlq(boss, pool);
+      const result = await replayDlq(boss, pool, DEFAULT_TENANT_ID);
       expect(result).toEqual({ replayed: 12, failed: 0 });
       const rawN = await pool.query("select count(*)::int as n from raw.raw_events where source = 'crm'");
       expect(rawN.rows[0].n).toBe(12);
-      expect(await fetchDlq(boss)).toHaveLength(0);
+      expect(await fetchDlq(boss, DEFAULT_TENANT_ID)).toHaveLength(0);
     } finally {
       await boss.stop();
     }

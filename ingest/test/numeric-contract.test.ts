@@ -7,7 +7,7 @@ import type { Server } from "node:http";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { replayQuarantined } from "../src/quarantine.js";
-import { ingestEvent } from "../src/ingest-event.js";
+import { ingestEvent, DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { secretForSource, signBody } from "../src/hmac.js";
 import type { Source } from "../src/sources.js";
 
@@ -31,7 +31,7 @@ beforeAll(async () => {
   const result = await freshTestDb();
   pool = result.pool;
   cleanup = result.cleanup;
-  const app = createIngestApp(pool);
+  const app = createIngestApp(pool, DEFAULT_TENANT_ID);
   srv = app.listen(0);
   port = (srv.address() as { port: number }).port;
 });

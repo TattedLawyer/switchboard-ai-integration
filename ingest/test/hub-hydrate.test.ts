@@ -5,6 +5,7 @@ import express from "express";
 import { freshTestDb } from "./helpers/testdb.js";
 import { numericContractViolation } from "../src/numeric-contract.js";
 import { createHubcrmApp, type HubcrmApp } from "../../mocks/hubcrm/src/index.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Task C pair 3 — hydration: thin events become full records, honestly.
 //
@@ -41,7 +42,7 @@ function listen(app: express.Express): string {
 /** Deliver the mock's pending events through the REAL batch door (in-process app). */
 async function deliverThroughDoor(hub: HubcrmApp): Promise<void> {
   const { createIngestApp } = await import("../src/server.js");
-  const ingest = createIngestApp(pool);
+  const ingest = createIngestApp(pool, DEFAULT_TENANT_ID);
   const s = ingest.listen(0);
   try {
     const stats = await hub.store.deliver({

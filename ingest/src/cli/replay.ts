@@ -1,5 +1,6 @@
 import { getPool } from "../db.js";
 import { createQueue, fetchDlq, replayDlq } from "../queue.js";
+import { resolveDeploymentTenant } from "../config.js";
 
 async function main(): Promise<void> {
   const listOnly = process.argv.includes("--list");
@@ -8,9 +9,13 @@ async function main(): Promise<void> {
 
   const pool = getPool();
   const boss = await createQueue(connectionString);
+  // SEC-I1: DLQ jobs carry their own tenant on the envelope. This is the fallback for jobs
+  // enqueued before the envelope had one — a rolling-deploy leftover — and every use of it
+  // is announced on the log by unwrapJob rather than substituted silently.
+  const fallbackTenantId = resolveDeploymentTenant();
 
   try {
-    const dlqJobs = await fetchDlq(boss);
+    const dlqJobs = await fetchDlq(boss, fallbackTenantId);
     // NOTE: exact line format is load-bearing — scripts/chaos.sh greps "DLQ depth: <n>".
     // The count is the TOTAL across all per-source DLQs.
     console.log(`DLQ depth: ${dlqJobs.length}`);
@@ -33,7 +38,7 @@ async function main(): Promise<void> {
       process.exit(0);
     }
 
-    const result = await replayDlq(boss, pool);
+    const result = await replayDlq(boss, pool, fallbackTenantId);
     console.log(`replayed: ${result.replayed}, failed: ${result.failed}`);
 
     await boss.stop();

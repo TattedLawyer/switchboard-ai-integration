@@ -13,6 +13,7 @@ import {
   withHydrationDlqBoss,
 } from "../src/connectors/hub-hydrate.js";
 import { recordGap } from "../src/connectors/types.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Close D2 (the split's close half) — the hydration-DLQ re-arm CLI, pinned by
 // child-process runs of the real entrypoint (operator-surface checklist lines 1/3/5).
@@ -66,7 +67,7 @@ function runCli(args: string[]): Promise<{ code: number; out: string }> {
 
 async function deliverThroughDoor(hub: HubcrmApp): Promise<void> {
   const { createIngestApp } = await import("../src/server.js");
-  const ingest = createIngestApp(pool);
+  const ingest = createIngestApp(pool, DEFAULT_TENANT_ID);
   const s = ingest.listen(0);
   try {
     const stats = await hub.store.deliver({

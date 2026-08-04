@@ -19,6 +19,7 @@ import {
   contentHash,
   resolveHeaderMapping,
 } from "../src/connectors/sheet-canonical.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Task A5 — sheets as a first-class source. Two RED→GREEN pairs, named:
 //   pair 1 "registration + nudge": the registry arm + env conventions resolve end-to-end
@@ -148,7 +149,7 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
     // nudge preserves nothing and is pure noise. Reject, don't file.
     const { sheets, baseUrl } = startSheet();
     const c = mkConnector(baseUrl);
-    const { port } = startIngest(createIngestApp(pool, { sheetsNudge: () => c.nudge(pool) }));
+    const { port } = startIngest(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: () => c.nudge(pool) }));
     const body = notification(sheets);
 
     const unsigned = await postNudge(port, body);
@@ -164,7 +165,7 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
   it("a signed nudge answers 202 and the early catchUp actually RAN — the ingested delta is observable in raw", async () => {
     const { sheets, baseUrl } = startSheet();
     const c = mkConnector(baseUrl);
-    const { port } = startIngest(createIngestApp(pool, { sheetsNudge: () => c.nudge(pool) }));
+    const { port } = startIngest(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: () => c.nudge(pool) }));
 
     const body = notification(sheets);
     const res = await postNudge(port, body, signBody(body, "demo-secret-sheets"));
@@ -190,7 +191,7 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
     delete process.env.WEBHOOK_SECRET_SHEETS;
     try {
       const { sheets } = startSheet();
-      const { port } = startIngest(createIngestApp(pool)); // sheets never configured here
+      const { port } = startIngest(createIngestApp(pool, DEFAULT_TENANT_ID)); // sheets never configured here
       const body = notification(sheets);
 
       const unsigned = await postNudge(port, body);
@@ -209,7 +210,7 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
 
   it("a signed nudge in a process with NO sheets runner wired answers 503 — accepting a nudge that can have no effect would be a lie to the channel", async () => {
     const { sheets } = startSheet();
-    const { port } = startIngest(createIngestApp(pool)); // no sheetsNudge hook
+    const { port } = startIngest(createIngestApp(pool, DEFAULT_TENANT_ID)); // no sheetsNudge hook
     const body = notification(sheets);
     const res = await postNudge(port, body, signBody(body, "demo-secret-sheets"));
     expect(res.status).toBe(503);
@@ -223,7 +224,7 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
     // POSTed here would mint a foreign id in that lane and poison every later diff. So
     // the door 404s BY NAME — not the generic "unknown source" fallback — and points at
     // the one push surface sheets actually has.
-    const { port } = startIngest(createIngestApp(pool));
+    const { port } = startIngest(createIngestApp(pool, DEFAULT_TENANT_ID));
     const body = JSON.stringify({
       event_id: "sheet-rk-0001-deadbeefdeadbeef",
       event_type: "sheet.row_upserted",
@@ -251,7 +252,7 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
     // survivors arrive as real HTTP posts through the HMAC door, and correctness comes
     // ONLY from the periodic catchUp cycles — which read the sheet's own truth.
     let c!: SheetSnapshotConnector;
-    const { port } = startIngest(createIngestApp(pool, { sheetsNudge: () => c.nudge(pool) }));
+    const { port } = startIngest(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: () => c.nudge(pool) }));
     const { sheets, baseUrl } = startSheet({
       seed: 21,
       webhookUrl: `http://127.0.0.1:${port}/connectors/sheets/nudge`,

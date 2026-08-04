@@ -5,7 +5,15 @@ import type { SourceEvent } from "./server.js";
 export const DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000000";
 
 export interface IngestOptions {
-  tenantId?: string;
+  /**
+   * REQUIRED (SEC-C1). Every caller must say which tenant this event belongs to, so a
+   * tenant-less call is a compile error rather than a silent nil-tenant write. Before
+   * this was required, the two push doors omitted it and every webhook keyed to the nil
+   * tenant — which is exactly the cross-tenant collision migration 006 exists to remove.
+   * Single-tenant deployments (the demo) pass DEFAULT_TENANT_ID explicitly; the service
+   * passes the one tenant `resolveDeploymentTenant()` read at boot.
+   */
+  tenantId: string;
   /**
    * The exact wire bytes the event arrived as (2b-D4 expand phase). Present only when the
    * door genuinely holds them — the webhook request text, or a connector's canonical JSON.
@@ -19,16 +27,16 @@ export async function ingestEvent(
   pool: pg.Pool,
   source: string,
   event: SourceEvent,
-  opts?: IngestOptions,
+  opts: IngestOptions,
 ): Promise<"inserted" | "duplicate"> {
-  // A caller that supplies the KEY explicitly but empty is a bug, not a single-tenant
-  // deployment — silently substituting the default there would re-create the cross-tenant
-  // collision this whole migration exists to remove, in the one code path nobody revisits.
-  // Omitting it entirely still means "single tenant", which is what the demo does.
-  if (opts && "tenantId" in opts && !opts.tenantId) {
+  // The type makes omission impossible; this guard covers the runtime case the type cannot
+  // — an empty string. Silently substituting the default there would re-create the
+  // cross-tenant collision this whole migration exists to remove, in the one code path
+  // nobody revisits.
+  if (!opts.tenantId) {
     throw new Error("tenant is required: refusing to ingest with an empty tenantId");
   }
-  const tenantId = opts?.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantId = opts.tenantId;
   // Same shape as the tenantId guard: a caller that supplies the KEY but empty text is a
   // bug (no door can receive an event on zero wire bytes), and silently storing "" would
   // masquerade as custody. Omitting it entirely means "this door has no wire bytes" → NULL.
@@ -43,7 +51,7 @@ export async function ingestEvent(
     const insertResult = await client.query(
       `insert into raw.raw_events (tenant_id, source, event_id, event_type, payload, raw_body)
        values ($1, $2, $3, $4, $5, $6) on conflict (tenant_id, source, event_id) do nothing`,
-      [tenantId, source, event.event_id, event.event_type, JSON.stringify(event), opts?.rawBody ?? null],
+      [tenantId, source, event.event_id, event.event_type, JSON.stringify(event), opts.rawBody ?? null],
     );
 
     if (insertResult.rowCount === 1) {

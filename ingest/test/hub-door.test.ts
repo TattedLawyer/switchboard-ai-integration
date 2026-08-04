@@ -5,6 +5,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { secretForSource, signBody } from "../src/hmac.js";
 import { createHubStore, type ThinEvent } from "../../mocks/hubcrm/src/index.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Task C pair 3 — the BATCH webhook door (disclosed decision: the generic door in
 // server.ts detects the hubcrm source and hands the whole request to the connector
@@ -28,7 +29,7 @@ beforeAll(async () => {
   const result = await freshTestDb();
   pool = result.pool;
   cleanup = result.cleanup;
-  const app = createIngestApp(pool);
+  const app = createIngestApp(pool, DEFAULT_TENANT_ID);
   srv = app.listen(0);
   port = (srv.address() as { port: number }).port;
 });
@@ -266,6 +267,7 @@ describe("STANDING RULE — batch-fatal is forbidden BY CONSTRUCTION, not by enu
       poolFailingOn(String(thrower.eventId)),
       JSON.parse(JSON.stringify(batch)),
       JSON.stringify(batch),
+      DEFAULT_TENANT_ID,
     );
 
     expect(outcome.status).toBe(202);
@@ -293,6 +295,7 @@ describe("STANDING RULE — batch-fatal is forbidden BY CONSTRUCTION, not by enu
       poolFailingOn(String(thrower.eventId), { alsoQuarantine: true }),
       JSON.parse(JSON.stringify(batch)),
       JSON.stringify(batch),
+      DEFAULT_TENANT_ID,
     );
 
     // NOT 202: an element counted `failed` reached no bucket at all — not raw, not
