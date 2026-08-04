@@ -791,6 +791,83 @@ from data that is correctly attributed rather than from a nil-tenant pile.
 
 ## Ingestion, operations and architecture — open
 
+- **The exit-code scheme is not applied** *(panel OPS-I6 + OPS-I2 + OPS-C2's
+  config class + OPS-M4)* — every non-zero exit from every CLI is `1`, so a
+  transient network partition and a genuine integrity breach are
+  indistinguishable to anything that wraps them, and a scheduled reconcile cannot
+  be wired to different responses (retry versus page a human). Concretely: a
+  reconcile red during a vendor maintenance window carries the same severity as
+  permanent data loss, which is precisely how gates get muted — the same hazard
+  one layer up from the "a permanent red is a red people learn to skip" reasoning
+  `cli/gap-ack.ts` already exists to prevent. Related and unfixed with it:
+  `npm run quarantine` (the sweep) exits 0 having recovered nothing while rows
+  remain, disagreeing with its own `--replay <id>` sibling; a `LEDGER_PATH_X`
+  that is SET but points at a missing file reconciles as a valid empty ledger
+  (PASS on a quiet lane, and on a busy one a red labelled "extra (in raw, not in
+  ledger)", which reads as phantom ingestion); and a CLI that cannot reach
+  Postgres reports a bare `AggregateError [ECONNREFUSED]` without naming the host
+  and database it tried.
+
+  *Owner: CLOSE-4, as one wave. Deferred from CLOSE-3 on scope, not on merit. The
+  intended scheme is three classes — `1` integrity, `75` `EX_TEMPFAIL`
+  unavailable, `78` `EX_CONFIG` misconfigured (sysexits(3)), consumable by
+  `systemd.service(5)`'s `RestartForceExitStatus=` / `RestartPreventExitStatus=`
+  — applied to every CLI at once plus a RUNBOOK table, because landing it
+  piecemeal produces exactly the inconsistency the finding is about. Its
+  precondition is a full audit of every script and test asserting a specific exit
+  status; that audit was performed and found 53 exit-status assertions across
+  seven ingest CLI test files plus a live collision in `scripts/chaos.sh:187-202`,
+  which treats backfill's `exit 1` as "resumable, retry up to 3x" and any other
+  code as non-resumable and fatal. Changing backfill's unreachable-source exit to
+  `75` inverts that retry logic, and `chaos.sh` cannot be run under CLOSE-3's hard
+  rules (port conflict with a concurrent session), so the change cannot be
+  verified where it would break. The quarantine-sweep half additionally needs the
+  "newly still-invalid" refinement — exit non-zero only when newly-still-invalid
+  rows exist, since jsonb-unstorable rows are permanently unreplayable by
+  construction (RUNBOOK 108-114) and a blanket non-zero would be a permanent red.*
+
+- **The hydration pump has no real liveness probe** *(panel OPS-I5, deferred
+  half)* — the cycle now says explicitly when it did not contact the object store,
+  which removes the misleading affirmative. It still does not PROVE reachability.
+
+  *Owner: the Phase-4 health/metrics work. Trigger: whenever that lands. Reason
+  for deferral: a per-cycle reachability call changes the failure semantics of the
+  entire scheduled backfill path, which is not a close-wave change.*
+
+- **`scripts/demo.sh` does not run the warn-set detector** *(panel OPS-M5)* —
+  `verify-dbt-warns.ts` runs only in `ci.yml`, so the local "run these before
+  trusting anything" path ends on a `dbt build` whose green tick explicitly does
+  not mean clean. This is disclosed in bold in RUNBOOK with the exact expected
+  counts; the gap is that the local gate is a human reading a summary line while
+  the script that would mechanize it exists and takes one line to call.
+
+  *Owner: CLOSE-4. Reason for deferral: the one-line fix touches `demo.sh`, and
+  neither the research pass nor CLOSE-3 could run `demo.sh` under the hard rules
+  (port conflict), so it would land unverified on the researcher's word alone.
+  Land it in a wave that can execute the full demo path and show the output.*
+
+- **No dependency audit or update automation in CI** *(panel SEC-M5)* — no
+  `npm audit` step, no Dependabot/Renovate config. Builds are reproducible
+  (`package-lock.json` committed, CI uses `npm ci`, pg-boss and the MCP SDK
+  exact-pinned), so this is a monitoring gap rather than a drift gap.
+
+  *Owner: unscheduled. A BLOCKING advisory gate is explicitly not wanted: on a
+  portfolio repo with a vendored dependency tree it will eventually red on an
+  advisory in a transitive dev dependency and become the permanent red
+  `cli/gap-ack.ts` warns about. A non-blocking step is acceptable whenever
+  someone wants the signal.*
+
+- **No connector runs against a real vendor sandbox** *(panel CRED-2)* — every
+  source is a mock in this repository, so fidelity to a real vendor's pagination,
+  rate limits, error shapes and delivery semantics is asserted by the connectors'
+  own research notes rather than demonstrated.
+
+  *Owner: Phase 3 kickoff, and explicitly AFTER SEC-I3 and SEC-I4 have landed
+  (they now have). Reason for deferral: it is a phase, not a fix — it needs a real
+  Stripe test-mode or HubSpot developer account, a credential-handling story, a
+  cassette-replay harness so CI stays hermetic, and a journal page on fidelity
+  deltas. Doing it before the credential defects were fixed would have been
+  backwards; that ordering is the argument.*
 
 - **`reconcile()` is unbounded in memory** *(audit)* — full event-id set and
   full parsed ledger in memory; the headline reliability proof OOMs before
