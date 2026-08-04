@@ -71,6 +71,27 @@ export function connectorForTenant(
   return connectorFor(source, tenantId);
 }
 
+/**
+ * The parenthetical a PASS line carries when the run is clean but a DISCLOSED, PERMANENT
+ * condition still stands. Empty string when nothing stands, so the ordinary PASS line is
+ * unchanged.
+ *
+ * Acknowledged permanent gaps have been caveated this way since the gap ledger shipped.
+ * The hydration DLQ was added at gate-H I4: excluding it from `clean` is deliberate and
+ * defensible (the stripefeed quarantine precedent — one permanently broken vendor object
+ * must not red every reconcile forever), but that decision is about GATING, and it was
+ * silently extended to the WORDING. The hub verdict read "store, raw thin events, and
+ * hydrated snapshots agree; nothing pending" with N terminal dead letters standing. A
+ * standing DLQ is the same species as a standing acknowledged gap: disclosed, permanent
+ * until an operator acts, and not a clean bill of health.
+ */
+export function standingConditionsNote(opts: { acknowledgedGaps: number; hydrationDlq: number }): string {
+  const parts: string[] = [];
+  if (opts.acknowledgedGaps > 0) parts.push(`${opts.acknowledgedGaps} acknowledged permanent gap(s) standing`);
+  if (opts.hydrationDlq > 0) parts.push(`${opts.hydrationDlq} terminal hydration dead letter(s) standing`);
+  return parts.length === 0 ? "" : ` (with ${parts.join(" and ")} — see above)`;
+}
+
 async function main(): Promise<void> {
   const pool = getPool();
   let reconciledCount = 0;
@@ -504,10 +525,10 @@ async function main(): Promise<void> {
       if (clean) {
         // An acknowledged gap is a STANDING DISCLOSED CONDITION, not a clean bill of
         // health — so a PASS that has one says so on the same line.
-        const ackNote =
-          ledgerGaps.length > 0
-            ? ` (with ${ledgerGaps.length} acknowledged permanent gap(s) standing — see above)`
-            : "";
+        const ackNote = standingConditionsNote({
+          acknowledgedGaps: ledgerGaps.length,
+          hydrationDlq: hub?.hydrationDlq.length ?? 0,
+        });
         // Paradigm-honest PASS line (cold review M1): the same class the integrity lines
         // above were rewritten for, left behind on the verdict itself. A bus and a feed
         // have no ledger; a sheet has no ledger file either. Say what actually matched.

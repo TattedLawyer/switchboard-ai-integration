@@ -12,6 +12,24 @@ import type { StripeFeedCatchUpReport } from "../connectors/stripe-feed.js";
 import type { BusReplayCatchUpReport } from "../connectors/bus-replay.js";
 import type { HubHydrationReport } from "../connectors/hub-hydrate.js";
 
+/**
+ * Whether this cycle genuinely never reached the object store (OPS-I5's zero line).
+ *
+ * `hydrationDlq` is in the guard because of gate-H I3: in a total object-store outage
+ * every pending event is retried and dead-lettered in the SAME run, leaving the other
+ * three counters at 0 — so the "NOT contacted" line printed directly above the
+ * "HYDRATION DLQ: N dead-lettered this run" line, one of them false, at the exact
+ * moment the store was contacted and failed every time.
+ */
+export function storeNotContacted(h: {
+  hydrated: number;
+  tombstoned: number;
+  hydrationPending: number;
+  hydrationDlq: number;
+}): boolean {
+  return h.hydrated === 0 && h.tombstoned === 0 && h.hydrationPending === 0 && h.hydrationDlq === 0;
+}
+
 async function main(): Promise<void> {
   const pool = getPool();
   let failed = false;
@@ -124,7 +142,7 @@ async function main(): Promise<void> {
           // non-misleading is. (A real per-cycle liveness probe is the better answer and is
           // deferred: adding a network call to every scheduled cycle changes the failure
           // semantics of the whole scheduled path.)
-          if (hydrated === 0 && tombstoned === 0 && hydrationPending === 0) {
+          if (storeNotContacted({ hydrated, tombstoned, hydrationPending, hydrationDlq })) {
             console.log(
               `backfill[${source}]: no events were awaiting hydration — the object store at ` +
                 `${baseUrl} was NOT contacted this cycle, so its reachability is unproven ` +
