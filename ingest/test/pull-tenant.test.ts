@@ -33,6 +33,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { createHubcrmApp } from "../../mocks/hubcrm/src/index.js";
 import { createBillingApp } from "../../mocks/billing/src/server.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 const INGEST_DIR = fileURLToPath(new URL("..", import.meta.url));
 /** A deliberately NON-default tenant: the whole point is that the default hides the defect. */

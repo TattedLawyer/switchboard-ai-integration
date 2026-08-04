@@ -66,7 +66,9 @@ export type FallbackPreset = "EARLIEST" | "LATEST";
 export interface BusReplayConnectorOptions {
   /** Base URL of the bus (GET <baseUrl>/subscribe). */
   baseUrl: string;
-  tenantId?: string;
+  /** REQUIRED (CLOSE-3 fix round). Defaulting here is what let the wiring seam construct
+   *  nil-tenant connectors while the doors wrote the configured tenant. */
+  tenantId: string;
   /** Per-request AbortSignal.timeout (register L1-G4): a black-holed bus is a bounded
    *  loud failure, never a wedge. Default 5000ms. */
   timeoutMs?: number;
@@ -169,7 +171,7 @@ export class BusReplayConnector implements Connector {
    *  precedent: sheets/stripefeed/hub-hydrate all do this rather than widen the seam). */
   async catchUpWithReport(pool: pg.Pool, opts?: ConnectorCatchUpOptions): Promise<BusReplayCatchUpReport> {
     const baseUrl = opts?.baseUrl ?? this.opts.baseUrl;
-    const tenantId = this.opts.tenantId ?? DEFAULT_TENANT_ID;
+    const tenantId = this.opts.tenantId;
     const batchSize = opts?.limit ?? this.opts.batchSize ?? 100;
     const maxRounds = opts?.maxRounds ?? 10_000;
     const fallback: FallbackPreset = this.opts.fallbackPreset ?? "EARLIEST";
@@ -307,7 +309,7 @@ export class BusReplayConnector implements Connector {
     opts?: ConnectorReconcileOptions,
   ): Promise<ConnectorReconcileResult & { report?: BusReconcileReport }> {
     const baseUrl = opts?.baseUrl ?? this.opts.baseUrl;
-    const tenantId = this.opts.tenantId ?? DEFAULT_TENANT_ID;
+    const tenantId = this.opts.tenantId;
     const batchSize = this.opts.batchSize ?? 100;
     const RECONCILE_MAX_ROUNDS = 10_000;
 

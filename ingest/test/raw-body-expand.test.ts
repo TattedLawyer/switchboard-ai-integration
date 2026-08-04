@@ -138,7 +138,7 @@ describe("poll door — no per-event wire bytes exist, so none are invented", ()
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ count: 5, fault_plan: { seed: 1, dropRate: 1, dupRate: 0, apiErrorRate: 0 } }),
       });
-      const result = await pollOnce(pool, "billing", `http://127.0.0.1:${port}`);
+      const result = await pollOnce(pool, "billing", `http://127.0.0.1:${port}`, { tenantId: DEFAULT_TENANT_ID });
       expect(result.ingested).toBe(5);
 
       const rows = await pool.query(

@@ -210,7 +210,9 @@ export async function handleHubcrmBatch(
 export interface HubHydrateConnectorOptions {
   /** Base URL of the vendor API (GET <baseUrl>/objects/<type>[/<id>]). */
   baseUrl: string;
-  tenantId?: string;
+  /** REQUIRED (CLOSE-3 fix round). Defaulting here is what let the wiring seam construct
+   *  nil-tenant connectors while the doors wrote the configured tenant. */
+  tenantId: string;
   /** Per-request AbortSignal.timeout (L1-G4 discipline). Default 5000ms. */
   timeoutMs?: number;
   /** Truncated exponential backoff for 429/5xx: bounded attempts with deterministic
@@ -338,7 +340,7 @@ export class HubHydrateConnector implements Connector {
    *  tombstone row, hydration DLQ — or counts it PENDING when the rate budget ran out. */
   async catchUpWithReport(pool: pg.Pool, opts?: ConnectorCatchUpOptions): Promise<HubHydrationReport> {
     const baseUrl = opts?.baseUrl ?? this.opts.baseUrl;
-    const tenantId = this.opts.tenantId ?? DEFAULT_TENANT_ID;
+    const tenantId = this.opts.tenantId;
     const budget = this.opts.fetchBudget ?? 500;
 
     const report: HubHydrationReport = {
@@ -462,7 +464,7 @@ export class HubHydrateConnector implements Connector {
     opts?: ConnectorReconcileOptions,
   ): Promise<ConnectorReconcileResult & { report?: HubReconcileReport }> {
     const baseUrl = opts?.baseUrl ?? this.opts.baseUrl;
-    const tenantId = this.opts.tenantId ?? DEFAULT_TENANT_ID;
+    const tenantId = this.opts.tenantId;
 
     // 1. The store's truth, all three types. Unreadable store = no report (comparing
     // against a truth we could not read would produce confident, meaningless diffs).

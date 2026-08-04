@@ -54,14 +54,14 @@ async function deliverThroughDoor(hub: HubcrmApp): Promise<void> {
   }
 }
 
-async function connector(baseUrl: string, tenantId?: string) {
+async function connector(baseUrl: string, tenantId: string = DEFAULT_TENANT_ID) {
   const { HubHydrateConnector } = await import("../src/connectors/hub-hydrate.js");
   return new HubHydrateConnector({
     baseUrl,
     databaseUrl: dbUrl,
     timeoutMs: 3000,
     backoff: { baseMs: 1, capMs: 10, maxAttempts: 6 },
-    ...(tenantId === undefined ? {} : { tenantId }),
+    tenantId,
   });
 }
 

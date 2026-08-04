@@ -133,7 +133,7 @@ describe("A7 obligation 1 — seam routing is behavior-preserving for the feed s
         feedEvent(`${source}-evt-3`, 3),
       ]);
 
-      const runBackfill = createBackfillRunner(pool, source, baseUrl);
+      const runBackfill = createBackfillRunner(pool, source, baseUrl, DEFAULT_TENANT_ID);
       await runBackfill();
 
       expect(await rawCount(source)).toBe(3);
@@ -171,7 +171,7 @@ describe("A7 obligation 1 — seam routing is behavior-preserving for the feed s
 
     const { logs, restore } = captureLogs();
     try {
-      const runBackfill = createBackfillRunner(pool, "support", baseUrl);
+      const runBackfill = createBackfillRunner(pool, "support", baseUrl, DEFAULT_TENANT_ID);
       const p1 = runBackfill();
       const p2 = runBackfill(); // arrives while the first cycle holds the gate
       await p2; // must resolve immediately — skipped, not queued behind p1
@@ -195,7 +195,7 @@ describe("A7 obligation 2 — the service loop routes sheets through the seam", 
   it("the sheets runner drives snapshot catchUp — every seeded row lands, and the loop NEVER touches /events on the sheets base URL", async () => {
     const { baseUrl, paths } = recordedSheet();
 
-    const runBackfill = createBackfillRunner(pool, "sheets", baseUrl);
+    const runBackfill = createBackfillRunner(pool, "sheets", baseUrl, DEFAULT_TENANT_ID);
     await runBackfill();
 
     // The pre-A7 loop 404s /events once a minute here (the KNOWN-ISSUES bullet this
@@ -231,11 +231,11 @@ describe("A7 obligation 3 — nudge hosting through the service wiring", () => {
   it("createServiceWiring hosts a sheets nudge exactly when sheets is enabled — feed-only wiring hosts none (the 503 posture survives for it)", async () => {
     const createServiceWiring = await loadCreateServiceWiring();
     process.env.SHEETS_BASE_URL = "http://127.0.0.1:1"; // never contacted here
-    const feedOnly = createServiceWiring(pool, ["crm", "billing", "support"]);
+    const feedOnly = createServiceWiring(pool, ["crm", "billing", "support"], DEFAULT_TENANT_ID);
     expect(feedOnly.runners.map((r) => r.source)).toEqual(["crm", "billing", "support"]);
     expect(feedOnly.sheetsNudge).toBeUndefined();
 
-    const withSheets = createServiceWiring(pool, ["crm", "sheets"]);
+    const withSheets = createServiceWiring(pool, ["crm", "sheets"], DEFAULT_TENANT_ID);
     expect(withSheets.runners.map((r) => r.source)).toEqual(["crm", "sheets"]);
     expect(withSheets.sheetsNudge).toBeDefined();
   });
@@ -244,7 +244,7 @@ describe("A7 obligation 3 — nudge hosting through the service wiring", () => {
     const createServiceWiring = await loadCreateServiceWiring();
     const { baseUrl } = recordedSheet();
     process.env.SHEETS_BASE_URL = baseUrl;
-    const wiring = createServiceWiring(pool, ["sheets"]);
+    const wiring = createServiceWiring(pool, ["sheets"], DEFAULT_TENANT_ID);
     const ingestUrl = listen(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: wiring.sheetsNudge }));
     const body = JSON.stringify({
       sheet_id: "sheet-test",
@@ -276,7 +276,7 @@ describe("A7 obligation 3 — nudge hosting through the service wiring", () => {
     const createServiceWiring = await loadCreateServiceWiring();
     const sheet = recordedSheet({ gateSnapshot: true });
     process.env.SHEETS_BASE_URL = sheet.baseUrl;
-    const wiring = createServiceWiring(pool, ["sheets"]);
+    const wiring = createServiceWiring(pool, ["sheets"], DEFAULT_TENANT_ID);
     const runSheets = wiring.runners.find((r) => r.source === "sheets")!.run;
 
     const { logs, restore } = captureLogs();

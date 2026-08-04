@@ -38,7 +38,7 @@ function listen(app: express.Express): string {
 
 async function connector(baseUrl: string) {
   const { HubHydrateConnector } = await import("../src/connectors/hub-hydrate.js");
-  return new HubHydrateConnector({
+  return new HubHydrateConnector({ tenantId: DEFAULT_TENANT_ID,
     baseUrl,
     databaseUrl: dbUrl,
     timeoutMs: 3000,

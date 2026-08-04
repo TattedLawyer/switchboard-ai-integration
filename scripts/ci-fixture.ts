@@ -79,7 +79,7 @@ async function main() {
   const hub = createHubcrmApp({ seed: 42, webhookUrl: `http://127.0.0.1:${ingestPort}/webhooks/hubcrm` });
   const hubSrv = hub.app.listen(0);
   const hubPort = (hubSrv.address() as { port: number }).port;
-  const hubConnector = new HubHydrateConnector({ baseUrl: `http://127.0.0.1:${hubPort}` });
+  const hubConnector = new HubHydrateConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: `http://127.0.0.1:${hubPort}` });
   for (let done = 0; done < HUB.ops; done += HUB.opsPerCycle) {
     const res = await fetch(`http://127.0.0.1:${hubPort}/simulate`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -116,7 +116,7 @@ async function main() {
     body: JSON.stringify({ count: COUNTS.stripefeed }),
   });
   if (!feedRes.ok) throw new Error(`simulate stripefeed failed: ${feedRes.status}`);
-  await new StripeFeedConnector({ baseUrl: `http://127.0.0.1:${feedPort}` }).catchUp(pool);
+  await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: `http://127.0.0.1:${feedPort}` }).catchUp(pool);
   feedSrv.close();
 
   // ── casebus: emit, then drain the subscription through the pull connector ───────────
@@ -128,7 +128,7 @@ async function main() {
     body: JSON.stringify({ count: COUNTS.casebus }),
   });
   if (!busRes.ok) throw new Error(`simulate casebus failed: ${busRes.status}`);
-  await new BusReplayConnector({ baseUrl: `http://127.0.0.1:${busPort}` }).catchUp(pool);
+  await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: `http://127.0.0.1:${busPort}` }).catchUp(pool);
   busSrv.close();
 
   // ── support (2a, csat arm): push through the door + idempotent poll overlap ─────────
@@ -143,7 +143,7 @@ async function main() {
     body: JSON.stringify({ count: COUNTS.support }),
   });
   if (!supportRes.ok) throw new Error(`simulate support failed: ${supportRes.status}`);
-  await catchUp(pool, "support", `http://127.0.0.1:${supportPort}`);
+  await catchUp(pool, "support", `http://127.0.0.1:${supportPort}`, { tenantId: DEFAULT_TENANT_ID });
   supportSrv.close();
   ingestSrv.close();
 
@@ -154,7 +154,7 @@ async function main() {
   const sheets = createSheetsApp({ seed: SHEETS.seed, rowCount: SHEETS.rowCount });
   const sheetsSrv = sheets.app.listen(0);
   const sheetsPort = (sheetsSrv.address() as { port: number }).port;
-  const connector = new SheetSnapshotConnector({ baseUrl: `http://127.0.0.1:${sheetsPort}` });
+  const connector = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: `http://127.0.0.1:${sheetsPort}` });
 
   // ALIGNMENT INVARIANT (cold review C1, re-pointed by F-1c): the CI fixture is a
   // faultless CORRELATED universe by design — every sheet client's email must be one the

@@ -6,6 +6,7 @@ import type pg from "pg";
 import { COL, createSheetsApp, type SheetsApp } from "../../mocks/sheets/src/index.js";
 import { freshTestDb } from "./helpers/testdb.js";
 import { SheetSnapshotConnector } from "../src/connectors/sheet-snapshot.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Gate-H cold review I1 (+ Minor 6) — the reconcile CLI path itself, exercised as the
 // operator runs it (`INGEST_SOURCES=sheets npm run reconcile -w ingest`), because the
@@ -74,7 +75,7 @@ function runReconcileCli(baseUrl: string): Promise<{ code: number; stdout: strin
 describe("reconcile CLI × sheets (cold review I1/M6)", () => {
   it("a converged sheet PASSES with exit 0 — and the integrity line states what was actually verified for the snapshot paradigm, never 'ledger hash chain'", async () => {
     const { baseUrl } = startSheet();
-    const c = new SheetSnapshotConnector({ baseUrl });
+    const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
     await c.catchUp(pool);
 
     const res = await runReconcileCli(baseUrl);
@@ -92,7 +93,7 @@ describe("reconcile CLI × sheets (cold review I1/M6)", () => {
 
   it("I1 (the false-PASS pin): a cell edited after a clean ingest = stale drift — the CLI must FAIL, exit nonzero, and NAME the stale row_key", async () => {
     const { sheets, baseUrl } = startSheet();
-    const c = new SheetSnapshotConnector({ baseUrl });
+    const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
     await c.catchUp(pool);
 
     // The everyday scenario from the review: a human edits a cell after a clean

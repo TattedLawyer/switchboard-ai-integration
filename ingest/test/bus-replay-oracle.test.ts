@@ -6,6 +6,7 @@ import { freshTestDb, type TestDbResult } from "./helpers/testdb.js";
 import { BusReplayConnector, CASEBUS_SOURCE } from "../src/connectors/bus-replay.js";
 import type { BusReconcileReport } from "../src/connectors/bus-replay.js";
 import { listGaps } from "../src/connectors/types.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Task D pair 4 — the oracle: connector vs the REAL mock, seeded, in-process.
 //
@@ -49,7 +50,7 @@ describe("oracle 1 — full drain ⇄ the retained window, exactly", () => {
     const mock = createCasebusApp({ seed: 42 });
     mock.stream.emit(53); // deliberately not a multiple of the batch size
     const baseUrl = listen(mock);
-    const c = new BusReplayConnector({ baseUrl, batchSize: 10 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 10 });
 
     const first = await c.catchUpWithReport(pool);
     expect(first.ingested).toBe(53);
@@ -68,7 +69,7 @@ describe("oracle 1 — full drain ⇄ the retained window, exactly", () => {
       expect(got.data).toMatchObject({ ...e.event.payload, replay_id: e.replay_id });
     }
 
-    const second = await new BusReplayConnector({ baseUrl, batchSize: 10 }).catchUpWithReport(pool);
+    const second = await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 10 }).catchUpWithReport(pool);
     expect(second.ingested).toBe(0);
     expect((await rawRows(pool)).size).toBe(53);
   });
@@ -78,7 +79,7 @@ describe("oracle 2 — at-least-once duplicate absorption, COUNTED", () => {
   it("every event delivered twice lands once, and the redeliveries are reported rather than swallowed", async () => {
     const mock = createCasebusApp({ seed: 13, duplicate: { seed: 13, rate: 1 } });
     mock.stream.emit(30);
-    const c = new BusReplayConnector({ baseUrl: listen(mock), batchSize: 7 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock), batchSize: 7 });
 
     const report = await c.catchUpWithReport(pool);
     expect(report.ingested).toBe(30);
@@ -93,7 +94,7 @@ describe("oracle 2 — at-least-once duplicate absorption, COUNTED", () => {
   it("partial redelivery (a realistic rate, not the everything knob) still converges exactly", async () => {
     const mock = createCasebusApp({ seed: 8, duplicate: { seed: 3, rate: 0.35 } });
     mock.stream.emit(40);
-    const c = new BusReplayConnector({ baseUrl: listen(mock), batchSize: 6 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock), batchSize: 6 });
     const report = await c.catchUpWithReport(pool);
     expect(report.ingested).toBe(40);
     expect(report.duplicates).toBeGreaterThan(0); // the fault really fired
@@ -111,12 +112,12 @@ describe("oracle 3 — crash mid-drain: resume from the persisted cursor, no los
     // to CLAIM a finished drain — the cursor is still consistent, which is the property
     // this oracle is really testing.
     await expect(
-      new BusReplayConnector({ baseUrl, batchSize: 10 }).catchUpWithReport(pool, { maxRounds: 2 }),
+      new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 10 }).catchUpWithReport(pool, { maxRounds: 2 }),
     ).rejects.toThrow(/maxRounds/);
     const partial = (await rawRows(pool)).size;
     expect(partial).toBe(20);
 
-    const resumed = await new BusReplayConnector({ baseUrl, batchSize: 10 }).catchUpWithReport(pool);
+    const resumed = await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 10 }).catchUpWithReport(pool);
     expect(resumed.ingested).toBe(15); // exactly the remainder — nothing re-ingested
     expect(resumed.duplicates).toBe(0);
     const raw = await rawRows(pool);
@@ -133,7 +134,7 @@ describe("oracle 4 — age-out mid-run: the honest, bounded loss report", () => 
     // Chapter 1: history ingested while the window still holds it (70h old — inside both
     // the bus's 72h window and the ingest door's occurred_at gate).
     const batch1 = mock.stream.emit(9, { ageS: 70 * 3600 });
-    expect(await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUp(pool)).toBe(9);
+    expect(await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool)).toBe(9);
 
     // Chapter 2: fresh events land, then the clock eats the old ones — batch1 is now 73h
     // old (gone, and the cursor with it), batch2 is minutes old.
@@ -142,7 +143,7 @@ describe("oracle 4 — age-out mid-run: the honest, bounded loss report", () => 
 
     // Chapter 3: the fallback. Forward progress AND an honest report, in that order of
     // execution and the reverse order of importance.
-    const report = await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUpWithReport(pool);
+    const report = await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUpWithReport(pool);
     expect(report.ingested).toBe(7);
     expect(report.gaps).toHaveLength(1);
     expect(report.gaps[0]).toEqual({
@@ -156,7 +157,7 @@ describe("oracle 4 — age-out mid-run: the honest, bounded loss report", () => 
     // Aftermath: nothing already ingested was lost to the expiry; the books balance with
     // the aged-out rows counted as the window's normal metabolism.
     expect((await rawRows(pool)).size).toBe(16);
-    const rec = (await new BusReplayConnector({ baseUrl, batchSize: 100 }).reconcile(pool)).report as BusReconcileReport;
+    const rec = (await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).reconcile(pool)).report as BusReconcileReport;
     expect(rec).toMatchObject({ ledger: 7, raw: 16, missing: [], extra: [], agedOutRaw: 9 });
 
     // The durable record — and it is UNACKNOWLEDGED, which is what makes reconcile red.
@@ -175,14 +176,14 @@ describe("oracle 5 — stream reset mid-run: the SAME wire error, a different di
     const baseUrl = listen(mock);
 
     const before = mock.stream.emit(11);
-    expect(await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUp(pool)).toBe(11);
+    expect(await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool)).toBe(11);
 
     // "On rare occasions, the stream of retained events can be reset if the Salesforce org
     // is moved to a new instance." Nothing aged out; the cursor is seconds old.
     mock.stream.reset();
     const after = mock.stream.emit(6);
 
-    const report = await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUpWithReport(pool);
+    const report = await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUpWithReport(pool);
     expect(report.ingested).toBe(6);
     expect(report.gaps).toHaveLength(1);
     expect(report.gaps[0].cause).toBe("reset"); // NOT 'retention' — age had nothing to do with it
@@ -209,10 +210,10 @@ describe("oracle 5 — stream reset mid-run: the SAME wire error, a different di
     const mock = createCasebusApp({ seed: 42 });
     const baseUrl = listen(mock);
     mock.stream.emit(5);
-    await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUp(pool);
+    await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool);
     mock.stream.reset(); // empty stream, new identity
 
-    const report = await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUpWithReport(pool);
+    const report = await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUpWithReport(pool);
     expect(report.ingested).toBe(0);
     expect(report.gaps).toHaveLength(1);
     expect(report.gaps[0].cause).toBe("reset");
@@ -241,7 +242,7 @@ describe("oracle 6 — opaque-id safety: arithmetic on a replay id is provably w
 
     // And the connector never invents one: every cursor it persists is a replay id the
     // server actually served.
-    await new BusReplayConnector({ baseUrl, batchSize: 6 }).catchUp(pool);
+    await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 6 }).catchUp(pool);
     const cur = await pool.query<{ last_event_id: string }>(
       "select last_event_id from ingest.cursors where source = $1",
       [CASEBUS_SOURCE],
@@ -255,7 +256,7 @@ describe("oracle 7 — the poison event, co-batched (standing rule)", () => {
     const mock = createCasebusApp({ seed: 42, poisonEmissionIndexes: [3, 4] });
     const baseUrl = listen(mock);
     mock.stream.emit(12);
-    const c = new BusReplayConnector({ baseUrl, batchSize: 12 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 12 });
 
     const report = await c.catchUpWithReport(pool);
     expect(report.ingested).toBe(10);
@@ -278,7 +279,7 @@ describe("oracle 8 — reconcile-first detection must not file a POORER record t
     const baseUrl = listen(mock);
 
     const aged = mock.stream.emit(9, { ageS: 70 * 3600 });
-    await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUp(pool);
+    await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool);
     const fresh = mock.stream.emit(7);
     mock.stream.advance(3 * 3600);
 
@@ -286,7 +287,7 @@ describe("oracle 8 — reconcile-first detection must not file a POORER record t
     // first-writer-wins, so whichever surface gets here first fixes the record's quality
     // for the life of the gap; a reconcile-first gap used to keep to_event_id NULL
     // FOREVER even though reconcile is holding the entire retained window in memory.
-    const rec = (await new BusReplayConnector({ baseUrl, batchSize: 100 }).reconcile(pool)).report as BusReconcileReport;
+    const rec = (await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).reconcile(pool)).report as BusReconcileReport;
     expect(rec.gaps).toHaveLength(1);
 
     const stored = await listGaps(pool, "00000000-0000-0000-0000-000000000000", CASEBUS_SOURCE);
@@ -308,10 +309,10 @@ describe("oracle 8 — reconcile-first detection must not file a POORER record t
       const mock = createCasebusApp({ seed: 42 });
       const baseUrl = listen(mock);
       const aged = mock.stream.emit(9, { ageS: 70 * 3600 });
-      await new BusReplayConnector({ baseUrl, batchSize: 100 }).catchUp(p);
+      await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(p);
       const fresh = mock.stream.emit(7);
       mock.stream.advance(3 * 3600);
-      const c = new BusReplayConnector({ baseUrl, batchSize: 100 });
+      const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 });
       if (reconcileFirst) {
         await c.reconcile(p);
         await c.catchUpWithReport(p);

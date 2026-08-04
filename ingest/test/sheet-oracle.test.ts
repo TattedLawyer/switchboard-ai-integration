@@ -63,7 +63,7 @@ function startSheet(opts?: Partial<SheetsAppOptions>): { sheets: SheetsApp; base
  *  (and in the seam tests); the soaks need the report-widening methods and small backoff
  *  numbers, which the seam's `Connector` deliberately does not expose. */
 function mkConnector(baseUrl: string): SheetSnapshotConnector {
-  return new SheetSnapshotConnector({
+  return new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID,
     baseUrl,
     timeoutMs: 3000,
     backoff: { baseMs: 5, capMs: 50, maxAttempts: 6 },
@@ -127,7 +127,7 @@ describe("A5 pair 1 — registration: sheets resolves through the registry and i
     const { baseUrl } = startSheet();
     process.env.SHEETS_BASE_URL = baseUrl;
 
-    const c = connectorFor("sheets");
+    const c = connectorFor("sheets", DEFAULT_TENANT_ID);
     expect(c.kind).toBe("sheet-snapshot");
     expect(c.source).toBe("sheets");
 

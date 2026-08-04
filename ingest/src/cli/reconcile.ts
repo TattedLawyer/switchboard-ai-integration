@@ -1,4 +1,5 @@
 import { getPool } from "../db.js";
+import { resolveDeploymentTenant } from "../config.js";
 import { baseUrlFor, enabledSources, type Source } from "../sources.js";
 import {
   BusReplayConnector,
@@ -43,22 +44,31 @@ const has = (name: string): boolean => process.argv.includes(`--${name}`);
  * registry gains a source, kind, or construction option, that pin — plus the compiler's
  * exhaustiveness on `kind` — is what forces this copy to follow.
  */
-export function connectorForTenant(source: Source, tenantId: string): Connector {
-  if (tenantId === DEFAULT_TENANT_ID) return connectorFor(source);
-  const kind = connectorFor(source).kind;
-  switch (kind) {
-    case "sheet-snapshot":
-      return new SheetSnapshotConnector({ baseUrl: baseUrlFor(source), tenantId });
-    case "stripe-feed":
-      return new StripeFeedConnector({ baseUrl: baseUrlFor(source), tenantId });
-    case "hub-hydrate":
-      return new HubHydrateConnector({ baseUrl: baseUrlFor(source), tenantId });
-    case "bus-replay":
-      return new BusReplayConnector({ baseUrl: baseUrlFor(source), tenantId });
-    case "ledger-feed":
-      // Unreachable: main() refuses --tenant for ledger-feed sources before this runs.
-      throw new Error(`--tenant is not supported for ledger-feed source ${source}`);
+export function connectorForTenant(
+  source: Source,
+  tenantId: string,
+  /** True only when the operator passed --tenant. The ledger-feed refusal below is about
+   *  the MULTI-tenant question ("reconcile tenant X's rows against everyone's ledger"),
+   *  not about the value: on a single-tenant deployment with SWITCHBOARD_TENANT_ID set,
+   *  every raw row IS that tenant's and the ledger IS the whole feed, so a bare reconcile
+   *  must keep working. Keying the refusal on the value instead would have made this fix
+   *  break bare reconcile on exactly the deployments it exists to serve. */
+  explicitTenantFlag = true,
+): Connector {
+  // CLOSE-3 fix round: this used to DUPLICATE the registry's wiring by necessity, because
+  // the registry constructed default-tenant connectors and the seam had no tenant
+  // parameter — and `reconcile-tenant-drift.test.ts` existed to catch the copy drifting.
+  // The registry now takes the tenant, so the copy is gone and the drift it guarded
+  // against is impossible rather than merely tested for. Kept as a named function because
+  // main() and the drift pin both call it, and because the ledger-feed refusal below is a
+  // reconcile-specific rule, not a registry rule.
+  if (connectorFor(source, tenantId).kind === "ledger-feed" && explicitTenantFlag && tenantId !== DEFAULT_TENANT_ID) {
+    // Unreachable in practice: main() refuses --tenant for ledger-feed sources before this
+    // runs. A ledger-feed source's oracle is a file on disk with no tenant in it, so
+    // reconciling one "as tenant X" would compare X's rows against everyone's ledger.
+    throw new Error(`--tenant is not supported for ledger-feed source ${source}`);
   }
+  return connectorFor(source, tenantId);
 }
 
 async function main(): Promise<void> {
@@ -74,7 +84,11 @@ async function main(): Promise<void> {
     await pool.end();
     process.exit(1);
   }
-  const tenantId = tenantArg ?? DEFAULT_TENANT_ID;
+  // CLOSE-3 fix round: the default is the DEPLOYMENT's tenant, not a hardcoded nil. With
+  // SWITCHBOARD_TENANT_ID set, a bare `npm run reconcile` used to check the nil lane —
+  // empty — and report a clean run over a pipeline writing somewhere else entirely. Unset
+  // deployments resolve to the nil tenant, so their behaviour is byte-identical to before.
+  const tenantId = tenantArg ?? resolveDeploymentTenant();
 
   try {
     if (tenantId !== DEFAULT_TENANT_ID) {
@@ -82,7 +96,7 @@ async function main(): Promise<void> {
       // paradigm's reconcile compares the source's whole raw lane against a single ledger
       // file — it is not tenant-scoped, so running it "for tenant X" would quietly answer
       // for every tenant at once. The other four paradigms are tenant-scoped end to end.
-      const unsupported = enabledSources().filter((s) => connectorFor(s).kind === "ledger-feed");
+      const unsupported = enabledSources().filter((s) => connectorFor(s, DEFAULT_TENANT_ID).kind === "ledger-feed");
       if (unsupported.length > 0) {
         console.error(
           `--tenant is not supported for ledger-feed source(s) ${unsupported.join(", ")}: ` +
@@ -146,7 +160,7 @@ async function main(): Promise<void> {
     };
 
     for (const source of enabledSources()) {
-      const connector = connectorForTenant(source, tenantId);
+      const connector = connectorForTenant(source, tenantId, has("tenant"));
 
       // Which losses were already on the record BEFORE this run. Taken as ids rather than
       // by comparing timestamps because `detected_at` is the DATABASE clock and this is

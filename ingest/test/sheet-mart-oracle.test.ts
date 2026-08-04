@@ -14,6 +14,7 @@ import {
   contentHash,
   resolveHeaderMapping,
 } from "../src/connectors/sheet-canonical.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Task A6 — warehouse consumption of the sheets source (stage 2 of the two-stage oracle).
 // Three RED→GREEN pairs, named:
@@ -729,7 +730,7 @@ function startSheet(opts?: Partial<SheetsAppOptions>): { sheets: SheetsApp; base
 }
 
 const mkConnector = (baseUrl: string): SheetSnapshotConnector =>
-  new SheetSnapshotConnector({ baseUrl, timeoutMs: 3000, backoff: { baseMs: 5, capMs: 50, maxAttempts: 6 } });
+  new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, timeoutMs: 3000, backoff: { baseMs: 5, capMs: 50, maxAttempts: 6 } });
 
 // The door-refusal expectation, deliberately RE-STATED (A5's rationale: an expectation
 // computed by the code under test would follow that code into any regression): the L1

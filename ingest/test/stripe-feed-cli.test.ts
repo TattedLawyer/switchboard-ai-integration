@@ -9,6 +9,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { listenReady } from "./helpers/listen-ready.js";
 import { expectGapDisclosure, expectParadigmIntegrityLine } from "./helpers/operator-surface.js";
 import { StripeFeedConnector, type StripeFeedReconcileReport } from "../src/connectors/stripe-feed.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Gate-H cold review, Task B range — C1 + I1 + I2 + I3: the connector↔OPERATOR seam.
 //
@@ -85,7 +86,7 @@ async function agedScenario(): Promise<{ mock: StripeFeedApp; baseUrl: string; c
   const mock = createStripeFeedApp({ seed: 42 });
   const baseUrl = await listen(mock.app);
   const batch1 = mock.feed.emit(8, { ageS: 26 * 86_400 });
-  const c = new StripeFeedConnector({ baseUrl });
+  const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
   await c.catchUp(pool);
   // Same-second batch → the connector's cursor is the id-tiebreak max of batch1.
   const cursorId = [...batch1].sort((a, b) => a.created - b.created || (a.id > b.id ? 1 : -1)).at(-1)!.id;
@@ -115,7 +116,7 @@ describe("C1 — the reviewer's reproduction, inverted: permanent loss is LOUD o
 
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const { createBackfillRunner } = await import("../src/main.js");
-    const run = createBackfillRunner(pool, "stripefeed", baseUrl);
+    const run = createBackfillRunner(pool, "stripefeed", baseUrl, DEFAULT_TENANT_ID);
     await run();
     const logged = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(logged).toMatch(/unclosable gap/i);
@@ -148,7 +149,7 @@ describe("I1 — paradigm-honest integrity line (the recorded Minor-6 class, ext
     const mock = createStripeFeedApp({ seed: 42 });
     const baseUrl = await listen(mock.app);
     mock.feed.emit(8);
-    await new StripeFeedConnector({ baseUrl }).catchUp(pool);
+    await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl }).catchUp(pool);
 
     const res = await runCli("src/cli/reconcile.ts", baseUrl);
     // Helper: this paradigm's honest line, every sibling paradigm's line excluded.
@@ -183,7 +184,7 @@ describe("I2 — quarantined-but-retained events are classified, cross-reference
 
   it("connector report: the quarantined event leaves `missing` and appears as quarantined-with-count; CLI prints it and still PASSes", async () => {
     const baseUrl = await stubFeedWithPoisonEvent();
-    const c = new StripeFeedConnector({ baseUrl });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
     const catchUpReport = await c.catchUpWithReport(pool);
     expect(catchUpReport).toMatchObject({ ingested: 1, quarantined: 1 });
 
@@ -205,7 +206,7 @@ describe("I2 — quarantined-but-retained events are classified, cross-reference
 
   it("a re-served quarantined event accumulates count, still never surfaces as missing", async () => {
     const baseUrl = await stubFeedWithPoisonEvent();
-    const c = new StripeFeedConnector({ baseUrl });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
     await c.catchUp(pool);
     // Second drain from a rolled-back cursor re-serves the page → re-quarantine.
     await pool.query("update ingest.cursors set last_event_id = null where source = 'stripefeed'");
@@ -230,7 +231,7 @@ describe("I3 — the failure hint names the REAL cursor for this paradigm", () =
         data: [{ id: "evt_m1resume", object: "event", type: "charge.succeeded", created: t, data: { object: { id: "DEMO-CH-1", amount_cents: 100 } } }],
       }),
     );
-    await new StripeFeedConnector({ baseUrl: await listen(app) }).catchUp(pool);
+    await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(app) }).catchUp(pool);
 
     // …then fail against an unreachable feed: the hint must name where we really are.
     const res = await runCli("src/cli/backfill.ts", "http://127.0.0.1:1");
@@ -249,7 +250,7 @@ describe("A3 end-to-end — a report-vs-ledger gap drift reds the real reconcile
     const mock = createStripeFeedApp({ seed: 42 });
     const baseUrl = await listen(mock.app);
     mock.feed.emit(8);
-    await new StripeFeedConnector({ baseUrl }).catchUp(pool);
+    await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl }).catchUp(pool);
 
     // Force the drift through the shipped seam: stripe-feed's reconcile FILTERS
     // null-near-edge rows out of report.gaps ("a stripefeed gap always names the

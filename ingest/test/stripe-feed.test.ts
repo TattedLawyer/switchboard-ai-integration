@@ -5,6 +5,7 @@ import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { StripeFeedConnector, type StripeFeedGap } from "../src/connectors/stripe-feed.js";
 import { numericContractViolation } from "../src/numeric-contract.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Task B pair 2 — the stripe-feed connector's door discipline, pinned against SCRIPTED
 // stub feeds (the real mock drives pair 3's oracle; these stubs let each pin control
@@ -88,7 +89,7 @@ describe("has_more is the ONLY termination signal (both directions pinned)", () 
     const { baseUrl, urls } = scriptedFeed([
       (_req, res) => res.json(pageBody([evt("evt_a1", t), evt("evt_a2", t)], false)),
     ]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
     expect(await c.catchUp(pool)).toBe(2);
     expect(urls).toHaveLength(1);
   });
@@ -99,7 +100,7 @@ describe("has_more is the ONLY termination signal (both directions pinned)", () 
       (_req, res) => res.json(pageBody([], true)),
       (_req, res) => res.json(pageBody([evt("evt_b1", t)], false)),
     ]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
     expect(await c.catchUp(pool)).toBe(1);
     expect(urls).toHaveLength(2);
     expect(await rawIds()).toEqual(["evt_b1"]);
@@ -111,14 +112,14 @@ describe("has_more is the ONLY termination signal (both directions pinned)", () 
       (_req, res) => res.json(pageBody([evt("evt_c1", t)], true)),
       (_req, res) => res.json(pageBody([evt("evt_c2", t + 1)], false)),
     ]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl, pageLimit: 100 });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl, pageLimit: 100 });
     expect(await c.catchUp(pool)).toBe(2);
     expect(urls).toHaveLength(2);
   });
 
   it("an endless empty-but-has_more feed is a BOUNDED failure, not a wedge: maxRounds stops it loudly", async () => {
     const { baseUrl } = scriptedFeed([(_req, res) => res.json(pageBody([], true))]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
     await expect(c.catchUp(pool, { maxRounds: 5 })).rejects.toThrow(/maxRounds|rounds/i);
     expect(await storedCursor()).toBeNull(); // nothing processed, nothing advanced
   });
@@ -133,7 +134,7 @@ describe("cursor discipline — ours, never the feed's", () => {
       (_req, res) =>
         res.json({ ...pageBody([evt("evt_d3", t + 2), evt("evt_d1", t)], false), next_cursor: "evt_evil" }),
     ]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
     await c.catchUp(pool);
     expect(await storedCursor()).toBe("evt_d3"); // max created — not response-last, not the bait
   });
@@ -143,7 +144,7 @@ describe("cursor discipline — ours, never the feed's", () => {
     const { baseUrl } = scriptedFeed([
       (_req, res) => res.json(pageBody([evt("evt_e2", t + 5), evt("evt_e1", t), evt("evt_e0", t)], false)),
     ]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
     await c.catchUp(pool);
     // raw's bigserial order = processing order: created asc, then id asc on the tie.
     expect(await rawIds()).toEqual(["evt_e0", "evt_e1", "evt_e2"]);
@@ -161,7 +162,7 @@ describe("cursor discipline — ours, never the feed's", () => {
         res.json(pageBody([evt("evt_f3", t + 2)], false));
       },
     ]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
     await expect(c.catchUp(pool)).rejects.toThrow(/500/);
     expect(await storedCursor()).toBe("evt_f2");
     expect(await rawIds()).toEqual(["evt_f1", "evt_f2"]);
@@ -176,7 +177,7 @@ describe("cursor discipline — ours, never the feed's", () => {
     const { baseUrl } = scriptedFeed([
       (_req, res) => res.json(pageBody([evt("evt_g1", t), bad], false)),
     ]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
     const report = await c.catchUpWithReport(pool);
     expect(report).toMatchObject({ ingested: 1, quarantined: 1 });
     expect(await rawIds()).toEqual(["evt_g1"]);
@@ -226,7 +227,7 @@ describe("the retention boundary — the paradigm's honest loss", () => {
         res.json(pageBody([evt("evt_h2", tNew), evt("evt_h3", tNew + 1)], false));
       },
     ]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
     const report = await c.catchUpWithReport(pool);
     expect(report.ingested).toBe(2); // forward progress
     expect(await storedCursor()).toBe("evt_h3");
@@ -241,7 +242,7 @@ describe("the retention boundary — the paradigm's honest loss", () => {
       (_req, res) =>
         res.status(400).json({ error: { type: "invalid_request_error", param: "limit", message: "Invalid integer" } }),
     ]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
     await expect(c.catchUp(pool)).rejects.toThrow(/400/);
   });
 });
@@ -249,7 +250,7 @@ describe("the retention boundary — the paradigm's honest loss", () => {
 describe("fetch discipline (register L1-G4 paid here)", () => {
   it("a black-holed feed is a BOUNDED loud failure via AbortSignal.timeout — never a wedge; cursor intact", async () => {
     const { baseUrl } = scriptedFeed([(_req, _res) => void 0 /* never responds */]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl, timeoutMs: 150 });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl, timeoutMs: 150 });
     const t0 = Date.now();
     await expect(c.catchUp(pool)).rejects.toThrow(/timed out/i);
     expect(Date.now() - t0).toBeLessThan(5_000);
@@ -268,13 +269,13 @@ describe("fetch discipline (register L1-G4 paid here)", () => {
         res.json(pageBody([evt("evt_i1", t)], false));
       },
     ]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl, backoff: { baseMs: 5, capMs: 20, maxAttempts: 4 } });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl, backoff: { baseMs: 5, capMs: 20, maxAttempts: 4 } });
     expect(await c.catchUp(pool)).toBe(1);
     expect(urls.length).toBe(3);
   });
 
   it("reconcile against an unreachable feed reports integrity failure with NO report — never a confident diff against nothing", async () => {
-    const c = new StripeFeedConnector({ baseUrl: "http://127.0.0.1:1", timeoutMs: 200 });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: "http://127.0.0.1:1", timeoutMs: 200 });
     const result = await c.reconcile(pool);
     expect(result.integrity.ok).toBe(false);
     expect(result.report).toBeUndefined();
@@ -288,7 +289,7 @@ describe("fetch discipline (register L1-G4 paid here)", () => {
     const t = NOW_S() - 60;
     const page = pageBody([evt("evt_j1", t), evt("evt_j2", t + 1)], true);
     const { baseUrl } = scriptedFeed([(_req, res) => res.json(page)]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
     const result = await c.reconcile(pool);
     expect(result.integrity.ok).toBe(false);
     expect(result.integrity.detail).toMatch(/re-serv|not advancing/i);
@@ -340,7 +341,7 @@ describe("addendum — one malformed `created` must not blind a thirty-day windo
     const { baseUrl } = scriptedFeed([
       (_req, res) => res.json(pageBody([...good, malformed] as StubEvent[], false)),
     ]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl, pageLimit: 100 });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl, pageLimit: 100 });
 
     const result = await c.reconcile(pool);
     // Before the fix: integrity false, report undefined — the whole window unreadable.
@@ -383,7 +384,7 @@ describe("addendum — one malformed `created` must not blind a thirty-day windo
     const { baseUrl } = scriptedFeed([
       (_req, res) => res.json(pageBody([evt("evt_a", now - 100), malformed] as StubEvent[], false)),
     ]);
-    const c = new StripeFeedConnector({ baseUrl: await baseUrl, pageLimit: 100 });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl, pageLimit: 100 });
 
     const result = await c.reconcile(pool);
     expect(result.integrity.ok).toBe(true);
@@ -410,7 +411,7 @@ describe("addendum — one malformed `created` must not blind a thirty-day windo
         (_req, res) => res.json(pageBody(page1, true)),
         (_req, res) => res.json(pageBody([], false)),
       ]);
-      const result = await new StripeFeedConnector({ baseUrl: await baseUrl, pageLimit: 100 }).reconcile(pool);
+      const result = await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl, pageLimit: 100 }).reconcile(pool);
       expect(result.integrity.ok).toBe(true);
       srv?.close();
       srv = undefined;
@@ -431,7 +432,7 @@ describe("addendum — one malformed `created` must not blind a thirty-day windo
     const noId = { ...evt("evt_a", now - 100), id: undefined as unknown as string };
     const { baseUrl } = scriptedFeed([(_req, res) => res.json(pageBody([noId] as StubEvent[], false))]);
 
-    const result = await new StripeFeedConnector({ baseUrl: await baseUrl, pageLimit: 100 }).reconcile(pool);
+    const result = await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl, pageLimit: 100 }).reconcile(pool);
     expect(result.integrity.ok).toBe(false);
     expect(result.report).toBeUndefined();
     expect(result.integrity.detail).toMatch(/id/);

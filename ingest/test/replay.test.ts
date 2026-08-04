@@ -184,6 +184,17 @@ describe("OPS-I4 — the queue has a depth surface at all", () => {
       const event = ev("evt-queue-depth-1");
       await enqueueEvent(boss, "casebus", event, { tenantId: DEFAULT_TENANT_ID });
 
+      // DISCRIMINATION NOTE (review minor 2). This test reds against a
+      // `getQueues()`-based implementation, but only because that path reads
+      // `queue.ready_count`, a cached column the supervisor refreshes on
+      // `monitorIntervalSeconds` — pg-boss@12.26.1 defaults it to 60 (dist/attorney.js),
+      // well outside the 10s poll below. The discrimination therefore rests on a VENDOR
+      // DEFAULT, not on an explicit contrast between the two data sources. If that default
+      // ever drops below this poll window, this test goes vacuous without failing: it would
+      // pass against the stale-counter implementation too. If you are upgrading pg-boss,
+      // re-check `monitorIntervalSeconds` — and if it has moved, replace this poll with a
+      // direct assertion that the count is live (e.g. read a depth, enqueue, read again
+      // inside one supervisor interval and require the second read to differ).
       const deadline = Date.now() + 10000;
       let row: Awaited<ReturnType<typeof fetchQueueDepths>>[number] | undefined;
       while (Date.now() < deadline) {

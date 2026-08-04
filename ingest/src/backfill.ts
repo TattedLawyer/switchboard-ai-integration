@@ -39,9 +39,13 @@ export async function pollOnce(
   pool: pg.Pool,
   source: string,
   baseUrl: string,
-  opts?: { limit?: number; tenantId?: string; timeoutMs?: number },
+  opts: { limit?: number; tenantId: string; timeoutMs?: number },
 ): Promise<{ ingested: number; duplicates: number; quarantined: number; last_seq: number }> {
-  const tenantId = opts?.tenantId ?? DEFAULT_TENANT_ID;
+  // REQUIRED (CLOSE-3 fix round): this is the recovery path for events the push doors
+  // lost, so it must land in the lane the doors write into. A default here wrote a shadow
+  // row under (tenant_id, source, event_id) instead of being absorbed as a duplicate.
+  if (!opts.tenantId) throw new Error("tenant is required: refusing to poll with an empty tenantId");
+  const tenantId = opts.tenantId;
   const cursor = await getCursor(pool, source, tenantId);
   const limit = opts?.limit ?? 50;
   const timeoutMs = opts?.timeoutMs ?? 5000;
@@ -142,10 +146,10 @@ export async function catchUp(
   pool: pg.Pool,
   source: string,
   baseUrl: string,
-  opts?: { maxRounds?: number; limit?: number; maxConsecutiveFailures?: number; tenantId?: string },
+  opts: { maxRounds?: number; limit?: number; maxConsecutiveFailures?: number; tenantId: string },
 ): Promise<number> {
-  const maxRounds = opts?.maxRounds ?? 10_000;
-  const maxConsecutiveFailures = opts?.maxConsecutiveFailures ?? 5;
+  const maxRounds = opts.maxRounds ?? 10_000;
+  const maxConsecutiveFailures = opts.maxConsecutiveFailures ?? 5;
   let totalIngested = 0;
   let consecutiveEmpty = 0;
   let consecutiveFailures = 0;
@@ -174,7 +178,7 @@ export async function catchUp(
     rounds++;
     let result: { ingested: number; duplicates: number; quarantined: number; last_seq: number };
     try {
-      result = await pollOnce(pool, source, baseUrl, { limit: opts?.limit, tenantId: opts?.tenantId });
+      result = await pollOnce(pool, source, baseUrl, { limit: opts.limit, tenantId: opts.tenantId });
     } catch (err) {
       consecutiveFailures++;
       if (consecutiveFailures >= maxConsecutiveFailures) {

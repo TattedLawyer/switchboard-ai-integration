@@ -5,6 +5,7 @@ import { createStripeFeedApp, type StripeFeedApp } from "../../mocks/stripefeed/
 import { freshTestDb, type TestDbResult } from "./helpers/testdb.js";
 import { StripeFeedConnector } from "../src/connectors/stripe-feed.js";
 import type { StripeFeedReconcileReport } from "../src/connectors/stripe-feed.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Task B pair 3 — the oracle: connector vs the REAL mock, seeded, in-process.
 //
@@ -56,7 +57,7 @@ describe("oracle 1 — full drain ⇄ retained set, exactly (the ledger-equivale
   it("drains everything the feed retains, byte-faithful at the payload level, and a re-drain ingests ZERO", async () => {
     const mock = createStripeFeedApp({ seed: 42 });
     mock.feed.emit(57); // deliberately not a multiple of the page size
-    const c = new StripeFeedConnector({ baseUrl: listen(mock), pageLimit: 10 });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock), pageLimit: 10 });
 
     const first = await c.catchUpWithReport(pool);
     expect(first.ingested).toBe(57);
@@ -97,8 +98,8 @@ describe("oracle 2 — shuffled-page invariance (ordering is undocumented; the c
     plain.feed.emit(83);
     shuffled.feed.emit(83);
 
-    const cPlain = new StripeFeedConnector({ baseUrl: listen(plain), pageLimit: 7 });
-    const cShuffled = new StripeFeedConnector({ baseUrl: listen(shuffled, true), pageLimit: 7 });
+    const cPlain = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(plain), pageLimit: 7 });
+    const cShuffled = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(shuffled, true), pageLimit: 7 });
 
     expect(await cPlain.catchUp(pool)).toBe(83);
     // The shuffled drain may re-serve pages (order-blind cursor + same-second ties);
@@ -118,7 +119,7 @@ describe("oracle 3 — mid-drain crash resume", () => {
   it("a drain cut off mid-way leaves the cursor at the last processed page; the resumed run completes with no loss and no double-ingest", async () => {
     const mock = createStripeFeedApp({ seed: 42 });
     mock.feed.emit(40);
-    const c = new StripeFeedConnector({ baseUrl: listen(mock), pageLimit: 6 });
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock), pageLimit: 6 });
 
     // The crash: the round budget expires mid-drain — loud by design, state consistent.
     await expect(c.catchUp(pool, { maxRounds: 3 })).rejects.toThrow(/maxRounds/);
@@ -135,7 +136,7 @@ describe("oracle 3 — mid-drain crash resume", () => {
     expect(cur.rows[0].last_event_id).toBeTruthy();
 
     // Resume: a FRESH connector instance (new process semantics) finishes the job.
-    const resumed = new StripeFeedConnector({ baseUrl: listen(mock, true), pageLimit: 6 });
+    const resumed = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock, true), pageLimit: 6 });
     const report = await resumed.catchUpWithReport(pool);
     expect(report.ingested).toBe(40 - partial);
     expect((await rawEvents(pool)).size).toBe(40);
@@ -150,7 +151,7 @@ describe("oracle 4 — retention expiry mid-catchUp: the honest, bounded loss re
     // Chapter 1: history the connector ingests while it is still retrievable. 26 days
     // old — inside BOTH the feed's 30-day window and the ingest door's occurred_at gate.
     const batch1 = mock.feed.emit(8, { ageS: 26 * 86_400 });
-    const c1 = new StripeFeedConnector({ baseUrl, pageLimit: 10 });
+    const c1 = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, pageLimit: 10 });
     expect(await c1.catchUp(pool)).toBe(8);
 
     // Chapter 2: fresh events land, then the clock eats the old ones — batch1 is now 31
@@ -160,7 +161,7 @@ describe("oracle 4 — retention expiry mid-catchUp: the honest, bounded loss re
 
     // A reconcile that runs BEFORE any fallback sees the still-live gap condition:
     // the persisted cursor names an event the feed no longer serves.
-    const preFallback = (await new StripeFeedConnector({ baseUrl, pageLimit: 10 }).reconcile(pool))
+    const preFallback = (await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, pageLimit: 10 }).reconcile(pool))
       .report as StripeFeedReconcileReport;
     expect(preFallback.gaps).toHaveLength(1);
     expect(preFallback.gaps[0].cause).toBe("retention");
@@ -169,7 +170,7 @@ describe("oracle 4 — retention expiry mid-catchUp: the honest, bounded loss re
     // batch1 (one emission second → id tiebreak); the gap's near edge is its stored
     // occurred_at, the far edge is batch2's created — the earliest event still
     // retained. Everything between is PERMANENTLY unreachable, and said so.
-    const c2 = new StripeFeedConnector({ baseUrl, pageLimit: 10 });
+    const c2 = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, pageLimit: 10 });
     const report = await c2.catchUpWithReport(pool);
     expect(report.ingested).toBe(6); // forward progress: all of batch2
     expect(report.gaps).toHaveLength(1);
@@ -195,7 +196,7 @@ describe("oracle 5 — 429 resilience against the seeded fault stream", () => {
   it("drains to exactness through injected rate limiting", async () => {
     const mock = createStripeFeedApp({ seed: 42, read429: { seed: 11, rate: 0.3 } });
     mock.feed.emit(40);
-    const c = new StripeFeedConnector({
+    const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID,
       baseUrl: listen(mock),
       pageLimit: 5,
       backoff: { baseMs: 5, capMs: 25, maxAttempts: 8 },

@@ -22,13 +22,24 @@ import type {
 export class LedgerFeedConnector implements Connector {
   readonly kind = "ledger-feed" as const;
 
-  constructor(readonly source: Source) {}
+  /**
+   * `tenantId` is REQUIRED (CLOSE-3 fix round). This connector's poll path is the recovery
+   * path for what the push doors lost, so it must write into the SAME lane the doors write
+   * into. It defaulted to the nil tenant while the doors wrote the configured one, which
+   * split every recovered event into a second row under
+   * `(tenant_id, source, event_id)` — the uniqueness that was supposed to absorb it.
+   */
+  constructor(
+    readonly source: Source,
+    private readonly tenantId: string,
+  ) {}
 
   async catchUp(pool: pg.Pool, opts?: ConnectorCatchUpOptions): Promise<number> {
     const baseUrl = opts?.baseUrl ?? baseUrlFor(this.source);
     return catchUp(pool, this.source, baseUrl, {
       limit: opts?.limit,
       maxRounds: opts?.maxRounds,
+      tenantId: this.tenantId,
     });
   }
 

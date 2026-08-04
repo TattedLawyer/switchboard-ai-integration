@@ -44,7 +44,9 @@ export const STRIPEFEED_SOURCE = "stripefeed" as const;
 export interface StripeFeedConnectorOptions {
   /** Base URL of the feed (GET <baseUrl>/v1/events). */
   baseUrl: string;
-  tenantId?: string;
+  /** REQUIRED (CLOSE-3 fix round). Defaulting here is what let the wiring seam construct
+   *  nil-tenant connectors while the doors wrote the configured tenant. */
+  tenantId: string;
   /** Per-request AbortSignal.timeout (register L1-G4) — a black-holed feed is a bounded
    *  loud failure, never a wedge. Default 5000ms. */
   timeoutMs?: number;
@@ -147,7 +149,7 @@ export class StripeFeedConnector implements Connector {
    *  interface change (house precedent: SheetSnapshotConnector.catchUpWithReport). */
   async catchUpWithReport(pool: pg.Pool, opts?: ConnectorCatchUpOptions): Promise<StripeFeedCatchUpReport> {
     const baseUrl = opts?.baseUrl ?? this.opts.baseUrl;
-    const tenantId = this.opts.tenantId ?? DEFAULT_TENANT_ID;
+    const tenantId = this.opts.tenantId;
     const limit = opts?.limit ?? this.opts.pageLimit ?? 100;
     const maxRounds = opts?.maxRounds ?? 10_000;
 
@@ -252,7 +254,7 @@ export class StripeFeedConnector implements Connector {
     opts?: ConnectorReconcileOptions,
   ): Promise<ConnectorReconcileResult & { report?: StripeFeedReconcileReport }> {
     const baseUrl = opts?.baseUrl ?? this.opts.baseUrl;
-    const tenantId = this.opts.tenantId ?? DEFAULT_TENANT_ID;
+    const tenantId = this.opts.tenantId;
 
     // Full drain of the retained window. Any fetch failure (including a mid-drain aged
     // cursor, impossible unless the window moves under us) is an integrity failure:

@@ -6,6 +6,7 @@ import { freshTestDb, type TestDbResult } from "./helpers/testdb.js";
 import { runMigrations } from "../src/migrate.js";
 import { StripeFeedConnector, type StripeFeedReconcileReport } from "../src/connectors/stripe-feed.js";
 import { acknowledgeGap, listGaps, recordGap } from "../src/connectors/types.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Task D pair 2 — the DURABLE gap ledger, and the retrofit that makes it real for two
 // paradigms at once.
@@ -219,11 +220,11 @@ describe("the stripefeed retrofit — the register said BUILD ONCE, BOTH CONNECT
     const baseUrl = listen(mock);
 
     mock.feed.emit(8, { ageS: 26 * 86_400 });
-    expect(await new StripeFeedConnector({ baseUrl, pageLimit: 10 }).catchUp(pool)).toBe(8);
+    expect(await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, pageLimit: 10 }).catchUp(pool)).toBe(8);
     mock.feed.emit(6);
     mock.feed.advance(5 * 86_400); // the first batch, and the cursor with it, ages out
 
-    const report = await new StripeFeedConnector({ baseUrl, pageLimit: 10 }).catchUpWithReport(pool);
+    const report = await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, pageLimit: 10 }).catchUpWithReport(pool);
     expect(report.gaps).toHaveLength(1);
 
     // The durable record: same bounds, same cause, in the table — with no in-memory
@@ -236,7 +237,7 @@ describe("the stripefeed retrofit — the register said BUILD ONCE, BOTH CONNECT
     expect(stored[0].toOccurredAt).toBe(report.gaps[0].toOccurredAt);
 
     // The whole point: a connector that never saw the fallback still reports the loss.
-    const amnesiac = new StripeFeedConnector({ baseUrl, pageLimit: 10 });
+    const amnesiac = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, pageLimit: 10 });
     const rec = (await amnesiac.reconcile(pool)).report as StripeFeedReconcileReport;
     expect(rec.gaps).toHaveLength(1);
     expect(rec.gaps[0].fromEventId).toBe(report.gaps[0].fromEventId);
@@ -246,13 +247,13 @@ describe("the stripefeed retrofit — the register said BUILD ONCE, BOTH CONNECT
     const mock = createStripeFeedApp({ seed: 7 });
     const baseUrl = listen(mock);
     mock.feed.emit(5, { ageS: 26 * 86_400 });
-    await new StripeFeedConnector({ baseUrl, pageLimit: 10 }).catchUp(pool);
+    await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, pageLimit: 10 }).catchUp(pool);
     mock.feed.emit(4);
     mock.feed.advance(5 * 86_400);
 
-    await new StripeFeedConnector({ baseUrl, pageLimit: 10 }).catchUpWithReport(pool);
-    await new StripeFeedConnector({ baseUrl, pageLimit: 10 }).catchUpWithReport(pool);
-    await new StripeFeedConnector({ baseUrl, pageLimit: 10 }).catchUpWithReport(pool);
+    await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, pageLimit: 10 }).catchUpWithReport(pool);
+    await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, pageLimit: 10 }).catchUpWithReport(pool);
+    await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, pageLimit: 10 }).catchUpWithReport(pool);
     expect(await listGaps(pool, "00000000-0000-0000-0000-000000000000", "stripefeed")).toHaveLength(1);
   });
 });

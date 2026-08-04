@@ -48,7 +48,7 @@ function startSheet(opts?: Partial<SheetsAppOptions>): { sheets: SheetsApp; base
 
 function connectorFor(baseUrl: string): SheetSnapshotConnector {
   // Small backoff numbers keep the 429 tests fast; semantics are unchanged.
-  return new SheetSnapshotConnector({
+  return new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID,
     baseUrl,
     timeoutMs: 3000,
     backoff: { baseMs: 5, capMs: 50, maxAttempts: 6 },
@@ -358,7 +358,7 @@ describe("A4 pair 2 — reconcile + resilience", () => {
     const bhSrv: Server = blackHole.listen(0);
     const port = (bhSrv.address() as { port: number }).port;
     try {
-      const c = new SheetSnapshotConnector({
+      const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID,
         baseUrl: `http://127.0.0.1:${port}`,
         timeoutMs: 200,
         backoff: { baseMs: 5, capMs: 50, maxAttempts: 6 },

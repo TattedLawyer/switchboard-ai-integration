@@ -41,8 +41,10 @@ export function createBackfillRunner(
   pgPool: pg.Pool,
   source: Source,
   baseUrl: string,
+  /** CLOSE-3 fix round: REQUIRED — the same tenant the doors write under. */
+  tenantId: string,
 ): () => Promise<void> {
-  const connector = connectorFor(source);
+  const connector = connectorFor(source, tenantId);
   let running = false;
   return async () => {
     if (running) {
@@ -193,10 +195,18 @@ export interface ServiceWiring {
   sheetsNudge?: () => Promise<void>;
 }
 
-export function createServiceWiring(pgPool: pg.Pool, sources: Source[]): ServiceWiring {
+export function createServiceWiring(
+  pgPool: pg.Pool,
+  sources: Source[],
+  // CLOSE-3 fix round: REQUIRED, and the same value the doors get. This seam is where the
+  // wave's tenant threading stopped — the runners were constructed without it, so the
+  // scheduled pull half wrote into the nil lane while the push half wrote the configured
+  // one. On hubcrm that stopped hydration entirely and silently.
+  tenantId: string,
+): ServiceWiring {
   const runners = sources.map((source) => {
     const baseUrl = baseUrlFor(source);
-    return { source, run: createBackfillRunner(pgPool, source, baseUrl), baseUrl };
+    return { source, run: createBackfillRunner(pgPool, source, baseUrl, tenantId), baseUrl };
   });
   const sheets = runners.find((r) => r.source === "sheets");
   return { runners, sheetsNudge: sheets?.run };
@@ -232,7 +242,7 @@ async function main() {
   // only, for the same reason the interval loop is: backfill/catchUp belongs with the
   // roles that own event ingestion. A receiver-only process therefore hosts NO runner
   // and its nudge door keeps answering the honest 503 (see server.ts).
-  const wiring = isWorker ? createServiceWiring(pool, enabledSources()) : undefined;
+  const wiring = isWorker ? createServiceWiring(pool, enabledSources(), deploymentTenantId) : undefined;
 
   if (isReceiver) {
     // Create the HTTP receiver app with queue integration

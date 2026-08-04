@@ -1,4 +1,5 @@
 import { getPool } from "../db.js";
+import { resolveDeploymentTenant } from "../config.js";
 import { baseUrlFor, enabledSources } from "../sources.js";
 import {
   catchUpReporter,
@@ -14,11 +15,16 @@ import type { HubHydrationReport } from "../connectors/hub-hydrate.js";
 async function main(): Promise<void> {
   const pool = getPool();
   let failed = false;
+  // CLOSE-3 fix round: the SAME tenant the doors write under, resolved the same way and
+  // from the same variable. The pull path is the recovery path for what the push path
+  // lost, so a different lane here is not "a second tenant" — it is a shadow copy of the
+  // first, invisible to the uniqueness key that was supposed to absorb it.
+  const tenantId = resolveDeploymentTenant();
 
   for (const source of enabledSources()) {
     // Reported for operator context only; the connector resolves its own source of truth.
     const baseUrl = baseUrlFor(source);
-    const connector = connectorFor(source);
+    const connector = connectorFor(source, tenantId);
     try {
       // Gate-H cold review C1: when the connector can report more than a number, ASK IT
       // — the report is where retention-boundary losses live, and a CLI that called the

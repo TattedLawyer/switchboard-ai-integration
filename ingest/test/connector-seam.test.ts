@@ -10,6 +10,7 @@ import { catchUp } from "../src/backfill.js";
 import { reconcile, verifyLedgerChain } from "../src/reconcile.js";
 import { connectorFor, connectorKinds } from "../src/connectors/index.js";
 import { SOURCES } from "../src/sources.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Phase 2b Task 1 — the connector seam.
 //
@@ -68,7 +69,7 @@ async function startLedgerMock(count: number): Promise<void> {
 describe("connector seam — every source resolves to a connector", () => {
   it("resolves a connector for every registered source", () => {
     for (const source of SOURCES) {
-      const c = connectorFor(source);
+      const c = connectorFor(source, DEFAULT_TENANT_ID);
       expect(c.source).toBe(source);
     }
   });
@@ -101,7 +102,7 @@ describe("connector seam — every source resolves to a connector", () => {
   });
 
   it("rejects an unknown source rather than silently returning a default — an unknown source must never quietly ingest as some other source's connector", () => {
-    expect(() => connectorFor("sheets-not-yet" as never)).toThrow(/unknown source/i);
+    expect(() => connectorFor("sheets-not-yet" as never, DEFAULT_TENANT_ID)).toThrow(/unknown source/i);
   });
 });
 
@@ -109,21 +110,21 @@ describe("connector seam — behavior preserving vs the functions it replaces", 
   it("catchUp through the connector ingests exactly what the direct call does", async () => {
     await startLedgerMock(12);
 
-    const viaConnector = await connectorFor("billing").catchUp(pool, { baseUrl });
+    const viaConnector = await connectorFor("billing", DEFAULT_TENANT_ID).catchUp(pool, { baseUrl });
     expect(viaConnector).toBe(12);
 
     // Cursor is now at the end; a direct call must agree there is nothing left. Same
     // mechanism, same cursor table, same result.
-    const viaDirect = await catchUp(pool, "billing", baseUrl);
+    const viaDirect = await catchUp(pool, "billing", baseUrl, { tenantId: DEFAULT_TENANT_ID });
     expect(viaDirect).toBe(0);
   });
 
   it("reconcile through the connector returns the same report as the direct call", async () => {
     await startLedgerMock(8);
-    await connectorFor("billing").catchUp(pool, { baseUrl });
+    await connectorFor("billing", DEFAULT_TENANT_ID).catchUp(pool, { baseUrl });
 
     const direct = await reconcile(pool, "billing", ledgerPath);
-    const viaConnector = await connectorFor("billing").reconcile(pool, { ledgerPath });
+    const viaConnector = await connectorFor("billing", DEFAULT_TENANT_ID).reconcile(pool, { ledgerPath });
 
     expect(viaConnector.skipped).toBeUndefined();
     expect(viaConnector.integrity.ok).toBe(true);
@@ -134,7 +135,7 @@ describe("connector seam — behavior preserving vs the functions it replaces", 
 
   it("surfaces a broken hash chain as an integrity failure WITHOUT a report — matching cli/reconcile.ts, which refuses to compare against a ledger it cannot trust", async () => {
     await startLedgerMock(4);
-    await connectorFor("billing").catchUp(pool, { baseUrl });
+    await connectorFor("billing", DEFAULT_TENANT_ID).catchUp(pool, { baseUrl });
 
     const { writeFileSync, readFileSync } = await import("node:fs");
     const lines = readFileSync(ledgerPath, "utf8").trimEnd().split("\n");
@@ -145,7 +146,7 @@ describe("connector seam — behavior preserving vs the functions it replaces", 
 
     expect(verifyLedgerChain(ledgerPath).ok).toBe(false);
 
-    const result = await connectorFor("billing").reconcile(pool, { ledgerPath });
+    const result = await connectorFor("billing", DEFAULT_TENANT_ID).reconcile(pool, { ledgerPath });
     expect(result.integrity.ok).toBe(false);
     expect(result.report).toBeUndefined();
   });
@@ -156,14 +157,14 @@ describe("connector seam — behavior preserving vs the functions it replaces", 
     // env-var typo must never silently drop a source from the zero-loss proof — a
     // reconcile that PASSes on the remainder is not a proof of anything. Unset is not
     // consent; the literal value `skip` is, by name, on the record.
-    const result = await connectorFor("billing").reconcile(pool, { ledgerPath: undefined });
+    const result = await connectorFor("billing", DEFAULT_TENANT_ID).reconcile(pool, { ledgerPath: undefined });
     expect(result.skipped).toBeUndefined();
     expect(result.integrity.ok).toBe(false);
     expect(result.integrity.detail).toMatch(/LEDGER_PATH_BILLING/);
     expect(result.report).toBeUndefined();
 
     // The explicit escape hatch, for the record and by name:
-    const optedOut = await connectorFor("billing").reconcile(pool, { ledgerPath: "skip" });
+    const optedOut = await connectorFor("billing", DEFAULT_TENANT_ID).reconcile(pool, { ledgerPath: "skip" });
     expect(optedOut.skipped).toMatch(/explicit opt-out/);
     expect(optedOut.integrity.ok).toBe(true);
     expect(optedOut.report).toBeUndefined();

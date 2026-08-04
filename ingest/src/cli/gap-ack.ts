@@ -22,6 +22,7 @@
 //   node --import tsx src/cli/gap-ack.ts --source <source> --id <n> --by <operator> [--note "..."] [--tenant <uuid>]
 
 import { getPool } from "../db.js";
+import { resolveDeploymentTenant } from "../config.js";
 import { enabledSources, isSource } from "../sources.js";
 import { DEFAULT_TENANT_ID } from "../ingest-event.js";
 import { acknowledgeGap, formatGapLedgerRow, listGaps } from "../connectors/index.js";
@@ -51,7 +52,11 @@ async function main(): Promise<void> {
     await pool.end();
     process.exit(1);
   }
-  const tenantId = tenantArg ?? DEFAULT_TENANT_ID;
+  // CLOSE-3 fix round: the default is the DEPLOYMENT's tenant (SWITCHBOARD_TENANT_ID),
+  // not a hardcoded nil — a bare run on a configured deployment used to operate on an
+  // empty nil lane and report a clean zero. Unset resolves to the nil tenant, so default
+  // deployments are byte-identical to before. An explicit --tenant still overrides.
+  const tenantId = tenantArg ?? resolveDeploymentTenant();
 
   try {
     // Close F8: same refusal as reconcile's, same wording (checklist line 6). An unknown

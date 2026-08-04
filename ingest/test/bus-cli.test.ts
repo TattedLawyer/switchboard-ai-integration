@@ -12,6 +12,7 @@ import {
 } from "./helpers/operator-surface.js";
 import { listGaps, recordGap } from "../src/connectors/types.js";
 import { BusReplayConnector } from "../src/connectors/bus-replay.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // Task D pair 4 — the STANDING OPERATOR-SURFACE CHECKLIST (born from Gate-H catching this
 // class four times, binding): every new result field this connector produces is CONSUMED
@@ -634,11 +635,11 @@ describe("service log — the loop consumes the report, not just a number", () =
     const prevDb = process.env.DATABASE_URL;
     process.env.DATABASE_URL = dbUrl;
     try {
-      await createBackfillRunner(pool, "casebus", baseUrl)();
+      await createBackfillRunner(pool, "casebus", baseUrl, DEFAULT_TENANT_ID)();
       mock.stream.reset();
       mock.stream.emit(3);
       const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-      await createBackfillRunner(pool, "casebus", baseUrl)();
+      await createBackfillRunner(pool, "casebus", baseUrl, DEFAULT_TENANT_ID)();
       const logged = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
       expect(logged).toMatch(/PERMANENT DATA LOSS/);
       expect(logged).toMatch(/unclosable gap \(reset\)/);
@@ -658,7 +659,7 @@ describe("service log — the loop consumes the report, not just a number", () =
     const prevDb = process.env.DATABASE_URL;
     process.env.DATABASE_URL = dbUrl;
     try {
-      await createBackfillRunner(pool, "casebus", baseUrl)();
+      await createBackfillRunner(pool, "casebus", baseUrl, DEFAULT_TENANT_ID)();
     } finally {
       process.env.DATABASE_URL = prevDb;
     }

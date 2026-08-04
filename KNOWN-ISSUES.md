@@ -674,11 +674,28 @@ previous wording — "single-tenant with a tenant-safe ingest floor" — read as
 claim about ingress that was false for the two push doors, which carried no
 tenant at all, and for the two remediation paths that reassigned tenancy to the
 default): **one deployment serves one configured tenant, and the tenant it is
-configured with is carried faithfully end to end.** `SWITCHBOARD_TENANT_ID` is
-resolved once at boot; every door, the queue envelope, the store and both
-quarantine replay paths now require a tenant as an argument, so a tenant-less
-write is a compile error rather than a silent write to the nil tenant. The
-analytics layer below is still unpartitioned and will merge two tenants'
+configured with is carried faithfully end to end — on both the push and the
+pull halves.** `SWITCHBOARD_TENANT_ID` is resolved once at boot and passed
+explicitly from there into: both webhook doors, the queue envelope, the worker,
+the store, quarantine replay, DLQ replay, the connector registry, the scheduled
+service wiring, the backfill poller, the hydration pump, the connectors'
+reconcile paths, the cursors, the gap ledger, and the four operator CLIs'
+default scope. Every one of those requires a tenant as an argument, so a
+tenant-less write is a compile error rather than a silent write to the nil
+tenant, and `connectorFor` refuses an empty one at runtime.
+
+The first version of this sentence was wrong and is worth recording as such: the
+push half was threaded and the **pull** half was not, which on a deployment that
+actually set the variable would have stopped hubcrm hydration entirely and
+silently (the pump scanned the nil lane while the door wrote the configured one)
+and split every backfill-recovered event into a shadow row, because
+`(tenant_id, source, event_id)` uniqueness cannot absorb a duplicate that is in a
+different lane. No test could see it, because with the variable unset both halves
+are the nil tenant and the behaviour is byte-identical to pre-wave. The pin that
+closes it (`ingest/test/pull-tenant.test.ts`) sets a non-default tenant and drives
+the real CLI, which is the shape any future tenancy claim here must be tested in.
+
+The analytics layer below is still unpartitioned and will merge two tenants'
 *entities* if two tenants' data ever reaches one database.
 
 This is **not** a multi-tenant product and none of the above claims one. The

@@ -39,7 +39,9 @@ import {
 export interface SheetSnapshotConnectorOptions {
   /** Base URL of the sheet's snapshot API (GET /snapshot — the combined atomic read). */
   baseUrl: string;
-  tenantId?: string;
+  /** REQUIRED (CLOSE-3 fix round). Defaulting here is what let the wiring seam construct
+   *  nil-tenant connectors while the doors wrote the configured tenant. */
+  tenantId: string;
   /** Per-request AbortSignal.timeout — no black-hole wedge (decision 7). Default 5000ms. */
   timeoutMs?: number;
   /** Truncated exponential backoff policy for 429s: min((2^n)*base + jitter, cap),
@@ -121,7 +123,7 @@ export class SheetSnapshotConnector implements Connector {
    *  Kept as a widening method (not an interface change) so the seam stays untouched. */
   async catchUpWithReport(pool: pg.Pool, opts?: ConnectorCatchUpOptions): Promise<SheetCatchUpReport> {
     const baseUrl = opts?.baseUrl ?? this.opts.baseUrl;
-    const tenantId = this.opts.tenantId ?? DEFAULT_TENANT_ID;
+    const tenantId = this.opts.tenantId;
 
     const snapshot = await this.fetchSnapshot(baseUrl);
     const mapping = resolveHeaderMapping(snapshot.header, this.opts.columnMap);
@@ -220,7 +222,7 @@ export class SheetSnapshotConnector implements Connector {
     opts?: ConnectorReconcileOptions,
   ): Promise<ConnectorReconcileResult & { report?: SheetReconcileReport }> {
     const baseUrl = opts?.baseUrl ?? this.opts.baseUrl;
-    const tenantId = this.opts.tenantId ?? DEFAULT_TENANT_ID;
+    const tenantId = this.opts.tenantId;
 
     let snapshot: Snapshot;
     try {

@@ -173,7 +173,7 @@ describe("service log — the loop consumes the report, not just a number", () =
     const prevDb = process.env.DATABASE_URL;
     process.env.DATABASE_URL = dbUrl;
     try {
-      const run = createBackfillRunner(pool, "hubcrm", baseUrl);
+      const run = createBackfillRunner(pool, "hubcrm", baseUrl, DEFAULT_TENANT_ID);
       await run();
     } finally {
       process.env.DATABASE_URL = prevDb;

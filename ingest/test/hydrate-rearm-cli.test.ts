@@ -80,7 +80,7 @@ async function deliverThroughDoor(hub: HubcrmApp): Promise<void> {
 }
 
 const connector = (baseUrl: string) =>
-  new HubHydrateConnector({
+  new HubHydrateConnector({ tenantId: DEFAULT_TENANT_ID,
     baseUrl,
     databaseUrl: dbUrl,
     timeoutMs: 3000,

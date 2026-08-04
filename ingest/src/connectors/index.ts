@@ -1,4 +1,5 @@
 import { SOURCES, baseUrlFor, isSource, type Source } from "../sources.js";
+import { DEFAULT_TENANT_ID } from "../ingest-event.js";
 import type pg from "pg";
 import { LedgerFeedConnector } from "./ledger-feed.js";
 import { SheetSnapshotConnector } from "./sheet-snapshot.js";
@@ -30,19 +31,23 @@ export { BusReplayConnector, CASEBUS_SOURCE, type BusGap, type FallbackPreset } 
 // unlike the ledger-feed connectors, which re-read their env per call. stripefeed
 // (Task B) is the third paradigm: an opaque-cursor envelope feed, same
 // construction-time base URL convention as sheets.
-const REGISTRY: Record<Source, () => Connector> = {
-  crm: () => new LedgerFeedConnector("crm"), // legacy lane — mock retired (F-1c), see sources.ts
-  billing: () => new LedgerFeedConnector("billing"),
-  support: () => new LedgerFeedConnector("support"),
-  sheets: () => new SheetSnapshotConnector({ baseUrl: baseUrlFor("sheets") }),
-  stripefeed: () => new StripeFeedConnector({ baseUrl: baseUrlFor("stripefeed") }),
+// CLOSE-3 fix round: every entry takes the deployment tenant. The registry is the ONE
+// place production constructs a connector, so making the tenant a parameter here is what
+// makes "no pull hop can silently default" true — previously each factory constructed a
+// nil-tenant connector and every caller inherited it.
+const REGISTRY: Record<Source, (tenantId: string) => Connector> = {
+  crm: (t) => new LedgerFeedConnector("crm", t), // legacy lane — mock retired (F-1c), see sources.ts
+  billing: (t) => new LedgerFeedConnector("billing", t),
+  support: (t) => new LedgerFeedConnector("support", t),
+  sheets: (t) => new SheetSnapshotConnector({ baseUrl: baseUrlFor("sheets"), tenantId: t }),
+  stripefeed: (t) => new StripeFeedConnector({ baseUrl: baseUrlFor("stripefeed"), tenantId: t }),
   // hubcrm (Task C): the fourth paradigm — thin batched webhooks land at the door;
   // catchUp is a hydration pump; reconcile reads the vendor object store's own truth.
-  hubcrm: () => new HubHydrateConnector({ baseUrl: baseUrlFor("hubcrm") }),
+  hubcrm: (t) => new HubHydrateConnector({ baseUrl: baseUrlFor("hubcrm"), tenantId: t }),
   // casebus (Task D): the fifth arm and the LAST paradigm — a stream you subscribe to.
   // catchUp resubscribes from a stored opaque replay id; reconcile reads the retained
   // 72h window, which is the only truth this paradigm has.
-  casebus: () => new BusReplayConnector({ baseUrl: baseUrlFor("casebus") }),
+  casebus: (t) => new BusReplayConnector({ baseUrl: baseUrlFor("casebus"), tenantId: t }),
 };
 
 /**
@@ -50,17 +55,21 @@ const REGISTRY: Record<Source, () => Connector> = {
  * a typo ingest under some other source's connector — writing one source's data into another's
  * lane, which `(source, event_id)` idempotency would then happily accept as legitimate.
  */
-export function connectorFor(source: Source): Connector {
+export function connectorFor(source: Source, tenantId: string): Connector {
   if (!isSource(source)) {
     throw new Error(`unknown source: ${String(source)} (known: ${SOURCES.join(", ")})`);
   }
-  return REGISTRY[source]();
+  if (!tenantId) {
+    throw new Error(`tenant is required: refusing to construct the ${source} connector with an empty tenantId`);
+  }
+  return REGISTRY[source](tenantId);
 }
 
 /** Which paradigm each source speaks. Pinned by test so a new kind cannot appear unnoticed. */
 export function connectorKinds(): Record<Source, ConnectorKind> {
   return Object.fromEntries(
-    SOURCES.map((s) => [s, REGISTRY[s]().kind]),
+    // Kind is a property of the paradigm, not of the tenant — any tenant answers it.
+    SOURCES.map((s) => [s, REGISTRY[s](DEFAULT_TENANT_ID).kind]),
   ) as Record<Source, ConnectorKind>;
 }
 
