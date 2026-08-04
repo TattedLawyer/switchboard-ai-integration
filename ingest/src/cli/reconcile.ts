@@ -91,11 +91,23 @@ async function main(): Promise<void> {
   const tenantId = tenantArg ?? resolveDeploymentTenant();
 
   try {
-    if (tenantId !== DEFAULT_TENANT_ID) {
+    // Keyed on the FLAG, not the value — matching connectorForTenant's gate below, which
+    // is the same rule and must not be able to disagree with this one. Keying it on the
+    // value (as it did until the close-out round) refused a bare `npm run reconcile` on
+    // any deployment with SWITCHBOARD_TENANT_ID set, quoting a --tenant the operator never
+    // passed — and since DEFAULT_ENABLED is billing,support and both demo.sh and chaos.sh
+    // enable ledger-feed sources, that disabled the zero-loss surface on precisely the
+    // deployments the tenant work exists to serve.
+    if (has("tenant")) {
       // Refuse, by name, what would otherwise be a silently WRONG answer: the ledger-feed
       // paradigm's reconcile compares the source's whole raw lane against a single ledger
       // file — it is not tenant-scoped, so running it "for tenant X" would quietly answer
       // for every tenant at once. The other four paradigms are tenant-scoped end to end.
+      //
+      // Known wart, deliberately left (KNOWN-ISSUES, with an owner): `--tenant <the
+      // deployment's own tenant>` is refused while a bare run of identical scope is not.
+      // Conservative and loud beats clever here, but letting the equal case through is the
+      // obvious follow-up.
       const unsupported = enabledSources().filter((s) => connectorFor(s, DEFAULT_TENANT_ID).kind === "ledger-feed");
       if (unsupported.length > 0) {
         console.error(

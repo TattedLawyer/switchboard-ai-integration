@@ -843,6 +843,24 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   rows exist, since jsonb-unstorable rows are permanently unreplayable by
   construction (RUNBOOK 108-114) and a blanket non-zero would be a permanent red.*
 
+- **`reconcile --tenant <the deployment's own tenant>` is refused while a bare
+  `reconcile` of identical scope is not** *(CLOSE-3 close-out)* — the ledger-feed
+  refusal keys on whether the `--tenant` flag was passed, not on the value, so an
+  operator who names the tenant the deployment is already configured for gets a
+  refusal for a run that would have been correct. The gate itself is right and must
+  stay: a ledger file carries no tenant, so answering "for tenant Y" from it is a
+  cross-tenant answer dressed as a per-tenant one. Keying it on the VALUE instead is
+  what caused the close-out regression — it refused every bare reconcile on a
+  configured deployment, disabling the zero-loss surface on precisely the deployments
+  the tenant work serves (`DEFAULT_ENABLED` is `billing,support`; demo.sh and
+  chaos.sh both enable ledger-feed sources). Conservative and loud was the right
+  trade at close.
+
+  *Owner: CLOSE-4. Fix: let the EQUAL case through — refuse only when an explicit
+  `--tenant` names a tenant other than the deployment's own. Small, but it needs its
+  own pin for all three cases (bare, equal, different), which is why it is not a
+  drive-by.*
+
 - **The hydration pump has no real liveness probe** *(panel OPS-I5, deferred
   half)* — the cycle now says explicitly when it did not contact the object store,
   which removes the misleading affirmative. It still does not PROVE reachability.
