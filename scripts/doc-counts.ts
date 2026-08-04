@@ -119,6 +119,9 @@ export function readmeTestCounts(markdown: string): number[] {
  *  total cannot be measured from inside the suite, so this reads the real run's log —
  *  the same summation the merge reviewer did by hand with grep+awk. */
 export function sumSuiteLog(log: string): number {
-  const matches = [...log.matchAll(/Tests\s+(\d+) passed/g)];
-  return matches.reduce((s, m) => s + Number(m[1]), 0);
+  // Both summary shapes: "Tests  59 passed (59)" and "Tests  1 failed | 677 passed (678)".
+  // Counting only the `passed` half would make a RED run silently undercount and read as
+  // a README that drifted — the wrong-shaped failure pointing at the wrong cause.
+  const matches = [...log.matchAll(/Tests\s+(?:(\d+) failed \| )?(\d+) passed/g)];
+  return matches.reduce((s, m) => s + Number(m[1] ?? 0) + Number(m[2]), 0);
 }
