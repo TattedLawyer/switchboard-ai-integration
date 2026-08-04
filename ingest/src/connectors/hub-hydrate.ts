@@ -143,6 +143,12 @@ export async function handleHubcrmBatch(
       const event = mapThinEvent(item);
       const unstorable = jsonbUnstorableReason(event);
       if (unstorable !== null) {
+        // OPS-I1, applied to the door it was missed on (gate-H I2). This is a PUSH door:
+        // the vendor gets a 202 and its delivery dashboard stays green, so the service
+        // log is the operator's only channel. Same wording as server.ts's generic door
+        // on purpose — one greppable phrase across every door, so an alert written for
+        // one source fires for all of them.
+        console.warn(`[ingest] quarantined ${HUBCRM_SOURCE} event ${event.event_id || "<none>"} at the door: ${unstorable}`);
         await quarantineEvent(pool, HUBCRM_SOURCE, event, `hubcrm: ${unstorable} (raw_body holds the full batch)`, rawBody, tenantId);
         quarantined++;
         continue;
@@ -153,6 +159,7 @@ export async function handleHubcrmBatch(
         const reason = detail
           ? `schema validation failed: ${detail.path.join(".")} — ${detail.message}`
           : "schema validation failed";
+        console.warn(`[ingest] quarantined ${HUBCRM_SOURCE} event ${event.event_id || "<none>"} at the door: ${reason}`);
         await quarantineEvent(pool, HUBCRM_SOURCE, event, reason, undefined, tenantId);
         quarantined++;
         continue;
@@ -167,6 +174,11 @@ export async function handleHubcrmBatch(
       // with a reason naming the throw — and the loop moves on to its batchmates.
       const message = err instanceof Error ? err.message : String(err);
       try {
+        // Third branch of the same door, logged for the same reason (gate-H I2): an
+        // UNEXPECTED throw is the branch an operator most needs to see, and it was the
+        // quietest of the three — the custody-failure sub-catch below logged, the
+        // successful preservation did not.
+        console.warn(`[ingest] quarantined ${HUBCRM_SOURCE} event at the door: unexpected error processing batch element: ${message}`);
         await quarantineEvent(
           pool,
           HUBCRM_SOURCE,

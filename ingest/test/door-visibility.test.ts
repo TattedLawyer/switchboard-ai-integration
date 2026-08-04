@@ -85,9 +85,11 @@ describe("OPS-I1, every door — a source registered without a visible quarantin
   // The one shape difference between the doors: hubcrm delivers BATCHES (a JSON array),
   // so a bare object is a 400 at its door rather than a quarantine. Everything else goes
   // through the generic per-event door.
+  // ...and the vendor field names differ with it: hubcrm's wire shape is HubSpot's
+  // (`eventId` / `subscriptionType`), mapped to the house shape by mapThinEvent.
   const bodyFor = (source: string, eventId: string): string =>
     source === "hubcrm"
-      ? JSON.stringify([{ event_id: eventId, bogus: true }])
+      ? JSON.stringify([{ eventId, subscriptionType: "company.propertyChange", bogus: true }])
       : JSON.stringify({ event_id: eventId, bogus: true });
 
   // sheets has no generic event door BY DESIGN (its raw lane is connector-born; a
