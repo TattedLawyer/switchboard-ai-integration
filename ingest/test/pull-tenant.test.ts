@@ -179,3 +179,80 @@ describe("the configured deployment tenant reaches the PULL half", () => {
     expect(cursor.rows.map((r) => r.tenant_id)).toEqual([TENANT_X]);
   }, 90_000);
 });
+
+// CLOSE-3 close-out — the regression the fix round introduced.
+//
+// The fix round re-keyed connectorForTenant's ledger-feed refusal on the --tenant FLAG
+// (correctly: the refusal is about the multi-tenant question, not about the value). It
+// left main()'s own copy of that gate keyed on the tenant VALUE. So on a deployment with
+// SWITCHBOARD_TENANT_ID set, a bare `npm run reconcile` refuses and exits 1, quoting a
+// --tenant flag the operator never passed.
+//
+// Blast radius is the reason this is not cosmetic: DEFAULT_ENABLED is ["billing",
+// "support"], demo.sh enables support, chaos.sh enables billing,support — every one a
+// ledger-feed source. The zero-loss surface is therefore DISABLED on exactly the
+// deployments the tenant fix exists to serve.
+describe("a configured deployment can still run its own reconcile", () => {
+  function runReconcile(env: Record<string, string>): Promise<{ code: number; out: string }> {
+    return new Promise((resolve, reject) => {
+      execFile(
+        process.execPath,
+        ["--import", "tsx", "src/cli/reconcile.ts", ...(env.__args ? env.__args.split(" ") : [])],
+        {
+          cwd: INGEST_DIR,
+          timeout: 60_000,
+          env: { ...process.env, DATABASE_URL: dbUrl, ALLOW_DEV_SECRETS: "1", ...env, __args: undefined } as NodeJS.ProcessEnv,
+        },
+        (err, stdout, stderr) => {
+          if (err && typeof err.code !== "number") return reject(err);
+          resolve({ code: err ? (err.code as number) : 0, out: `${stdout}\n${stderr}` });
+        },
+      );
+    });
+  }
+
+  it("bare reconcile on a deployment with SWITCHBOARD_TENANT_ID set is NOT refused as though --tenant had been passed", async () => {
+    const ledgerPath = join(dir, "ledger-support.jsonl");
+    const support = createBillingApp({ ledgerPath, webhookUrl: "http://127.0.0.1:1" });
+    const supportUrl = listen(support);
+    await fetch(`${supportUrl}/simulate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ count: 3 }),
+    });
+
+    const res = await runReconcile({
+      SWITCHBOARD_TENANT_ID: TENANT_X,
+      INGEST_SOURCES: "support",
+      SUPPORT_BASE_URL: supportUrl,
+      LEDGER_PATH_SUPPORT: ledgerPath,
+    });
+
+    // The refusal names a flag the operator never typed. That is the regression.
+    expect(res.out, "bare reconcile refused a --tenant that was never passed").not.toContain(
+      "--tenant is not supported for ledger-feed source",
+    );
+    // And it must actually reconcile rather than bailing before it starts.
+    expect(res.out).toContain("[support]");
+  }, 90_000);
+
+  it("an EXPLICIT --tenant naming a different tenant is still refused for a ledger-feed source", async () => {
+    const ledgerPath = join(dir, "ledger-support.jsonl");
+    const support = createBillingApp({ ledgerPath, webhookUrl: "http://127.0.0.1:1" });
+    const supportUrl = listen(support);
+
+    const res = await runReconcile({
+      SWITCHBOARD_TENANT_ID: TENANT_X,
+      INGEST_SOURCES: "support",
+      SUPPORT_BASE_URL: supportUrl,
+      LEDGER_PATH_SUPPORT: ledgerPath,
+      __args: "--tenant 44444444-4444-4444-4444-444444444444",
+    });
+
+    // The rule the gate exists for survives: a ledger file has no tenant in it, so
+    // answering "for tenant Y" from it would be a cross-tenant answer dressed as a
+    // per-tenant one.
+    expect(res.code).toBe(1);
+    expect(res.out).toContain("--tenant is not supported for ledger-feed source");
+  }, 90_000);
+});
