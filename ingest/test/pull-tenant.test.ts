@@ -1,0 +1,180 @@
+// CLOSE-3 fix round — the pull half of ingestion never received the deployment tenant.
+//
+// The lie this file kills: KNOWN-ISSUES said the configured tenant "is carried faithfully
+// end to end", and the wave threaded it through the push doors, the queue envelope, the
+// worker, the store and both replay paths — and stopped at the wiring seam. The service
+// wiring, the backfill runner, the connector registry and every connector's catchUp fell
+// back to DEFAULT_TENANT_ID, and nothing on the pull side read SWITCHBOARD_TENANT_ID at all.
+//
+// Why no existing test could see it: with the variable UNSET everything is the nil tenant on
+// both halves, which is byte-identical to pre-wave behaviour. The defect only exists on a
+// deployment that sets the variable the wave shipped and documented — and no test set it.
+// So the pin is exactly that: a NON-DEFAULT configured tenant, driven through the REAL CLI
+// entrypoints as a deployment would, asserting on STORED tenant_id.
+//
+// Two consequences it reproduces:
+//   1. hubcrm hydration stops entirely and silently — the pump scans
+//      `where r.tenant_id = <nil>` while the door writes the configured tenant, so it
+//      matches nothing, forever, with no error.
+//   2. backfill recovery splits into a second tenant lane — raw_events is unique on
+//      (tenant_id, source, event_id), so an event the door stored under tenant X and the
+//      poller later recovers under the nil tenant is TWO ROWS, not an absorbed duplicate.
+//      The poller is precisely the path that exists to recover what the push path lost.
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { execFile } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Server } from "node:http";
+import type express from "express";
+import type pg from "pg";
+import { freshTestDb } from "./helpers/testdb.js";
+import { createIngestApp } from "../src/server.js";
+import { createHubcrmApp } from "../../mocks/hubcrm/src/index.js";
+import { createBillingApp } from "../../mocks/billing/src/server.js";
+
+const INGEST_DIR = fileURLToPath(new URL("..", import.meta.url));
+/** A deliberately NON-default tenant: the whole point is that the default hides the defect. */
+const TENANT_X = "33333333-3333-3333-3333-333333333333";
+const NIL_TENANT = "00000000-0000-0000-0000-000000000000";
+
+let pool: pg.Pool;
+let dbUrl: string;
+let cleanup: () => Promise<void>;
+let dir: string;
+const servers: Server[] = [];
+
+beforeEach(async () => {
+  const result = await freshTestDb();
+  pool = result.pool;
+  dbUrl = result.url;
+  cleanup = result.cleanup;
+  dir = mkdtempSync(join(tmpdir(), "pull-tenant-"));
+});
+afterEach(async () => {
+  for (const s of servers.splice(0)) s.close();
+  if (dir) rmSync(dir, { recursive: true, force: true });
+  await cleanup();
+});
+
+function listen(app: express.Express): string {
+  const s = app.listen(0);
+  servers.push(s);
+  return `http://127.0.0.1:${(s.address() as { port: number }).port}`;
+}
+
+/** Runs the REAL CLI as a deployment would: SWITCHBOARD_TENANT_ID set, nothing else special. */
+function runBackfill(env: Record<string, string>): Promise<{ code: number; out: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      ["--import", "tsx", "src/cli/backfill.ts"],
+      {
+        cwd: INGEST_DIR,
+        timeout: 60_000,
+        env: { ...process.env, DATABASE_URL: dbUrl, ALLOW_DEV_SECRETS: "1", ...env },
+      },
+      (err, stdout, stderr) => {
+        if (err && typeof err.code !== "number") return reject(err);
+        resolve({ code: err ? (err.code as number) : 0, out: `${stdout}\n${stderr}` });
+      },
+    );
+  });
+}
+
+describe("the configured deployment tenant reaches the PULL half", () => {
+  it("hubcrm: the hydration pump processes the rows the door wrote — it does not scan an empty nil-tenant lane", async () => {
+    const hub = createHubcrmApp({ seed: 91 });
+    const hubUrl = listen(hub.app);
+    hub.store.simulate(6);
+
+    // The door is configured for TENANT_X, exactly as a deployment with
+    // SWITCHBOARD_TENANT_ID set would build it. Thin events land under TENANT_X.
+    const doorUrl = listen(createIngestApp(pool, TENANT_X));
+    const stats = await hub.store.deliver({ webhookUrl: `${doorUrl}/webhooks/hubcrm` });
+    expect(stats.failedBatches).toBe(0);
+
+    const thin = await pool.query(
+      "select count(*)::int as n from raw.raw_events where source = 'hubcrm' and tenant_id = $1",
+      [TENANT_X],
+    );
+    expect(thin.rows[0].n, "precondition: the door stored thin events under TENANT_X").toBeGreaterThan(0);
+
+    // Now the pump, as the scheduled service and the CLI run it.
+    const res = await runBackfill({
+      SWITCHBOARD_TENANT_ID: TENANT_X,
+      INGEST_SOURCES: "hubcrm",
+      HUBCRM_BASE_URL: hubUrl,
+    });
+    expect(res.code, res.out).toBe(0);
+
+    // THE ASSERTION. Before the fix this is 0: the pump scanned the nil tenant, found
+    // nothing to hydrate, and reported a clean cycle.
+    const hydrated = await pool.query(
+      "select count(*)::int as n from ingest.hydrated_snapshots where tenant_id = $1",
+      [TENANT_X],
+    );
+    expect(hydrated.rows[0].n, `pump hydrated nothing under TENANT_X. CLI said:\n${res.out}`).toBeGreaterThan(0);
+
+    // And it must not have written a shadow lane under the nil tenant either.
+    const shadow = await pool.query(
+      "select count(*)::int as n from ingest.hydrated_snapshots where tenant_id = $1",
+      [NIL_TENANT],
+    );
+    expect(shadow.rows[0].n).toBe(0);
+  }, 90_000);
+
+  it("ledger-feed: an event the door stored and the poller re-fetches is ONE row, not a second-lane duplicate", async () => {
+    const ledgerPath = join(dir, "ledger-billing.jsonl");
+    // The mock delivers to a black hole, so the push path is ours to drive by hand and the
+    // pull path sees every event as un-ingested — the recovery shape this test is about.
+    const billing = createBillingApp({ ledgerPath, webhookUrl: "http://127.0.0.1:1" });
+    const billingUrl = listen(billing);
+    await fetch(`${billingUrl}/simulate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ count: 5 }),
+    });
+
+    // The door — configured for TENANT_X — stores the feed's events first, standing in for
+    // the webhook deliveries a real vendor would have pushed.
+    const feed = await (await fetch(`${billingUrl}/events?after=0&limit=50`)).json();
+    const events = (feed.events ?? feed) as { event_id: string }[];
+    expect(events.length).toBeGreaterThan(0);
+    const { ingestEvent } = await import("../src/ingest-event.js");
+    for (const e of events) {
+      await ingestEvent(pool, "billing", e as never, { tenantId: TENANT_X });
+    }
+
+    const before = await pool.query(
+      "select count(*)::int as n from raw.raw_events where source = 'billing'",
+    );
+    expect(before.rows[0].n).toBe(events.length);
+
+    // The poller now recovers the same events. Under one configured tenant this must be a
+    // no-op absorbed by (tenant_id, source, event_id) idempotency.
+    const res = await runBackfill({
+      SWITCHBOARD_TENANT_ID: TENANT_X,
+      INGEST_SOURCES: "billing",
+      BILLING_BASE_URL: billingUrl,
+    });
+    expect(res.code, res.out).toBe(0);
+
+    // THE ASSERTION. Before the fix the poller wrote under the nil tenant, so every event
+    // became a SECOND row — the uniqueness key is per tenant, so nothing collided.
+    const after = await pool.query(
+      "select tenant_id, count(*)::int as n from raw.raw_events where source = 'billing' group by 1 order by 1",
+    );
+    expect(
+      after.rows,
+      `raw.raw_events split across tenant lanes. CLI said:\n${res.out}`,
+    ).toEqual([{ tenant_id: TENANT_X, n: events.length }]);
+
+    // The cursor the poller advanced belongs to the same lane, or the next run re-splits.
+    const cursor = await pool.query(
+      "select tenant_id from ingest.cursors where source = 'billing'",
+    );
+    expect(cursor.rows.map((r) => r.tenant_id)).toEqual([TENANT_X]);
+  }, 90_000);
+});
