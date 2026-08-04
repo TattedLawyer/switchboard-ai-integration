@@ -96,9 +96,16 @@ seven-line standing checklist in
   more sources aborted after repeated upstream errors; state is consistent, the
   output names the resumable cursor; re-run to resume).
 - **Poisoned/failed jobs:** each source has its own DLQ (`ingest-<source>-dlq`).
-  `npm run replay -w ingest -- --list` prints total depth and per-job
-  `source=... event_id=...` lines across all source DLQs;
-  `npm run replay -w ingest` re-ingests (idempotent) and consumes. Both drain
+  `npm run replay -w ingest -- --list` prints total depth and, per job,
+  `source=... event_id=... age=... retries=... — DLQ reason: <reason>` across all
+  source DLQs. The reason is the failure message the worker recorded on the job
+  itself, and the age is the ORIGINAL job's age (pg-boss preserves it across the
+  move to the DLQ), so a dead letter now answers "why" and "since when" without
+  reading `pgboss.job` by hand — at parity with `hydrate-rearm --list`, which has
+  printed its reason all along. `npm run replay -w ingest` re-ingests
+  (idempotent) and consumes; **replay can fail**, and each failure prints
+  `id=... source=... event_id=... replay failed: <message>` rather than being
+  swallowed into the `failed:` count. Both drain
   the FULL queue in one invocation (aggregated across all source DLQs) — the
   depth printed is the whole queue, never a capped page.
 - **Malformed payloads:** rows sit in `ingest.quarantine` with reasons and their
@@ -506,7 +513,8 @@ backup timestamp and now — not unbounded ledger replay from empty.
 |---|---|
 | `docker: command not found` / daemon errors | colima not running: `colima start`; compose plugin registered via `~/.docker/config.json` `cliPluginsExtraDirs` |
 | Ports 4002–4008 / 5433 busy | `lsof -ti:4002,4003,4004,4005,4006,4007,4008 \| xargs kill`; another Postgres on 5433 → change compose mapping. (4001 is the retired 2a crm mock's port — nothing should be listening there) |
-| demo/chaos FAIL with count mismatch | Worker not draining — check ingest logs; the scripts' bounded waits print both counts on timeout |
+| demo/chaos FAIL with count mismatch | Worker not draining — run `npm run replay -w ingest -- --queues`, which prints per source `ready` (the true backlog: queued minus deferred), `deferred`, `active`, `dlq` and the age of the oldest pending job, counted live rather than from pg-boss's periodically-cached counters. A non-zero `ready` with a rising `oldest_pending` is a stuck worker; a non-zero `dlq` is a poison payload — `--list` then names its reason. The scripts' bounded waits also print both counts on timeout |
+| migration checksum drift (`… has CHANGED since it was applied`) | The database and the repository disagree about what schema exists. Surfaced as an uncaught throw with a stack; the message itself names the file, both checksums and the remedy. Do NOT edit the applied migration — add a new one. If the drift is a local scratch database, drop and re-migrate it |
 | 401 on every webhook for one source | `WEBHOOK_SECRET_<SOURCE>` mismatch between that mock and ingest environments (each source verifies with its own secret — check the right one) |
 | 401s that appear only under load or across machines | Signature replay window (±300s, 2a.3): the timestamp is signed, so sender/receiver clocks more than 5 minutes apart reject valid traffic — check NTP/clock sync |
 | Process throws `... is not set — refusing to fall back` at boot | Fail-closed secrets (2a.3): set the named env var, or `ALLOW_DEV_SECRETS=1` for local demo use only |

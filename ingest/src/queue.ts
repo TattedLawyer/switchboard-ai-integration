@@ -202,11 +202,46 @@ export async function startWorker(
   return workerIds;
 }
 
+/**
+ * OPS-C1: what a dead letter can tell you.
+ *
+ * This used to project each pg-boss job down to `{source, id, data, rawBody}` and throw the
+ * rest away — including `output`, which is where OUR OWN worker records the handler's
+ * failure message (`{message}`, see startWorker below). The panel read that as "the reason
+ * exists on no shipped surface"; it is truer to say the reason was in the data all along and
+ * this function did not select it. pg-boss's dead-letter CTE (`plans.js`, `failJobsBody`)
+ * copies `r.output` onto the DLQ job, and `JobWithMetadata` additionally declares
+ * `sourceId`, `sourceName`, `sourceCreatedOn` ("preserving its true age in the system across
+ * the move") and `retryCount`. `findJobs` — which this already calls — returns all of them.
+ *
+ * So the reason, the job's TRUE original age, and how many times it was retried come from
+ * the call we were already making. No reason-capture machinery had to be built.
+ */
+export interface DlqEntry {
+  source: Source;
+  id: string;
+  data: SourceEvent;
+  rawBody: string | null;
+  tenantId: string;
+  /** The handler's failure message, from the job's own `output`. Null when nothing recorded
+   *  one — printed as `<none recorded>` rather than omitted, because "we do not know why"
+   *  is itself information an operator needs. */
+  reason: string | null;
+  /** The id of the original job that failed, on its own queue. */
+  sourceId: string | null;
+  /** The queue it originally failed on. */
+  sourceName: string | null;
+  /** The ORIGINAL job's createdOn where pg-boss preserved it, else the DLQ job's own —
+   *  i.e. the age that matters, not the age of the copy. */
+  originalCreatedOn: Date;
+  retryCount: number;
+}
+
 export async function fetchDlq(
   boss: PgBoss,
   /** SEC-I1: the deployment tenant, used only for envelope-less legacy DLQ jobs. */
   fallbackTenantId: string
-): Promise<{ source: Source; id: string; data: SourceEvent; rawBody: string | null; tenantId: string }[]> {
+): Promise<DlqEntry[]> {
   // Aggregate ALL pending jobs across every source's DLQ, tagging each with its source.
   // Drain-by-default (debt-burn A7, the AWS-CLI pagination contract): exhaustive
   // retrieval is the default and truncation must never be silent — the old 10-cap made
@@ -216,7 +251,7 @@ export async function fetchDlq(
   // Note: In pg-boss, a DLQ is just another queue, so we query each directly.
   // Jobs are unwrapped from the IngestJob envelope so callers keep seeing the event as
   // `data` (the CLI prints event_id/event_type from it); the wire bytes ride alongside.
-  const aggregated: { source: Source; id: string; data: SourceEvent; rawBody: string | null; tenantId: string }[] = [];
+  const aggregated: DlqEntry[] = [];
   for (const source of SOURCES) {
     const jobs = await boss.findJobs<IngestJob | SourceEvent>(dlqName(source));
 
@@ -228,11 +263,41 @@ export async function fetchDlq(
     for (const job of jobs) {
       if (job.state === "created" || job.state === "retry") {
         const { event, rawBody, tenantId } = unwrapJob(job.data, fallbackTenantId, `dlq ${dlqName(source)}`);
-        aggregated.push({ source, id: job.id, data: event, rawBody, tenantId });
+        // `output` is declared `object`; ours is `{message}`. Anything else (a
+        // library-generated timeout/heartbeat output) is stringified rather than dropped —
+        // printing whatever is there beats printing nothing.
+        const output = job.output as { message?: unknown } | null | undefined;
+        const reason =
+          output && typeof output === "object" && "message" in output
+            ? String(output.message)
+            : output && Object.keys(output).length > 0
+              ? JSON.stringify(output)
+              : null;
+        aggregated.push({
+          source,
+          id: job.id,
+          data: event,
+          rawBody,
+          tenantId,
+          reason,
+          sourceId: job.sourceId ?? null,
+          sourceName: job.sourceName ?? null,
+          originalCreatedOn: job.sourceCreatedOn ?? job.createdOn,
+          retryCount: job.retryCount,
+        });
       }
     }
   }
   return aggregated;
+}
+
+/** OPS-C1: a failure that reached only a counter is a diagnosis the system caught and threw
+ *  away. Each failure carries the job it belonged to and the error's own message. */
+export interface DlqReplayFailure {
+  id: string;
+  source: Source;
+  eventId: string | null;
+  message: string;
 }
 
 export async function replayDlq(
@@ -240,11 +305,11 @@ export async function replayDlq(
   pool: pg.Pool,
   /** SEC-I1: the deployment tenant, used only for envelope-less legacy DLQ jobs. */
   fallbackTenantId: string
-): Promise<{ replayed: number; failed: number }> {
+): Promise<{ replayed: number; failed: number; failures: DlqReplayFailure[] }> {
   const dlqJobs = await fetchDlq(boss, fallbackTenantId);
 
   let replayed = 0;
-  let failed = 0;
+  const failures: DlqReplayFailure[] = [];
 
   for (const job of dlqJobs) {
     try {
@@ -271,10 +336,71 @@ export async function replayDlq(
       // job has already been handled (ingested), so remove it from the DLQ outright.
       await boss.deleteJob(dlqName(job.source), job.id);
       replayed++;
-    } catch {
-      failed++;
+    } catch (err) {
+      // Was `catch { failed++ }` — the error object discarded without being logged, counted
+      // by reason, or attached to the job, so the CLI could print only `failed: 1` and the
+      // operator had nowhere to go.
+      failures.push({
+        id: job.id,
+        source: job.source,
+        eventId: job.data.event_id ?? null,
+        message: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
-  return { replayed, failed };
+  return { replayed, failed: failures.length, failures };
+}
+
+/**
+ * OPS-I4: the five numbers that make a stuck queue diagnosable, per source. RUNBOOK's
+ * remedy for "worker not draining" used to say "check ingest logs", which the panel
+ * reproduced as useless — the logs carry startup lines, backfill results and errors, and
+ * nothing about queue state. This is one pinned-API call per queue: `getQueues` returns
+ * `QueueResult`, whose `readyCount` the vendor's own types document as "the true backlog"
+ * (`queuedCount` includes deferred, not-yet-runnable jobs). Depth alone is not enough — the
+ * age of the oldest pending job is what separates "busy" from "stuck", so it is here too.
+ */
+export interface QueueDepth {
+  source: Source;
+  ready: number;
+  deferred: number;
+  active: number;
+  dlq: number;
+  /** createdOn of the oldest pending job on the main queue, or null when it is empty. */
+  oldestPending: Date | null;
+}
+
+export async function fetchQueueDepths(boss: PgBoss): Promise<QueueDepth[]> {
+  const now = Date.now();
+  const depths: QueueDepth[] = [];
+  for (const source of SOURCES) {
+    // Counted from a LIVE peek, not from QueueResult's cached counters. `getQueues` reads
+    // `queue.ready_count` / `queued_count`, which the supervisor's maintenance cycle writes
+    // periodically (plans.js's queue-stats cache) — so on the exact incident this surface
+    // exists for, "the receiver is accepting faster than the worker drains", the cached
+    // number can be minutes stale and read healthy. findJobs is a read-only peek that does
+    // not lease, which is the same primitive fetchDlq already uses to decide what is pending.
+    const jobs = await boss.findJobs(queueName(source));
+    let ready = 0;
+    let deferred = 0;
+    let active = 0;
+    let oldest: Date | null = null;
+    for (const j of jobs) {
+      if (j.state === "active") {
+        active++;
+        continue;
+      }
+      if (j.state !== "created" && j.state !== "retry") continue;
+      // The vendor's own distinction, and the one that matters: a deferred (future-dated)
+      // job is queued but NOT runnable, so counting it as backlog reads as a stuck worker.
+      if (j.startAfter && j.startAfter.getTime() > now) deferred++;
+      else ready++;
+      if (oldest === null || j.createdOn < oldest) oldest = j.createdOn;
+    }
+    const dlqJobs = await boss.findJobs(dlqName(source));
+    const dlq = dlqJobs.filter((j) => j.state === "created" || j.state === "retry").length;
+    depths.push({ source, ready, deferred, active, dlq, oldestPending: oldest });
+  }
+  return depths;
 }

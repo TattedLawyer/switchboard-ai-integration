@@ -321,7 +321,7 @@ describe("pg-boss queue", () => {
 
       // And one replay invocation drains everything — with a healthy pool this time.
       const result = await replayDlq(boss, pool, DEFAULT_TENANT_ID);
-      expect(result).toEqual({ replayed: 12, failed: 0 });
+      expect(result).toMatchObject({ replayed: 12, failed: 0, failures: [] });
       const rawN = await pool.query("select count(*)::int as n from raw.raw_events where source = 'crm'");
       expect(rawN.rows[0].n).toBe(12);
       expect(await fetchDlq(boss, DEFAULT_TENANT_ID)).toHaveLength(0);
