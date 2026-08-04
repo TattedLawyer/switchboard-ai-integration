@@ -274,8 +274,13 @@ async function main(): Promise<void> {
       // each connector's reconcile() returns its own report shape for its own kind.
       type BaseBuckets = Pick<
         ReconcileReport,
-        "ledger" | "raw" | "missing" | "extra" | "rawDuplicates" | "ledgerDuplicates"
+        "ledger" | "raw" | "missing" | "extra" | "rawDuplicates" | "ledgerDuplicates" | "crossTenantEventIds"
       >;
+      // The `_*XT` discards below are checklist-line-1 explicit discards, not oversights:
+      // `crossTenantEventIds` is a ledger-paradigm field (gate-H I8). The other four
+      // paradigms scope every one of their reads by tenant end to end, so they cannot
+      // produce a cross-tenant collision, and a line printing zero of them on those
+      // sources would be noise asserting a condition their shape forbids.
       let base: BaseBuckets;
       let stale: string[] | undefined;
       let windowed: { agedOutRaw: number; quarantined: { event_id: string; count: number }[] } | undefined;
@@ -285,44 +290,44 @@ async function main(): Promise<void> {
         | undefined;
       switch (connector.kind) {
         case "ledger-feed": {
-          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, ...rest } = report;
+          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds, ...rest } = report;
           rest satisfies Record<string, never>;
-          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates };
+          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds };
           break;
         }
         case "sheet-snapshot": {
-          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, stale: sheetStale, ...rest } =
+          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds: _sheetXT, stale: sheetStale, ...rest } =
             report as SheetReconcileReport;
           rest satisfies Record<string, never>;
-          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates };
+          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds: undefined };
           stale = sheetStale;
           break;
         }
         case "stripe-feed": {
-          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, agedOutRaw, quarantined, gaps, ...rest } =
+          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds: _feedXT, agedOutRaw, quarantined, gaps, ...rest } =
             report as StripeFeedReconcileReport;
           rest satisfies Record<string, never>;
-          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates };
+          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds: undefined };
           windowed = { agedOutRaw, quarantined };
           reportedGaps = gaps;
           break;
         }
         case "bus-replay": {
-          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, agedOutRaw, quarantined, gaps, ...rest } =
+          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds: _busXT, agedOutRaw, quarantined, gaps, ...rest } =
             report as BusReconcileReport;
           rest satisfies Record<string, never>;
-          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates };
+          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds: undefined };
           windowed = { agedOutRaw, quarantined };
           reportedGaps = gaps;
           break;
         }
         case "hub-hydrate": {
           const {
-            ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates,
+            ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds: _hubXT,
             drifted, mergedAwayRaw, tombstonedRaw, hydrationPending, hydrationDlq, ...rest
           } = report as HubReconcileReport;
           rest satisfies Record<string, never>;
-          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates };
+          base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds: undefined };
           hub = { drifted, mergedAwayRaw, tombstonedRaw, hydrationPending, hydrationDlq };
           break;
         }
@@ -386,6 +391,20 @@ async function main(): Promise<void> {
         console.log(`[${source}] raw:    ${base.raw} distinct event_id(s)`);
       }
       console.log(`[${source}] raw duplicates: ${base.rawDuplicates}`);
+      if (base.crossTenantEventIds !== undefined && base.crossTenantEventIds.length > 0) {
+        // Gate-H I8. Printed only when nonzero, and deliberately NOT gated: on a database
+        // that ingested under the nil tenant before SWITCHBOARD_TENANT_ID was set, the
+        // same event_id legitimately exists once per tenant, and the ledger-vs-raw
+        // comparison is whole-lane by design (the ledger carries no tenant). Before this,
+        // those rows were counted as raw duplicates and the run reported a permanent
+        // `FAIL: reconciliation found discrepancies` with nothing anywhere saying why.
+        console.log(
+          `[${source}] cross-tenant event_id(s) (present under more than one tenant — legitimate since ` +
+            `migration 006 made uniqueness per-tenant; this ledger reconcile is whole-lane by design, so ` +
+            `they are context, not a discrepancy): ${base.crossTenantEventIds.length}`,
+        );
+        for (const id of base.crossTenantEventIds) console.log(`  - ${id}`);
+      }
       if (base.ledgerDuplicates !== undefined) {
         // Debt-burn A6 (operator-surface rule: a produced field is printed). Nonzero is
         // unreachable on this path today — the chain verifier rejects duplicate ids

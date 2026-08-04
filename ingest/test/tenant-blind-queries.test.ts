@@ -110,8 +110,8 @@ afterEach(async () => {
 
 async function insertRaw(tenantId: string, source: string, eventId: string): Promise<void> {
   await pool.query(
-    `insert into raw.raw_events (tenant_id, source, event_id, event_type, occurred_at, payload)
-     values ($1, $2, $3, 'x.created', now(), $4)`,
+    `insert into raw.raw_events (tenant_id, source, event_id, event_type, payload)
+     values ($1, $2, $3, 'x.created', $4)`,
     [tenantId, source, eventId, JSON.stringify({ event_id: eventId })],
   );
 }

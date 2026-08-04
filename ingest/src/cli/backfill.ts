@@ -174,9 +174,15 @@ async function main(): Promise<void> {
       // last_seq is pinned at 0 for them and quoting it told the operator a wrong,
       // ledger-paradigm position in the middle of an incident.
       try {
+        // Gate-H I7: tenant-scoped, like every other statement in this file. `cursors` is
+        // PK'd (tenant_id, source) since migration 006, so on a database that holds both
+        // pre-tenancy nil-tenant rows and configured-tenant rows this used to return an
+        // arbitrary one of the two — telling the operator to "resume from" another lane's
+        // position, mid-incident, in the block whose two comments below record this exact
+        // class of fabricated-position bug being fixed twice already.
         const endRes = await pool.query(
-          "select last_seq, last_event_id from ingest.cursors where source = $1",
-          [source],
+          "select last_seq, last_event_id from ingest.cursors where tenant_id = $1 and source = $2",
+          [tenantId, source],
         );
         const row = endRes.rows[0] as { last_seq?: unknown; last_event_id?: string | null } | undefined;
         // OPS-M1: the same class the comment above records as already fixed once, surviving

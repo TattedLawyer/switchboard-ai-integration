@@ -138,6 +138,14 @@ export interface ReconcileReport {
    *  count honestly on its own. Optional because the other paradigms' reports extend
    *  this shape and have no ledger file. */
   ledgerDuplicates?: number;
+  /** Ledger-paradigm only (gate-H I8): event_ids present in this source's raw lane under
+   *  MORE THAN ONE tenant. Legitimate since migration 006 — uniqueness is per tenant, and
+   *  a database that ingested under the nil tenant before `SWITCHBOARD_TENANT_ID` was set
+   *  holds exactly this. Not a failure, and deliberately not gating: the ledger-vs-raw
+   *  comparison is whole-lane by design, and the id sets still match. It is REPORTED
+   *  because the alternative is an operator seeing a number they cannot explain. Optional
+   *  because the other four paradigms are tenant-scoped end to end and cannot produce it. */
+  crossTenantEventIds?: string[];
 }
 
 export async function reconcile(pool: pg.Pool, source: string, ledgerPath: string): Promise<ReconcileReport> {
@@ -147,16 +155,46 @@ export async function reconcile(pool: pg.Pool, source: string, ledgerPath: strin
   // a duplicated event_id from the count comparison (debt-burn A6) — count the collapse.
   const ledgerDuplicates = ledgerEntries.length - ledgerIds.size;
 
-  const rawRes = await pool.query<{ event_id: string }>(
-    "select event_id from raw.raw_events where source = $1",
+  // Deliberately NOT tenant-scoped, and that is the disclosed design: a ledger file
+  // carries no tenant — the ledger IS the whole feed — so comparing it against one
+  // tenant's slice would report every row from every other lane as `missing`. On the
+  // documented pre-tenancy→configured migration path that would red the whole zero-loss
+  // surface for every event ingested before SWITCHBOARD_TENANT_ID was set. The query
+  // does now READ the tenant, which is the part that was missing (gate-H I8).
+  const rawRes = await pool.query<{ event_id: string; tenant_id: string }>(
+    "select event_id, tenant_id from raw.raw_events where source = $1",
     [source],
   );
   const rawIds = rawRes.rows.map((r) => r.event_id);
   const rawIdSet = new Set(rawIds);
-  // Structurally always 0: uq_raw_events_source_event_id (migration 003) makes duplicate
-  // (source, event_id) inserts impossible, so this proves identity parity (no duplicate
-  // rows can exist), not payload parity (it says nothing about whether stored payloads match).
-  const rawDuplicates = rawIds.length - rawIdSet.size;
+  // Structurally always 0: uniqueness is `(tenant_id, source, event_id)` — migration 006
+  // replaced 003's `uq_raw_events_source_event_id` with it. So this proves identity parity
+  // WITHIN a lane (no duplicate rows can exist), not payload parity (it says nothing about
+  // whether stored payloads match).
+  //
+  // What 006 also did, and what this function believed impossible until gate-H I8: the
+  // same event_id can legitimately exist ONCE PER TENANT. On a database that ingested
+  // under the nil tenant and later set SWITCHBOARD_TENANT_ID, the naive
+  // `rawIds.length - rawIdSet.size` counted those legitimate pairs as duplicates and the
+  // CLI turned them into a permanent `FAIL: reconciliation found discrepancies` with no
+  // line anywhere saying why — the operator's worst case, because the code was certain
+  // the condition could not arise. Count duplicates per (tenant, event_id), and report
+  // the cross-tenant collisions as the distinct, explainable thing they are.
+  const seenPerTenant = new Set<string>();
+  const idTenants = new Map<string, Set<string>>();
+  let rawDuplicates = 0;
+  for (const row of rawRes.rows) {
+    const key = `${row.tenant_id} ${row.event_id}`;
+    if (seenPerTenant.has(key)) rawDuplicates++;
+    seenPerTenant.add(key);
+    const tenants = idTenants.get(row.event_id) ?? new Set<string>();
+    tenants.add(row.tenant_id);
+    idTenants.set(row.event_id, tenants);
+  }
+  const crossTenantEventIds = [...idTenants.entries()]
+    .filter(([, tenants]) => tenants.size > 1)
+    .map(([id]) => id)
+    .sort();
 
   const missing: string[] = [];
   for (const id of ledgerIds) {
@@ -178,5 +216,6 @@ export async function reconcile(pool: pg.Pool, source: string, ledgerPath: strin
     extra,
     rawDuplicates,
     ledgerDuplicates,
+    crossTenantEventIds,
   };
 }
