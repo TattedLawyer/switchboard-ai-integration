@@ -78,13 +78,43 @@ describe("PRE-3 #34 — migration 013's functional index is USABLE by deriveStat
     );
     expect(res.rows, `${INDEX} not found — migration 013 did not apply`).toHaveLength(1);
     const def = res.rows[0].indexdef;
-    expect(def).toContain("tenant_id");
-    expect(def).toContain("source");
-    expect(def).toContain("row_key");
+
+    // FIX ROUND (PRE-3 review, Important 1). This block used to assert substrings of the
+    // WHOLE `indexdef`, which reads
+    //   CREATE INDEX idx_raw_events_sheet_row_key ON raw.raw_events USING btree (...)
+    // — it contains the index NAME, and the name contains the substring `row_key`. So the
+    // one assertion covering the functional expression was satisfied by the name no matter
+    // what the expression was. Demonstrated by the reviewer and reproduced here before
+    // fixing: rewriting the migration to `(tenant_id, source, id desc)` — deleting the
+    // entire subject of the migration — left all three tests green. A regression straight
+    // back to the O(full-history) scan #34 exists to prevent could have landed under this
+    // pin.
+    //
+    // So the name is REMOVED before anything is asserted, and the removal is itself
+    // checked. `indexdef` always carries the column list after `USING <method> (`; slicing
+    // from there drops the index name and the table name in one move, leaving only the
+    // definition an assertion should be reading.
+    const columns = def.slice(def.indexOf("USING "));
+    expect(columns, `could not isolate the column list from: ${def}`).toMatch(/^USING \w+ \(/);
+    // The stripper is load-bearing, so it is pinned: if it ever stops removing the name,
+    // every assertion below silently becomes name-satisfiable again.
+    expect(columns, "the index NAME is still inside the string being asserted on").not.toContain(INDEX);
+
+    expect(columns).toContain("tenant_id");
+    expect(columns).toContain("source");
+    // THE ASSERTION THIS TEST EXISTS FOR: the functional EXPRESSION, structurally — the
+    // jsonb path operators and both keys, not a bare `row_key` substring. `payload` is the
+    // token the name could never have supplied.
+    expect(columns).toContain("payload");
+    // Postgres renders the expression back with its own casts and parentheses —
+    // `(((payload -> 'data'::text) ->> 'row_key'::text))` — so the pattern is written
+    // against BOTH operators and BOTH keys in order, tolerant of the casts and the
+    // parenthesis the catalog inserts between them, and of nothing else.
+    expect(columns).toMatch(/payload\s*->\s*'data'(::text)?\)?\s*->>\s*'row_key'/);
     // `id desc` is what lets `distinct on (row_key) order by row_key, id desc` walk the
     // index in order instead of sorting. Losing it would leave a plausible-looking index
     // that does not serve the query it was built for.
-    expect(def).toMatch(/id DESC/i);
+    expect(columns).toMatch(/id DESC/i);
   });
 
   it("EXPLAIN names the index for the DISTINCT ON latest-state query (assert the NAME, never the absence of 'Seq Scan')", async () => {

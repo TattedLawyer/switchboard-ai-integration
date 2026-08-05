@@ -35,7 +35,7 @@ without changing this table does not go green.
 
 | | Count | Derivation |
 |---|---|---|
-| **Open defects** | **31** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Open defects** | **32** | Part II top-level bullets that name an `Owner:` and are not struck |
 | **Design disclosures** | **40** | Part I top-level bullets |
 | **Paid** (struck entries) | **46** | Part III struck bullets, plus the cosmetic/low list |
 
@@ -1146,6 +1146,26 @@ whole file.
 
   *Owner: unscheduled. Trigger: the Phase-4 raw-contract step, which rewrites
   this area anyway.*
+
+- **`stripe-feed-oracle.test.ts`'s shuffled-page invariance can flake on a
+  wall-clock second boundary** *(observed PRE-3; not caused by it)* — the oracle
+  builds the same universe in two databases and deep-equals the resulting raw
+  rows, including `occurred_at`, which the mock mints per run at SECOND
+  granularity. When the two builds straddle a second boundary the identical run
+  produces `…:02Z` in one and `…:03Z` in the other and the deep-equal reds,
+  naming a timestamp difference that means nothing about ordering — which is the
+  property the test exists to prove. Observed once in the PRE-3 wave's full-suite
+  runs; it did not reproduce in that wave's other runs or in the review's. Low
+  frequency by construction: it needs the boundary to fall inside a window of a
+  few hundred milliseconds.
+
+  *Owner: unscheduled — the next stripefeed-test slice, else phase close. Fix
+  candidate: compare on a normalised or injected clock rather than deep-equalling
+  minted timestamps (exclude `occurred_at` from the comparison and assert it
+  separately as "within tolerance", or thread a fixed clock into both builds).
+  Deliberately NOT fixed in PRE-3: it changes an ORACLE's comparison semantics,
+  and weakening what an oracle compares is not drive-by work — it needs its own
+  reasoning about what the relaxed comparison can no longer catch.*
 ---
 
 # Part III — Paid

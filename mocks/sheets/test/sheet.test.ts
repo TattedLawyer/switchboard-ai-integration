@@ -186,6 +186,11 @@ describe("bounded metadata (documented 30,000-char cap; ceiling behavior unverif
 // This does NOT retire the entry: proving the connector against our own mock is a weaker
 // oracle than a real spreadsheet, and the headline claim stays true. It converts
 // "expected-safe by construction" into "expected-safe by construction AND exercised".
+// LOAD-BEARING FOR ANOTHER WORKSPACE (PRE-3 review, Minor 1): the three "PRE-3 #33"
+// tests in `ingest/test/sheet-oracle.test.ts` assert INVARIANCE across a reorder — no
+// events, no drift, unchanged hashes — all of which a no-op `move_column` would also
+// satisfy. This block is what makes those three mean anything: it pins that the operation
+// really permutes. Do not weaken it without going to fix them too.
 describe("PRE-3 #33 — move_column permutes a column and its cells together", () => {
   it("moves the header label and every row's cell as one unit", () => {
     const sheet = createSheet({ seed: 11, rowCount: 4 });

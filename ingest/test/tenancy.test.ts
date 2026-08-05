@@ -138,9 +138,40 @@ describe("tenant isolation is enforced by the DATABASE, not by application conve
       select indexdef from pg_indexes
       where schemaname = 'raw' and tablename = 'raw_events'
     `);
+    // FIX ROUND (PRE-3 review, Important 1 — the same defect class, second member, found
+    // by sweeping for it). These predicates ran against the WHOLE `indexdef`, which begins
+    // `CREATE [UNIQUE] INDEX <name> ON <table> USING btree (...)`. The names on this table
+    // are `ix_raw_events_tenant_id` and `uq_raw_events_tenant_source_event_id`, so
+    // `/tenant_id/` was satisfied by the first index's NAME and `/event_id/` by the
+    // second's — the assertion could not distinguish "indexed on tenant_id" from "named
+    // after tenant_id", which is exactly the "unindexed column, every read a scan"
+    // condition this test exists to forbid.
+    //
+    // Exposure was narrower here than in migration-013's case (verified, not assumed): the
+    // second predicate needs `tenant_id` from a UNIQUE definition, and the unique index's
+    // name spells `tenant_source_event_id`, which does NOT contain `tenant_id` — so a
+    // mutation removing tenant_id from every column list still redded the test overall.
+    // Fixed anyway: a predicate that cannot tell a name from a column is one column-rename
+    // away from being the silent kind, and this is the sweep's whole point.
+    //
+    // Everything after `USING <method> (` is the column list and nothing else: no index
+    // name, no table name. Keyword assertions (`UNIQUE`) stay on the full definition,
+    // where they belong and where no name can supply them.
     const defs: string[] = res.rows.map((r) => r.indexdef);
-    expect(defs.some((d) => /tenant_id/.test(d))).toBe(true);
+    const columnsOf = (d: string): string => d.slice(d.indexOf("USING "));
+    // The stripper is load-bearing, so it is checked rather than trusted: if it ever stops
+    // removing the name, every predicate below silently becomes name-satisfiable again.
+    for (const d of defs) {
+      expect(columnsOf(d), `could not isolate the column list from: ${d}`).toMatch(/^USING \w+ \(/);
+      expect(columnsOf(d), `the index NAME is still inside the string being asserted on: ${d}`)
+        .not.toMatch(/raw_events/);
+    }
+    expect(defs.some((d) => /tenant_id/.test(columnsOf(d)))).toBe(true);
     // The uniqueness key itself must be tenant-scoped, not global.
-    expect(defs.some((d) => /unique/i.test(d) && /tenant_id/.test(d) && /event_id/.test(d))).toBe(true);
+    expect(
+      defs.some(
+        (d) => /unique/i.test(d) && /tenant_id/.test(columnsOf(d)) && /event_id/.test(columnsOf(d)),
+      ),
+    ).toBe(true);
   });
 });

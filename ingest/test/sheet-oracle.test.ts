@@ -575,6 +575,20 @@ describe("A5 pair 2 — standing scenarios", () => {
 // resolves positions by header NAME on every fetch and caches nothing — becomes
 // "expected-safe by construction AND exercised". A pass here was the expected outcome;
 // the value is that a future change which starts caching positions now reds.
+//
+// TRACEABILITY — READ THIS BEFORE WEAKENING OR DELETING ANYTHING (PRE-3 review, Minor 1).
+// Every assertion in this block is an INVARIANCE claim: no events, no drift, hashes
+// unchanged. A `move_column` that did NOTHING would satisfy all three. Their meaning
+// therefore does not live here — it lives in
+// `mocks/sheets/test/sheet.test.ts` → "PRE-3 #33 — move_column permutes a column and its
+// cells together", which pins that the operation genuinely moves the header label and
+// every row's cell (verified by the reviewer: making the op a no-op reds that pin with
+// `expected 'Client Name' to be 'Currency'`, while all three tests below stay green).
+//
+// The split is deliberate and correct — operation reality pinned where the operation
+// lives, invariance pinned where the connector lives — but it is only sound as a PAIR.
+// Weakening or deleting the mock-side pin silently hollows out these three tests in a
+// different workspace, with nothing here to say so. That is what this comment is for.
 describe("PRE-3 #33 — the connector survives a column reorder because it resolves by name, not position", () => {
   it("a reorder between cycles produces NO events: same rows, same content, same hashes", async () => {
     const { sheets, baseUrl } = startSheet();
