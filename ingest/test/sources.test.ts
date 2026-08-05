@@ -57,14 +57,46 @@ describe("source registry", () => {
     process.env.SHEETS_BASE_URL = "http://127.0.0.1:9998";
     expect(baseUrlFor("sheets")).toBe("http://127.0.0.1:9998");
   });
-  it("INGEST_SOURCES filters to known sources; the DEFAULT stays the feed trio — sheets is enabled only when configured", () => {
+  // SPEC CHANGE (PRE-3 / #21, deliberate — this FLIPS the pin below): the old pin
+  // blessed `filter(isSource)` tolerance, i.e. `INGEST_SOURCES=crm, bogus ,support`
+  // quietly ran two sources and `INGEST_SOURCES=` quietly ran ZERO while every webhook
+  // door stayed armed. `config.ts`'s recorded doctrine is the opposite — "present and
+  // invalid → throw at boot. The error text is an OPERATOR SURFACE: it names the
+  // variable, echoes the rejected value, and states what would be accepted" — and this
+  // variable was the one boot input that did not obey it. The tolerance was never
+  // load-bearing: `sources.ts`'s own comment records that "scripts pin INGEST_SOURCES
+  // explicitly", and docker-compose/demo/chaos all name real members.
+  // Empty deliberately DIVERGES from `intFromEnv`/`choiceFromEnv`'s "empty means the
+  // default": for a scalar knob the default is a working value, but "explicitly zero
+  // sources" and "forgot to set it" are indistinguishable here and the consequence of
+  // guessing wrong is a process that ingests nothing, silently, forever. So empty is a
+  // refusal, and the error says how to ask for the default (unset the variable).
+  it("INGEST_SOURCES: unknown members and empty values are BOOT REFUSALS naming the variable, the value and what is accepted", () => {
+    expect(() => enabledSources({ INGEST_SOURCES: "crm, bogus ,support" })).toThrow(
+      'invalid INGEST_SOURCES "crm, bogus ,support": unknown source "bogus" — must be a comma-separated list of crm, billing, support, sheets, stripefeed, hubcrm, casebus',
+    );
+    // The real-world typo from the register: one letter, one silently-dropped source.
+    expect(() => enabledSources({ INGEST_SOURCES: "hubcrm,stripfeed" })).toThrow(
+      /unknown source "stripfeed"/,
+    );
+    expect(() => enabledSources({ INGEST_SOURCES: "" })).toThrow(
+      'invalid INGEST_SOURCES "": must name at least one of crm, billing, support, sheets, stripefeed, hubcrm, casebus — unset INGEST_SOURCES to use the default (billing, support)',
+    );
+    expect(() => enabledSources({ INGEST_SOURCES: "   " })).toThrow(/must name at least one of/);
+    // A blank entry is its own complaint — "unknown source \"\"" would be unreadable.
+    expect(() => enabledSources({ INGEST_SOURCES: "billing,,support" })).toThrow(
+      'invalid INGEST_SOURCES "billing,,support": empty entry at position 2 — must be a comma-separated list of crm, billing, support, sheets, stripefeed, hubcrm, casebus',
+    );
+  });
+  it("INGEST_SOURCES names the enabled set; UNSET (and only unset) means the default", () => {
     // SPEC CHANGE (A5): sheets joined SOURCES but NOT the default enabled set. The
     // default drives main.ts's feed-shaped interval backfill and the demo scripts —
     // surfaces a snapshot source has no business in uninvited (it has no /events feed
     // to poll). Opting in via INGEST_SOURCES also makes WEBHOOK_SECRET_SHEETS a boot
     // requirement exactly where the source is actually on, and nowhere else.
     expect(enabledSources()).toEqual(["billing", "support"]); // F-1c: crm mock retired, no longer default-enabled
-    process.env.INGEST_SOURCES = "crm, bogus ,support";
+    // Surrounding whitespace stays tolerated — it is not a typo, it is formatting.
+    process.env.INGEST_SOURCES = "crm, support";
     expect(enabledSources()).toEqual(["crm", "support"]);
     process.env.INGEST_SOURCES = "crm,sheets";
     expect(enabledSources()).toEqual(["crm", "sheets"]);

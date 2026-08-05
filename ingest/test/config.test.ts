@@ -43,11 +43,66 @@ describe("B1: boot refuses invalid env instead of silently misbehaving", () => {
     await expect(importMainFresh()).rejects.toThrow(/receiver.*worker.*all/);
   });
 
+  // PRE-3 / #21: INGEST_SOURCES was the one boot input outside this doctrine — it was
+  // read INSIDE main(), tolerantly, so a typo could not be a boot refusal even in
+  // principle. It now resolves at module top level like PORT/INGEST_ROLE, which is what
+  // makes the refusal a BOOT refusal rather than a first-cycle surprise.
+  it("INGEST_SOURCES typo → boot throws naming the bad token (not a silently smaller source set)", async () => {
+    vi.stubEnv("INGEST_SOURCES", "hubcrm,stripfeed");
+    await expect(importMainFresh()).rejects.toThrow(/INGEST_SOURCES.*stripfeed/s);
+  });
+
+  it("INGEST_SOURCES empty → boot throws (not a process that ingests nothing with every door still armed)", async () => {
+    vi.stubEnv("INGEST_SOURCES", "");
+    await expect(importMainFresh()).rejects.toThrow(/INGEST_SOURCES/);
+  });
+
   it("defaults still boot: no env overrides → import resolves", async () => {
     vi.stubEnv("PORT", "");
     vi.stubEnv("BACKFILL_INTERVAL_MS", "");
     vi.stubEnv("INGEST_ROLE", "");
     await expect(importMainFresh()).resolves.toBeDefined();
+  });
+});
+
+// PRE-3 / #20: `INGEST_ROLE=worker` refused to boot without WEBHOOK_SECRET_<SOURCE> for
+// every enabled source — secrets a worker can never use. `secretForSource` is reached
+// from exactly two places, both door handlers in server.ts (the event door and the
+// sheets nudge door); no worker path consults it, so a worker loses nothing. The
+// dangerous direction is the other one, and it is pinned here too: the RECEIVER must
+// still fail closed.
+describe("PRE-3 #20: door secrets are a receiver obligation, not a worker one", () => {
+  const withNoSecrets = async (fn: () => void): Promise<string> => {
+    vi.stubEnv("ALLOW_DEV_SECRETS", "");
+    vi.stubEnv("WEBHOOK_SECRET_BILLING", "");
+    vi.stubEnv("WEBHOOK_SECRET_SUPPORT", "");
+    try {
+      fn();
+      return "";
+    } catch (err) {
+      return (err as Error).message;
+    }
+  };
+
+  it("role=worker with no door secrets configured: no refusal", async () => {
+    const { assertRoleSecrets } = await import("../src/main.js");
+    expect(await withNoSecrets(() => assertRoleSecrets("worker", ["billing", "support"]))).toBe("");
+  });
+
+  it("role=receiver still fails closed, naming every missing variable", async () => {
+    const { assertRoleSecrets } = await import("../src/main.js");
+    const message = await withNoSecrets(() =>
+      assertRoleSecrets("receiver", ["billing", "support"]),
+    );
+    expect(message).toContain("WEBHOOK_SECRET_BILLING");
+    expect(message).toContain("WEBHOOK_SECRET_SUPPORT");
+  });
+
+  it("role=all still fails closed — the receiver half of `all` is a receiver", async () => {
+    const { assertRoleSecrets } = await import("../src/main.js");
+    expect(await withNoSecrets(() => assertRoleSecrets("all", ["billing"]))).toContain(
+      "WEBHOOK_SECRET_BILLING",
+    );
   });
 });
 
