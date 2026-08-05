@@ -35,9 +35,9 @@ without changing this table does not go green.
 
 | | Count | Derivation |
 |---|---|---|
-| **Open defects** | **32** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Open defects** | **31** | Part II top-level bullets that name an `Owner:` and are not struck |
 | **Design disclosures** | **40** | Part I top-level bullets |
-| **Paid** (struck entries) | **45** | Part III struck bullets, plus the cosmetic/low list |
+| **Paid** (struck entries) | **46** | Part III struck bullets, plus the cosmetic/low list |
 
 Why the owner predicate rather than a subtraction: Part II's own entry rule is that
 every open entry names an owner, so the four *paid* sub-items of the multi-tenancy
@@ -1002,12 +1002,18 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   deltas. Doing it before the credential defects were fixed would have been
   backwards; that ordering is the argument.*
 
-- **`reconcile()` is unbounded in memory** *(audit)* — full event-id set and
-  full parsed ledger in memory; the headline reliability proof OOMs before
-  the documented ledger ceiling bites. Fine at demo scale; listed in
-  scaling-ceilings now.
+- **`reconcile()` is unbounded in memory** *(audit; text corrected PRE-3)* — the
+  text used to say "full event-id set and full parsed ledger". Re-read at head,
+  `ingest/src/reconcile.ts` holds **SEVEN** unbounded structures live at peak, before
+  the `missing`/`extra`/`crossTenantEventIds` outputs: `ledgerEntries` (the whole
+  parsed ledger array), `ledgerIds` (Set), `rawRes.rows` (the whole raw result),
+  `rawIds` (a *separate* full array), `rawIdSet` (Set), `seenPerTenant` (a Set of
+  `tenant␣id` keys), and `idTenants` — a Map of Set per event id, **the most expensive
+  of the lot**, added by the gate-H I8 cross-tenant work. The old sentence described
+  the pre-I8 shape and had rotted. The headline reliability proof OOMs before the
+  documented ledger ceiling bites. Fine at demo scale; listed in scaling-ceilings.
 
-  *Owner: unscheduled — bounded by the documented ceiling in `docs/scaling-ceilings.md`; harmless at demo scale. Trigger: any lane whose raw volume approaches the ledger ceiling already recorded there, or the first non-demo deployment of reconcile.*
+  *Owner: unscheduled — bounded by the documented ceiling in `docs/scaling-ceilings.md`; harmless at demo scale. Trigger: any lane whose raw volume approaches the ledger ceiling already recorded there, or the first non-demo deployment of reconcile. Fixing it means a server-side cursor for the raw scan, a streaming line reader for the ledger, and a rewrite of the diff into a merge-join — real work with no demo-scale payoff, which is why PRE-3 corrected the TEXT and deliberately deferred the code.*
 
 - ~~Unstorable quarantined rows have no replay path~~ *Partially paid (2a.3):*
   `npm run quarantine` now lists and replays quarantined rows through the
@@ -1117,10 +1123,19 @@ whole file.
 
   *Owner: Phase 4 hardening / the next contract-touching slice (R11). Dormant
   until a currencyless source lands.*
-- **Shared HMAC/ledger package.** `ingest/src/hmac.ts` and
-  `mocks/core/src/hmac.ts` both live at head; the cross-compat tests (which now
-  import the REAL mock functions) are what hold the pair together until they are
-  consolidated. Context: Part III, architecture.
+- **Shared HMAC/ledger package.** *(text corrected PRE-3 — the duplication is WIDER
+  than this entry disclosed.)* `ingest/src/hmac.ts` and `mocks/core/src/hmac.ts` both
+  live at head — but the title has always said "HMAC/**ledger**" while the body cited
+  only `hmac.ts`. The ledger half is real and is duplicated in three places:
+  `ingest/src/reconcile.ts` carries explicit "intentionally duplicated … keep both
+  copies in sync" notes against `mocks/core/src/ledger.ts` for
+  `DEFAULT_LEDGER_HMAC_KEY`, for `ledgerHmacKey()`, and for the canonical chain hash.
+  The cross-compat tests (which import the REAL mock functions) are what hold all of it
+  together until consolidation. The duplication is DELIBERATE — it honours the rule that
+  ingest's `src` must not depend on a test-only mock service package — so the fix is a
+  new shared workspace package plus build/tsconfig wiring plus moving the cross-compat
+  tests onto it, which is why PRE-3 corrected the text and deferred the work. Context:
+  Part III, architecture.
 
   *Owner: Phase 4 *(re-stamped — the shared package did not land in 2b)*.*
 
@@ -1131,12 +1146,6 @@ whole file.
 
   *Owner: unscheduled. Trigger: the Phase-4 raw-contract step, which rewrites
   this area anyway.*
-- **Agent test files assign `DBT_SCHEMA` at module top-level and share one
-  database** — order-dependent by construction, benign today *(audit)*.
-
-  *Owner: unscheduled. Trigger: the first observed order-dependent failure, or
-  any parallelisation of the agent workspace's suite.*
-
 ---
 
 # Part III — Paid
@@ -1769,6 +1778,19 @@ it — is the part worth reading.
   operator-actionable condition must not red every reconcile forever. So the gate can
   still be green; it can no longer be green and silent. Landed after the sheets-mock
   column work (#33), per the ordering note.
+
+- ~~**Agent test files assign `DBT_SCHEMA` at module top-level and share one
+  database** — order-dependent by construction, benign today *(audit)*.~~
+  *Paid (PRE-3, batch F), and the text OVER-STATED it:* the three schemas are already
+  distinct (`agent_priv_test`, `mcp_test_analytics`, `host_test_analytics`), so the
+  collision "share one database" implies was absent. The residual hazard was narrower
+  and real — a module-top-level `process.env` assignment is a side effect of IMPORT, so
+  it escapes the file that wrote it the moment these suites share a process, which is
+  the parallelisation trigger this entry itself named. All three now use `vi.stubEnv` in
+  a `beforeAll` with `vi.unstubAllEnvs` after, and the rule is pinned as a GREP over the
+  whole agent test directory rather than as three edits, so the fourth such file nobody
+  has written yet is covered. Repo-wide check at the same time: no test file anywhere
+  else assigns `process.env` at module scope.
 
 ## Cosmetic / low
 
