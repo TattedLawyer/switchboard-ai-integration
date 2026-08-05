@@ -67,7 +67,17 @@ async function main() {
   rmSync("out/ci", { recursive: true, force: true });
   mkdirSync("out/ci", { recursive: true });
 
-  const ingestSrv = createIngestApp(pool, DEFAULT_TENANT_ID).listen(0); // no enqueue → direct synchronous ingest
+  // PRE-3 (#15): the doors are mounted over the sources a deployment SERVES, so this
+  // fixture must say which deployment it is. Stated explicitly rather than left to
+  // `enabledSources()`'s env default: the fixture drives four legs and would otherwise
+  // depend on whatever INGEST_SOURCES the surrounding shell happened to hold — and a
+  // wrong answer here is silent, because a 404'd door produces a smaller universe rather
+  // than an error. That is exactly how this was caught: with the default in force the
+  // hubcrm door 404'd and the run failed downstream with "hubcrm leg hydrated no contact
+  // emails" instead of anything naming the door.
+  const ingestSrv = createIngestApp(pool, DEFAULT_TENANT_ID, {
+    enabledSources: ["hubcrm", "support", "sheets", "casebus", "stripefeed"],
+  }).listen(0); // no enqueue → direct synchronous ingest
   const ingestPort = (ingestSrv.address() as { port: number }).port;
 
   // ── hubcrm: thin webhook batches through the REAL door, hydration pump interleaved ──

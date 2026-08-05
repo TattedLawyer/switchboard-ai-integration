@@ -16,6 +16,7 @@
 // contact emails the CRM leg actually ingested — over ALL sheet.row_upserted events, not
 // just latest state, so a misaligned email that was later tombstoned still fails loudly.
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -103,5 +104,37 @@ describe("ci-fixture correlated universe (cold review C1)", () => {
       `select count(*)::int as n from raw.raw_events where source = 'sheets'`,
     );
     expect(n.rows[0].n).toBe(22);
+  });
+});
+
+// ── PRE-3 / #15 blast-radius guard ────────────────────────────────────────────────────
+//
+// This one is written from a live miss, not from foresight. When the webhook doors were
+// mounted over `enabledSources()`, the sweep covered `ingest/test` and `ingest/src` and
+// stopped there — `scripts/ci-fixture.ts` also builds an ingest app, and it was left
+// taking the env default. Every test above still passed, because the suite that runs this
+// fixture as a child process inherits vitest's own INGEST_SOURCES declaration; the defect
+// only surfaced on a hand-run dbt live-fire, as `alignment: hubcrm leg hydrated no contact
+// emails` — a downstream symptom naming nothing about a door.
+//
+// That is the failure mode a 404'd door has: it makes the universe SMALLER, not broken. So
+// the fixture now states its own deployment, and this pins that it keeps stating it —
+// inheriting an ambient value is exactly what made the miss invisible.
+describe("PRE-3 — the CI fixture declares which sources its deployment serves", () => {
+  const fixtureSrc = readFileSync(
+    fileURLToPath(new URL("../../scripts/ci-fixture.ts", import.meta.url)),
+    "utf8",
+  );
+
+  it("passes enabledSources to createIngestApp explicitly, never inheriting the environment", () => {
+    const call = fixtureSrc.slice(fixtureSrc.indexOf("createIngestApp("));
+    expect(call.slice(0, 400)).toContain("enabledSources:");
+  });
+
+  it("declares every source it actually drives — a missing one 404s its door and shrinks the universe silently", () => {
+    const declared = /enabledSources:\s*\[([^\]]*)\]/.exec(fixtureSrc)?.[1] ?? "";
+    for (const source of ["hubcrm", "support", "sheets", "casebus", "stripefeed"]) {
+      expect(declared, `${source} is driven by this fixture but not declared`).toContain(source);
+    }
   });
 });
