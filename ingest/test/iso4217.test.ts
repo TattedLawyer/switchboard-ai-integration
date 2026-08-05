@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -103,6 +103,7 @@ describe("the door's currency gate is ISO-4217 MEMBERSHIP, not three-letter shap
 //                     never an excerpt of the real table.
 // The mutual pin is kept at the end as a cheap tripwire. It is not the oracle.
 
+const WAREHOUSE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../warehouse");
 const ISO_SEED_PATH = join(dirname(fileURLToPath(import.meta.url)), "../../warehouse/seeds/iso_4217_currencies.csv");
 const CODES_MODULE_PATH = join(dirname(fileURLToPath(import.meta.url)), "../src/iso4217-codes.ts");
 const SYNTHETIC_XML_PATH = join(dirname(fileURLToPath(import.meta.url)), "fixtures/iso4217-synthetic.xml");
@@ -204,5 +205,50 @@ describe("the generator's logic, exercised against a SYNTHETIC fixture", () => {
     const list = parseListOne(synthetic());
     const withoutXxx: ListOne = { published: list.published, codes: list.codes.filter((c) => c !== "XXX") };
     expect(() => admittedCodes(withoutXxx)).toThrow(/XXX/);
+  });
+});
+
+// ── The warehouse half: the three staging models stop re-typing the rule ───────────────
+//
+// The regex was hand-written FOUR times — the contract plus stg_billing__invoices,
+// stg_crm__deals and stg_sheets__rows — with nothing mechanically diffing them. Replacing
+// the contract's copy alone would have left three staging models still admitting "ABC",
+// so a code the door refuses would still stage as a currency on any row that reached raw
+// by another path (backfill, direct insert, history predating the door's rule). The seed
+// closes that: the models JOIN the generated list instead of describing it.
+
+const CURRENCY_MODELS = [
+  "models/staging/stg_billing__invoices.sql",
+  "models/staging/stg_crm__deals.sql",
+  "models/staging/stg_sheets__rows.sql",
+] as const;
+
+describe("no warehouse SQL re-types the currency rule (the hand-copy class is closed, not just synced)", () => {
+  it("each of the three currency-bearing staging models refs the seed", () => {
+    for (const p of CURRENCY_MODELS) {
+      expect(readFileSync(join(WAREHOUSE_DIR, p), "utf8"), p).toContain("ref('iso_4217_currencies')");
+    }
+  });
+
+  it("NO .sql anywhere under warehouse/ carries the shape regex any more — tree-wide, so a NEW model cannot reopen the class", () => {
+    const skipDirs = new Set(["target", "logs", "dbt_packages"]);
+    const sqlFiles: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          if (!skipDirs.has(entry.name)) walk(join(dir, entry.name));
+        } else if (entry.name.endsWith(".sql")) sqlFiles.push(join(dir, entry.name));
+      }
+    };
+    walk(WAREHOUSE_DIR);
+    expect(sqlFiles.length, "the sweep must be sweeping something").toBeGreaterThanOrEqual(15);
+    for (const p of sqlFiles) {
+      expect(readFileSync(p, "utf8"), `${p} re-types the currency rule — join ref('iso_4217_currencies') instead`)
+        .not.toContain("[A-Z]{3}");
+    }
+  });
+
+  it("the seed is declared to dbt, so `dbt build` materializes it rather than the models refing a relation that does not exist", () => {
+    expect(readFileSync(join(WAREHOUSE_DIR, "seeds/schema.yml"), "utf8")).toContain("iso_4217_currencies");
   });
 });
