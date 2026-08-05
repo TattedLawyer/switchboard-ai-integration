@@ -1066,13 +1066,26 @@ from data that is correctly attributed rather than from a nil-tenant pile.
 - **`deriveState` is O(full history), and history only grows.** Both of its
   queries (latest-per-row and the supersession counts) scan every sheet event
   ever ingested — every edit *and* every revert appends forever, so per-cycle
-  cost grows monotonically. Registered: (a) near-term, a functional index on
-  `(tenant_id, source, (payload->'data'->>'row_key'), id)` serves both queries;
-  (b) the structural ceiling (compaction / materialized latest-state) belongs to
-  the Phase-4 raw-contract step, not the connector. Trigger: a sheets lane past
-  ~10⁵ events or measured catchUp latency regression.
+  cost grows monotonically. Registered as two halves. **(a) The near-term half is
+  PAID (PRE-3):** migration `013_sheet_row_key_index.sql` creates
+  `idx_raw_events_sheet_row_key on raw.raw_events (tenant_id, source,
+  ((payload->'data'->>'row_key')), id desc)` — leading equality predicates, the
+  expression as the `DISTINCT ON`/`ORDER BY` key, `id desc` last so the ordered
+  walk needs no sort; `event_type` is deliberately left as a filter rather than an
+  index column, being a two-value predicate over the whole lane. It is pinned by an
+  `EXPLAIN` assertion on the index NAME, run with `enable_seqscan` off, because a
+  one-page test table "will nearly always get a sequential scan plan whether indexes
+  are available or not" (PostgreSQL docs) and the naive absence-of-Seq-Scan pin would
+  false-red a correct index. Note the honest scope, which is asserted rather than
+  described: the index serves the latest-per-row query and only PARTLY serves the
+  supersession-count query, whose grouping keys include `event_type` and the coalesced
+  content hash. **(b) The structural ceiling** (compaction / materialized latest-state)
+  is untouched and still belongs to the Phase-4 raw-contract step, not the connector —
+  013 makes the scan indexable, it does not stop `deriveState` being O(history).
+  Trigger for the remaining half: a sheets lane past ~10⁵ events or measured catchUp
+  latency regression.
 
-  *Owner: near-term half (the functional index) unscheduled with a stated trigger — a sheets lane past ~10⁵ events or a measured catchUp latency regression; structural half (compaction / materialized latest-state) Phase 4, with the raw-contract step.*
+  *Owner: structural half (compaction / materialized latest-state) Phase 4, with the raw-contract step. The near-term functional index landed in PRE-3 and is pinned by ingest/test/migration-013.test.ts.*
 
 - **Cross-currency refusal is deliberately conservative at the deal grain.** Whether an
   entity's deals "mix currencies" is judged across ALL its deals, while the guarded sum is

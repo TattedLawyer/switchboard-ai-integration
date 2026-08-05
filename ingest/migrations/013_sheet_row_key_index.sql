@@ -1,0 +1,41 @@
+-- 013 — a functional index for the sheets connector's deriveState (PRE-3, #34).
+--
+-- THE CONDITION. `SheetSnapshotConnector.deriveState` reads the connector's own memory
+-- back out of raw on EVERY catchUp cycle, with two queries that both scan every sheet
+-- event ever ingested for the tenant/source:
+--
+--   select distinct on (payload->'data'->>'row_key') ... from raw.raw_events
+--    where tenant_id = $1 and source = $2 and event_type in (...)
+--    order by payload->'data'->>'row_key', id desc
+--
+-- and a `group by` over (event_type, that same row_key expression, the content hash).
+-- No functional index on `payload->'data'->>'row_key'` existed anywhere in 001–012 —
+-- only tenant-id, created-at, gap-open and hydrated-object indexes — so the cost of a
+-- cycle grew with the whole history of the lane rather than with the size of the sheet.
+--
+-- THE INDEX. Leading `tenant_id, source` because both are equality predicates in both
+-- queries. The expression third, because it is the DISTINCT ON / ORDER BY key. `id desc`
+-- last, so `distinct on (row_key) ... order by row_key, id desc` can be satisfied by an
+-- ordered index walk instead of a sort. PostgreSQL requires the extra parentheses around
+-- an index expression, which is why the third column is doubly parenthesised.
+--
+-- `event_type in (...)` is deliberately LEFT AS A FILTER rather than added as a column:
+-- it is a two-value predicate over the whole sheet lane, so it buys little selectivity
+-- and would widen every insert's index-maintenance cost. Expression indexes are already
+-- "relatively expensive to maintain because the derived expression(s) must be computed
+-- for each row insertion and non-HOT update" (PostgreSQL docs, Indexes on Expressions);
+-- they are worth it "when retrieval speed is more important than insertion and update
+-- speed", which is the trade here — one write per event, a full-lane read per cycle.
+--
+-- WHAT THIS DOES **NOT** FIX, stated so nobody reads more into it: the second (group by)
+-- query is only PARTLY served, since its grouping keys include `event_type` and the
+-- coalesced content-hash expression. And the structural half of the entry — compaction,
+-- or a materialised latest-state — is untouched and stays Phase 4. This migration makes
+-- the scan indexable; it does not stop deriveState being O(history).
+--
+-- `if not exists` in the house style. No `concurrently`: migrate.ts runs migrations
+-- inside a transaction, where CREATE INDEX CONCURRENTLY is not permitted, and the demo
+-- and test databases have no live write traffic to protect from the lock.
+
+create index if not exists idx_raw_events_sheet_row_key
+  on raw.raw_events (tenant_id, source, ((payload->'data'->>'row_key')), id desc);
