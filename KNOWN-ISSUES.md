@@ -35,9 +35,9 @@ without changing this table does not go green.
 
 | | Count | Derivation |
 |---|---|---|
-| **Open defects** | **35** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Open defects** | **33** | Part II top-level bullets that name an `Owner:` and are not struck |
 | **Design disclosures** | **40** | Part I top-level bullets |
-| **Paid** (struck entries) | **42** | Part III struck bullets, plus the cosmetic/low list |
+| **Paid** (struck entries) | **44** | Part III struck bullets, plus the cosmetic/low list |
 
 Why the owner predicate rather than a subtraction: Part II's own entry rule is that
 every open entry names an owner, so the four *paid* sub-items of the multi-tenancy
@@ -933,16 +933,6 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   the scripts' database resolution cannot be verified where it would break — the same
   reason the exit-code scheme is deferred, and the same standard.*
 
-- **Ephemeral test databases leak with no sweeper** *(gate-H M11, hygiene)* —
-  `ingest/test/helpers/testdb.ts` has a careful, idempotent, termination-proof
-  `cleanup()`, but nothing reclaims `switchboard_test_*` databases from a run that
-  was SIGKILLed, and a review found three standing on the dev instance.
-
-  *Owner: unscheduled. Fix: a sweeper that drops `switchboard_test_*` databases older
-  than a threshold, run from the suite's global setup. Trigger: the first time a
-  developer's instance runs out of connections or disk because of it — hygiene, not
-  correctness, and a sweeper that drops databases has its own foot-gun.*
-
 - **The exit-code scheme is not applied** *(panel OPS-I6 + OPS-I2 + OPS-C2's
   config class + OPS-M4)* — every non-zero exit from every CLI is `1`, so a
   transient network partition and a genuine integrity breach are
@@ -997,17 +987,6 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   neither the research pass nor CLOSE-3 could run `demo.sh` under the hard rules
   (port conflict), so it would land unverified on the researcher's word alone.
   Land it in a wave that can execute the full demo path and show the output.*
-
-- **No dependency audit or update automation in CI** *(panel SEC-M5)* — no
-  `npm audit` step, no Dependabot/Renovate config. Builds are reproducible
-  (`package-lock.json` committed, CI uses `npm ci`, pg-boss and the MCP SDK
-  exact-pinned), so this is a monitoring gap rather than a drift gap.
-
-  *Owner: unscheduled. A BLOCKING advisory gate is explicitly not wanted: on a
-  portfolio repo with a vendored dependency tree it will eventually red on an
-  advisory in a transitive dev dependency and become the permanent red
-  `cli/gap-ack.ts` warns about. A non-blocking step is acceptable whenever
-  someone wants the signal.*
 
 - **No connector runs against a real vendor sandbox** *(panel CRED-2)* — every
   source is a mock in this repository, so fidelity to a real vendor's pagination,
@@ -1718,6 +1697,40 @@ it — is the part worth reading.
   literal is NOT config and was deliberately left alone; it is derived from
   `profiles.yml`'s `schema: public`, and the defect was the pool, not the name.
 
+- ~~**Ephemeral test databases leak with no sweeper** *(gate-H M11, hygiene)* —
+  `ingest/test/helpers/testdb.ts` has a careful, idempotent, termination-proof
+  `cleanup()`, but nothing reclaims `switchboard_test_*` databases from a run that
+  was SIGKILLed, and a review found three standing on the dev instance.~~
+  *Paid (PRE-3, batch F):* a best-effort sweeper in vitest's `globalSetup`
+  (`test/helpers/global-setup.ts`), delegating to a predicate
+  (`test/helpers/sweep-test-dbs.ts`) written to be wrong in only one direction. The
+  entry's own caution — "a sweeper that drops databases has its own foot-gun" — is
+  answered by a CONJUNCTION, not a prefix match: the name must match the exact shape
+  `freshTestDb` mints, anchored at both ends, AND the timestamp embedded in that name
+  must be more than an hour old. Age is read from the name rather than the catalog
+  precisely because the only databases it may touch are the ones whose names already
+  carry `Date.now()`, so a name whose timestamp will not parse is proof it was not
+  minted here and is refused rather than guessed at; a future timestamp is a clock
+  anomaly and is also refused. The named `switchboard` database, scratch databases and
+  every adjacent-looking name (`switchboard_test`, `switchboard_testing`, a minted name
+  missing its suffix, an unanchored match) are pinned as refusals. The hook can log and
+  cannot fail a run — a sweeper that reddens a green suite would be a worse trade than
+  the leak. Verified live: three abandoned databases standing on the dev instance at the
+  start of this wave were reclaimed, and a deliberately-young sibling created alongside
+  an old one was left in place.
+
+- ~~**No dependency audit or update automation in CI** *(panel SEC-M5)* — no
+  `npm audit` step, no Dependabot/Renovate config. Builds are reproducible
+  (`package-lock.json` committed, CI uses `npm ci`, pg-boss and the MCP SDK
+  exact-pinned), so this is a monitoring gap rather than a drift gap.~~
+  *Paid (PRE-3, batch F):* `npm audit --audit-level=high || true` runs in `ci.yml`
+  before typecheck. The entry's refusal of the blocking form is honoured and PINNED —
+  `ci-dependency-audit.test.ts` asserts both that the step exists and that its failure is
+  swallowed, because the second half is what a future "let's make this strict" edit would
+  quietly remove, and the workflow comment states the reason where that person will read
+  it: an advisory in a transitive dev dependency this repo neither fixes nor ships would
+  pin CI red forever, and a permanently red gate is a gate everyone ignores.
+
 ## Cosmetic / low
 
 
@@ -1750,6 +1763,15 @@ push-vs-PR double-run limit no longer exists: attempt 2 was observed live on
 the Task G push — one surviving CI run, its sibling cancelled. chaos.yml
 still needs no group — its triggers (schedule / dispatch / PR label) have no
 push+PR double-run pair ·
-agent test files assign `DBT_SCHEMA` at module top-level and share one DB —
-order-dependent by construction, benign today *(audit)* · assorted items
+~~agent test files assign `DBT_SCHEMA` at module top-level and share one DB —
+order-dependent by construction, benign today *(audit)*~~ *Paid (PRE-3, batch F),
+and the text was OVER-STATED:* the three schemas are already distinct
+(`agent_priv_test`, `mcp_test_analytics`, `host_test_analytics`), so the collision
+"share one DB" implies was absent — the residual hazard was narrower and real, that a
+module-top-level `process.env` assignment is a side effect of IMPORT and so escapes
+the file that wrote it the moment these suites share a process, which is the
+parallelisation trigger the entry itself named. All three now use `vi.stubEnv` in a
+`beforeAll` with `vi.unstubAllEnvs` after, and the rule is pinned as a GREP over the
+whole agent test directory rather than as three edits, so the fourth such file nobody
+has written yet is covered too · assorted items
 tracked in review ledgers.

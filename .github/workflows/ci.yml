@@ -54,6 +54,16 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
+      # PRE-3 (#27): a dependency-advisory SIGNAL, deliberately NON-BLOCKING.
+      # `|| true` is the point, not a shortcut: a single high-severity advisory in a
+      # transitive dev dependency would pin this workflow red on something the repo
+      # neither fixes nor ships, and a permanently red gate is a gate everyone learns to
+      # ignore. The output is here to be read when someone wants the signal; the day this
+      # should block, that is a decision with its own reasoning, not a `|| true` deletion.
+      # Both halves — that it runs, and that it cannot fail the run — are pinned in
+      # ingest/test/ci-dependency-audit.test.ts.
+      - name: dependency advisories (non-blocking)
+        run: npm audit --audit-level=high || true
       - name: typecheck
         run: npm run typecheck
       - name: migrate

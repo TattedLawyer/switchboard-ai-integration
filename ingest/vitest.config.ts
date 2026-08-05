@@ -12,6 +12,11 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
+    // PRE-3 (#22): reclaim `switchboard_test_*` databases a SIGKILLed run abandoned.
+    // Best-effort by construction — see helpers/global-setup.ts; it can log, it cannot
+    // fail the run, and the predicate it delegates to (helpers/sweep-test-dbs.ts) refuses
+    // everything it does not positively recognise as ours AND stale.
+    globalSetup: ["test/helpers/global-setup.ts"],
     testTimeout: 30_000,
     hookTimeout: 120_000,
     // INGEST_SOURCES (PRE-3 #15): the webhook doors are now mounted over the sources a

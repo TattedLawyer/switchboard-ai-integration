@@ -131,8 +131,8 @@ describe("PRE-3 #19 — the warn gate resolves its connection the way dbt does",
   });
 
   it("reads DATABASE_URL as an endpoint too, so the two can be compared and NAMED", () => {
-    expect(databaseUrlEndpoint({ DATABASE_URL: "postgres://u:p@db.example:5432/app" })).toEqual({
-      host: "db.example",
+    expect(databaseUrlEndpoint({ DATABASE_URL: "postgres://wh_user:wh_pass@db.example.com:5432/app" })).toEqual({
+      host: "db.example.com",
       port: 5432,
       database: "app",
     });
@@ -143,11 +143,11 @@ describe("PRE-3 #19 — the warn gate resolves its connection the way dbt does",
     const message = auditSchemaMissingMessage({
       auditSchema: "public_dbt_test__audit",
       dbt: dbtEndpointFromEnv({ DBT_DBNAME: "warehouse", DBT_HOST: "wh" }),
-      appUrl: databaseUrlEndpoint({ DATABASE_URL: "postgres://u:p@app:5432/appdb" }),
+      appUrl: databaseUrlEndpoint({ DATABASE_URL: "postgres://wh_user:wh_pass@app-host:5432/appdb" }),
       cause: "relation does not exist",
     });
     expect(message).toContain("warehouse@wh:5433");
-    expect(message).toContain("appdb@app:5432");
+    expect(message).toContain("appdb@app-host:5432");
     expect(message).toMatch(/looked in/);
     // The wrong-cause sentence must NOT be the headline when the endpoints disagree.
     expect(message.split("\n")[0]).not.toMatch(/store_failures/);

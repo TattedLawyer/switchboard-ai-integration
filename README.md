@@ -144,7 +144,7 @@ reporting a clean run.
 - A worker that generates the Monday revenue-risk report — with a timeout and
   fallback so the report generates even when the AI service is down, and per-call
   cost logging.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 943 tests, the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 959 tests, the
   dbt build (98 build steps: 15 models, 2 seeds, 81 data tests), the agent
   action-safety eval, and the identity oracle, against a real Postgres service
   container
@@ -159,7 +159,7 @@ reporting a clean run.
   on a slow machine, and a leftover mock server inherited across steps sharing a
   process table. Each is narrated with its run ID in the
   [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
-- 943 automated tests, green in CI and locally — including a seeded
+- 959 automated tests, green in CI and locally — including a seeded
   property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety under
   arbitrary torn writes. That count is not maintained by hand: CI runs
@@ -188,7 +188,7 @@ reporting a clean run.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 943 tests green across nine workspaces (incl. 6 seeded fast-check properties); 98 dbt build steps (15 models, 2 seeds, 81 data tests) — `PASS=97 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
+| Suite | `npm test` + dbt | 959 tests green across nine workspaces (incl. 6 seeded fast-check properties); 98 dbt build steps (15 models, 2 seeds, 81 data tests) — `PASS=97 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
 
 ## What's coming (built in phases, in public)
 

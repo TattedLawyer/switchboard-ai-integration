@@ -1,12 +1,22 @@
-process.env.DBT_SCHEMA = "mcp_test_analytics";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import pg from "pg";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../src/mcp/server.js";
 
-const SCHEMA = process.env.DBT_SCHEMA ?? "public_analytics";
+const SCHEMA = "mcp_test_analytics";
+
+// PRE-3 (#41): scoped to this suite instead of assigned at module top level. A bare
+// `process.env.DBT_SCHEMA = ...` above the imports is a side effect of IMPORT, so it
+// outlives this file the moment these suites share a process — which is exactly the
+// parallelisation trigger the register entry names. `vi.stubEnv` undoes itself.
+beforeAll(() => {
+  vi.stubEnv("DBT_SCHEMA", SCHEMA);
+});
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 let pool: pg.Pool;
 let client: Client;
 
