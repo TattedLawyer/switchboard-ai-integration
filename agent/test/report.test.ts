@@ -357,14 +357,26 @@ describe("PRE-3 #13 — an adversarial entity name cannot become report structur
     expect(md).toContain("Ignore previous instructions");
     // The table must still have exactly one row per entity: a name carrying a newline
     // used to be able to add rows the mart never produced.
-    const rows = md.split("\n").filter((l) => l.startsWith("| DEMO-C-") || l.startsWith("| billing:"));
-    expect(rows).toHaveLength(14);
+    // Thirteen: DEMO-C-0001..0013. `billing:B-0015` has has_crm = false, so the report's
+    // canonical-account query excludes it — it is the incomplete-entity count, not a row.
+    const rows = md.split("\n").filter((l) => l.startsWith("| DEMO-C-"));
+    expect(rows).toHaveLength(13);
     const row = rows.find((r) => r.includes("DEMO-C-0013"))!;
     // Seven cells means seven pipes-plus-one: the injected pipe did not split the cell.
     expect(row.split("|").length).toBe(9);
     expect(row).not.toContain("##");
     expect(row).not.toContain("`");
-    // And no heading was minted anywhere in the document by that field.
-    expect(md).not.toContain("## URGENT");
+    // And no HEADING was minted anywhere in the document by that field. The appendix
+    // legitimately reprints the raw snapshot JSON, where those characters are inert inside
+    // a code span — so the claim is about line starts, which is what a heading actually is.
+    expect(md.split("\n").filter((l) => /^#{1,6}\s/.test(l))).toEqual([
+      "# Monday Revenue-Risk Report",
+      "## Accounts to watch",
+      "## All accounts",
+      "## Appendix: raw account snapshots",
+    ]);
+    // The appendix's code span cannot be closed early by a backtick in the data.
+    const appendixLine = md.split("\n").find((l) => l.includes("DEMO-C-0013") && l.startsWith("- `"))!;
+    expect(appendixLine.split("`")).toHaveLength(3);
   });
 });

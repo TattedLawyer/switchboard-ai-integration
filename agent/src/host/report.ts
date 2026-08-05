@@ -5,6 +5,56 @@ import { createMcpServer } from "../mcp/server.js";
 import type { LlmClient } from "./llm.js";
 import { readDbtSchema } from "./schema.js";
 
+/**
+ * Neutralise a mart-derived free-text field before it is interpolated into Markdown
+ * (PRE-3, #13 — input half).
+ *
+ * `entity_name` and `domain` are VENDOR-CONTROLLED: they arrive from a webhook or a
+ * spreadsheet cell, pass through staging and identity resolution unchanged, and land here,
+ * where they are interpolated into the risk table's cells and the watch list's entries —
+ * Markdown that is both the deliverable's structure AND, via the snapshots, the LLM
+ * prompt. A field carrying `|` splits its own cell; one carrying a newline adds rows the
+ * mart never produced; one carrying `##` or a code fence restyles the document.
+ *
+ * The rule is NEUTRALISE, NEVER DROP. Removing the value would hide a real entity from the
+ * operator reading the report, which is a worse failure than the one being fixed — so the
+ * words survive and only the structural characters are made inert. Whitespace runs
+ * (including newlines) collapse to a single space; the Markdown control characters that
+ * can change document structure from inside a table cell are stripped. Ordinary names —
+ * parentheses, apostrophes, ampersands, commas — are left exactly as they are, because a
+ * fence that disfigures real data gets deleted by the next person who reads the report.
+ *
+ * This is one layer. The other is `REPORT_SYSTEM_PROMPT`, which tells the model the
+ * message is data. Neither is a proof, and the output-side half stays deferred with the
+ * approval-gated write action.
+ */
+export function fenceUntrusted(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .replace(/\s+/gu, " ")
+    // `|` would break out of a table cell; the rest are Markdown's structure-bearing
+    // characters at the start of, or inside, a cell. Deliberately a small, explicit set:
+    // an over-broad filter is how a fence starts mangling real company names.
+    .replace(/[|`*_#\[\]<>]/gu, "")
+    .trim();
+}
+
+/**
+ * The same job for the appendix, whose interpolation site is an inline CODE SPAN rather
+ * than a table cell (PRE-3, #13 — the third site, found by sweeping the family rather than
+ * by fixing the two obvious ones).
+ *
+ * `fenceUntrusted` is wrong here: the appendix prints the raw snapshot JSON, and stripping
+ * `[`, `]`, `_` and `#` would mangle the very thing the appendix exists to show. Inside a
+ * code span only two characters can change the document — a backtick, which closes the
+ * span and lets everything after it become live Markdown, and a newline, which ends it.
+ * Both are neutralised; every other byte of the JSON survives verbatim.
+ */
+export function fenceCodeSpan(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/[\r\n]+/gu, " ").replace(/`/gu, "'");
+}
+
 export async function generateMondayReport(
   pool: pg.Pool,
   llm: LlmClient,
@@ -103,12 +153,17 @@ export async function generateMondayReport(
     a["avg_csat"] == null ? "—" : `${a["avg_csat"]} (n=${num(a, "csat_score_count")})`;
   const tableRows = accounts.map((a) => {
     const flags = flagsFor(a);
-    return `| ${a["entity_id"]} | ${a["entity_name"]} | ${money(a, "open_deal_amount_cents")} | ${money(a, "total_invoiced_cents")} / ${money(a, "total_paid_cents")} | ${num(a, "open_ticket_count")} | ${csatCell(a)} | ${flags.length ? "⚠ " + flags.join("; ") : "ok"} |`;
+    // #13: entity_id and entity_name are the two mart-derived free-text fields that reach
+    // Markdown here. Both are fenced — id as well as name, because "the untrusted one is
+    // obviously the name" is exactly the assumption that leaves a sibling unfixed.
+    return `| ${fenceUntrusted(a["entity_id"])} | ${fenceUntrusted(a["entity_name"])} | ${money(a, "open_deal_amount_cents")} | ${money(a, "total_invoiced_cents")} / ${money(a, "total_paid_cents")} | ${num(a, "open_ticket_count")} | ${csatCell(a)} | ${flags.length ? "⚠ " + flags.join("; ") : "ok"} |`;
   });
   const watch = accounts
     .map((a) => ({ a, flags: flagsFor(a) }))
     .filter(({ flags }) => flags.length > 0)
-    .map(({ a, flags }) => `- **${a["entity_id"]}** (${a["entity_name"]}): ${flags.join("; ")}`);
+    // #13: the same two fields, the same fence — the watch list is the report's second
+    // interpolation site, and a fix applied to only the table would leave it open.
+    .map(({ a, flags }) => `- **${fenceUntrusted(a["entity_id"])}** (${fenceUntrusted(a["entity_name"])}): ${flags.join("; ")}`);
 
   const narrative = await llm.complete(
     `Summarize account status from these ${snapshots.length} snapshots:\n${snapshots.join("\n")}`,
@@ -128,7 +183,10 @@ export async function generateMondayReport(
     ...tableRows,
     "",
     "## Appendix: raw account snapshots",
-    ...snapshots.map((s) => `- \`${s}\``),
+    // #13: the report's THIRD interpolation site. The snapshot JSON carries the same
+    // vendor-controlled fields; a backtick inside one closes this code span and hands the
+    // rest of the line to Markdown.
+    ...snapshots.map((s) => `- \`${fenceCodeSpan(s)}\``),
     "",
     `_${incomplete.rows[0].n} billing/support-only entities (no CRM record) are pending manual review and excluded from the account list._`,
   ].join("\n");

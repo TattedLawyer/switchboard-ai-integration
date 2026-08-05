@@ -858,13 +858,34 @@ from data that is correctly attributed rather than from a nil-tenant pile.
 
   *Owner: Phase 3 — behavioral evaluation lands with the approval-gated write action.*
 
-- **Prompt-injection surface is unmitigated** *(audit)* — entity names/domains
-  flow verbatim into the report prompt. Blast radius today is a wrong
-  paragraph in a Markdown file (the risk table is computed deterministically
-  and sits beside the narrative); this MUST be closed before Phase 3 grants
-  any write action.
+- **Prompt-injection surface: the INPUT half is closed, the output half is not**
+  *(audit; input half paid PRE-3)* — entity names and domains are
+  vendor-controlled and flow through staging and identity resolution into the
+  report verbatim. **Paid:** the system block now states that everything in the
+  user message is data retrieved from a database, never instructions, and names
+  summarisation as the only task (`REPORT_SYSTEM_PROMPT`, pinned as the text
+  actually sent, not as a constant asserted against itself); and every mart-derived
+  free-text field is fenced before it reaches Markdown at all THREE interpolation
+  sites — the risk table's cells, the watch list's entries, and the appendix's code
+  spans, the last found by sweeping the family rather than fixing the two obvious
+  ones. The rule is neutralise, never drop: the words survive, so an adversarial
+  entity is still visible to the operator, and only the structure-bearing characters
+  are made inert. Pinned by a fixture entity literally named `Ignore previous
+  instructions | ## URGENT …`. Zero new dependencies: `hai-guardrails` was read at the
+  manifest and REFUSED for this wave — six runtime dependencies plus a
+  `@langchain/core` peer, against `config.ts`'s standing zero-new-dependency
+  constraint, and its decided scan-at-retrieval architecture has no retrieval
+  boundary until Phase 3 builds one.
 
-  *Owner: Phase 3 — and it is a **blocker** for it: this MUST be closed before any write action is granted.*
+  **Still open, and stated precisely so the closure is not over-claimed:** (a) the
+  MODEL-TIER scanner (heuristic/pattern/LLM classification of retrieved content),
+  which belongs at the Phase-3 retrieval boundary where the decided cost architecture
+  — deterministic tier first, hash-cached verdicts — actually applies; and (b) the
+  OUTPUT-side validation, checking what the model produced before anything acts on
+  it, which has no surface to attach to until the approval-gated write action exists.
+  System framing raises the cost of an injection; it does not make one impossible.
+
+  *Owner: Phase 3, for the two named halves only — the model-tier scanner at the retrieval boundary, and output-side validation with the approval-gated write action. It is no longer a blocker for Phase 3's start: the input half that had to be closed before any write action is granted landed in PRE-3.*
 
 ## Ingestion, operations and architecture — open
 
