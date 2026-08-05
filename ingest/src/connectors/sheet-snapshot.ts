@@ -68,6 +68,25 @@ export interface SheetCatchUpReport {
  */
 export interface SheetReconcileReport extends ReconcileReport {
   stale: string[];
+  /**
+   * PRE-3 (#14): mapped-but-missing (non-key) columns, on the RECONCILE side.
+   *
+   * Same field name, same type and same sentence as `SheetCatchUpReport.degradations`,
+   * derived from the same `mapping.missing` — deliberately, so an operator greps ONE
+   * phrase across both surfaces instead of learning two vocabularies for one condition.
+   *
+   * It exists because reconcile could not see the condition at all. A mapped column that
+   * disappears from the header is reported on the catch-up surface only; after one catchUp
+   * cycle the new events carry the truncated content and reconcile recomputes hashes
+   * through the SAME truncated mapping, so both sides agree and the gate printed
+   * "PASS: raw latest-state matches the sheet exactly" over permanent field loss.
+   *
+   * It is a STANDING CONDITION, not a discrepancy: it routes through the CLI's
+   * `standingConditionsNote` and does not red the run (the stripefeed-quarantine
+   * precedent — a disclosed, permanent, operator-actionable condition must not red every
+   * reconcile forever). The gate can be green; it can no longer be green and silent.
+   */
+  degradations: string[];
 }
 
 /** Read-path counters, observable so tests can pin "bounded retries actually happened". */
@@ -243,6 +262,15 @@ export class SheetSnapshotConnector implements Connector {
       };
     }
 
+    // PRE-3 (#14): the same derivation the catch-up path uses (`mapping.missing`), worded
+    // identically. Computed after the key-column refusal above, so this is only ever about
+    // NON-key columns — an unmappable key column is still a hard integrity failure.
+    const degradations = mapping.missing.map(
+      (field) =>
+        `mapped column "${field}" has no matching header in this snapshot — field absent ` +
+        `from events (headers seen: [${snapshot.header.join(", ")}])`,
+    );
+
     // Reconcile compares CONTENT (payload hashes), never ids — the -r<n> salt is
     // invisible here, so a landed revert reads clean, exactly the property A4.1 restores.
     const { latest: derived } = await this.deriveState(pool, tenantId);
@@ -278,6 +306,7 @@ export class SheetSnapshotConnector implements Connector {
         missing,
         stale,
         extra,
+        degradations,
         rawDuplicates: 0,
       },
     };

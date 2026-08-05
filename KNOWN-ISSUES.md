@@ -35,9 +35,9 @@ without changing this table does not go green.
 
 | | Count | Derivation |
 |---|---|---|
-| **Open defects** | **33** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Open defects** | **32** | Part II top-level bullets that name an `Owner:` and are not struck |
 | **Design disclosures** | **40** | Part I top-level bullets |
-| **Paid** (struck entries) | **44** | Part III struck bullets, plus the cosmetic/low list |
+| **Paid** (struck entries) | **45** | Part III struck bullets, plus the cosmetic/low list |
 
 Why the owner predicate rather than a subtraction: Part II's own entry rule is that
 every open entry names an owner, so the four *paid* sub-items of the multi-tenancy
@@ -888,25 +888,6 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   *Owner: Phase 3, for the two named halves only — the model-tier scanner at the retrieval boundary, and output-side validation with the approval-gated write action. It is no longer a blocker for Phase 3's start: the input half that had to be closed before any write action is granted landed in PRE-3.*
 
 ## Ingestion, operations and architecture — open
-
-- **A sheets mapped column that disappears is invisible to the gate surface**
-  *(gate-H I5)* — a mapped column vanishing from the sheet header produces a
-  degradation entry on the **catch-up** report (printed by `backfill` on stderr,
-  which exits 0) and nothing at all on the reconcile report, which has no
-  degradation channel: `SheetReconcileReport` carries `stale`, `degradations`
-  exists on `SheetCatchUpReport` only. After one catchUp cycle the new events carry
-  the truncated content and reconcile recomputes hashes through the SAME truncated
-  mapping, so both sides agree and it prints `PASS: raw latest-state matches the
-  sheet exactly`. Permanent field loss, gate green. Within the drift window the
-  rows read `stale` — "present on both sides, content differs" — which sends the
-  operator to cell-level triage for what is a mapping failure (operator-surface
-  checklist line 5's failure mode). Adjacent to, but not covered by, the existing
-  "column reorder is UNPROVEN against a real sheet" entry.
-
-  *Owner: CLOSE-4. Fix: a degradation channel on the reconcile report — which means
-  a new field on a report shape, therefore all three exhaustive-consumption switches,
-  therefore its own RED. Mitigating meanwhile: `sheets` is opt-in, deliberately out
-  of `demo.sh` and absent from the CI fixture, so no shipped proof depends on it.*
 
 - **`DBT_SCHEMA` is a reader-side alias that reads like a deployment knob**
   *(gate-H I10)* — `agent/src/host/schema.ts`, `ingest/src/migrate.ts`,
@@ -1764,6 +1745,30 @@ it — is the part worth reading.
   quietly remove, and the workflow comment states the reason where that person will read
   it: an advisory in a transitive dev dependency this repo neither fixes nor ships would
   pin CI red forever, and a permanently red gate is a gate everyone ignores.
+
+- ~~**A sheets mapped column that disappears is invisible to the gate surface**
+  *(gate-H I5)* — a mapped column vanishing from the sheet header produces a
+  degradation entry on the **catch-up** report (printed by `backfill` on stderr,
+  which exits 0) and nothing at all on the reconcile report, which has no
+  degradation channel: `SheetReconcileReport` carries `stale`, `degradations`
+  exists on `SheetCatchUpReport` only. After one catchUp cycle the new events carry
+  the truncated content and reconcile recomputes hashes through the SAME truncated
+  mapping, so both sides agree and it prints `PASS: raw latest-state matches the
+  sheet exactly`. Permanent field loss, gate green.~~ *Paid (PRE-3):*
+  `SheetReconcileReport` carries `degradations: string[]` — the SAME field name, type
+  and sentence as the catch-up surface, from the SAME `mapping.missing` derivation, so
+  an operator greps one phrase across both instead of learning two vocabularies for one
+  condition. It is consumed by the reconcile CLI's exhaustive destructure (the
+  compile-time consumption wall meant the field could not be added without a decided
+  operator surface) and printed even at ZERO, because a category inferred from silence
+  is a category nobody looks for. Its line carries its OWN wording — a mapping failure,
+  not "content differs" — so it cannot send the operator to the cell-level triage
+  `stale` implies (operator-surface checklist line 5). The verdict routes through the
+  existing `standingConditionsNote` rather than a fourth convention and does NOT hard-red
+  the run, on the stripefeed-quarantine precedent: a disclosed, permanent,
+  operator-actionable condition must not red every reconcile forever. So the gate can
+  still be green; it can no longer be green and silent. Landed after the sheets-mock
+  column work (#33), per the ordering note.
 
 ## Cosmetic / low
 

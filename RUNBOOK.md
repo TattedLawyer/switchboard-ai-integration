@@ -198,6 +198,17 @@ accounting home is `ingest.quarantine`, where the entry's reason names the
 failing field. The oracle's invariant: sheet rows = converged raw rows +
 quarantined-current rows, and `extra` empties on the next catchUp.
 
+**Reconcile's degradation line (PRE-3).** `reconcile` prints
+`[sheets] degradations (mapped column absent from the header — field lost from
+every event): N`, at zero as well as nonzero, and names each lost field. It is a
+STANDING CONDITION, not a discrepancy: the run still PASSes and exits 0, but the
+PASS line itself names the degraded column(s). Read it as "both sides agree —
+about a mapping that is missing a column". Fix by restoring the header text (or
+adding the new spelling to `SHEET_COLUMN_MAP`'s aliases for that field) and
+re-running catchUp; the events already ingested without the field are not
+back-filled. Before this, a permanently lost column printed the bare
+`PASS: raw latest-state matches the sheet exactly`.
+
 **The nudge door** (`POST /connectors/sheets/nudge`) is the sheets paradigm's
 only push surface: a thin, HMAC-signed "read the sheet soon" hint
 (`WEBHOOK_SECRET_SHEETS`, same timestamped scheme as the event doors). 404 =

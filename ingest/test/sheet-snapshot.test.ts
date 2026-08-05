@@ -295,6 +295,11 @@ describe("A4 pair 2 — reconcile + resilience", () => {
     expect(result.skipped).toBeUndefined();
     expect(result.integrity.ok).toBe(true);
     expect(result.report).toEqual({
+      // PRE-3 (#14): the reconcile report gained a `degradations` channel — a mapped
+      // column that vanished from the header used to be invisible to this gate. Empty
+      // here because nothing is degraded; present because the category must be reported,
+      // not inferred from silence.
+      degradations: [],
       ledger: 6,
       raw: 6,
       missing: [],

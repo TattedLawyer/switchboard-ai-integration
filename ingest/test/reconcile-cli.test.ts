@@ -188,14 +188,17 @@ describe("PRE-3 #14 — reconcile can see a mapped column that vanished", () => 
     const { sheets, baseUrl } = startSheet();
     const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
     await c.catchUp(pool);
-    // A human renames a mapped, NON-KEY column. The field stops being extractable; the
-    // sheet still has key columns, so nothing refuses — it just quietly gets thinner.
-    sheets.sheet.apply({ type: "rename_header", column: COL.amount, name: "Deal Value (PHP)" });
+    // A human renames a mapped, NON-KEY column to something the column map does not
+    // recognise. (Deliberately NOT one of the modelled HEADER_VARIANTS — those are all
+    // aliases in SHEET_COLUMN_MAP and map cleanly, which is the point of having them.)
+    // The field stops being extractable; the sheet still has its key columns, so nothing
+    // refuses — the pipeline just quietly gets thinner.
+    sheets.sheet.apply({ type: "rename_header", column: COL.amount, name: "$$ (Q3 rollup)" });
     await c.catchUp(pool); // the truncated content is now on both sides
 
     const res = await runReconcileCli(baseUrl);
-    expect(res.stdout).toMatch(/\[sheets\] degradations: 1/);
-    expect(res.stdout).toContain("amount");
+    expect(res.stdout).toMatch(/\[sheets\] degradations[^\n]*: 1/);
+    expect(res.stdout).toContain("amount_cents");
     // Checklist line 5: it must name ITS cause and not borrow a sibling's. A mapping
     // failure is not cell drift.
     const degradationLine = res.stdout.split("\n").find((l) => l.includes("degradation"))!;
@@ -206,7 +209,7 @@ describe("PRE-3 #14 — reconcile can see a mapped column that vanished", () => 
     const { sheets, baseUrl } = startSheet();
     const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
     await c.catchUp(pool);
-    sheets.sheet.apply({ type: "rename_header", column: COL.amount, name: "Deal Value (PHP)" });
+    sheets.sheet.apply({ type: "rename_header", column: COL.amount, name: "$$ (Q3 rollup)" });
     await c.catchUp(pool);
 
     const res = await runReconcileCli(baseUrl);
@@ -217,7 +220,7 @@ describe("PRE-3 #14 — reconcile can see a mapped column that vanished", () => 
     expect(res.stdout).not.toMatch(/PASS: raw latest-state matches the sheet exactly, no duplicates\n/);
     const passLine = res.stdout.split("\n").find((l) => l.includes("[sheets] PASS"))!;
     expect(passLine).toMatch(/degrad/i);
-    expect(passLine).toContain("amount");
+    expect(passLine).toContain("amount_cents");
   });
 
   it("a healthy sheet still prints the bucket at ZERO and the ordinary clean PASS — the category is never inferred from silence", async () => {
@@ -227,7 +230,7 @@ describe("PRE-3 #14 — reconcile can see a mapped column that vanished", () => 
 
     const res = await runReconcileCli(baseUrl);
     expect(res.code).toBe(0);
-    expect(res.stdout).toMatch(/\[sheets\] degradations: 0/);
+    expect(res.stdout).toMatch(/\[sheets\] degradations[^\n]*: 0/);
     const passLine = res.stdout.split("\n").find((l) => l.includes("[sheets] PASS"))!;
     expect(passLine).not.toMatch(/degrad/i);
   });

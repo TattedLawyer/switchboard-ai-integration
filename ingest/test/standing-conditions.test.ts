@@ -68,8 +68,8 @@ describe("I4 — a PASS carrying standing disclosed conditions says so on the sa
 // not red every reconcile forever).
 describe("PRE-3 #14 — degradations join the standing-conditions note", () => {
   it("names the degraded column(s) on an otherwise clean run", () => {
-    const note = standingConditionsNote({ acknowledgedGaps: 0, hydrationDlq: 0, degradations: ["amount", "status"] });
-    expect(note).toContain("amount");
+    const note = standingConditionsNote({ acknowledgedGaps: 0, hydrationDlq: 0, degradations: ["amount_cents", "status"] });
+    expect(note).toContain("amount_cents");
     expect(note).toContain("status");
     expect(note).toMatch(/degrad/i);
     // The existing shape is preserved: a parenthetical, pointing up at the detail.
@@ -82,10 +82,10 @@ describe("PRE-3 #14 — degradations join the standing-conditions note", () => {
   });
 
   it("composes with the two conditions that were already there, rather than replacing them", () => {
-    const note = standingConditionsNote({ acknowledgedGaps: 2, hydrationDlq: 1, degradations: ["amount"] });
+    const note = standingConditionsNote({ acknowledgedGaps: 2, hydrationDlq: 1, degradations: ["amount_cents"] });
     expect(note).toContain("2 acknowledged permanent gap(s) standing");
     expect(note).toContain("1 terminal hydration dead letter(s) standing");
-    expect(note).toContain("amount");
+    expect(note).toContain("amount_cents");
   });
 
   it("degradations is OPTIONAL — the callers that have no such concept are unaffected", () => {

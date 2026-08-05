@@ -103,11 +103,32 @@ export function connectorForTenant(
  * standing DLQ is the same species as a standing acknowledged gap: disclosed, permanent
  * until an operator acts, and not a clean bill of health.
  */
-export function standingConditionsNote(opts: { acknowledgedGaps: number; hydrationDlq: number }): string {
+export function standingConditionsNote(opts: {
+  acknowledgedGaps: number;
+  hydrationDlq: number;
+  /** PRE-3 (#14): sheet degradations — a mapped column that vanished from the header.
+   *  Optional, because the four other paradigms have no such concept and must not have
+   *  to say "zero" to use this helper. Same species as the two above: disclosed,
+   *  permanent until an operator acts, and NOT a clean bill of health. */
+  degradations?: readonly string[];
+}): string {
   const parts: string[] = [];
   if (opts.acknowledgedGaps > 0) parts.push(`${opts.acknowledgedGaps} acknowledged permanent gap(s) standing`);
   if (opts.hydrationDlq > 0) parts.push(`${opts.hydrationDlq} terminal hydration dead letter(s) standing`);
+  // Named, not counted: "1 degraded column" sends an operator looking; "amount" tells
+  // them what to go fix. The count is already on its own line above.
+  if (opts.degradations !== undefined && opts.degradations.length > 0) {
+    parts.push(`degraded column mapping(s) standing: ${opts.degradations.join(", ")}`);
+  }
   return parts.length === 0 ? "" : ` (with ${parts.join(" and ")} — see above)`;
+}
+
+/** PRE-3 (#14): the field name out of a degradation sentence, for the one-line verdict.
+ *  The sentences are produced by the connector in one place and start
+ *  `mapped column "<field>" ...`; if that ever stops being true the verdict falls back to
+ *  the whole sentence, which is ugly but never wrong. */
+function degradedFieldOf(degradation: string): string {
+  return /^mapped column "([^"]+)"/.exec(degradation)?.[1] ?? degradation;
 }
 
 async function main(): Promise<void> {
@@ -333,6 +354,8 @@ async function main(): Promise<void> {
       // sources would be noise asserting a condition their shape forbids.
       let base: BaseBuckets;
       let stale: string[] | undefined;
+      // PRE-3 (#14): the sheet paradigm's degradation channel on the reconcile side.
+      let degradations: string[] | undefined;
       let windowed: { agedOutRaw: number; quarantined: { event_id: string; count: number }[] } | undefined;
       let reportedGaps: readonly ReportedGapLike[] | undefined;
       let hub:
@@ -346,11 +369,14 @@ async function main(): Promise<void> {
           break;
         }
         case "sheet-snapshot": {
-          const { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds: _sheetXT, stale: sheetStale, ...rest } =
-            report as SheetReconcileReport;
+          const {
+            ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds: _sheetXT,
+            stale: sheetStale, degradations: sheetDegradations, ...rest
+          } = report as SheetReconcileReport;
           rest satisfies Record<string, never>;
           base = { ledger, raw, missing, extra, rawDuplicates, ledgerDuplicates, crossTenantEventIds: undefined };
           stale = sheetStale;
+          degradations = sheetDegradations;
           break;
         }
         case "stripe-feed": {
@@ -492,6 +518,16 @@ async function main(): Promise<void> {
         }
       }
 
+      // PRE-3 (#14): mapped columns that vanished from the header. Printed even at ZERO,
+      // because a category an operator has to infer from silence is a category they will
+      // not look for — the same reasoning that put `stale` on this surface. Its own
+      // wording, deliberately: this is a MAPPING failure, and borrowing `stale`'s "content
+      // differs" phrasing would send the operator to cell-level triage (checklist line 5).
+      if (degradations !== undefined) {
+        console.log(`[${source}] degradations (mapped column absent from the header — field lost from every event): ${degradations.length}`);
+        for (const d of degradations) console.log(`  - ${d}`);
+      }
+
       // Cold review C1/I2 — the retention paradigm's own buckets. agedOutRaw is the
       // window's normal metabolism (printed for context, never gated). `quarantined`
       // is retained-but-diverted: preserved in ingest.quarantine, replayable, NOT
@@ -557,6 +593,10 @@ async function main(): Promise<void> {
         const ackNote = standingConditionsNote({
           acknowledgedGaps: ledgerGaps.length,
           hydrationDlq: hub?.hydrationDlq.length ?? 0,
+          // PRE-3 (#14): the field names, not the whole sentence — the full text is on
+          // its own lines above; this is the verdict's reminder that the run is clean
+          // BECAUSE both sides agree on a mapping that is missing a column.
+          degradations: degradations?.map(degradedFieldOf),
         });
         // Paradigm-honest PASS line (cold review M1): the same class the integrity lines
         // above were rewritten for, left behind on the verdict itself. A bus and a feed
