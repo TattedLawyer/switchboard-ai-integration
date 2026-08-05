@@ -35,9 +35,9 @@ without changing this table does not go green.
 
 | | Count | Derivation |
 |---|---|---|
-| **Open defects** | **32** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Open defects** | **31** | Part II top-level bullets that name an `Owner:` and are not struck |
 | **Design disclosures** | **40** | Part I top-level bullets |
-| **Paid** (struck entries) | **46** | Part III struck bullets, plus the cosmetic/low list |
+| **Paid** (struck entries) | **47** | Part III struck bullets, plus the cosmetic/low list |
 
 Why the owner predicate rather than a subtraction: Part II's own entry rule is that
 every open entry names an owner, so the four *paid* sub-items of the multi-tenancy
@@ -462,12 +462,31 @@ leaves it is gone from the source forever.
   declares `currency` on the four money-bearing types: present-but-malformed quarantines
   the whole event with a reason naming the field (replayable like any quarantined event);
   ABSENT passes untouched — legacy pre-currency events must flow, and refused-at-mart
-  semantics for NULL currency are unchanged. The staging `^[A-Z]{3}$`-or-NULL regexp is
-  thereby demoted to containment for doorless rows (direct inserts, pre-contract history).
-  The pattern admits plausible fakes like "ABC" — the ISO-4217 allowlist stays a
-  registered follow-up, **owner stamped at phase-2b close (R11): Phase 4
-  hardening / the next contract-touching slice** (dormant until a real vendor
-  exercises the door; previously unowned, which was the only defect).
+  semantics for NULL currency are unchanged. The staging guard is thereby demoted to
+  containment for doorless rows (direct inserts, pre-contract history).
+
+  *(updated PRE-3 — the allowlist landed.)* The rule is no longer the shape regex
+  `^[A-Z]{3}$`, which admitted all 17,576 three-letter uppercase strings and therefore
+  plausible fakes like "ABC". It is now MEMBERSHIP in ISO-4217 as published by SIX (the
+  standard's maintenance agency): `list-one.xml` is vendored at `vendor/iso-4217/` with
+  its published date, and `scripts/generate-iso4217.ts` renders it into the door's
+  allowlist (`ingest/src/iso4217-codes.ts`) *and* the dbt seed `iso_4217_currencies` that
+  the three staging models now join. One source, two generated artifacts, drift pinned in
+  every direction — the list is never hand-typed and never fetched at build or run time.
+  `XXX` ("no currency") and `XTS` ("reserved for testing") are deliberately excluded.
+  The quarantine reason names the standard AND the published edition, so a stale vendored
+  list is a hypothesis the operator can form rather than an invisible one.
+
+  Disclosed with it, because the fix creates it: **the vendored list ages, and nothing
+  automatically detects that it has.** SIX amends `list-one` when currencies are created
+  or withdrawn, not on a calendar, so there is no cadence to schedule; refreshing is the
+  documented manual procedure in `vendor/iso-4217/README.md`. The consequence of a stale
+  vendored list is bounded in the safe direction — a NEWLY created currency is refused at
+  the door and shows up as a quarantine row naming the standard and the edition it was
+  judged against, never as a wrong total — and a withdrawn one keeps being admitted until
+  the next refresh. A build-time fetch would close the gap and was rejected: it makes the
+  door's behaviour depend on a vendor's uptime and removes the reviewable diff, which is
+  the more expensive failure. Deliberate, and named here so it is not discovered.
 
 - **Legacy rows with NO currency field no longer sum at all.** Any NULL-currency row
   (never carried, or — on doorless rows — malformed and nulled at staging) refuses its
@@ -1092,9 +1111,23 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   open-deals-only — so a closed EUR deal NULLs an otherwise pure-USD open-pipeline sum.
   Over-refusal only: no cross-currency number can ever be emitted, and all-USD data is
   unaffected. The precise fix (`count(distinct currency) filter (where status = 'open')`)
-  is known and deferred until a real multi-currency source exists to test against.
+  is known and written down.
 
-  *Owner: unscheduled — the precise fix is known and written down. Trigger: a real multi-currency source to test against. Over-refusal only until then; no wrong number can be emitted.*
+  *(text corrected PRE-3 — the stated TRIGGER was wrong, and it was the flattering kind of
+  wrong.)* This entry used to defer on "a real multi-currency source to test against",
+  which reads as *untestable* and is not true: the warehouse's seeds and synthetic sources
+  already carry a `currency` field, and since #37 landed the door and the three staging
+  models judge that field against the published ISO-4217 list, so a mixed-currency
+  fixture can be written today out of codes that are genuinely currencies rather than out
+  of plausible-looking strings — which is precisely what would have made such a fixture
+  worth nothing. Nothing blocks the test. The honest reason to defer is different and
+  narrower: loosening a conservative guard without a real multi-currency SOURCE to
+  validate the loosened rule against trades a disclosed, bounded over-refusal for a
+  possible under-refusal — and an under-refusal here emits a wrong number, which is the
+  failure this repo will not take. The cost of waiting is a NULL an operator can see; the
+  cost of being wrong is a total nobody can tell is wrong.
+
+  *Owner: unscheduled — the precise fix is known and written down. Trigger: a real multi-currency SOURCE (not a fixture — a fixture is writable today) whose behaviour can validate the loosened rule. Over-refusal only until then; no wrong number can be emitted.*
 
 ## Open halves of entries that live in Part I
 
@@ -1110,12 +1143,6 @@ whole file.
   close-scope daemon. Context: Part I, faithful-source end-state.
 
   *Owner: Phase 3 — on the approval-queue spine.*
-- **ISO-4217 currency allowlist at the door.** The field contract's
-  `^[A-Z]{3}$` pattern admits plausible fakes like `"ABC"`. Context: Part I,
-  numeric & monetary integrity.
-
-  *Owner: Phase 4 hardening / the next contract-touching slice (R11). Dormant
-  until a real vendor exercises the door.*
 - **Connector-level `default_currency` config.** A source that legitimately
   sends no currency should get a per-source declared default at the
   connector/config layer, not a lenient mart. Context: Part I, numeric &
@@ -1798,6 +1825,34 @@ it — is the part worth reading.
   operator-actionable condition must not red every reconcile forever. So the gate can
   still be green; it can no longer be green and silent. Landed after the sheets-mock
   column work (#33), per the ordering note.
+
+- ~~**ISO-4217 currency allowlist at the door** *(R11)* — the field contract's
+  `^[A-Z]{3}$` gate is a SHAPE check standing in for a vocabulary: it admits all 17,576
+  three-letter uppercase strings, of which roughly 176 are currencies. So `"ABC"`,
+  `"ZZZ"`, `"BTC"` and `"XXX"` (which the standard publishes as *no currency*) pass the
+  door, land in raw, stage as a currency, and become a value the mart groups by and
+  refuses sums across — indistinguishable downstream from `"USD"`. The same regex was
+  hand-written independently in three staging models, so four copies of one rule existed
+  with nothing mechanically diffing them.~~ *Paid (PRE-3):* the rule is now MEMBERSHIP,
+  and the list is generated, never typed. SIX is the ISO-4217 maintenance agency; its
+  published `list-one.xml` (`Pblshd="2026-01-01"`) is vendored at `vendor/iso-4217/`
+  alongside a README recording the source URL, the published date, the exclusions and the
+  refresh procedure, and `scripts/generate-iso4217.ts` renders it into TWO committed
+  artifacts — `ingest/src/iso4217-codes.ts` for the door and
+  `warehouse/seeds/iso_4217_currencies.csv` for dbt, which the three staging models now
+  JOIN instead of describing. This is the `numeric_bounds.csv` precedent applied exactly:
+  committed generated file, shipped renderer, generator script, and consistency pins that
+  red in every drift direction (revert-checked: neutering the membership branch reds 6
+  tests, a hand-edited module 5, a hand-edited seed 2, and moving the source XML under
+  stale artifacts 3). Door and warehouse are two renderings of one source, so they cannot
+  disagree about what a currency is. `XXX` and `XTS` are excluded deliberately, named in
+  three places. Operator surface: a shape-valid non-currency quarantines with a reason
+  naming the standard AND the published edition it was judged against — so "our vendored
+  list is stale" is a hypothesis a human can form — and excluding the sibling shape-failure
+  wording, so the two causes never wear each other's explanation. The list is live rather
+  than remembered, and there is a pin that says so: `BGN` is REFUSED, because the
+  vendored amendment is the one that withdrew it for Bulgaria's euro adoption. A
+  hand-typed list would still be admitting it, and nothing would have said so.
 
 - ~~**Agent test files assign `DBT_SCHEMA` at module top-level and share one
   database** — order-dependent by construction, benign today *(audit)*.~~
