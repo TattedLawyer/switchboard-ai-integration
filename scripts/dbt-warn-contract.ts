@@ -99,3 +99,98 @@ export function checkWarnSet(
   }
   return failures;
 }
+
+// ── PRE-3 (#19): where dbt actually wrote ────────────────────────────────────────────
+//
+// `verify-dbt-warns.ts` reads the stored-failures table dbt produced, so it must resolve
+// its connection the way dbt does. dbt reads `warehouse/profiles.yml`, which is
+// `DBT_HOST` / `DBT_PORT` / `DBT_USER` / `DBT_PASSWORD` / `DBT_DBNAME` with the defaults
+// mirrored below; the gate was reading `DATABASE_URL`. In CI the two spell the same
+// database, so the defect is invisible precisely where the script runs — and anywhere the
+// app database and the warehouse database differ, the gate inspects a database dbt never
+// touched and blames `store_failures`, which is a correct-shaped failure pointing at the
+// wrong cause.
+//
+// Defaults here are profiles.yml's, quoted, and pinned in dbt-warn-contract.test.ts —
+// including port 5433, whose two-contexts reasoning lives in profiles.yml itself. Note
+// only the CONNECTION moves: the audit-schema literal (`public_dbt_test__audit`) stays a
+// literal, because it is derived from profiles.yml's `schema: public` and is a fact of the
+// repo rather than config.
+
+export interface DbtEndpoint {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+}
+
+/** The endpoint dbt itself would connect to, from the same variables profiles.yml reads. */
+export function dbtEndpointFromEnv(env: NodeJS.ProcessEnv): DbtEndpoint {
+  const rawPort = env.DBT_PORT;
+  const port = rawPort === undefined || rawPort === "" ? 5433 : Number(rawPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    // Same operator-surface form as ingest/src/config.ts: name the variable, echo the
+    // rejected value, state what would be accepted. Never NaN into a connection.
+    throw new Error(`invalid DBT_PORT "${rawPort}": must be an integer between 1 and 65535`);
+  }
+  return {
+    host: env.DBT_HOST ?? "localhost",
+    port,
+    user: env.DBT_USER ?? "switchboard",
+    password: env.DBT_PASSWORD ?? "switchboard",
+    database: env.DBT_DBNAME ?? "switchboard",
+  };
+}
+
+/** The app-side endpoint, for the comparison only — never for the query. */
+export function databaseUrlEndpoint(
+  env: NodeJS.ProcessEnv,
+): { host: string; port: number; database: string } | null {
+  const raw = env.DATABASE_URL;
+  if (raw === undefined || raw === "") return null;
+  try {
+    const u = new URL(raw);
+    return {
+      host: u.hostname,
+      port: u.port === "" ? 5432 : Number(u.port),
+      database: decodeURIComponent(u.pathname.replace(/^\//, "")),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** `<database>@<host>:<port>` — the shape both halves of the failure message use. */
+export function describeEndpoint(e: { host: string; port: number; database: string }): string {
+  return `${e.database}@${e.host}:${e.port}`;
+}
+
+/**
+ * The message for "the audit schema is not there". Names the MISMATCH when the two
+ * endpoints differ — that is the real cause and the reader can act on it — and falls back
+ * to the store_failures explanation only when they agree, which is the one case where
+ * store_failures genuinely is the remaining suspect.
+ */
+export function auditSchemaMissingMessage(opts: {
+  auditSchema: string;
+  dbt: DbtEndpoint;
+  appUrl: { host: string; port: number; database: string } | null;
+  cause: string;
+}): string {
+  const dbtDesc = describeEndpoint(opts.dbt);
+  const appDesc = opts.appUrl === null ? null : describeEndpoint(opts.appUrl);
+  if (appDesc !== null && appDesc !== dbtDesc) {
+    return (
+      `cannot read ${opts.auditSchema}.assert_amounts_plausible — looked in ${dbtDesc} ` +
+      `(resolved from DBT_HOST/DBT_PORT/DBT_DBNAME, the same variables warehouse/profiles.yml reads), ` +
+      `while DATABASE_URL names ${appDesc}. If dbt built into ${appDesc}, point the DBT_* ` +
+      `variables at it; the two must name the same database for this gate to mean anything. ` +
+      `(${opts.cause})`
+    );
+  }
+  return (
+    `cannot read the stored failures of assert_amounts_plausible (${opts.auditSchema}) in ${dbtDesc} — ` +
+    `store_failures must stay on for the identity check: ${opts.cause}`
+  );
+}

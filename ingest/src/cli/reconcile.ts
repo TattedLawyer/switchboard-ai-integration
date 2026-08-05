@@ -62,10 +62,28 @@ export function connectorForTenant(
   // against is impossible rather than merely tested for. Kept as a named function because
   // main() and the drift pin both call it, and because the ledger-feed refusal below is a
   // reconcile-specific rule, not a registry rule.
-  if (connectorFor(source, tenantId).kind === "ledger-feed" && explicitTenantFlag && tenantId !== DEFAULT_TENANT_ID) {
-    // Unreachable in practice: main() refuses --tenant for ledger-feed sources before this
-    // runs. A ledger-feed source's oracle is a file on disk with no tenant in it, so
-    // reconciling one "as tenant X" would compare X's rows against everyone's ledger.
+  if (
+    connectorFor(source, tenantId).kind === "ledger-feed" &&
+    explicitTenantFlag &&
+    tenantId !== resolveDeploymentTenant()
+  ) {
+    // PRE-3 (#24): NARROWER than main()'s gate by design, and deliberately not identical
+    // to it — main() decides for the whole run before any connector is built, this
+    // decides per source for callers that skip main() entirely. Unreachable from the CLI;
+    // reachable from direct callers, including `reconcile-tenant-drift.test.ts`, which is
+    // why the branch is kept rather than deleted.
+    //
+    // The COMPARISON moved with main()'s in the same commit. It used to read
+    // `tenantId !== DEFAULT_TENANT_ID`, which was never the same rule main() applied — the
+    // stale comment at the CLI gate claiming the two could "not be able to disagree" was
+    // false at head — and leaving it would have created a NEW disagreement pointing the
+    // other way: with SWITCHBOARD_TENANT_ID set, main() now allows `--tenant <own>` while
+    // this backstop would still have thrown.
+    //
+    // The rule itself is unchanged: a ledger-feed source's oracle is a file on disk with
+    // no tenant in it, so reconciling one "as tenant X" would compare X's rows against
+    // everyone's ledger. Naming this deployment's OWN tenant asks for exactly the scope a
+    // bare run already has, so there is nothing to refuse.
     throw new Error(`--tenant is not supported for ledger-feed source ${source}`);
   }
   return connectorFor(source, tenantId);
@@ -109,26 +127,37 @@ async function main(): Promise<void> {
   // SWITCHBOARD_TENANT_ID set, a bare `npm run reconcile` used to check the nil lane —
   // empty — and report a clean run over a pipeline writing somewhere else entirely. Unset
   // deployments resolve to the nil tenant, so their behaviour is byte-identical to before.
-  const tenantId = tenantArg ?? resolveDeploymentTenant();
+  const deploymentTenantId = resolveDeploymentTenant();
+  const tenantId = tenantArg ?? deploymentTenantId;
+  // PRE-3 (#24): the ledger-feed refusal keys on whether the operator named a tenant
+  // OTHER than this deployment's — not on the mere presence of the flag. `--tenant <own
+  // tenant>` requests exactly the scope a bare run already has and is now allowed; the
+  // cross-tenant question the refusal exists for is absent by the flag's own value.
+  const namesAnotherTenant = has("tenant") && tenantId !== deploymentTenantId;
 
   try {
-    // Keyed on the FLAG, not the value — matching connectorForTenant's gate below, which
-    // is the same rule and must not be able to disagree with this one. Keying it on the
-    // value (as it did until the close-out round) refused a bare `npm run reconcile` on
-    // any deployment with SWITCHBOARD_TENANT_ID set, quoting a --tenant the operator never
-    // passed — and since DEFAULT_ENABLED is billing,support and both demo.sh and chaos.sh
-    // enable ledger-feed sources, that disabled the zero-loss surface on precisely the
-    // deployments the tenant work exists to serve.
-    if (has("tenant")) {
+    // Keyed on "an explicit tenant OTHER than this deployment's" (PRE-3 #24). Three
+    // cases, all pinned in test/pull-tenant.test.ts:
+    //   · bare run                → allowed. Keying on the VALUE alone (as this did until
+    //     the CLOSE-3 close-out) refused a bare `npm run reconcile` on any deployment with
+    //     SWITCHBOARD_TENANT_ID set, quoting a --tenant the operator never passed — and
+    //     since DEFAULT_ENABLED is billing,support and both demo.sh and chaos.sh enable
+    //     ledger-feed sources, that disabled the zero-loss surface on precisely the
+    //     deployments the tenant work exists to serve.
+    //   · --tenant <own tenant>   → allowed. Keying on the FLAG alone (as this did until
+    //     PRE-3) refused a request identical in scope to the bare run above.
+    //   · --tenant <other tenant> → refused, which is the whole point.
+    //
+    // The comment this replaces claimed the gate matched `connectorForTenant`'s and that
+    // the two "must not be able to disagree". They already did — that gate compared
+    // against DEFAULT_TENANT_ID while this one read the flag — so the claim was false at
+    // head. Both now apply the same sentence, and both moved in the same commit.
+    if (namesAnotherTenant) {
       // Refuse, by name, what would otherwise be a silently WRONG answer: the ledger-feed
       // paradigm's reconcile compares the source's whole raw lane against a single ledger
       // file — it is not tenant-scoped, so running it "for tenant X" would quietly answer
       // for every tenant at once. The other four paradigms are tenant-scoped end to end.
       //
-      // Known wart, deliberately left (KNOWN-ISSUES, with an owner): `--tenant <the
-      // deployment's own tenant>` is refused while a bare run of identical scope is not.
-      // Conservative and loud beats clever here, but letting the equal case through is the
-      // obvious follow-up.
       const unsupported = enabledSources().filter((s) => connectorFor(s, DEFAULT_TENANT_ID).kind === "ledger-feed");
       if (unsupported.length > 0) {
         console.error(

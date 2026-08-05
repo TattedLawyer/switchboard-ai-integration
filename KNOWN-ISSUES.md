@@ -35,9 +35,9 @@ without changing this table does not go green.
 
 | | Count | Derivation |
 |---|---|---|
-| **Open defects** | **37** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Open defects** | **35** | Part II top-level bullets that name an `Owner:` and are not struck |
 | **Design disclosures** | **40** | Part I top-level bullets |
-| **Paid** (struck entries) | **40** | Part III struck bullets, plus the cosmetic/low list |
+| **Paid** (struck entries) | **42** | Part III struck bullets, plus the cosmetic/low list |
 
 Why the owner predicate rather than a subtraction: Part II's own entry rule is that
 every open entry names an owner, so the four *paid* sub-items of the multi-tenancy
@@ -933,17 +933,6 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   the scripts' database resolution cannot be verified where it would break — the same
   reason the exit-code scheme is deferred, and the same standard.*
 
-- **`scripts/verify-dbt-warns.ts` cannot follow `DBT_DBNAME`/`DBT_HOST`** *(gate-H
-  M8)* — it reads stored failures over `DATABASE_URL` from a literal
-  `public_dbt_test__audit`, while dbt wrote via the `DBT_*` profile. If the two
-  disagree, the gate inspects a database dbt never touched and reports the absence as
-  "store_failures must stay on" — a correct-shaped failure pointing at the wrong
-  cause. Benign in CI, where both resolve to the same database.
-
-  *Owner: CLOSE-4. Fix: resolve the audit schema's connection from the same `DBT_*`
-  variables the profile uses, and fail naming the mismatch rather than the symptom.
-  Trigger: any deployment that separates the app database from the warehouse one.*
-
 - **Ephemeral test databases leak with no sweeper** *(gate-H M11, hygiene)* —
   `ingest/test/helpers/testdb.ts` has a careful, idempotent, termination-proof
   `cleanup()`, but nothing reclaims `switchboard_test_*` databases from a run that
@@ -988,24 +977,6 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   "newly still-invalid" refinement — exit non-zero only when newly-still-invalid
   rows exist, since jsonb-unstorable rows are permanently unreplayable by
   construction (RUNBOOK 108-114) and a blanket non-zero would be a permanent red.*
-
-- **`reconcile --tenant <the deployment's own tenant>` is refused while a bare
-  `reconcile` of identical scope is not** *(CLOSE-3 close-out)* — the ledger-feed
-  refusal keys on whether the `--tenant` flag was passed, not on the value, so an
-  operator who names the tenant the deployment is already configured for gets a
-  refusal for a run that would have been correct. The gate itself is right and must
-  stay: a ledger file carries no tenant, so answering "for tenant Y" from it is a
-  cross-tenant answer dressed as a per-tenant one. Keying it on the VALUE instead is
-  what caused the close-out regression — it refused every bare reconcile on a
-  configured deployment, disabling the zero-loss surface on precisely the deployments
-  the tenant work serves (`DEFAULT_ENABLED` is `billing,support`; demo.sh and
-  chaos.sh both enable ledger-feed sources). Conservative and loud was the right
-  trade at close.
-
-  *Owner: CLOSE-4. Fix: let the EQUAL case through — refuse only when an explicit
-  `--tenant` names a tenant other than the deployment's own. Small, but it needs its
-  own pin for all three cases (bare, equal, different), which is why it is not a
-  drive-by.*
 
 - **The hydration pump has no real liveness probe** *(panel OPS-I5, deferred
   half)* — the cycle now says explicitly when it did not contact the object store,
@@ -1700,6 +1671,39 @@ it — is the part worth reading.
   events dead-lettered still has a DLQ that must be drainable. Landed after the batch-A
   boot refusal, without which a typo'd `INGEST_SOURCES` would have made every door
   vanish silently.
+
+- ~~**`reconcile --tenant <the deployment's own tenant>` is refused while a bare
+  `reconcile` of identical scope is not** *(CLOSE-3 close-out)* — the ledger-feed
+  refusal keys on whether the `--tenant` flag was passed, not on the value, so an
+  operator who names the tenant the deployment is already configured for gets a
+  refusal for a run that would have been correct.~~ *Paid (PRE-3, batch B):* the gate
+  keys on "an explicit tenant OTHER than this deployment's". All three cases are pinned
+  in `pull-tenant.test.ts` — bare allowed, `--tenant <own>` allowed, `--tenant <other>`
+  still refused, which is the cross-tenant answer the gate exists for. The fix carried a
+  finding the entry did not: the comment at `cli/reconcile.ts:115` claimed this gate was
+  "matching `connectorForTenant`'s gate below, which is the same rule and must not be
+  able to disagree with this one", while `:65` compared against `DEFAULT_TENANT_ID` — a
+  narrower and genuinely different rule, making the comment false at head. Both gates
+  moved to the same sentence in the same commit, because fixing only `main()` would have
+  created a NEW disagreement pointing the other way (with `SWITCHBOARD_TENANT_ID` set,
+  `main()` would allow `--tenant <own>` while the backstop still threw). `:65` was
+  corrected rather than deleted: it is unreachable from the CLI but reachable from direct
+  callers including `reconcile-tenant-drift.test.ts`, so it is real defence-in-depth and
+  only its comment was wrong.
+
+- ~~**`scripts/verify-dbt-warns.ts` cannot follow `DBT_DBNAME`/`DBT_HOST`** *(gate-H
+  M8)* — it reads stored failures over `DATABASE_URL` from a literal
+  `public_dbt_test__audit`, while dbt wrote via the `DBT_*` profile. If the two
+  disagree, the gate inspects a database dbt never touched and reports the absence as
+  "store_failures must stay on" — a correct-shaped failure pointing at the wrong
+  cause.~~ *Paid (PRE-3, batch B):* the gate resolves its connection from
+  `DBT_HOST`/`DBT_PORT`/`DBT_USER`/`DBT_PASSWORD`/`DBT_DBNAME` with `profiles.yml`'s own
+  defaults, so it reads the database dbt wrote to. When the two endpoints disagree the
+  failure names both — `looked in <db>@<host>:<port> ... while DATABASE_URL names
+  <db>@<host>:<port>` — and the `store_failures` sentence is kept for the one case where
+  it is still the honest remaining suspect: the endpoints agreeing. The audit-schema
+  literal is NOT config and was deliberately left alone; it is derived from
+  `profiles.yml`'s `schema: public`, and the defect was the pool, not the name.
 
 ## Cosmetic / low
 

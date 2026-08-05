@@ -18,7 +18,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { checkWarnSet } from "./dbt-warn-contract.js";
+import {
+  auditSchemaMissingMessage,
+  checkWarnSet,
+  databaseUrlEndpoint,
+  dbtEndpointFromEnv,
+} from "./dbt-warn-contract.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const RUN_RESULTS = join(ROOT, "warehouse", "target", "run_results.json");
@@ -48,7 +53,16 @@ async function main() {
   failures.push(...checkWarnSet(doc));
 
   // Row identity, from the test's own recorded failures.
-  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  // PRE-3 (#19): connect the way DBT does, not the way the app does. This table is
+  // dbt's own artifact, so the only database it can be read from is the one dbt wrote to.
+  const dbtEndpoint = dbtEndpointFromEnv(process.env);
+  const pool = new pg.Pool({
+    host: dbtEndpoint.host,
+    port: dbtEndpoint.port,
+    user: dbtEndpoint.user,
+    password: dbtEndpoint.password,
+    database: dbtEndpoint.database,
+  });
   try {
     const rows = await pool.query(
       `select kind, id from ${AUDIT_SCHEMA}.assert_amounts_plausible order by kind, id`,
@@ -60,7 +74,12 @@ async function main() {
     }
   } catch (err) {
     failures.push(
-      `cannot read the stored failures of assert_amounts_plausible (${AUDIT_SCHEMA}) — store_failures must stay on for the identity check: ${String(err)}`,
+      auditSchemaMissingMessage({
+        auditSchema: AUDIT_SCHEMA,
+        dbt: dbtEndpoint,
+        appUrl: databaseUrlEndpoint(process.env),
+        cause: String(err),
+      }),
     );
   } finally {
     await pool.end();
