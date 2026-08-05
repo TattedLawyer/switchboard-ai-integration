@@ -10,6 +10,7 @@ import {
   type SheetsAppOptions,
 } from "../../mocks/sheets/src/index.js";
 import { freshTestDb } from "./helpers/testdb.js";
+import { ISO_4217_CURRENCIES } from "../src/iso4217-codes.js";
 import { createIngestApp } from "../src/server.js";
 import { signBody } from "../src/hmac.js";
 import { connectorFor } from "../src/connectors/index.js";
@@ -290,15 +291,22 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
 // would follow that code into any regression. It mirrors the L1 contract for the two
 // sheet fields with rules — amount_cents (strict integer/2dp shapes, ≤13 whole digits;
 // anything else rides through as a raw string and the contract refuses it) and currency
-// (^[A-Z]{3}$). Empty cells are ABSENT (the contract's absence rule), so "" never fails
+// (shape ^[A-Z]{3}$ AND ISO-4217 membership, #37). Empty cells are ABSENT (the contract's absence rule), so "" never fails
 // anything — that is exactly why only 3 of the mock's 4 garbage currencies quarantine.
 const AMOUNT_OK = /^\d{1,13}(\.\d{1,2})?$/;
-const CURRENCY_OK = /^[A-Z]{3}$/;
+// #37: the rule is SHAPE **and** membership in the published ISO-4217 list. The shape
+// half stays re-stated (an expectation computed by the code under test would follow it
+// into a regression); the membership half reads the GENERATED list — re-typing 176 codes
+// here would be the very hand-copy the seed machinery exists to remove, and a re-stated
+// subset would silently disagree with the door. isIso4217() is deliberately NOT called:
+// this is the list as data, not the contract's own predicate.
+const CURRENCY_SHAPE_OK = /^[A-Z]{3}$/;
+const CURRENCY_OK = (v: string): boolean => CURRENCY_SHAPE_OK.test(v) && ISO_4217_CURRENCIES.includes(v);
 function doorFailure(content: Record<string, string>): "amount_cents" | "currency" | null {
   if (content.amount_cents !== undefined && !AMOUNT_OK.test(content.amount_cents.trim())) {
     return "amount_cents";
   }
-  if (content.currency !== undefined && !CURRENCY_OK.test(content.currency)) return "currency";
+  if (content.currency !== undefined && !CURRENCY_OK(content.currency)) return "currency";
   return null;
 }
 
@@ -428,32 +436,39 @@ describe("A5 pair 2 — quarantine accounting, pinned at the edges", () => {
     await expectQuarantineAwareConvergence(pool, sheets, c);
   });
 
-  it("M4: garbage currencies quarantine 3-of-4 — '' degrades to ABSENT and ingests clean; the three real garbage variants quarantine naming currency", async () => {
+  it("M4: garbage currencies quarantine 4-of-5 — '' degrades to ABSENT and ingests clean; the four real garbage variants (INCLUDING the shape-valid non-currency 'ABC') quarantine naming currency", async () => {
     const { sheets, baseUrl } = startSheet();
     const c = mkConnector(baseUrl);
     await c.catchUp(pool);
 
-    // One variant per row: ["usd", "US Dollars", "₱", ""] onto rows 0..3.
-    const rks = sheets.sheet.metadata().slice(0, 4).map((m) => m.rowKey);
+    // One variant per row: ["usd", "US Dollars", "₱", "ABC", ""] onto rows 0..4.
+    // "ABC" is the #37 case and the only one that is a well-formed code: before the
+    // ISO-4217 allowlist it ingested CLEAN and became a currency the mart grouped by.
+    const rks = sheets.sheet.metadata().slice(0, GARBAGE_CURRENCIES.length).map((m) => m.rowKey);
     GARBAGE_CURRENCIES.forEach((value, i) => {
       sheets.sheet.apply({ type: "garbage_currency", rowKey: rks[i], value });
     });
 
     const report = await c.catchUpWithReport(pool);
-    // Do NOT expect 4/4: "" empties the cell, the cell becomes an absent field, and
+    // Do NOT expect 5/5: "" empties the cell, the cell becomes an absent field, and
     // absent passes the optional-currency rule. That row is a real content change (it
     // LOST its currency) and ingests clean.
-    expect(report.quarantined).toBe(3);
+    expect(report.quarantined).toBe(4);
     expect(report.ingested).toBe(1);
 
     const q = await quarantineRows(pool);
-    expect(q.map((e) => e.row_key).sort()).toEqual(rks.slice(0, 3).sort());
+    expect(q.map((e) => e.row_key).sort()).toEqual(rks.slice(0, 4).sort());
     for (const e of q) expect(e.reason).toContain("currency");
+    // The shape-valid one names the STANDARD, not the shape — the operator reading this
+    // row must be told "ABC is not a currency", not "ABC is not three uppercase letters".
+    const abcRow = q.find((e) => e.row_key === rks[3]);
+    expect(abcRow?.reason).toContain("ISO-4217");
+    expect(abcRow?.reason).toContain('"ABC"');
 
     // The ""-row's landed event genuinely has no currency field: its LATEST raw event
     // (insertion order) is the emptied re-upsert.
     const rows = await rawSheetEvents(pool);
-    const forRow = rows.filter((r) => (r.payload.data as Record<string, unknown>).row_key === rks[3]);
+    const forRow = rows.filter((r) => (r.payload.data as Record<string, unknown>).row_key === rks[4]);
     expect(forRow).toHaveLength(2); // seed upsert + the emptied re-upsert
     expect(forRow[1].payload.data as Record<string, unknown>).not.toHaveProperty("currency");
     await expectQuarantineAwareConvergence(pool, sheets, c);

@@ -54,3 +54,29 @@ seeds:
     columns:
       - name: domain
         data_tests: [not_null, unique]
+  - name: iso_4217_currencies
+    description: >
+      The ISO-4217 currency codes the pipeline accepts (#37), GENERATED from the vendored
+      SIX list-one.xml by scripts/generate-iso4217.ts — the same script and the same
+      source that render the ingest door's allowlist (ingest/src/iso4217-codes.ts). SIX is
+      the ISO-4217 maintenance agency; provenance, published date (Pblshd="2026-01-01"),
+      exclusions and the refresh procedure live in vendor/iso-4217/README.md. NEVER
+      hand-edit: regenerate and commit the diff (the consistency pins in
+      ingest/test/iso4217.test.ts red the suite when this file, the door's module and the
+      vendored XML disagree in any direction, byte-for-byte).
+      Why it exists: the currency rule used to be the shape regex '^[A-Z]{3}$',
+      hand-written in the contract and independently in all three consuming staging
+      models — four copies, nothing mechanically diffing them, and all four admitting the
+      17,576 three-letter strings of which ~176 are currencies. The models now JOIN this
+      list rather than describe it, so the door and the warehouse cannot disagree about
+      what a currency is.
+      Deliberately EXCLUDED from the published list: XXX ("no currency" — admitting it
+      would let the absence of a currency through as a currency) and XTS ("reserved for
+      testing"). Everything else list-one publishes is admitted as published, including
+      funds, the precious metals and the regional units.
+      Consumers: stg_billing__invoices, stg_crm__deals, stg_sheets__rows — a non-member
+      code stages as NULL ("unknown": counted by the mart and refused from its totals,
+      never summed), which is exactly what a malformed code already did.
+    columns:
+      - name: currency_code
+        data_tests: [not_null, unique]

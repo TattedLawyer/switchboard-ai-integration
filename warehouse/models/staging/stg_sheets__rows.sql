@@ -51,9 +51,12 @@ select
     case when pg_input_is_valid(row_data ->> 'amount_cents', 'bigint')
          then (row_data ->> 'amount_cents')::bigint end as amount_cents,
     -- L5: currency is carried, not discarded — the mart refuses to sum across
-    -- currencies. Same ^[A-Z]{3}$-or-NULL guard as invoices/deals: anything else becomes
-    -- NULL ("unknown" — counted by the mart and REFUSED from its labeled totals).
-    case when (row_data ->> 'currency') ~ '^[A-Z]{3}$'
+    -- currencies. Same ISO-4217-membership-or-NULL guard as invoices/deals (#37), read
+    -- from the generated seed rather than re-typed: anything the published list does not
+    -- name becomes NULL ("unknown" — counted by the mart and REFUSED from its labeled
+    -- totals). A human typing "usd" or "PESO" into a spreadsheet cell is the ordinary
+    -- case here, and neither is a currency the mart may sum.
+    case when (row_data ->> 'currency') in (select currency_code from {{ ref('iso_4217_currencies') }})
          then row_data ->> 'currency' end as currency,
     row_data ->> 'status'       as status,
     row_data ->> 'deal'         as label,

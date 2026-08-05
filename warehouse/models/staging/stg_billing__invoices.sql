@@ -34,10 +34,13 @@ shaped as (
         -- enforcement). NULLs stay visible downstream (L3/L4).
         case when pg_input_is_valid(invoice ->> 'amount_cents', 'bigint')
              then (invoice ->> 'amount_cents')::bigint end as amount_cents,
-        -- L5: currency carried, not discarded; constrained to a three-letter uppercase
-        -- code at the source — anything else becomes NULL ("unknown": counted by the
-        -- mart and refused from its totals, never summed).
-        case when (invoice ->> 'currency') ~ '^[A-Z]{3}$'
+        -- L5: currency carried, not discarded; constrained to MEMBERSHIP in the
+        -- generated ISO-4217 seed (#37) — never a re-typed rule. Anything else, malformed
+        -- or merely fictional, becomes NULL ("unknown": counted by the mart and refused
+        -- from its totals, never summed). The door enforces the same list from the same
+        -- vendored source; this is blast-radius containment for rows that reached raw
+        -- another way (backfill, direct insert, history predating the rule).
+        case when (invoice ->> 'currency') in (select currency_code from {{ ref('iso_4217_currencies') }})
              then invoice ->> 'currency' end as currency
     from latest
 )

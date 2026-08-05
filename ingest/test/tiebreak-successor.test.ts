@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
+import { ISO_4217_REF } from "./helpers/numeric-bounds.js";
 
 // ── The evt-N tiebreak retirement (Task C pair 1; register LANDMINE L2-G6 / LANDMINE-2b/3) ──
 //
@@ -145,7 +146,7 @@ const T = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toI
 describe.each(RESOURCED_MODEL_PATHS)("$title — evt-N ordinal stays retired (re-sourced model)", ({ path }) => {
   it("the evt-N ordinal cast is gone from the model text", () => {
     // Text-only load; the billing models ref numeric_bounds since Wave 5 (inert here).
-    expect(loadModel(path, { numeric_bounds: "numeric_bounds" })).not.toContain("substring(event_id from 5)");
+    expect(loadModel(path, { numeric_bounds: "numeric_bounds", ...ISO_4217_REF })).not.toContain("substring(event_id from 5)");
   });
 });
 

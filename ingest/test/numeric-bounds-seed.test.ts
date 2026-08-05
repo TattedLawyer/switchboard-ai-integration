@@ -7,7 +7,9 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
 import {
   NUMERIC_BOUNDS_SEED_PATH,
+  createIso4217Fixture,
   createNumericBoundsFixture,
+  ISO_4217_REF,
   readNumericBoundsSeed,
   type NumericBoundsSeedRow,
 } from "./helpers/numeric-bounds.js";
@@ -126,6 +128,7 @@ let cleanup: () => Promise<void>;
 beforeEach(async () => {
   ({ pool, cleanup } = await freshTestDb());
   await createNumericBoundsFixture(pool); // the committed seed, as dbt would materialize it
+  await createIso4217Fixture(pool);
 });
 
 afterEach(async () => {
@@ -133,7 +136,7 @@ afterEach(async () => {
 });
 
 const PAYMENTS_SQL = () => loadModel("models/staging/stg_billing__payments.sql", { numeric_bounds: "numeric_bounds" });
-const INVOICES_SQL = () => loadModel("models/staging/stg_billing__invoices.sql", { numeric_bounds: "numeric_bounds" });
+const INVOICES_SQL = () => loadModel("models/staging/stg_billing__invoices.sql", { numeric_bounds: "numeric_bounds", ...ISO_4217_REF });
 
 const insertStripefeedRaw = async (
   eventId: string,

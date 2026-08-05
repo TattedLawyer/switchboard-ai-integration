@@ -8,7 +8,7 @@ import {
   insertHubObjectState,
   insertStripeEvent,
 } from "./helpers/hub-staging.js";
-import { createNumericBoundsFixture } from "./helpers/numeric-bounds.js";
+import { createIso4217Fixture, createNumericBoundsFixture, ISO_4217_REF } from "./helpers/numeric-bounds.js";
 
 // ── F-1c: the coordinated staging switch, pinned per arm ────────────────────────────────
 //
@@ -28,13 +28,14 @@ beforeEach(async () => {
   // Wave 5 (Task G): the billing staging models join ref('numeric_bounds') — the
   // COMMITTED seed, materialized; inert for the other models loaded here.
   await createNumericBoundsFixture(pool);
+  await createIso4217Fixture(pool);
 });
 afterEach(async () => {
   await cleanup();
 });
 
 const model = async (relPath: string): Promise<Record<string, unknown>[]> =>
-  (await pool.query(`select * from (${loadModel(relPath, { numeric_bounds: "numeric_bounds" })}) m`)).rows;
+  (await pool.query(`select * from (${loadModel(relPath, { numeric_bounds: "numeric_bounds", ...ISO_4217_REF })}) m`)).rows;
 
 describe("stg_crm__companies — the hubcrm snapshot arm", () => {
   it("stages by hs_manifest_id from live objects' snapshots; the triggering event's occurred_at decides latest state, not arrival", async () => {

@@ -6,8 +6,9 @@ import { COL, createSheetsApp, type SheetsApp, type SheetsAppOptions } from "../
 import { generateManifest } from "../../mocks/core/src/manifest.js";
 import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
+import { ISO_4217_CURRENCIES } from "../src/iso4217-codes.js";
 import { insertHubObjectState } from "./helpers/hub-staging.js";
-import { createNumericBoundsFixture } from "./helpers/numeric-bounds.js";
+import { createIso4217Fixture, createNumericBoundsFixture, ISO_4217_REF } from "./helpers/numeric-bounds.js";
 import { SheetSnapshotConnector } from "../src/connectors/sheet-snapshot.js";
 import {
   canonicalRowContent,
@@ -42,6 +43,9 @@ let srv: Server | undefined; // mock sheet server (pair 3)
 
 beforeEach(async () => {
   ({ pool, cleanup } = await freshTestDb());
+  // #37: stg_sheets__rows now refs the generated ISO-4217 seed instead of re-typing the
+  // currency rule, so the relation must exist for every pin that loads the real model.
+  await createIso4217Fixture(pool);
 });
 afterEach(async () => {
   srv?.close();
@@ -51,7 +55,7 @@ afterEach(async () => {
 
 // The REAL staging model, loaded from disk. It reads raw.raw_events directly (no refs),
 // which freshTestDb provides — the same lane the connector ingests into.
-const STAGING_SQL = loadModel("models/staging/stg_sheets__rows.sql");
+const STAGING_SQL = loadModel("models/staging/stg_sheets__rows.sql", ISO_4217_REF);
 
 const stagingRows = async (db: pg.Pool): Promise<Record<string, unknown>[]> =>
   (await db.query(`select * from (${STAGING_SQL}) s order by row_key`)).rows;
@@ -198,7 +202,7 @@ describe("A6 pair 1 — stg_sheets__rows: latest-state under the successor order
     const rows = await stagingRows(pool);
     expect(rows).toHaveLength(2);
     expect(rows[0].amount_cents).toBeNull(); // 'US$ 500' fails pg_input_is_valid(bigint)
-    expect(rows[0].currency).toBeNull(); // 'usd' fails ^[A-Z]{3}$
+    expect(rows[0].currency).toBeNull(); // 'usd' fails the door's shape gate, before membership is even asked
     expect(rows[1].amount_cents).toBeNull(); // absent → NULL
     expect(rows[1].currency).toBeNull();
   });
@@ -690,7 +694,9 @@ const chainWarehouse = async (db: pg.Pool): Promise<void> => {
   // Wave 5 (Task G): the billing staging views join ref('numeric_bounds') — materialize
   // the COMMITTED seed first (real content, real join); inert for the other models.
   await createNumericBoundsFixture(db);
-  for (const m of staging) await db.query(`create view ${m} as ${loadModel(`models/staging/${m}.sql`, { numeric_bounds: "numeric_bounds" })}`);
+  // #37: iso_4217_currencies is created by this file's beforeEach (stg_sheets__rows refs
+  // it in the pins that do not go through this chain), so it already exists here.
+  for (const m of staging) await db.query(`create view ${m} as ${loadModel(`models/staging/${m}.sql`, { numeric_bounds: "numeric_bounds", ...ISO_4217_REF })}`);
   await db.query(`create view merge_edges as ${loadModel("models/identity/merge_edges.sql")}`);
   await db.query(`create view int_crm__canonical_companies as ${loadModel("models/identity/int_crm__canonical_companies.sql", {
     stg_crm__companies: "stg_crm__companies", merge_edges: "merge_edges",
@@ -734,13 +740,20 @@ const mkConnector = (baseUrl: string): SheetSnapshotConnector =>
 
 // The door-refusal expectation, deliberately RE-STATED (A5's rationale: an expectation
 // computed by the code under test would follow that code into any regression): the L1
-// contract for the two ruled sheet fields — amount_cents strict shapes and ^[A-Z]{3}$
-// currency; empty cells are ABSENT and never fail anything.
+// contract for the two ruled sheet fields — amount_cents strict shapes, and currency as
+// shape AND ISO-4217 membership (#37); empty cells are ABSENT and never fail anything.
 const AMOUNT_OK = /^\d{1,13}(\.\d{1,2})?$/;
-const CURRENCY_OK = /^[A-Z]{3}$/;
+// #37: the rule is SHAPE **and** membership in the published ISO-4217 list. The shape
+// half stays re-stated (an expectation computed by the code under test would follow it
+// into a regression); the membership half reads the GENERATED list — re-typing 176 codes
+// here would be the very hand-copy the seed machinery exists to remove, and a re-stated
+// subset would silently disagree with the door. isIso4217() is deliberately NOT called:
+// this is the list as data, not the contract's own predicate.
+const CURRENCY_SHAPE_OK = /^[A-Z]{3}$/;
+const CURRENCY_OK = (v: string): boolean => CURRENCY_SHAPE_OK.test(v) && ISO_4217_CURRENCIES.includes(v);
 const doorFailure = (content: Record<string, string>): string | null => {
   if (content.amount_cents !== undefined && !AMOUNT_OK.test(content.amount_cents.trim())) return "amount_cents";
-  if (content.currency !== undefined && !CURRENCY_OK.test(content.currency)) return "currency";
+  if (content.currency !== undefined && !CURRENCY_OK(content.currency)) return "currency";
   return null;
 };
 /** Independently re-stated cents parse (whole*100 + 2-padded fraction, integer math). */

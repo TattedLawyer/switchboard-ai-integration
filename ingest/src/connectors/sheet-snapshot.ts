@@ -484,7 +484,7 @@ export class SheetSnapshotConnector implements Connector {
       // strict shapes; an unparseable amount rides through as the RAW string so the field
       // contract quarantines it naming the field. Everything else (currency, dates,
       // notes, identity fields) is a passthrough string — currency is judged by A2's
-      // ^[A-Z]{3}$ rule at the door; date rules are registered follow-up work.
+      // ISO-4217 membership rule at the door (#37); date rules are registered follow-up work.
       data[field as CanonicalField] =
         field === "amount_cents" ? (parseAmountToCents(raw) ?? raw) : raw;
     }

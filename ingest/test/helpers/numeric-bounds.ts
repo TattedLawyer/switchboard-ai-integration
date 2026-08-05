@@ -65,3 +65,37 @@ export async function createNumericBoundsFixture(pool: pg.Pool, table = "numeric
     ]);
   }
 }
+
+// ── #37: the ISO-4217 seed, same discipline ────────────────────────────────────────────
+// warehouse/seeds/iso_4217_currencies.csv is the dbt-side rendering of the vendored SIX
+// list-one.xml, emitted by scripts/generate-iso4217.ts from the SAME source as the door's
+// ingest/src/iso4217-codes.ts. Fixtures materialize THIS committed file — never a
+// re-typed subset — so a fixture can only disagree with dbt by the seed being stale, and
+// staleness is what the consistency pins in iso4217.test.ts red.
+export const ISO_4217_SEED_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../warehouse/seeds/iso_4217_currencies.csv",
+);
+
+export function readIso4217Seed(): string[] {
+  if (!existsSync(ISO_4217_SEED_PATH)) {
+    throw new Error(
+      "warehouse/seeds/iso_4217_currencies.csv is not emitted — run `npx tsx scripts/generate-iso4217.ts` and commit the diff",
+    );
+  }
+  const [header, ...rows] = readFileSync(ISO_4217_SEED_PATH, "utf8").trim().split("\n");
+  if (header !== "currency_code") throw new Error(`iso_4217_currencies.csv header drifted: ${header}`);
+  if (rows.length < 150) throw new Error(`iso_4217_currencies.csv holds only ${rows.length} codes — refusing a short list`);
+  return rows;
+}
+
+/** Materialize the committed ISO-4217 seed as a relation, for tests running REAL
+ *  warehouse SQL that refs iso_4217_currencies. */
+export async function createIso4217Fixture(pool: pg.Pool, table = "iso_4217_currencies"): Promise<void> {
+  const codes = readIso4217Seed();
+  await pool.query(`create table ${table} (currency_code text not null)`);
+  await pool.query(`insert into ${table} (currency_code) select unnest($1::text[])`, [codes]);
+}
+
+/** The refMap entry every currency-bearing staging model now needs. */
+export const ISO_4217_REF = { iso_4217_currencies: "iso_4217_currencies" } as const;

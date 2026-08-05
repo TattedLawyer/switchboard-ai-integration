@@ -14,7 +14,12 @@ export type FaultPlanName = (typeof FAULT_PLANS)[number];
 // not manifest content — identity content (names/emails/companies/deals) always comes
 // from the manifest universe.
 export const FREEHAND_DATES = ["7/30", "July 30", "30-Jul-2026", "tomorrow"] as const;
-export const GARBAGE_CURRENCIES = ["usd", "US Dollars", "₱", ""] as const;
+// "ABC" is deliberately in this list and deliberately unlike the others: it is a
+// PERFECTLY SHAPED currency code that is not a currency (#37). Before the ISO-4217
+// allowlist, every garbage variant here was shape-invalid, so the sheets lane could not
+// exercise — and could not regress — the difference between "not a code" and "not a real
+// code". The empty string stays: an empty cell is ABSENT, not garbage, and must pass.
+export const GARBAGE_CURRENCIES = ["usd", "US Dollars", "₱", "ABC", ""] as const;
 
 export type HumanEdit = {
   step: number;

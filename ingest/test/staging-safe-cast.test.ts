@@ -3,12 +3,12 @@ import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
 import { insertHubObjectState } from "./helpers/hub-staging.js";
-import { createNumericBoundsFixture } from "./helpers/numeric-bounds.js";
+import { createIso4217Fixture, createNumericBoundsFixture, ISO_4217_REF } from "./helpers/numeric-bounds.js";
 
 // The billing staging models join ref('numeric_bounds') since Wave 5 (Task G) — the
 // fixture materializes the COMMITTED seed; extra refMap entries are inert for models
 // without the ref.
-const BOUNDS_REF = { numeric_bounds: "numeric_bounds" };
+const BOUNDS_REF = { numeric_bounds: "numeric_bounds", ...ISO_4217_REF };
 
 // L2 (blast-radius containment): these tests insert malformed numerics DIRECTLY into
 // raw.raw_events, bypassing the ingest door's numeric contract (L1) ON PURPOSE — the
@@ -26,6 +26,7 @@ let cleanup: () => Promise<void>;
 beforeEach(async () => {
   ({ pool, cleanup } = await freshTestDb());
   await createNumericBoundsFixture(pool);
+  await createIso4217Fixture(pool);
 });
 
 afterEach(async () => {
@@ -157,7 +158,7 @@ describe("stg_crm__deals — L2 safe cast (hubcrm snapshot arm)", () => {
     await mk(603, "7603", "e-huge", OUT_OF_RANGE);
 
     const res = await pool.query(
-      `select * from (${loadModel("models/staging/stg_crm__deals.sql")}) m order by deal_id`,
+      `select * from (${loadModel("models/staging/stg_crm__deals.sql", ISO_4217_REF)}) m order by deal_id`,
     );
     expect(res.rowCount).toBe(3);
     const byId = Object.fromEntries(res.rows.map((r) => [r.deal_id, r]));
@@ -179,7 +180,7 @@ describe("stg_crm__deals — L2 safe cast (hubcrm snapshot arm)", () => {
     await mk(614, "7614", "e-cleared", null); // the script's currency CLEAR — null property
 
     const res = await pool.query(
-      `select * from (${loadModel("models/staging/stg_crm__deals.sql")}) m order by deal_id`,
+      `select * from (${loadModel("models/staging/stg_crm__deals.sql", ISO_4217_REF)}) m order by deal_id`,
     );
     expect(res.rowCount).toBe(4);
     const byId = Object.fromEntries(res.rows.map((r) => [r.deal_id, r]));
