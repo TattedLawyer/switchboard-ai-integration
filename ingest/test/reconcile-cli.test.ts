@@ -162,3 +162,73 @@ describe("A8 on the real CLI — an enabled ledger-feed source with no ledger pa
     expect(res.code).toBe(1);
   });
 });
+
+// ── PRE-3 / #14 — a vanished mapped column reaches the RECONCILE gate ─────────────────
+//
+// The lie (gate-H I5): a mapped column disappearing from the sheet header produces a
+// `degradations` entry on the CATCH-UP report — printed by `backfill` on stderr, which
+// exits 0 — and nothing at all on the reconcile report, which had no degradation channel
+// (`SheetReconcileReport` carried `stale` alone). After one catchUp cycle the new events
+// carry the truncated content and reconcile recomputes hashes through the SAME truncated
+// mapping, so both sides agree and it prints `PASS: raw latest-state matches the sheet
+// exactly`. Permanent field loss, gate green — a silent-correctness hole in the zero-loss
+// surface that is this repo's headline claim.
+//
+// Within the drift window the rows read `stale` instead — "present on both sides, content
+// differs" — which sends the operator to cell-level triage for what is a MAPPING failure
+// (operator-surface checklist line 5: a cause must name itself and exclude its siblings).
+//
+// The shape follows the house paradigm rather than inventing one: the same field NAME and
+// the same phrasing as the catch-up surface, so an operator greps one sentence across
+// both; and the verdict goes through `standingConditionsNote`, not a hard red — the
+// stripefeed-quarantine precedent says a disclosed permanent condition must not red every
+// run forever.
+describe("PRE-3 #14 — reconcile can see a mapped column that vanished", () => {
+  it("the degraded column is NAMED on the reconcile report's operator surface", async () => {
+    const { sheets, baseUrl } = startSheet();
+    const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
+    await c.catchUp(pool);
+    // A human renames a mapped, NON-KEY column. The field stops being extractable; the
+    // sheet still has key columns, so nothing refuses — it just quietly gets thinner.
+    sheets.sheet.apply({ type: "rename_header", column: COL.amount, name: "Deal Value (PHP)" });
+    await c.catchUp(pool); // the truncated content is now on both sides
+
+    const res = await runReconcileCli(baseUrl);
+    expect(res.stdout).toMatch(/\[sheets\] degradations: 1/);
+    expect(res.stdout).toContain("amount");
+    // Checklist line 5: it must name ITS cause and not borrow a sibling's. A mapping
+    // failure is not cell drift.
+    const degradationLine = res.stdout.split("\n").find((l) => l.includes("degradation"))!;
+    expect(degradationLine).not.toMatch(/content differs/);
+  });
+
+  it("the verdict is a PASS that NAMES the standing condition — never the bare clean line, never a hard red", async () => {
+    const { sheets, baseUrl } = startSheet();
+    const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
+    await c.catchUp(pool);
+    sheets.sheet.apply({ type: "rename_header", column: COL.amount, name: "Deal Value (PHP)" });
+    await c.catchUp(pool);
+
+    const res = await runReconcileCli(baseUrl);
+    // NOT a hard red: a disclosed permanent condition must not red every run forever.
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain("[sheets] PASS");
+    // ...and NOT the bare clean line either. This is the actual defect: green AND silent.
+    expect(res.stdout).not.toMatch(/PASS: raw latest-state matches the sheet exactly, no duplicates\n/);
+    const passLine = res.stdout.split("\n").find((l) => l.includes("[sheets] PASS"))!;
+    expect(passLine).toMatch(/degrad/i);
+    expect(passLine).toContain("amount");
+  });
+
+  it("a healthy sheet still prints the bucket at ZERO and the ordinary clean PASS — the category is never inferred from silence", async () => {
+    const { baseUrl } = startSheet();
+    const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
+    await c.catchUp(pool);
+
+    const res = await runReconcileCli(baseUrl);
+    expect(res.code).toBe(0);
+    expect(res.stdout).toMatch(/\[sheets\] degradations: 0/);
+    const passLine = res.stdout.split("\n").find((l) => l.includes("[sheets] PASS"))!;
+    expect(passLine).not.toMatch(/degrad/i);
+  });
+});

@@ -57,3 +57,40 @@ describe("I4 — a PASS carrying standing disclosed conditions says so on the sa
     expect(standingConditionsNote({ acknowledgedGaps: 0, hydrationDlq: 0 })).toBe("");
   });
 });
+
+// ── PRE-3 / #14 — a vanished mapped column is a STANDING CONDITION on the verdict ─────
+//
+// `standingConditionsNote` is the repo's existing convention for "the run is otherwise
+// clean, and something disclosed and permanent still stands". Degradations are the same
+// species — disclosed, operator-actionable, permanent until someone fixes the sheet — so
+// they route through it rather than inventing a fourth convention, and they must NOT hard-
+// red the run (the stripefeed-quarantine precedent: a permanent, disclosed condition must
+// not red every reconcile forever).
+describe("PRE-3 #14 — degradations join the standing-conditions note", () => {
+  it("names the degraded column(s) on an otherwise clean run", () => {
+    const note = standingConditionsNote({ acknowledgedGaps: 0, hydrationDlq: 0, degradations: ["amount", "status"] });
+    expect(note).toContain("amount");
+    expect(note).toContain("status");
+    expect(note).toMatch(/degrad/i);
+    // The existing shape is preserved: a parenthetical, pointing up at the detail.
+    expect(note.startsWith(" (with ")).toBe(true);
+    expect(note).toContain("see above");
+  });
+
+  it("stays silent when nothing stands — the ordinary PASS line is unchanged", () => {
+    expect(standingConditionsNote({ acknowledgedGaps: 0, hydrationDlq: 0, degradations: [] })).toBe("");
+  });
+
+  it("composes with the two conditions that were already there, rather than replacing them", () => {
+    const note = standingConditionsNote({ acknowledgedGaps: 2, hydrationDlq: 1, degradations: ["amount"] });
+    expect(note).toContain("2 acknowledged permanent gap(s) standing");
+    expect(note).toContain("1 terminal hydration dead letter(s) standing");
+    expect(note).toContain("amount");
+  });
+
+  it("degradations is OPTIONAL — the callers that have no such concept are unaffected", () => {
+    expect(standingConditionsNote({ acknowledgedGaps: 1, hydrationDlq: 0 })).toContain(
+      "1 acknowledged permanent gap(s) standing",
+    );
+  });
+});
