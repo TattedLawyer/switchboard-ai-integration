@@ -1054,14 +1054,27 @@ from data that is correctly attributed rather than from a nil-tenant pile.
 
   *Owner: Phase 4 *(re-stamped — the 2b-D decision took the expand arm only; this label previously still promised "Phase 2b")*.*
 
-- **Column reorder is UNPROVEN against a real sheet.** The mock models header
-  *renames* only — column positions never move — so no test can exercise a
-  reorder. The connector is built for it anyway (the carried landmine rule:
-  positions are resolved by header *name* on every fetch and never cached), so
-  reorder is expected-safe by construction, but that expectation has never met a
-  real spreadsheet. *Owner: first real-Sheets engagement; verify before trusting.*
+- **Column reorder is UNPROVEN against a real sheet.** The connector resolves
+  column positions by header *name* on every fetch and never caches them, so a
+  reorder is expected-safe by construction — and since PRE-3 that expectation is
+  also EXERCISED: the sheets mock models `move_column` (header label and every
+  row's cell moving together), and the connector is put through a reorder between
+  cycles with three assertions — no spurious events, a clean reconcile, and a real
+  edit still landing afterwards. All three passed on the first run, which was the
+  predicted outcome; the value is that a future change which starts caching
+  positions now reds.
+  **The entry is NOT retired, and the supporting sentence it used to carry was
+  wrong:** it said "no test can exercise a reorder", which described the mock we
+  wrote (`seed.ts`: "Header renames change the header TEXT only"; `editor.ts`:
+  "positions never change — only labels") rather than reality, where a human drags
+  a column. Proving the connector against our own mock is a weaker oracle than a
+  real spreadsheet, so the headline claim stands. Note also what was deliberately
+  NOT done: `move_column` is buildable but is in no fault plan's weighted mix, because
+  every plan's output is seeded and dozens of soak assertions are pinned to those exact
+  sequences — adding an operation to a mix is a spec change about what "a messy human"
+  does, arriving bundled with a mass re-pin that would hide whatever else moved.
 
-  *Owner: unscheduled — first real-Sheets engagement. Trigger: pointing the connector at a real spreadsheet; verify before trusting it.*
+  *Owner: unscheduled — first real-Sheets engagement. Trigger: pointing the connector at a real spreadsheet; verify before trusting it. What remains unproven is narrower since PRE-3: the connector's name-resolution is exercised against our own mock, never against a real spreadsheet's behaviour.*
 
 - **`deriveState` is O(full history), and history only grows.** Both of its
   queries (latest-per-row and the supersession counts) scan every sheet event

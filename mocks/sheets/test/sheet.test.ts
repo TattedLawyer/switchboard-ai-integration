@@ -174,3 +174,58 @@ describe("bounded metadata (documented 30,000-char cap; ceiling behavior unverif
     expect(liveChars).toBeGreaterThan(METADATA_CHAR_CAP - 20);
   });
 });
+
+// ── PRE-3 / #33 — the mock can permute column POSITIONS, not just header labels ────────
+//
+// The register says "column reorder is UNPROVEN against a real sheet", and the triage
+// found the supporting sentence ("no test can exercise a reorder") false as stated: it is
+// a property of the mock we wrote — `seed.ts` says "Header renames change the header TEXT
+// only", `editor.ts` says "positions never change — only labels" — not a property of
+// reality, where a human drags a column and everything moves.
+//
+// This does NOT retire the entry: proving the connector against our own mock is a weaker
+// oracle than a real spreadsheet, and the headline claim stays true. It converts
+// "expected-safe by construction" into "expected-safe by construction AND exercised".
+describe("PRE-3 #33 — move_column permutes a column and its cells together", () => {
+  it("moves the header label and every row's cell as one unit", () => {
+    const sheet = createSheet({ seed: 11, rowCount: 4 });
+    const before = sheet.values();
+    const label = before.header[COL.currency];
+    const cellsBefore = before.rows.map((r) => r[COL.currency]);
+
+    sheet.apply({ type: "move_column", from: COL.currency, to: 0 });
+
+    const after = sheet.values();
+    expect(after.header[0]).toBe(label);
+    expect(after.rows.map((r) => r[0])).toEqual(cellsBefore);
+    // Nothing was lost or duplicated: same width, same multiset of labels.
+    expect(after.header).toHaveLength(before.header.length);
+    expect([...after.header].sort()).toEqual([...before.header].sort());
+    // Every row keeps its full content, only reordered.
+    after.rows.forEach((row, i) => {
+      expect([...row].sort()).toEqual([...before.rows[i]].sort());
+    });
+  });
+
+  it("preserves row identity — a reorder is a COLUMN operation and must not touch row keys", () => {
+    const sheet = createSheet({ seed: 12, rowCount: 5 });
+    const keysBefore = sheet.metadata().map((m) => m.rowKey);
+    sheet.apply({ type: "move_column", from: COL.notes, to: COL.clientName });
+    expect(sheet.metadata().map((m) => m.rowKey)).toEqual(keysBefore);
+  });
+
+  it("journals the move with both positions and the column's label", () => {
+    const sheet = createSheet({ seed: 13, rowCount: 3 });
+    sheet.apply({ type: "move_column", from: COL.amount, to: COL.status });
+    const entry = sheet.journal().at(-1)!;
+    expect(entry.op).toBe("move_column");
+    expect(entry.detail).toMatchObject({ from: COL.amount, to: COL.status, column: "Amount" });
+    expect(entry.rowsChanged).toBe(3);
+  });
+
+  it("refuses an out-of-range move rather than silently corrupting the grid", () => {
+    const sheet = createSheet({ seed: 14, rowCount: 2 });
+    expect(() => sheet.apply({ type: "move_column", from: 0, to: 99 })).toThrow(/move_column out of range/);
+    expect(() => sheet.apply({ type: "move_column", from: -1, to: 0 })).toThrow(/move_column out of range/);
+  });
+});

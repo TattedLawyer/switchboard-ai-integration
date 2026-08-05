@@ -24,7 +24,15 @@ export type EditOp =
   | { type: "freehand_date"; rowKey: string; value: string }
   | { type: "garbage_currency"; rowKey: string; value: string }
   | { type: "bulk_paste"; position: number; rows: string[][] }
-  | { type: "duplicate_row"; rowKey: string };
+  | { type: "duplicate_row"; rowKey: string }
+  /** PRE-3 (#33): move a column from one position to another, carrying every row's cell
+   *  with it. Real spreadsheets permute columns — a human drags one — and until now this
+   *  mock could only RENAME (`rename_header` changes the label, positions never move), so
+   *  the register's "no test can exercise a reorder" was true of our mock and false of
+   *  reality. The connector resolves positions by header NAME on every fetch and caches
+   *  nothing, so a reorder is expected-safe by construction; this op is what turns that
+   *  into expected-safe AND exercised. */
+  | { type: "move_column"; from: number; to: number };
 
 export type EditOpType = EditOp["type"];
 
@@ -147,6 +155,29 @@ export function createSheet(opts: { seed: number; rowCount?: number; profile?: P
         const [dead] = rows.splice(i, 1);
         liveMetadataChars -= dead.rowKey.length; // metadata dies with its row (documented)
         return record("delete_row", rowRange(i), 1, { rowKey: op.rowKey });
+      }
+      case "move_column": {
+        // Header and every row move TOGETHER — a spreadsheet column is the label and the
+        // cells under it. Moving one without the other would model corruption, not a
+        // reorder, and would make the connector look broken for the wrong reason.
+        if (op.from < 0 || op.from >= WIDTH || op.to < 0 || op.to >= WIDTH) {
+          throw new Error(`move_column out of range: ${op.from} -> ${op.to} (width ${WIDTH})`);
+        }
+        const label = header[op.from];
+        header.splice(op.from, 1);
+        header.splice(op.to, 0, label);
+        for (const row of rows) {
+          const [cell] = row.cells.splice(op.from, 1);
+          row.cells.splice(op.to, 0, cell);
+        }
+        // The whole grid's columns shifted, so the range is the whole grid. rowsChanged
+        // counts data rows: the header moved too, but the journal's rowsChanged has always
+        // meant data rows (rename_header records 0 for the same reason).
+        return record("move_column", `A1:${colLetter(WIDTH - 1)}${sheetRow(rows.length - 1)}`, rows.length, {
+          from: op.from,
+          to: op.to,
+          column: label,
+        });
       }
       case "rename_header": {
         const from = header[op.column];

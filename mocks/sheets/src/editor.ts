@@ -3,7 +3,7 @@
 // journal, and (via onHumanEdit) notification stream.
 
 import { prng } from "@switchboard/mock-core";
-import { COL, createRowSource, editValueSource } from "./seed.js";
+import { COL, SHEET_HEADER, createRowSource, editValueSource } from "./seed.js";
 import type { Profile } from "@switchboard/mock-core";
 import type { EditOp, EditOpType, SheetState } from "./sheet.js";
 
@@ -132,6 +132,27 @@ export function createEditor(
       }
       case "duplicate_row":
         return { type: "duplicate_row", rowKey: pickRowKey() };
+      // PRE-3 (#33): buildable, but deliberately NOT in any fault plan's MIX below.
+      //
+      // The mock can now permute columns, which is what the register's "no test can
+      // exercise a reorder" needed. Putting it into the weighted mixes would be a
+      // different and much larger change: every fault plan's output is seeded and dozens
+      // of soak/oracle assertions are pinned against those exact sequences, so adding an
+      // operation to a MIX re-rolls all of them. That is a spec change about what "a
+      // messy human" does, not the small fidelity upgrade the entry asked for, and it
+      // would arrive bundled with a mass re-pin that hides whatever else moved.
+      //
+      // So a reorder is a DELIBERATE operation a test applies (see
+      // ingest/test/sheet-oracle.test.ts and mocks/sheets/test/sheet.test.ts), and this
+      // arm exists so `EditOpType` stays exhaustive — the compile wall is what will make
+      // the next person adding an operation read this note.
+      case "move_column": {
+        const width = SHEET_HEADER.length;
+        const from = Math.floor(rand() * width);
+        let to = Math.floor(rand() * width);
+        if (to === from) to = (from + 1) % width;
+        return { type: "move_column", from, to };
+      }
     }
   };
 

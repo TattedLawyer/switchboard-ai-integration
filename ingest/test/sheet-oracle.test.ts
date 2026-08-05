@@ -560,3 +560,66 @@ describe("A5 pair 2 — standing scenarios", () => {
     expect(await quarantineRows(pool)).toHaveLength(0); // calm content: the storm quarantines nothing
   });
 });
+
+// ── PRE-3 / #33 — a column REORDER, finally exercised ────────────────────────────────
+//
+// The register entry ("column reorder is UNPROVEN against a real sheet") carried a
+// supporting sentence — "no test can exercise a reorder" — that was false as stated. It
+// described the mock we wrote, whose `rename_header` changes labels and never positions,
+// not the world, where a human drags a column and everything under it moves. The sheets
+// mock now models `move_column`, so the claim can be tested.
+//
+// The entry is NOT retired by this, and the wording is deliberate: proving the connector
+// against our own mock is a weaker oracle than a real spreadsheet, and the headline claim
+// stays true. What changes is that "expected-safe by construction" — the connector
+// resolves positions by header NAME on every fetch and caches nothing — becomes
+// "expected-safe by construction AND exercised". A pass here was the expected outcome;
+// the value is that a future change which starts caching positions now reds.
+describe("PRE-3 #33 — the connector survives a column reorder because it resolves by name, not position", () => {
+  it("a reorder between cycles produces NO events: same rows, same content, same hashes", async () => {
+    const { sheets, baseUrl } = startSheet();
+    const c = mkConnector(baseUrl);
+    const first = await c.catchUp(pool);
+    expect(first).toBeGreaterThan(0);
+
+    const before = await pool.query(
+      `select event_id, payload->'data'->>'content_hash' as h from raw.raw_events
+        where source = 'sheets' order by event_id`,
+    );
+
+    // The human drags Currency to the front. Every header label and every cell moves.
+    sheets.sheet.apply({ type: "move_column", from: COL.currency, to: 0 });
+
+    // THE ASSERTION. A position-caching connector would now hash different content for
+    // every row and emit a full grid of spurious "changed" events.
+    expect(await c.catchUp(pool)).toBe(0);
+    const after = await pool.query(
+      `select event_id, payload->'data'->>'content_hash' as h from raw.raw_events
+        where source = 'sheets' order by event_id`,
+    );
+    expect(after.rows).toEqual(before.rows);
+  });
+
+  it("reconcile stays clean across the reorder — the gate does not read a permutation as drift", async () => {
+    const { sheets, baseUrl } = startSheet();
+    const c = mkConnector(baseUrl);
+    await c.catchUp(pool);
+    sheets.sheet.apply({ type: "move_column", from: COL.notes, to: COL.clientName });
+
+    const { report } = await c.reconcile(pool);
+    expect(report!.missing).toEqual([]);
+    expect(report!.extra).toEqual([]);
+    expect(report!.stale).toEqual([]);
+  });
+
+  it("a REAL edit still lands after a reorder — the reorder must not deafen the connector", async () => {
+    const { sheets, baseUrl } = startSheet();
+    const c = mkConnector(baseUrl);
+    await c.catchUp(pool);
+    sheets.sheet.apply({ type: "move_column", from: COL.status, to: COL.email });
+
+    const rowKey = sheets.sheet.metadata()[0].rowKey;
+    sheets.sheet.apply({ type: "edit_cell", rowKey, column: COL.notes, value: "post-reorder note" });
+    expect(await c.catchUp(pool)).toBe(1);
+  });
+});
