@@ -54,6 +54,31 @@ describe("the registry's tenant shape, and reconcile's ledger-feed refusal", () 
     }
   });
 
+  // PRE-3 / #24, the second half of the fix. `main()`'s gate and this one MUST move
+  // together: the CLI now allows `--tenant <the deployment's own tenant>`, so a backstop
+  // still keyed on "differs from the NIL tenant" would throw for exactly the case main()
+  // just started allowing, on any deployment with SWITCHBOARD_TENANT_ID set. The rule on
+  // both paths is now the same sentence — refuse an explicit tenant that is not THIS
+  // deployment's — which is what the (previously false) comment at the CLI's gate claimed
+  // was already true.
+  it("PRE-3 #24 · the backstop allows the deployment's OWN tenant, matching main()'s rule rather than contradicting it", () => {
+    const ledgerFeeds = SOURCES.filter((s) => connectorFor(s, DEFAULT_TENANT_ID).kind === "ledger-feed") as Source[];
+    expect(ledgerFeeds.length).toBeGreaterThan(0);
+    const saved = process.env.SWITCHBOARD_TENANT_ID;
+    process.env.SWITCHBOARD_TENANT_ID = TENANT;
+    try {
+      for (const source of ledgerFeeds) {
+        expect(() => connectorForTenant(source, TENANT), source).not.toThrow();
+        expect(() => connectorForTenant(source, DEFAULT_TENANT_ID), source).toThrow(
+          /--tenant is not supported for ledger-feed source/,
+        );
+      }
+    } finally {
+      if (saved === undefined) delete process.env.SWITCHBOARD_TENANT_ID;
+      else process.env.SWITCHBOARD_TENANT_ID = saved;
+    }
+  });
+
   it("ledger-feed sources refuse a non-default tenant by name on this path too (the CLI refuses earlier; this is the backstop)", () => {
     for (const source of SOURCES.filter((s) => connectorFor(s, DEFAULT_TENANT_ID).kind === "ledger-feed") as Source[]) {
       expect(() => connectorForTenant(source, TENANT)).toThrow(/--tenant is not supported for ledger-feed source/);

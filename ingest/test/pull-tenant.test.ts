@@ -236,6 +236,45 @@ describe("a configured deployment can still run its own reconcile", () => {
     expect(res.out).toContain("[support]");
   }, 90_000);
 
+  // PRE-3 / #24. The third case, and the one the gate got wrong: `--tenant <the
+  // deployment's own tenant>` names EXACTLY the scope a bare run already has, and was
+  // refused anyway — because the gate keyed on `has("tenant")` alone rather than on
+  // whether the named tenant differs from this deployment's. An operator who spells out
+  // what they are checking (a habit worth encouraging, and one a runbook or a wrapper
+  // script naturally produces) got a refusal quoting a cross-tenant hazard that the flag
+  // value proves is absent. Conservative-and-loud was the right holding position; it is
+  // not the right rule.
+  it("PRE-3 #24 · an EXPLICIT --tenant naming THIS deployment's own tenant is allowed — identical scope to a bare run must get an identical answer", async () => {
+    const ledgerPath = join(dir, "ledger-support.jsonl");
+    const support = createBillingApp({ ledgerPath, webhookUrl: "http://127.0.0.1:1" });
+    const supportUrl = listen(support);
+    await fetch(`${supportUrl}/simulate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ count: 3 }),
+    });
+    // The explicit-tenant run also passes through the F8 "must have recorded state"
+    // gate, so give the lane state the same way the bare-run case above does.
+    const feed = await (await fetch(`${supportUrl}/events?after=0&limit=50`)).json();
+    const events = (feed.events ?? feed) as { event_id: string }[];
+    const { ingestEvent } = await import("../src/ingest-event.js");
+    for (const e of events) await ingestEvent(pool, "support", e as never, { tenantId: TENANT_X });
+
+    const res = await runReconcile({
+      SWITCHBOARD_TENANT_ID: TENANT_X,
+      INGEST_SOURCES: "support",
+      SUPPORT_BASE_URL: supportUrl,
+      LEDGER_PATH_SUPPORT: ledgerPath,
+      __args: `--tenant ${TENANT_X}`,
+    });
+
+    expect(
+      res.out,
+      "--tenant naming the deployment's OWN tenant was refused as a cross-tenant request",
+    ).not.toContain("--tenant is not supported for ledger-feed source");
+    expect(res.out).toContain("[support]");
+  }, 90_000);
+
   it("an EXPLICIT --tenant naming a different tenant is still refused for a ledger-feed source", async () => {
     const ledgerPath = join(dir, "ledger-support.jsonl");
     const support = createBillingApp({ ledgerPath, webhookUrl: "http://127.0.0.1:1" });

@@ -74,3 +74,94 @@ describe("dbt expected-warn contract", () => {
     ]);
   });
 });
+
+// ── PRE-3 / #19 — the gate must look where dbt actually wrote ────────────────────────
+//
+// `verify-dbt-warns.ts` reads the stored-failures table over a pool built from
+// `DATABASE_URL`, while dbt writes it through `warehouse/profiles.yml`, which resolves
+// `DBT_HOST` / `DBT_PORT` / `DBT_USER` / `DBT_PASSWORD` / `DBT_DBNAME`. In CI both spell
+// the same database, so the bug is invisible there — and on any deployment that separates
+// the app database from the warehouse one, the gate inspects a database dbt never touched
+// and reports the absence as "store_failures must stay on": a correct-shaped failure
+// pointing at the wrong cause, which is worse than no check, because it sends the reader
+// to go turn on a setting that is already on.
+import {
+  describeEndpoint,
+  dbtEndpointFromEnv,
+  databaseUrlEndpoint,
+  auditSchemaMissingMessage,
+} from "../../scripts/dbt-warn-contract.js";
+
+describe("PRE-3 #19 — the warn gate resolves its connection the way dbt does", () => {
+  it("mirrors profiles.yml's defaults exactly — same variables, same fallbacks", () => {
+    // The defaults are profiles.yml's, quoted: host localhost, port 5433 (the HOST
+    // publication docker-compose.yml maps), user/password/dbname switchboard.
+    expect(dbtEndpointFromEnv({})).toEqual({
+      host: "localhost",
+      port: 5433,
+      user: "switchboard",
+      password: "switchboard",
+      database: "switchboard",
+    });
+    expect(
+      dbtEndpointFromEnv({
+        DBT_HOST: "warehouse.internal",
+        DBT_PORT: "6543",
+        DBT_USER: "dbt",
+        DBT_PASSWORD: "s3cret",
+        DBT_DBNAME: "analytics",
+      }),
+    ).toEqual({
+      host: "warehouse.internal",
+      port: 6543,
+      user: "dbt",
+      password: "s3cret",
+      database: "analytics",
+    });
+  });
+
+  it("a non-numeric DBT_PORT is a refusal naming the variable, never NaN into a connection", () => {
+    expect(() => dbtEndpointFromEnv({ DBT_PORT: "banana" })).toThrow(/DBT_PORT/);
+  });
+
+  it("describes an endpoint as <db>@<host>:<port> — the shape the failure message needs", () => {
+    expect(describeEndpoint(dbtEndpointFromEnv({ DBT_DBNAME: "wh", DBT_HOST: "h", DBT_PORT: "1" }))).toBe(
+      "wh@h:1",
+    );
+  });
+
+  it("reads DATABASE_URL as an endpoint too, so the two can be compared and NAMED", () => {
+    expect(databaseUrlEndpoint({ DATABASE_URL: "postgres://u:p@db.example:5432/app" })).toEqual({
+      host: "db.example",
+      port: 5432,
+      database: "app",
+    });
+    expect(databaseUrlEndpoint({})).toBeNull();
+  });
+
+  it("a missing audit schema names BOTH endpoints when they differ — the real cause, not 'store_failures must stay on'", () => {
+    const message = auditSchemaMissingMessage({
+      auditSchema: "public_dbt_test__audit",
+      dbt: dbtEndpointFromEnv({ DBT_DBNAME: "warehouse", DBT_HOST: "wh" }),
+      appUrl: databaseUrlEndpoint({ DATABASE_URL: "postgres://u:p@app:5432/appdb" }),
+      cause: "relation does not exist",
+    });
+    expect(message).toContain("warehouse@wh:5433");
+    expect(message).toContain("appdb@app:5432");
+    expect(message).toMatch(/looked in/);
+    // The wrong-cause sentence must NOT be the headline when the endpoints disagree.
+    expect(message.split("\n")[0]).not.toMatch(/store_failures/);
+  });
+
+  it("when the two endpoints AGREE, the honest remaining cause is store_failures — and it says so", () => {
+    const same = { DATABASE_URL: "postgres://switchboard:switchboard@localhost:5433/switchboard" };
+    const message = auditSchemaMissingMessage({
+      auditSchema: "public_dbt_test__audit",
+      dbt: dbtEndpointFromEnv({}),
+      appUrl: databaseUrlEndpoint(same),
+      cause: "relation does not exist",
+    });
+    expect(message).toMatch(/store_failures/);
+    expect(message).not.toMatch(/looked in/);
+  });
+});
