@@ -126,3 +126,58 @@ describe("sumSuiteLog reads the log CI actually produces", () => {
     expect(sumSuiteLog("\x1b[1m\x1b[32mnothing here\x1b[39m\x1b[22m")).toBe(0);
   });
 });
+
+// ── The dbt totals: the same class as the suite count, one category short ──────────────
+//
+// Cold review I1. The suite count has been mechanically derived since gate-H, because "a
+// number a human maintains beside a thing a machine changes" went wrong twice. The dbt
+// build's totals are the SAME shape of number and were never brought under the gate: they
+// are stated in four places, they change whenever a model, seed or data test is added,
+// and nothing checked them.
+//
+// It went wrong the moment something changed them. Adding the iso_4217_currencies seed
+// (one seed + its two column tests) moved the DAG from 98 nodes to 101; one of the four
+// sites was updated and three were not, so README contradicted ITSELF four lines of prose
+// apart and the RUNBOOK told an operator to expect a total the pipeline no longer prints
+// — which inverts the exact failure that sentence exists to prevent.
+//
+// This block is the internal-consistency half, which needs no dbt run and so reds on a
+// developer's machine the moment the four sites disagree. The other half — comparing them
+// to what dbt ACTUALLY printed — lives in scripts/verify-doc-counts.ts, for the same
+// reason the suite count does: a test cannot run the build it describes.
+
+const runbook = repoFile("RUNBOOK.md");
+const DBT_DOCS: ReadonlyArray<[string, string]> = [
+  ["README.md", readme],
+  ["RUNBOOK.md", runbook],
+  ["KNOWN-ISSUES.md", knownIssues],
+];
+
+describe("the dbt build's totals are one number stated in four places, not four numbers", () => {
+  it("every `N build steps (M models, S seeds, T data tests)` claim in the docs states the same four numbers", () => {
+    const claims = DBT_DOCS.flatMap(([file, text]) =>
+      [...text.matchAll(/(\d+) dbt build steps \((\d+) models, (\d+) seeds, (\d+) data tests\)/g)].map(
+        (m) => ({ file, claim: m[0].slice(0, 80) }),
+      ),
+    );
+    expect(claims.length, "no dbt step claim found anywhere — this pin would be vacuous").toBeGreaterThanOrEqual(2);
+    expect(new Set(claims.map((c) => c.claim)).size, `dbt step claims disagree: ${JSON.stringify(claims, null, 1)}`).toBe(1);
+  });
+
+  it("every `PASS=… WARN=… ERROR=…` claim in the docs states the same result", () => {
+    const claims = DBT_DOCS.flatMap(([file, text]) =>
+      [...text.matchAll(/PASS=(\d+) WARN=(\d+) ERROR=(\d+)/g)].map((m) => ({ file, claim: m[0] })),
+    );
+    expect(claims.length, "no dbt result claim found anywhere — this pin would be vacuous").toBeGreaterThanOrEqual(3);
+    expect(new Set(claims.map((c) => c.claim)).size, `dbt result claims disagree: ${JSON.stringify(claims, null, 1)}`).toBe(1);
+  });
+
+  it("every `TOTAL=…` claim agrees with the step count stated beside it", () => {
+    const totals = DBT_DOCS.flatMap(([, text]) => [...text.matchAll(/TOTAL=(\d+)/g)].map((m) => Number(m[1])));
+    const steps = DBT_DOCS.flatMap(([, text]) =>
+      [...text.matchAll(/(\d+) dbt build steps/g)].map((m) => Number(m[1])),
+    );
+    expect(totals.length, "no TOTAL= claim found — vacuous").toBeGreaterThanOrEqual(1);
+    expect(new Set([...totals, ...steps]).size, `dbt TOTAL= and 'build steps' disagree: totals ${totals}, steps ${steps}`).toBe(1);
+  });
+});
