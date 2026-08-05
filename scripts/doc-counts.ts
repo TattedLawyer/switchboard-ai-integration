@@ -363,3 +363,83 @@ export function readmePropertyClaim(markdown: string): number | null {
   const m = /(\d+) seeded fast-check properties/.exec(markdown);
   return m ? Number(m[1]) : null;
 }
+
+// ── The gate's own command line ────────────────────────────────────────────────────────
+//
+// Cold review M4. Every flag was read with `argv.indexOf("--flag")`, which cannot tell
+// "not asked for" from "asked for, misspelled" — so `--dbt-log` (the spelling our own
+// RUNBOOK published) ran the weaker consistency-only mode and exited 0. A verification
+// gate that silently downgrades on a typo is worse than the drift it exists to catch: it
+// issues a green tick for a check it never ran.
+//
+// So parsing is EXHAUSTIVE rather than by-lookup: every token must be consumed by a known
+// option, and anything left over is an error naming itself. The weaker modes stay
+// reachable by OMITTING a flag — a choice — never by misspelling one — a mistake.
+
+export interface DocCountArgs {
+  suiteLog?: string;
+  dbtArtifacts?: string;
+}
+
+export const KNOWN_FLAGS = ["--suite-log", "--dbt-artifacts"] as const;
+
+/** Throws on anything unrecognized, on a flag given twice, and on a flag missing its
+ *  value. Never returns a partially-understood command line. */
+export function parseDocCountArgs(argv: readonly string[]): DocCountArgs {
+  const out: DocCountArgs = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    const takeValue = (): string => {
+      const v = argv[i + 1];
+      if (v === undefined || v.startsWith("--")) {
+        throw new Error(`${token} needs a value (got ${v === undefined ? "nothing" : JSON.stringify(v)})`);
+      }
+      i += 1;
+      return v;
+    };
+    switch (token) {
+      case "--suite-log":
+        if (out.suiteLog !== undefined) throw new Error("--suite-log given twice");
+        out.suiteLog = takeValue();
+        break;
+      case "--dbt-artifacts":
+        if (out.dbtArtifacts !== undefined) throw new Error("--dbt-artifacts given twice");
+        out.dbtArtifacts = takeValue();
+        break;
+      default:
+        throw new Error(
+          `unrecognized argument ${JSON.stringify(token)}. Known options: ${KNOWN_FLAGS.join(", ")}. ` +
+            "Omitting a flag runs the weaker check deliberately; MISSPELLING one used to do it silently, " +
+            "which is why this is now an error.",
+        );
+    }
+  }
+  return out;
+}
+
+// ── Two more counts README states about the tree ───────────────────────────────────────
+// Cold review M5. Same treatment as the rest: derived, not hand-verified.
+
+/** dbt staging models on disk. README calls them "9 staging views", which is what they
+ *  are — every model under models/staging materializes as a view. */
+export function countStagingModels(fileNames: readonly string[]): number {
+  return fileNames.filter((f) => f.endsWith(".sql")).length;
+}
+export function readmeStagingClaim(markdown: string): number | null {
+  const m = /(\d+) staging views/.exec(markdown);
+  return m ? Number(m[1]) : null;
+}
+
+/** Mock SOURCE servers: every workspace under mocks/ except `core`, which is the shared
+ *  library (`@switchboard/mock-core`) the same README sentence names separately — it
+ *  serves nothing. Excluding it by name rather than by counting directories is the whole
+ *  point: a future non-server workspace under mocks/ must force this decision again
+ *  instead of quietly inflating the number. */
+export const NON_SERVER_MOCK_WORKSPACES = ["core"] as const;
+export function countMockSourceServers(dirNames: readonly string[]): number {
+  return dirNames.filter((d) => !(NON_SERVER_MOCK_WORKSPACES as readonly string[]).includes(d)).length;
+}
+export function readmeMockServerClaim(markdown: string): number | null {
+  const m = /(\w+) mock source servers/.exec(markdown);
+  return m ? (NUMBER_WORDS[m[1]] ?? Number(m[1]) ?? null) : null;
+}

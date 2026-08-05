@@ -13,7 +13,7 @@
 // sentences are quoted inside the pin, so the edit that falsifies one reds a test whose
 // failure message points at the doc.
 import { describe, expect, it } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -28,6 +28,11 @@ import {
   countSuiteWorkspaces,
   readmePropertyClaim,
   readmeWorkspaceClaim,
+  countMockSourceServers,
+  countStagingModels,
+  parseDocCountArgs,
+  readmeMockServerClaim,
+  readmeStagingClaim,
   readDbtClaims,
   dbtClaimFailures,
 } from "../../scripts/doc-counts.js";
@@ -343,3 +348,37 @@ describe("verify-doc-counts refuses an option it does not recognize, instead of 
     expect(out).toContain("doc counts PASS");
   });
 }, 60_000);
+
+describe("parseDocCountArgs — exhaustive, so a typo can never buy a weaker check", () => {
+  it("accepts the two real flags, in any order", () => {
+    expect(parseDocCountArgs(["--suite-log", "a.log", "--dbt-artifacts", "t"])).toEqual({ suiteLog: "a.log", dbtArtifacts: "t" });
+    expect(parseDocCountArgs(["--dbt-artifacts", "t"])).toEqual({ dbtArtifacts: "t" });
+    expect(parseDocCountArgs([])).toEqual({}); // the deliberate weaker mode
+  });
+
+  it("refuses the unknown, the doubled, the value-less and the stray — naming the token and the real options", () => {
+    expect(() => parseDocCountArgs(["--dbt-log", "t"])).toThrow(/--dbt-log[\s\S]*--dbt-artifacts/);
+    expect(() => parseDocCountArgs(["--suite-logs", "a"])).toThrow(/--suite-logs/);
+    expect(() => parseDocCountArgs(["warehouse/target"])).toThrow(/unrecognized/);
+    expect(() => parseDocCountArgs(["--suite-log", "a", "--suite-log", "b"])).toThrow(/twice/);
+    expect(() => parseDocCountArgs(["--suite-log"])).toThrow(/needs a value/);
+    expect(() => parseDocCountArgs(["--suite-log", "--dbt-artifacts", "t"])).toThrow(/needs a value/);
+  });
+});
+
+describe("the two tree counts README states (cold review M5)", () => {
+  it("'N staging views' matches the models on disk", () => {
+    const dir = fileURLToPath(new URL("../../warehouse/models/staging/", import.meta.url));
+    expect(readmeStagingClaim(readme)).toBe(countStagingModels(readdirSync(dir)));
+    expect(countStagingModels(["a.sql", "b.sql", "schema.yml"])).toBe(2); // yml is not a model
+  });
+
+  it("'N mock source servers' excludes mock-core BY NAME — it is the shared library, not a server", () => {
+    const dir = fileURLToPath(new URL("../../mocks/", import.meta.url));
+    const dirs = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    expect(readmeMockServerClaim(readme)).toBe(countMockSourceServers(dirs));
+    // Named exclusion, not "count minus one": a future non-server workspace under mocks/
+    // must force the decision again rather than quietly inflating the published number.
+    expect(countMockSourceServers(["core", "billing", "support"])).toBe(2);
+  });
+});

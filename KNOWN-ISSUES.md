@@ -35,7 +35,7 @@ without changing this table does not go green.
 
 | | Count | Derivation |
 |---|---|---|
-| **Open defects** | **31** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Open defects** | **32** | Part II top-level bullets that name an `Owner:` and are not struck |
 | **Design disclosures** | **40** | Part I top-level bullets |
 | **Paid** (struck entries) | **47** | Part III struck bullets, plus the cosmetic/low list |
 
@@ -996,6 +996,31 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   *Owner: the Phase-4 health/metrics work. Trigger: whenever that lands. Reason
   for deferral: a per-cycle reachability call changes the failure semantics of the
   entire scheduled backfill path, which is not a close-wave change.*
+
+- **README's demo event counts are the last hand-maintained numbers in the docs**
+  *(cold review M6)* — `README.md` states "560 events across 4 sources: hubcrm 300 ops,
+  stripefeed 100, casebus 80, support 80". Accurate at head, and the only machine-changed
+  doc number left without a mechanical check now that the suite count, the dbt totals
+  (steps / models / seeds / data tests / PASS / WARN / ERROR), the workspace count, the
+  fast-check property count, the staging-view count, the mock-server count and the
+  register scoreboard are all derived and CI-gated.
+
+  Two things this entry corrects, because the PRE-3 pass wrote both of them down wrongly
+  and a wrong reason is worse than an open item: (a) it claimed `check-demo.sh` validates
+  the numbers — it does not. That script asserts `ledger == raw == journal` **per source**
+  and non-zero for the pull paradigm; it never compares against an absolute count, so
+  every one of these figures could drift while it stayed green. (b) It claimed the
+  numbers were ungateable here. They are literals in `demo.sh` (`{"count": 100}`,
+  `{"count": 80}`, the `210+20+70` hubcrm chunking), so the same source-grep derivation
+  already used for the fast-check property count would reach them without running
+  anything.
+
+  *Owner: CLOSE-4. Reason for deferral: the honest gate reads the counts `demo.sh`
+  actually POSTs and compares them to what the run ingests, and the hard rules forbid
+  running `demo.sh` (port conflict) — so a grep-only gate would pin the literals to each
+  other and prove nothing about the pipeline, which is the vacuity class this repo keeps
+  paying for. Land it in the wave that can execute the full demo path and show the
+  output, alongside the warn-set detector item below, which defers for the same reason.*
 
 - **`scripts/demo.sh` does not run the warn-set detector** *(panel OPS-M5)* —
   `verify-dbt-warns.ts` runs only in `ci.yml`, so the local "run these before

@@ -80,7 +80,7 @@ universe permanently trips one warn-severity test on purpose (`assert_amounts_pl
 row `DEMO-CH-0001`) so that surface is proven to fire instead of passing vacuously; the
 expected total is `PASS=100 WARN=1 ERROR=0 TOTAL=101` — 101 dbt build steps
 (15 models, 3 seeds, 83 data tests), a figure this repo does NOT maintain by hand:
-`scripts/verify-doc-counts.ts --dbt-log` checks every site that states it against what
+`scripts/verify-doc-counts.ts --dbt-artifacts warehouse/target` checks every site that states it against what
 the build actually printed, in CI, right after the build prints it. Because dbt exits 0 on warnings, do
 NOT read the step's green tick as "clean" — CI runs `scripts/verify-dbt-warns.ts` right
 after `dbt build`, which fails if the warn set is anything other than exactly that test

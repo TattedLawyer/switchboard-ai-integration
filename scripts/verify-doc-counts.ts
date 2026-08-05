@@ -25,7 +25,7 @@
 // does, and re-running it to count it would double the CI's longest step to check a
 // number. Passing the log the real run produced also means the number checked is the
 // number that actually went green, not a second run's.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   dbtClaimFailures,
@@ -35,14 +35,30 @@ import {
   countSuiteWorkspaces,
   readmePropertyClaim,
   readmeWorkspaceClaim,
+  countMockSourceServers,
+  countStagingModels,
+  parseDocCountArgs,
+  readmeMockServerClaim,
+  readmeStagingClaim,
   readDbtClaims,
   readScoreboard,
   readmeTestCounts,
   sumSuiteLog,
 } from "./doc-counts.js";
 
-const repoFile = (rel: string): string =>
-  readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), "utf8");
+const repoPath = (rel: string): string => fileURLToPath(new URL(`../${rel}`, import.meta.url));
+const repoFile = (rel: string): string => readFileSync(repoPath(rel), "utf8");
+
+// Cold review M4: parse the command line EXHAUSTIVELY before doing any work. A flag this
+// script does not recognize is an error, not a silent fall-through to a weaker check —
+// `--dbt-log` (which our own RUNBOOK published) used to pass while verifying nothing.
+let args;
+try {
+  args = parseDocCountArgs(process.argv.slice(2));
+} catch (e) {
+  console.error(`doc counts FAILED: ${(e as Error).message}`);
+  process.exit(1);
+}
 
 const failures: string[] = [];
 
@@ -83,33 +99,28 @@ if (claims.length === 0) {
   failures.push(`README.md: its test-count claims disagree with each other: ${claims.join(", ")}`);
 }
 
-const logFlag = process.argv.indexOf("--suite-log");
-if (logFlag !== -1) {
-  const path = process.argv[logFlag + 1];
-  if (path === undefined) {
-    failures.push("--suite-log needs a path");
+if (args.suiteLog !== undefined) {
+  const path = args.suiteLog;
+  const total = sumSuiteLog(readFileSync(path, "utf8"));
+  if (total === 0) {
+    failures.push(
+      `${path}: no "Tests N passed" lines — this is not a full \`npm test\` log, and a zero ` +
+        "sum must not read as agreement with a README that claims zero tests",
+    );
+  } else if (claims.length > 0 && claims[0] !== total) {
+    failures.push(
+      `README.md claims ${claims[0]} tests; the suite log sums to ${total}. ` +
+        "Update all three README claims to the measured number.",
+    );
   } else {
-    const total = sumSuiteLog(readFileSync(path, "utf8"));
-    if (total === 0) {
-      failures.push(
-        `${path}: no "Tests N passed" lines — this is not a full \`npm test\` log, and a zero ` +
-          "sum must not read as agreement with a README that claims zero tests",
-      );
-    } else if (claims.length > 0 && claims[0] !== total) {
-      failures.push(
-        `README.md claims ${claims[0]} tests; the suite log sums to ${total}. ` +
-          "Update all three README claims to the measured number.",
-      );
-    } else {
-      console.log(`README test count: ${total} — matches the suite log at ${path}`);
-    }
-    const wsClaim = readmeWorkspaceClaim(readme);
-    const wsReal = countSuiteWorkspaces(readFileSync(path, "utf8"));
-    if (wsClaim === null) {
-      failures.push("README.md: the 'across N workspaces' claim is gone — this gate has nothing to check");
-    } else if (wsReal > 0 && wsClaim !== wsReal) {
-      failures.push(`README.md claims ${wsClaim} workspaces; the suite log holds ${wsReal} workspace blocks`);
-    }
+    console.log(`README test count: ${total} — matches the suite log at ${path}`);
+  }
+  const wsClaim = readmeWorkspaceClaim(readme);
+  const wsReal = countSuiteWorkspaces(readFileSync(path, "utf8"));
+  if (wsClaim === null) {
+    failures.push("README.md: the 'across N workspaces' claim is gone — this gate has nothing to check");
+  } else if (wsReal > 0 && wsClaim !== wsReal) {
+    failures.push(`README.md claims ${wsClaim} workspaces; the suite log holds ${wsReal} workspace blocks`);
   }
 } else {
   console.log("(no --suite-log: README's test count was checked for internal consistency only)");
@@ -126,6 +137,28 @@ if (propClaim === null) {
   );
 }
 
+// M5: two more README counts about the tree.
+const stagingClaim = readmeStagingClaim(readme);
+const stagingReal = countStagingModels(readdirSync(repoPath("warehouse/models/staging")));
+if (stagingClaim === null) {
+  failures.push("README.md: the 'N staging views' claim is gone — this gate has nothing to check");
+} else if (stagingClaim !== stagingReal) {
+  failures.push(`README.md claims ${stagingClaim} staging views; warehouse/models/staging holds ${stagingReal} models`);
+}
+
+const mockClaim = readmeMockServerClaim(readme);
+const mockReal = countMockSourceServers(
+  readdirSync(repoPath("mocks"), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name),
+);
+if (mockClaim === null) {
+  failures.push("README.md: the 'N mock source servers' claim is gone — this gate has nothing to check");
+} else if (mockClaim !== mockReal) {
+  failures.push(
+    `README.md claims ${mockClaim} mock source servers; mocks/ holds ${mockReal} server workspaces ` +
+      "(mock-core is the shared library, excluded by name)",
+  );
+}
+
 // ---- 3. the dbt totals, against each other and against the build ----------------
 const dbtClaims = readDbtClaims([
   ["README.md", readme],
@@ -138,27 +171,22 @@ const dbtClaims = readDbtClaims([
 // run_results deliberately omits. Parsing the human-readable summary instead would rebuild
 // the ANSI fragility that took sumSuiteLog red in its first CI run. Same artifact, same
 // directory, as scripts/verify-dbt-warns.ts already uses.
-const artifactFlag = process.argv.indexOf("--dbt-artifacts");
 let liveDbt = null;
-if (artifactFlag !== -1) {
-  const dir = process.argv[artifactFlag + 1];
-  if (dir === undefined) {
-    failures.push("--dbt-artifacts needs a directory (dbt's target/, holding run_results.json and manifest.json)");
-  } else {
-    try {
-      liveDbt = readDbtTotals(
-        JSON.parse(readFileSync(`${dir}/run_results.json`, "utf8")),
-        JSON.parse(readFileSync(`${dir}/manifest.json`, "utf8")),
-      );
-      console.log(
-        `dbt totals from ${dir}: ${liveDbt.steps} steps (${liveDbt.models} models, ${liveDbt.seeds} seeds, ` +
-          `${liveDbt.dataTests} data tests) — PASS=${liveDbt.pass} WARN=${liveDbt.warn} ERROR=${liveDbt.error}`,
-      );
-    } catch (e) {
-      // Fails closed on purpose: an absent, half-written or schema-moved artifact must
-      // never read as "the docs agree with reality".
-      failures.push(`could not read dbt artifacts from ${dir}: ${(e as Error).message}`);
-    }
+if (args.dbtArtifacts !== undefined) {
+  const dir = args.dbtArtifacts;
+  try {
+    liveDbt = readDbtTotals(
+      JSON.parse(readFileSync(`${dir}/run_results.json`, "utf8")),
+      JSON.parse(readFileSync(`${dir}/manifest.json`, "utf8")),
+    );
+    console.log(
+      `dbt totals from ${dir}: ${liveDbt.steps} steps (${liveDbt.models} models, ${liveDbt.seeds} seeds, ` +
+        `${liveDbt.dataTests} data tests) — PASS=${liveDbt.pass} WARN=${liveDbt.warn} ERROR=${liveDbt.error}`,
+    );
+  } catch (e) {
+    // Fails closed on purpose: an absent, half-written or schema-moved artifact must
+    // never read as "the docs agree with reality".
+    failures.push(`could not read dbt artifacts from ${dir}: ${(e as Error).message}`);
   }
 } else {
   console.log("(no --dbt-artifacts: the dbt totals were checked for cross-document consistency only)");
