@@ -201,8 +201,9 @@ quarantined-current rows, and `extra` empties on the next catchUp.
 **The nudge door** (`POST /connectors/sheets/nudge`) is the sheets paradigm's
 only push surface: a thin, HMAC-signed "read the sheet soon" hint
 (`WEBHOOK_SECRET_SHEETS`, same timestamped scheme as the event doors). 404 =
-this deployment never configured sheets (no secret resolvable — the route is
-effectively absent, and an anonymous probe can never mint a 500 here); 401 =
+this deployment does not serve sheets — either `sheets` is absent from
+`INGEST_SOURCES` (PRE-3) or no secret resolves; either way the route is
+effectively absent, and an anonymous probe can never mint a 500 here; 401 =
 signature invalid (rejected outright — nudges carry no data worth quarantining);
 503 = this process hosts no sheets connector (the hint could have no effect);
 202 = accepted and an early catchUp was attempted (a failed attempt still answers 202 —
@@ -516,6 +517,7 @@ backup timestamp and now — not unbounded ledger replay from empty.
 | Ports 4002–4008 / 5433 busy | `lsof -ti:4002,4003,4004,4005,4006,4007,4008 \| xargs kill`; another Postgres on 5433 → change compose mapping. (4001 is the retired 2a crm mock's port — nothing should be listening there) |
 | demo/chaos FAIL with count mismatch | Worker not draining — run `npm run replay -w ingest -- --queues`, which prints per source `ready` (the true backlog: queued minus deferred), `deferred`, `active`, `dlq` and the age of the oldest pending job, counted live rather than from pg-boss's periodically-cached counters. A non-zero `ready` with a rising `oldest_pending` is a stuck worker; a non-zero `dlq` is a poison payload — `--list` then names its reason. The scripts' bounded waits also print both counts on timeout |
 | migration checksum drift (`… has CHANGED since it was applied`) | The database and the repository disagree about what schema exists. Surfaced as an uncaught throw with a stack; the message itself names the file, both checksums and the remedy. Do NOT edit the applied migration — add a new one. If the drift is a local scratch database, drop and re-migrate it |
+| 404 on every webhook for one source, body `source not served by this deployment` | That source is registered but not in this deployment's `INGEST_SOURCES` (PRE-3 #15). The door is deliberately absent — accepting would ingest into a lane no backfill and no reconcile covers. Add the source to `INGEST_SOURCES` (and set its `WEBHOOK_SECRET_<SOURCE>`) on the receiver, or point the vendor at the deployment that does serve it. A body of `unknown source` instead means the path names a source that is not in the registry at all |
 | 401 on every webhook for one source | `WEBHOOK_SECRET_<SOURCE>` mismatch between that mock and ingest environments (each source verifies with its own secret — check the right one) |
 | 401s that appear only under load or across machines | Signature replay window (±300s, 2a.3): the timestamp is signed, so sender/receiver clocks more than 5 minutes apart reject valid traffic — check NTP/clock sync |
 | Process throws `... is not set — refusing to fall back` at boot | Fail-closed secrets (2a.3): set the named env var, or `ALLOW_DEV_SECRETS=1` for local demo use only |

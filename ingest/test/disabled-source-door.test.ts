@@ -87,9 +87,11 @@ describe("PRE-3 #15 — the event door is mounted over the ENABLED sources, not 
     const enabled: Source[] = ["billing", "crm"];
     const ev = JSON.stringify({
       event_id: "evt-pre3-enabled",
-      event_type: "invoice.paid",
+      event_type: "invoice.created",
       occurred_at: new Date().toISOString(),
-      data: { id: "DEMO-1", amount: 1 },
+      // amount_cents present: the L1 numeric contract declares it required for
+      // invoice.created, and this case must prove the event really STORED.
+      data: { id: "DEMO-PRE3-0001", amount_cents: 12500 },
     });
     const ok = await postTo(enabled, "/webhooks/billing", ev, signBody(ev, secretForSource("billing")));
     expect(ok.status).toBe(202);
@@ -107,7 +109,7 @@ describe("PRE-3 #15 — the event door is mounted over the ENABLED sources, not 
       event_id: "evt-pre3-disabled",
       event_type: "case.created",
       occurred_at: new Date().toISOString(),
-      data: { id: "DEMO-2" },
+      data: { id: "DEMO-PRE3-0002" },
     });
     // Correctly signed, and STILL refused — the door is absent, not unauthenticated.
     const reply = await postTo(enabled, "/webhooks/support", ev, signBody(ev, secretForSource("support")));
@@ -185,6 +187,7 @@ describe("PRE-3 #15 — DLQ scans deliberately keep iterating the whole registry
   it("is a decision recorded in the source, so a future sweep does not 'finish the job'", async () => {
     const { readFileSync } = await import("node:fs");
     const queueSrc = readFileSync(new URL("../src/queue.ts", import.meta.url), "utf8");
-    expect(queueSrc).toMatch(/PRE-3[\s\S]{0,600}?disabled source's existing dead letters still need draining/);
+    expect(queueSrc).toMatch(/PRE-3 \(#15\), DELIBERATE AND NOT AN OVERSIGHT/);
+    expect(queueSrc).toMatch(/existing dead letters still need\n\/\/ draining/);
   });
 });

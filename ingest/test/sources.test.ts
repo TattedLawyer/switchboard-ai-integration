@@ -1,5 +1,14 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SOURCES, isSource, baseUrlFor, enabledSources, ledgerPathFor } from "../src/sources.js";
+
+// vitest.config.ts declares INGEST_SOURCES for the whole workspace (PRE-3 #15 — the
+// doors are mounted over the served set, so every door suite needs a deployment). This
+// file is the one that tests the PARSER, so it starts each case from a clean slate:
+// "unset" is a value this module has to distinguish, and it cannot if the harness always
+// supplies one.
+beforeEach(() => {
+  delete process.env.INGEST_SOURCES;
+});
 
 afterEach(() => {
   delete process.env.INGEST_SOURCES;

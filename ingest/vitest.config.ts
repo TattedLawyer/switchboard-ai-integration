@@ -14,6 +14,18 @@ export default defineConfig({
     include: ["test/**/*.test.ts"],
     testTimeout: 30_000,
     hookTimeout: 120_000,
-    env: { ALLOW_DEV_SECRETS: "1" },
+    // INGEST_SOURCES (PRE-3 #15): the webhook doors are now mounted over the sources a
+    // deployment actually serves, so a test that posts to `/webhooks/hubcrm` has to say
+    // which deployment it is. Declared ONCE here, as the whole registry, rather than
+    // nineteen times across the door/connector suites: "the test deployment serves every
+    // registered source" is a single visible fact, and scattering it would make the next
+    // source's registration a nineteen-file edit. The door BEHAVIOUR itself is never
+    // taken from this default — `test/disabled-source-door.test.ts` passes its enabled
+    // set explicitly per case, so enabled/disabled/unregistered are pinned against
+    // stated inputs and cannot be quietly satisfied by whatever the environment holds.
+    env: {
+      ALLOW_DEV_SECRETS: "1",
+      INGEST_SOURCES: "crm,billing,support,sheets,stripefeed,hubcrm,casebus",
+    },
   },
 });

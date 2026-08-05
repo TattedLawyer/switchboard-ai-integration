@@ -3,7 +3,7 @@ import type pg from "pg";
 import { jsonbUnstorableReason, quarantineEvent } from "./quarantine.js";
 import { ingestEvent } from "./ingest-event.js";
 import { classifyRejection, secretForSource, verifySignature } from "./hmac.js";
-import { isSource, type Source } from "./sources.js";
+import { enabledSources, isSource, type Source } from "./sources.js";
 import { eventSchema, type SourceEvent } from "./event-schema.js";
 import { handleHubcrmBatch } from "./connectors/hub-hydrate.js";
 // Compatibility re-export: backfill.ts, ingest-event.ts, the connectors and several tests
@@ -38,9 +38,23 @@ export function createIngestApp(
      *  the service wiring's shared interval runner reports nothing (void: a coalesced
      *  nudge skips, and this door never used the count anyway — it only awaits). */
     sheetsNudge?: () => Promise<number | void>;
+    /**
+     * PRE-3 (#15): the sources THIS deployment actually serves. Both push doors are
+     * mounted over it, so a registered-but-disabled source is an absent route (404)
+     * rather than an armed door ingesting into a lane no backfill and no reconcile
+     * covers. Defaults to `enabledSources()` — the same resolution `main.ts` makes at
+     * boot — so a caller that says nothing gets the deployment's real configuration
+     * rather than the whole registry.
+     *
+     * Safe to read here only because batch A made a mistyped or empty INGEST_SOURCES a
+     * boot refusal: an `enabledSources()` that can silently return `[]` would turn this
+     * into "every door vanishes" on one transposed letter.
+     */
+    enabledSources?: readonly Source[];
   }
 ): express.Express {
   const app = express();
+  const served = new Set<Source>(opts?.enabledSources ?? enabledSources());
   // B8: body handling is ROUTE-scoped, attached per POST route below, so routing
   // decides before body syntax does — a request to an unknown `:source` 404s with the
   // parser never run (Express's registration-order contract; research §B8). The three
@@ -89,6 +103,18 @@ export function createIngestApp(
     const sourceParam = typeof req.params.source === "string" ? req.params.source : "";
     if (!isSource(sourceParam)) {
       return res.status(404).json({ error: "unknown source" });
+    }
+    // PRE-3 (#15): registered, but not served HERE. Same status, different sentence —
+    // an operator reading a vendor's delivery log must be able to tell "this source
+    // never existed" from "this deployment turned it off". 404 rather than 410/503/403:
+    // RFC 9110 sanctions 404 for a server "unwilling to disclose that [a representation]
+    // exists", while 410 would falsely claim permanence about a reversible env setting,
+    // 503 would falsely claim a self-clearing condition, and 403 is the code the spec
+    // tells you not to use when hiding existence. Checked BEFORE the signature and
+    // before the parser, so an anonymous POST is a quiet 404 rather than the 500 +
+    // server-side log a missing secret used to produce from inside the handler.
+    if (!served.has(sourceParam)) {
+      return res.status(404).json({ error: "source not served by this deployment" });
     }
     // A5: sheets is registered (deployment surface: base URL, secret, port) but its raw
     // lane is CONNECTOR-BORN — every event_id is manufactured from row content, and
@@ -217,6 +243,15 @@ export function createIngestApp(
   // D3) — never a new crypto copy.
   app.post("/connectors/sheets/nudge", mediaTypeGate, jsonParser, parserErrors, async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     try {
+      // PRE-3 (#15), FAMILY SWEEP: `server.ts` mounts exactly two push doors, and this
+      // is the second. Its existing 404 below answers a DIFFERENT question — "no secret
+      // resolvable" — so a deployment with WEBHOOK_SECRET_SHEETS configured and sheets
+      // absent from INGEST_SOURCES kept an armed nudge that could drive a catchUp for a
+      // source it had turned off. Same rule, same status, same sentence as the event
+      // door, checked first for the same reason.
+      if (!served.has("sheets")) {
+        return res.status(404).json({ error: "source not served by this deployment" });
+      }
       // Cold review I3: resolve the secret FIRST, and treat "no secret resolvable" as
       // "this deployment never configured sheets" — the route is effectively absent, so
       // answer 404 (mirroring the unknown-source shape above). Before this, the

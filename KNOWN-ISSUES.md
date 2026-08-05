@@ -35,9 +35,9 @@ without changing this table does not go green.
 
 | | Count | Derivation |
 |---|---|---|
-| **Open defects** | **38** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Open defects** | **37** | Part II top-level bullets that name an `Owner:` and are not struck |
 | **Design disclosures** | **40** | Part I top-level bullets |
-| **Paid** (struck entries) | **39** | Part III struck bullets, plus the cosmetic/low list |
+| **Paid** (struck entries) | **40** | Part III struck bullets, plus the cosmetic/low list |
 
 Why the owner predicate rather than a subtraction: Part II's own entry rule is that
 every open entry names an owner, so the four *paid* sub-items of the multi-tenancy
@@ -887,27 +887,6 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   therefore its own RED. Mitigating meanwhile: `sheets` is opt-in, deliberately out
   of `demo.sh` and absent from the CI fixture, so no shipped proof depends on it.*
 
-- **A disabled source's webhook door stays armed** *(gate-H I11)* —
-  `server.ts` admits any source in the registry (`isSource`), and `queue.ts`
-  registers workers and scans DLQs over `SOURCES`, not `enabledSources()`;
-  `enabledSources()` gates only backfill/hydration and reconcile. On any non-default
-  `INGEST_SOURCES` that gives two conditions. With the secret still configured,
-  `/webhooks/<disabled-source>` keeps accepting and ingesting into a lane **no
-  backfill and no reconcile covers** — ingest with no zero-loss surface behind it.
-  With the secret absent, `secretForSource` throws inside the handler, the catch-all
-  answers 500 and logs server-side on **every anonymous POST** — the prober-noise
-  class the sheets nudge door was fixed for, whose fix comment asserts "the event
-  doors never had this shape because their secrets are boot-asserted exactly when
-  their source is enabled", which is false for a *disabled* source's still-mounted
-  door.
-
-  *Owner: CLOSE-4, and it is the one on this list with a security edge. Fix: mount
-  event doors over `enabledSources()` and answer 404 for a registered-but-disabled
-  source, mirroring the nudge door's absence-shaped refusal. Reason for deferral: it
-  changes the status code a deployment's vendors see for a source it turned off, so
-  it needs its own RED across all three cases (enabled, disabled-with-secret,
-  disabled-without) rather than a drive-by at a close.*
-
 - **`DBT_SCHEMA` is a reader-side alias that reads like a deployment knob**
   *(gate-H I10)* — `agent/src/host/schema.ts`, `ingest/src/migrate.ts`,
   `scripts/verify-identity.ts` and the MCP/report SQL all honour it;
@@ -1688,6 +1667,39 @@ it — is the part worth reading.
   `server.ts` (the event door and the sheets nudge door), so a worker loses nothing.
   The dangerous direction is pinned in the same RED — `receiver` **and** `all` still
   fail closed with the aggregated error naming every missing variable.
+
+- ~~**A disabled source's webhook door stays armed** *(gate-H I11)* —
+  `server.ts` admits any source in the registry (`isSource`), and `queue.ts`
+  registers workers and scans DLQs over `SOURCES`, not `enabledSources()`;
+  `enabledSources()` gates only backfill/hydration and reconcile. On any non-default
+  `INGEST_SOURCES` that gives two conditions. With the secret still configured,
+  `/webhooks/<disabled-source>` keeps accepting and ingesting into a lane **no
+  backfill and no reconcile covers** — ingest with no zero-loss surface behind it.
+  With the secret absent, `secretForSource` throws inside the handler, the catch-all
+  answers 500 and logs server-side on **every anonymous POST** — the prober-noise
+  class the sheets nudge door was fixed for, whose fix comment asserts "the event
+  doors never had this shape because their secrets are boot-asserted exactly when
+  their source is enabled", which is false for a *disabled* source's still-mounted
+  door.~~
+  *Paid (PRE-3):* both push doors are now mounted over the deployment's served set. A
+  registered-but-disabled source answers **404** with its own sentence ("source not
+  served by this deployment"), distinguishable in text from the unregistered-source 404
+  that is unchanged. 404 rather than 410/503/403 on the specification: RFC 9110 sanctions
+  404 for a server "unwilling to disclose that [a representation] exists", while 410
+  falsely claims permanence about a reversible env setting, 503 falsely claims a
+  self-clearing condition, and 403 carries the spec's own instruction to use 404 instead
+  when hiding existence. Retry hazard cleared against real vendors before choosing —
+  Stripe bounds retries at three days and lists 404 among them, GitHub does not retry at
+  all, and the one non-retried code (2xx) would be a lie. The check runs before the
+  signature and before the parser, so the 500 + server-side log on an anonymous POST is
+  gone. **Family sweep:** `server.ts` mounts exactly two push doors and the second one —
+  the sheets nudge — had the same hole wearing a different mask, since its existing 404
+  answers "no secret resolvable" rather than "sheets is not enabled here"; both are fixed
+  and both are pinned. `queue.ts`'s four `SOURCES` loops deliberately do **not** follow,
+  and that decision is now recorded in `queue.ts` and pinned: a source disabled after
+  events dead-lettered still has a DLQ that must be drainable. Landed after the batch-A
+  boot refusal, without which a typo'd `INGEST_SOURCES` would have made every door
+  vanish silently.
 
 ## Cosmetic / low
 

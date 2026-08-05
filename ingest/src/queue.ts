@@ -6,6 +6,17 @@ import { SOURCES, type Source } from "./sources.js";
 
 // Per-source queues and DLQs (isolation: a poison billing job can never block CRM
 // ingestion, and DLQ depth is inspectable per source).
+//
+// PRE-3 (#15), DELIBERATE AND NOT AN OVERSIGHT: the four `for (const source of SOURCES)`
+// loops below — worker registration, DLQ depth, DLQ fetch and DLQ replay — keep
+// iterating the whole REGISTRY, while the webhook doors in `server.ts` were narrowed to
+// `enabledSources()` in the same wave. The asymmetry is the point. Narrowing the door
+// closes a hole: new ingest into a lane no backfill and no reconcile covers. Narrowing
+// the DRAIN would open a worse one — a disabled source's existing dead letters still need
+// draining, and turning a source off is very often exactly why an operator is going to
+// look at its DLQ. A drain surface that disappears the moment the source is disabled
+// would strand the events. Pinned in test/disabled-source-door.test.ts so a later
+// "finish the job" sweep has to argue with this comment first.
 export function queueName(source: Source): string {
   return `ingest-${source}`;
 }

@@ -280,7 +280,14 @@ async function main() {
         }
       : undefined;
 
-    app = createIngestApp(pool, deploymentTenantId, { enqueue, sheetsNudge: wiring?.sheetsNudge });
+    // PRE-3 (#15): the doors are mounted over the SAME resolved source list the runners
+    // and the secret assertion use — one resolution, so the door a vendor can reach and
+    // the lane a backfill/reconcile covers can never disagree.
+    app = createIngestApp(pool, deploymentTenantId, {
+      enqueue,
+      sheetsNudge: wiring?.sheetsNudge,
+      enabledSources: enabledSourceList,
+    });
     server = app.listen(port, () =>
       console.log(`ingest receiver listening on :${port} (role: ${ingestRole})`)
     );
