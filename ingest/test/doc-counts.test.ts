@@ -14,6 +14,7 @@
 // failure message points at the doc.
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   README_TEST_COUNT_CLAIMS,
@@ -291,3 +292,54 @@ describe("the other two README numbers about things a machine changes", () => {
     expect(countFastCheckProperties("describe('property 1: a', …) describe('property 1: b', …)")).toBe(1);
   });
 });
+
+// ── The gate's own command line ────────────────────────────────────────────────────────
+//
+// Cold review M4. RUNBOOK:83 told operators to run `--dbt-log`. That flag does not exist;
+// the real one is `--dbt-artifacts`. The wrong spelling did not fail — argv was scanned
+// with indexOf for each KNOWN flag, so an unknown one was simply never found, the gate
+// fell back to its weaker consistency-only mode, printed "(no --dbt-artifacts: …)" and
+// exited 0.
+//
+// That is worse than the wrong number the gate exists to catch. A verification gate that
+// SILENTLY DOWNGRADES on a typo hands out green ticks for checks it never ran, and the
+// operator's evidence that it ran is the exit code it just faked. Both flags had the
+// defect, so a misspelled --suite-log skipped the test-count check the same way.
+//
+// Decision: an unrecognized option is an ERROR. The fallback modes stay reachable — but
+// only by OMITTING a flag, which is a choice, never by misspelling one, which is a
+// mistake. Silence is reserved for what was deliberately not asked for.
+
+const runGate = (args: string[]): { code: number; out: string } => {
+  const r = spawnSync("npx", ["tsx", "scripts/verify-doc-counts.ts", ...args], {
+    cwd: fileURLToPath(new URL("../../", import.meta.url)),
+    encoding: "utf8",
+  });
+  return { code: r.status ?? -1, out: `${r.stdout}${r.stderr}` };
+};
+
+describe("verify-doc-counts refuses an option it does not recognize, instead of quietly running less", () => {
+  it("the RUNBOOK's old spelling --dbt-log now FAILS and names itself — it used to pass while checking nothing", () => {
+    const { code, out } = runGate(["--dbt-log", "warehouse/target"]);
+    expect(code, "an unknown flag must not exit 0").not.toBe(0);
+    expect(out).toContain("--dbt-log");
+    expect(out).toContain("--dbt-artifacts"); // names the real one, so the fix is in the failure
+  });
+
+  it("a misspelled --suite-log fails too — the same defect existed on both flags", () => {
+    const { code, out } = runGate(["--suite-logs", "/tmp/whatever.log"]);
+    expect(code).not.toBe(0);
+    expect(out).toContain("--suite-logs");
+  });
+
+  it("a stray positional argument fails — a path typed without its flag is the same mistake", () => {
+    const { code } = runGate(["warehouse/target"]);
+    expect(code).not.toBe(0);
+  });
+
+  it("the DELIBERATE weaker mode still works: omitting flags is a choice, not a typo", () => {
+    const { code, out } = runGate([]);
+    expect(code).toBe(0);
+    expect(out).toContain("doc counts PASS");
+  });
+}, 60_000);
