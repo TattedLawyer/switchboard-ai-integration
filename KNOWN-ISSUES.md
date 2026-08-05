@@ -445,7 +445,7 @@ leaves it is gone from the source forever.
 - **A green `dbt build` in CI means "ERROR=0 and WARN=1", not "no warnings".** The CI
   fixture deliberately seeds one above-bound charge (close F7) so the unlikely-value
   surface is proven to fire end-to-end in the built warehouse rather than passing
-  vacuously, so `dbt build` reports `PASS=97 WARN=1 ERROR=0 TOTAL=98` forever, naming
+  vacuously, so `dbt build` reports `PASS=100 WARN=1 ERROR=0 TOTAL=101` forever, naming
   `assert_amounts_plausible` and row `DEMO-CH-0001`. dbt exits 0 on warnings, so that
   permanent warn could mask a second one — `assert_unusable_amounts_flagged` is also
   warn-severity and currently 0 rows. The criterion is therefore MECHANICAL, not prose:
@@ -692,7 +692,7 @@ successful de-duplication. That is closed:
   maps to *multiple* canonicals and each tenant contributes exactly one. It is
   an over-merge guard, not a boundary guard. `customer_360` would sum both
   clients' revenue. Retrofitting means a partition in every join predicate and
-  group-by across ~14 models.
+  group-by across ~15 models.
 
   *Owner: unscheduled — the isolation-model decision in Part I §"What production would require" 1 gates all four. Trigger: the first multi-tenant engagement, or any deployment serving a second business from one instance.*
 

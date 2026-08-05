@@ -137,3 +137,229 @@ export function sumSuiteLog(log: string): number {
   const matches = [...plain.matchAll(/Tests\s+(?:(\d+) failed \| )?(\d+) passed/g)];
   return matches.reduce((s, m) => s + Number(m[1] ?? 0) + Number(m[2]), 0);
 }
+
+// ── The dbt build's totals ─────────────────────────────────────────────────────────────
+//
+// Cold review I1. Same class as the suite count, one category short: the dbt DAG's size is
+// stated in four doc sentences, it changes whenever a model, seed or data test is added,
+// and nothing checked it. Adding one seed moved it 98 → 101 and three of the four sites
+// went stale, including the RUNBOOK sentence an operator uses to decide the pipeline is
+// broken.
+//
+// READ FROM dbt's MACHINE-READABLE ARTIFACTS, not from its stdout. The first instinct was
+// to parse the `Finished running …` / `Done. PASS=…` summary lines, and that would have
+// rebuilt the exact defect the suite gate already paid for: `sumSuiteLog` shipped, went
+// green locally and red in its first CI run, because vitest colorizes and the pattern
+// could not span the ANSI escapes. dbt colorizes the same way. A gate that parses
+// human-readable output is a coin flip on an environment detail.
+//
+// dbt's own docs (https://docs.getdbt.com/reference/artifacts/run-results-json):
+// run_results.json is "Produced by: build, clone, compile, docs generate, retry, run,
+// seed, show, snapshot, test, run-operation", its `results` array holds one entry per node
+// with `unique_id` and `status`, and "only executed nodes appear in the run results" —
+// which is precisely what "N build steps" claims. The same page says that instead of the
+// whole node "only the `unique_id` is included. (The full `node` object is recorded in
+// manifest.json)", so resource_type is read from manifest.json by cross-reference, as
+// documented — NOT by splitting the unique_id on ".". The `<resource_type>.<package>.<name>`
+// shape is only demonstrated by example in dbt's docs, never specified, so relying on it
+// would be an undocumented-format inference; it was verified to agree on our artifact
+// (101/101 nodes, zero mismatches) and still not used, because a convention that happens
+// to hold is not a contract.
+//
+// In-repo precedent, deliberately matched: scripts/verify-dbt-warns.ts already gates on
+// run_results.json from the same warehouse/target directory.
+//
+// WHY THIS NEEDS THE RUN, stated rather than assumed. manifest.json is written by any
+// parsing command — `dbt parse` "doesn't connect to your warehouse"
+// (https://docs.getdbt.com/reference/commands/parse) — so a database-free node count is
+// available. It is the wrong number: manifest holds every resource in the project,
+// including analyses that `dbt build` never executes and a separate `disabled` array, so
+// turning it into "build steps" means re-implementing dbt's build-selection rules. A
+// second implementation of the thing being checked, drifting from the first, IS the defect
+// class here. run_results.json answers the question dbt itself answered.
+
+/** Artifact schema this gate was written and verified against. dbt's docs are explicit
+ *  that "Artifact versions may change in any minor version of dbt (v1.x.0). Each artifact
+ *  is versioned independently" (https://docs.getdbt.com/reference/artifacts/dbt-artifacts),
+ *  so the version is asserted rather than assumed: a dbt upgrade that moves the schema
+ *  fails HERE, naming itself, instead of silently producing a wrong count. CI pins
+ *  dbt-core exactly, so reaching this error is always a deliberate act. */
+export const RUN_RESULTS_SCHEMA = "https://schemas.getdbt.com/dbt/run-results/v6.json";
+
+export interface DbtTotals {
+  /** Executed nodes — the number dbt prints as TOTAL=. */
+  steps: number;
+  models: number;
+  seeds: number;
+  dataTests: number;
+  pass: number;
+  warn: number;
+  error: number;
+}
+
+/** Statuses dbt reports per node. Models/seeds report `success`; tests report `pass`,
+ *  `warn` or `fail`. dbt's printed `PASS=` aggregates `success` and `pass` — confirmed
+ *  empirically against our pinned dbt 1.12.0 (82 pass + 18 success = the printed PASS=100),
+ *  which is why the aggregation is written down here rather than left implicit. An
+ *  UNKNOWN status throws: a status this gate cannot classify must never be silently
+ *  dropped into a smaller count. */
+const PASS_STATUSES = new Set(["success", "pass"]);
+const WARN_STATUSES = new Set(["warn"]);
+const ERROR_STATUSES = new Set(["error", "fail", "runtime error"]);
+const SKIP_STATUSES = new Set(["skipped", "noop", "no-op", "partial success", "reused"]);
+
+/** Reads dbt's artifacts. Throws — never returns a plausible-but-wrong number — when the
+ *  schema moved, a node is unaccounted for, or a status cannot be classified. */
+export function readDbtTotals(runResults: unknown, manifest: unknown): DbtTotals {
+  const rr = runResults as { metadata?: { dbt_schema_version?: string }; results?: unknown[] };
+  const mf = manifest as { nodes?: Record<string, { resource_type?: string }> };
+  const schema = rr?.metadata?.dbt_schema_version;
+  if (schema !== RUN_RESULTS_SCHEMA) {
+    throw new Error(
+      `run_results.json is schema ${JSON.stringify(schema)}; this gate was verified against ` +
+        `${RUN_RESULTS_SCHEMA}. dbt versions artifacts independently and may change them in any ` +
+        "minor release — re-verify the field meanings, then update RUN_RESULTS_SCHEMA.",
+    );
+  }
+  if (!Array.isArray(rr.results)) throw new Error("run_results.json has no `results` array");
+  if (!mf?.nodes) throw new Error("manifest.json has no `nodes` — resource types are read from it by cross-reference");
+  const totals: DbtTotals = { steps: rr.results.length, models: 0, seeds: 0, dataTests: 0, pass: 0, warn: 0, error: 0 };
+  if (totals.steps === 0) throw new Error("run_results.json executed zero nodes — that is not a build this gate can check");
+  for (const raw of rr.results) {
+    const r = raw as { unique_id?: string; status?: string };
+    const node = r.unique_id === undefined ? undefined : mf.nodes[r.unique_id];
+    if (!node) {
+      throw new Error(`run_results.json names ${JSON.stringify(r.unique_id)}, which manifest.json does not carry`);
+    }
+    switch (node.resource_type) {
+      case "model": totals.models += 1; break;
+      case "seed": totals.seeds += 1; break;
+      case "test": totals.dataTests += 1; break;
+      case "snapshot": case "analysis": case "operation": break; // executed, but no doc claims them
+      default:
+        throw new Error(`unclassified dbt resource_type ${JSON.stringify(node.resource_type)} on ${r.unique_id}`);
+    }
+    const status = r.status ?? "";
+    if (PASS_STATUSES.has(status)) totals.pass += 1;
+    else if (WARN_STATUSES.has(status)) totals.warn += 1;
+    else if (ERROR_STATUSES.has(status)) totals.error += 1;
+    else if (!SKIP_STATUSES.has(status)) {
+      throw new Error(`unclassified dbt status ${JSON.stringify(status)} on ${r.unique_id} — refusing to undercount`);
+    }
+  }
+  return totals;
+}
+
+/** A dbt claim as a doc makes it, with where it was found. Both phrasings are matched
+ *  because both are load-bearing prose: the step breakdown reads naturally in the
+ *  evidence table, the PASS/WARN/ERROR line is what an operator compares their terminal
+ *  against. They are NORMALIZED to one wording across all four sites (cold review I1
+ *  found "98 build steps" and "101 dbt build steps" in the same file), so one pattern
+ *  finds them all — an unmatched phrasing is an ungated claim, which is the defect. */
+export interface DbtClaim {
+  file: string;
+  text: string;
+  steps?: number;
+  models?: number;
+  seeds?: number;
+  dataTests?: number;
+  pass?: number;
+  warn?: number;
+  error?: number;
+}
+
+export function readDbtClaims(files: ReadonlyArray<readonly [string, string]>): DbtClaim[] {
+  const out: DbtClaim[] = [];
+  for (const [file, text] of files) {
+    for (const m of text.matchAll(/(\d+) dbt build steps \((\d+) models, (\d+) seeds, (\d+) data tests\)/g)) {
+      out.push({
+        file,
+        text: m[0],
+        steps: Number(m[1]),
+        models: Number(m[2]),
+        seeds: Number(m[3]),
+        dataTests: Number(m[4]),
+      });
+    }
+    for (const m of text.matchAll(/PASS=(\d+) WARN=(\d+) ERROR=(\d+)(?:[^\n`]*?TOTAL=(\d+))?/g)) {
+      out.push({
+        file,
+        text: m[0],
+        pass: Number(m[1]),
+        warn: Number(m[2]),
+        error: Number(m[3]),
+        ...(m[4] === undefined ? {} : { steps: Number(m[4]) }),
+      });
+    }
+  }
+  return out;
+}
+
+/** Every disagreement among the claims themselves, and — when `live` is given — with what
+ *  dbt actually printed. Returns human-readable failure lines; empty means agreement. */
+export function dbtClaimFailures(claims: readonly DbtClaim[], live?: DbtTotals | null): string[] {
+  const failures: string[] = [];
+  if (claims.length < 4) {
+    failures.push(
+      `only ${claims.length} dbt claim(s) found across the docs — the four known sites are README (×2), ` +
+        "RUNBOOK and KNOWN-ISSUES; a claim whose phrasing this gate cannot match is an UNGATED claim, " +
+        "which is the defect itself",
+    );
+  }
+  const fields = ["steps", "models", "seeds", "dataTests", "pass", "warn", "error"] as const;
+  for (const f of fields) {
+    const stated = claims.filter((c) => c[f] !== undefined);
+    const values = new Set(stated.map((c) => c[f]));
+    if (values.size > 1) {
+      failures.push(
+        `docs disagree with each other about dbt ${f}: ` +
+          stated.map((c) => `${c.file} says ${c[f]} ("${c.text}")`).join("; "),
+      );
+    }
+    if (live && values.size >= 1 && !values.has(live[f])) {
+      failures.push(
+        `docs say dbt ${f} = ${[...values].join("/")}; the live build reported ${live[f]}. ` +
+          `Update every site: ${[...new Set(stated.map((c) => c.file))].join(", ")}.`,
+      );
+    }
+  }
+  return failures;
+}
+
+// ── Two more numbers README states about things a machine changes ──────────────────────
+//
+// Found by the cold review's follow-up sweep ("grep every doc for any other number
+// describing something a machine changes"). Both were accurate at the time of the sweep;
+// both are gated anyway, because "accurate today" is what every one of these numbers was
+// before it drifted. The judgment calls that were NOT gated are recorded in the task
+// report with the reason, not left silent.
+
+/** Workspaces that ran tests, from the same log the suite count is summed from. This is
+ *  the honest denominator for README's "across nine workspaces": a workspace with no
+ *  tests contributes no block, and claiming it did would be the lie. */
+export function countSuiteWorkspaces(log: string): number {
+  const plain = log.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "");
+  return [...plain.matchAll(/Test Files\s+(?:\d+ failed \| )?\d+ passed/g)].length;
+}
+
+/** README's "nine workspaces" as a word, because that is how the prose reads. */
+const NUMBER_WORDS: Record<string, number> = {
+  four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+};
+export function readmeWorkspaceClaim(markdown: string): number | null {
+  const m = /across (\w+) workspaces/.exec(markdown);
+  if (!m) return null;
+  return NUMBER_WORDS[m[1]] ?? Number(m[1]) ?? null;
+}
+
+/** README's "N seeded fast-check properties". The suite numbers its properties
+ *  ("property 1:" … "property 6:") and one property carries two cases, so the claim is a
+ *  count of PROPERTIES, not of tests — which is why it reads 6 beside 7 test names, and
+ *  why this derivation counts the distinct numbers rather than the `fc.assert` calls. */
+export function countFastCheckProperties(propertiesTestSource: string): number {
+  return new Set([...propertiesTestSource.matchAll(/property (\d+):/g)].map((m) => m[1])).size;
+}
+export function readmePropertyClaim(markdown: string): number | null {
+  const m = /(\d+) seeded fast-check properties/.exec(markdown);
+  return m ? Number(m[1]) : null;
+}

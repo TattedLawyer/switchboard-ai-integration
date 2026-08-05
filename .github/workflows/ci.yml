@@ -119,3 +119,15 @@ jobs:
         run: npx tsx scripts/verify-dbt-warns.ts
       - name: verify identity resolution against manifest
         run: npx tsx scripts/verify-identity.ts
+      # Cold review I1: the dbt DAG's size is stated in four doc sentences and nothing
+      # checked it — adding one seed moved it 98 -> 101 and three of the four went stale,
+      # including the RUNBOOK sentence an operator uses to decide the pipeline is broken.
+      # Same class as the suite count, so it gets the same treatment: derived from dbt's
+      # own run_results.json + manifest.json artifacts, never from a hand-maintained number
+      # and never from dbt's colorized stdout (parsing that is what took the suite gate red
+      # in its first CI run). Same artifacts scripts/verify-dbt-warns.ts already reads.
+      # Runs a second time here (the earlier invocation has no artifacts yet) rather than
+      # moving the whole gate down, so a stale scoreboard still fails BEFORE the expensive
+      # warehouse steps.
+      - name: verify documented dbt totals against the build that just ran
+        run: npx tsx scripts/verify-doc-counts.ts --suite-log /tmp/suite.log --dbt-artifacts warehouse/target

@@ -10,10 +10,16 @@
 //      (a test cannot count the run it is part of), so it reads the log of a real
 //      `npm test` and sums the per-workspace "Tests N passed" lines — exactly the
 //      summation the gate-H merge reviewer did by hand, mechanised.
+//   3. The dbt build's totals, stated in four doc sentences, against dbt's own
+//      run_results.json + manifest.json artifacts (cold review I1). Without --dbt-log the four sites are still checked
+//      against EACH OTHER, which is what catches the common case: a sibling missed.
+//      Adding one seed moved the DAG 98 → 101 and three of four sites went stale,
+//      including the RUNBOOK sentence an operator uses to decide the pipeline is broken.
 //
 // Usage:
-//   npx tsx scripts/verify-doc-counts.ts                       # check 1 only
-//   npx tsx scripts/verify-doc-counts.ts --suite-log run.log   # checks 1 and 2
+//   npx tsx scripts/verify-doc-counts.ts                       # checks 1 and 3 (text only)
+//   npx tsx scripts/verify-doc-counts.ts --suite-log run.log   # + check 2
+//   npx tsx scripts/verify-doc-counts.ts --dbt-artifacts warehouse/target   # + check 3
 //
 // Why the log rather than a fresh run: `npm test` is the expensive thing CI already
 // does, and re-running it to count it would double the CI's longest step to check a
@@ -21,7 +27,19 @@
 // number that actually went green, not a second run's.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { deriveRegisterCounts, readScoreboard, readmeTestCounts, sumSuiteLog } from "./doc-counts.js";
+import {
+  dbtClaimFailures,
+  deriveRegisterCounts,
+  readDbtTotals,
+  countFastCheckProperties,
+  countSuiteWorkspaces,
+  readmePropertyClaim,
+  readmeWorkspaceClaim,
+  readDbtClaims,
+  readScoreboard,
+  readmeTestCounts,
+  sumSuiteLog,
+} from "./doc-counts.js";
 
 const repoFile = (rel: string): string =>
   readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), "utf8");
@@ -85,10 +103,67 @@ if (logFlag !== -1) {
     } else {
       console.log(`README test count: ${total} — matches the suite log at ${path}`);
     }
+    const wsClaim = readmeWorkspaceClaim(readme);
+    const wsReal = countSuiteWorkspaces(readFileSync(path, "utf8"));
+    if (wsClaim === null) {
+      failures.push("README.md: the 'across N workspaces' claim is gone — this gate has nothing to check");
+    } else if (wsReal > 0 && wsClaim !== wsReal) {
+      failures.push(`README.md claims ${wsClaim} workspaces; the suite log holds ${wsReal} workspace blocks`);
+    }
   }
 } else {
   console.log("(no --suite-log: README's test count was checked for internal consistency only)");
 }
+
+// ---- 2b. two more README numbers about things a machine changes ------------------
+const propClaim = readmePropertyClaim(readme);
+const propReal = countFastCheckProperties(repoFile("ingest/test/properties.test.ts"));
+if (propClaim === null) {
+  failures.push("README.md: the 'N seeded fast-check properties' claim is gone — this gate has nothing to check");
+} else if (propClaim !== propReal) {
+  failures.push(
+    `README.md claims ${propClaim} seeded fast-check properties; ingest/test/properties.test.ts numbers ${propReal}`,
+  );
+}
+
+// ---- 3. the dbt totals, against each other and against the build ----------------
+const dbtClaims = readDbtClaims([
+  ["README.md", readme],
+  ["RUNBOOK.md", repoFile("RUNBOOK.md")],
+  ["KNOWN-ISSUES.md", knownIssues],
+]);
+// Read from dbt's ARTIFACTS, never from its stdout: run_results.json holds one entry per
+// executed node ("only executed nodes appear in the run results" — dbt's own docs), which
+// is exactly what "N build steps" claims, and manifest.json carries the resource_type that
+// run_results deliberately omits. Parsing the human-readable summary instead would rebuild
+// the ANSI fragility that took sumSuiteLog red in its first CI run. Same artifact, same
+// directory, as scripts/verify-dbt-warns.ts already uses.
+const artifactFlag = process.argv.indexOf("--dbt-artifacts");
+let liveDbt = null;
+if (artifactFlag !== -1) {
+  const dir = process.argv[artifactFlag + 1];
+  if (dir === undefined) {
+    failures.push("--dbt-artifacts needs a directory (dbt's target/, holding run_results.json and manifest.json)");
+  } else {
+    try {
+      liveDbt = readDbtTotals(
+        JSON.parse(readFileSync(`${dir}/run_results.json`, "utf8")),
+        JSON.parse(readFileSync(`${dir}/manifest.json`, "utf8")),
+      );
+      console.log(
+        `dbt totals from ${dir}: ${liveDbt.steps} steps (${liveDbt.models} models, ${liveDbt.seeds} seeds, ` +
+          `${liveDbt.dataTests} data tests) — PASS=${liveDbt.pass} WARN=${liveDbt.warn} ERROR=${liveDbt.error}`,
+      );
+    } catch (e) {
+      // Fails closed on purpose: an absent, half-written or schema-moved artifact must
+      // never read as "the docs agree with reality".
+      failures.push(`could not read dbt artifacts from ${dir}: ${(e as Error).message}`);
+    }
+  }
+} else {
+  console.log("(no --dbt-artifacts: the dbt totals were checked for cross-document consistency only)");
+}
+failures.push(...dbtClaimFailures(dbtClaims, liveDbt));
 
 if (failures.length > 0) {
   console.error(`\ndoc counts FAILED (${failures.length}):`);

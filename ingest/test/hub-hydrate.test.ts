@@ -42,7 +42,11 @@ function listen(app: express.Express): string {
 /** Deliver the mock's pending events through the REAL batch door (in-process app). */
 async function deliverThroughDoor(hub: HubcrmApp): Promise<void> {
   const { createIngestApp } = await import("../src/server.js");
-  const ingest = createIngestApp(pool, DEFAULT_TENANT_ID);
+  // Cold review M2: the served set is DECLARED, not inherited from the workspace-wide
+  // INGEST_SOURCES. Ambient inheritance is the shape behind this range's own live
+  // ci-fixture miss, where a 404'd door made the universe smaller and surfaced three
+  // steps downstream as a confusing result rather than as a closed door.
+  const ingest = createIngestApp(pool, DEFAULT_TENANT_ID, { enabledSources: ["hubcrm"] });
   const s = ingest.listen(0);
   try {
     const stats = await hub.store.deliver({

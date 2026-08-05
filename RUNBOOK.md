@@ -78,7 +78,10 @@ identity layer and `customer_360` against the seed manifest's planned match matr
 **A green `dbt build` here is `ERROR=0, WARN=1` — not "no warnings".** The fixture
 universe permanently trips one warn-severity test on purpose (`assert_amounts_plausible`,
 row `DEMO-CH-0001`) so that surface is proven to fire instead of passing vacuously; the
-expected total is `PASS=97 WARN=1 ERROR=0 TOTAL=98`. Because dbt exits 0 on warnings, do
+expected total is `PASS=100 WARN=1 ERROR=0 TOTAL=101` — 101 dbt build steps
+(15 models, 3 seeds, 83 data tests), a figure this repo does NOT maintain by hand:
+`scripts/verify-doc-counts.ts --dbt-log` checks every site that states it against what
+the build actually printed, in CI, right after the build prints it. Because dbt exits 0 on warnings, do
 NOT read the step's green tick as "clean" — CI runs `scripts/verify-dbt-warns.ts` right
 after `dbt build`, which fails if the warn set is anything other than exactly that test
 and exactly that row (extra warn, missing warn, or different row). If you see a second

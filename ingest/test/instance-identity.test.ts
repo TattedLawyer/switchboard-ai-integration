@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import pg from "pg";
 import { createIngestApp } from "../src/server.js";
+
+// Cold review M2: this suite declares the deployment its doors serve instead of inheriting
+// ingest/vitest.config.ts's workspace-wide INGEST_SOURCES. These pins are about /status
+// and instance identity, which are source-independent — but a suite that inherits its
+// deployment silently changes meaning when the default narrows, and that ambient-inheritance
+// shape is exactly what produced this range's live ci-fixture miss.
+const SERVED = { enabledSources: ["hubcrm", "billing"] } as const;
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 
 // C3 (phase-close review): the demo/chaos scripts proved the MOCKS were the servers they
@@ -41,16 +48,16 @@ async function getStatus(app: ReturnType<typeof createIngestApp>) {
 describe("ingest /status — proves WHICH process answered, not just that one did", () => {
   it("echoes the instance id the process was started with", async () => {
     process.env.INGEST_INSTANCE_ID = "run-abc-123";
-    const { status, body } = await getStatus(createIngestApp(pool, DEFAULT_TENANT_ID));
+    const { status, body } = await getStatus(createIngestApp(pool, DEFAULT_TENANT_ID, SERVED));
     expect(status).toBe(200);
     expect(body.instance_id).toBe("run-abc-123");
   });
 
   it("reports a different id for a process started under a different id — which is the whole point: a caller comparing ids catches a leftover server that a port check cannot", async () => {
     process.env.INGEST_INSTANCE_ID = "run-first";
-    const first = await getStatus(createIngestApp(pool, DEFAULT_TENANT_ID));
+    const first = await getStatus(createIngestApp(pool, DEFAULT_TENANT_ID, SERVED));
     process.env.INGEST_INSTANCE_ID = "run-second";
-    const second = await getStatus(createIngestApp(pool, DEFAULT_TENANT_ID));
+    const second = await getStatus(createIngestApp(pool, DEFAULT_TENANT_ID, SERVED));
     expect(first.body.instance_id).toBe("run-first");
     expect(second.body.instance_id).toBe("run-second");
     expect(first.body.instance_id).not.toBe(second.body.instance_id);
@@ -58,14 +65,14 @@ describe("ingest /status — proves WHICH process answered, not just that one di
 
   it("does not fail when no id is set — unset means 'nobody is checking', not an error, so ad-hoc local runs and the manual RUNBOOK path keep working", async () => {
     delete process.env.INGEST_INSTANCE_ID;
-    const { status, body } = await getStatus(createIngestApp(pool, DEFAULT_TENANT_ID));
+    const { status, body } = await getStatus(createIngestApp(pool, DEFAULT_TENANT_ID, SERVED));
     expect(status).toBe(200);
     expect(body.instance_id).toBeNull();
   });
 
   it("leaks nothing beyond the identity fields — /status is unauthenticated, so it must not become a reconnaissance surface", async () => {
     process.env.INGEST_INSTANCE_ID = "run-abc-123";
-    const { body } = await getStatus(createIngestApp(pool, DEFAULT_TENANT_ID));
+    const { body } = await getStatus(createIngestApp(pool, DEFAULT_TENANT_ID, SERVED));
     expect(Object.keys(body).sort()).toEqual(["instance_id", "service"]);
     expect(JSON.stringify(body)).not.toMatch(/postgres|password|secret|DATABASE_URL/i);
   });

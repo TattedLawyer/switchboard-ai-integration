@@ -13,7 +13,7 @@
 // sentences are quoted inside the pin, so the edit that falsifies one reds a test whose
 // failure message points at the doc.
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   README_TEST_COUNT_CLAIMS,
@@ -21,6 +21,14 @@ import {
   readScoreboard,
   readmeTestCounts,
   sumSuiteLog,
+  readDbtTotals,
+  RUN_RESULTS_SCHEMA,
+  countFastCheckProperties,
+  countSuiteWorkspaces,
+  readmePropertyClaim,
+  readmeWorkspaceClaim,
+  readDbtClaims,
+  dbtClaimFailures,
 } from "../../scripts/doc-counts.js";
 
 const repoFile = (rel: string): string =>
@@ -153,31 +161,133 @@ const DBT_DOCS: ReadonlyArray<[string, string]> = [
   ["KNOWN-ISSUES.md", knownIssues],
 ];
 
+const claims = readDbtClaims(DBT_DOCS);
+
 describe("the dbt build's totals are one number stated in four places, not four numbers", () => {
-  it("every `N build steps (M models, S seeds, T data tests)` claim in the docs states the same four numbers", () => {
-    const claims = DBT_DOCS.flatMap(([file, text]) =>
-      [...text.matchAll(/(\d+) dbt build steps \((\d+) models, (\d+) seeds, (\d+) data tests\)/g)].map(
-        (m) => ({ file, claim: m[0].slice(0, 80) }),
-      ),
-    );
-    expect(claims.length, "no dbt step claim found anywhere — this pin would be vacuous").toBeGreaterThanOrEqual(2);
-    expect(new Set(claims.map((c) => c.claim)).size, `dbt step claims disagree: ${JSON.stringify(claims, null, 1)}`).toBe(1);
+
+  it("the four known sites are all FOUND — a claim this gate cannot match is an ungated claim, which is the defect", () => {
+    // Cold review I1 found the two README sites phrased differently ("98 build steps" vs
+    // "101 dbt build steps"), which is its own reason nothing could ever have gated them.
+    // The wording is now normalized, and this pin is what keeps it normalized.
+    expect(claims.length, `found: ${JSON.stringify(claims.map((c) => `${c.file}: ${c.text}`), null, 1)}`)
+      .toBeGreaterThanOrEqual(4);
+    for (const file of ["README.md", "RUNBOOK.md", "KNOWN-ISSUES.md"]) {
+      expect(claims.some((c) => c.file === file), `${file} states no matchable dbt claim`).toBe(true);
+    }
   });
 
-  it("every `PASS=… WARN=… ERROR=…` claim in the docs states the same result", () => {
-    const claims = DBT_DOCS.flatMap(([file, text]) =>
-      [...text.matchAll(/PASS=(\d+) WARN=(\d+) ERROR=(\d+)/g)].map((m) => ({ file, claim: m[0] })),
-    );
-    expect(claims.length, "no dbt result claim found anywhere — this pin would be vacuous").toBeGreaterThanOrEqual(3);
-    expect(new Set(claims.map((c) => c.claim)).size, `dbt result claims disagree: ${JSON.stringify(claims, null, 1)}`).toBe(1);
+  it("no two sites disagree about any of steps / models / seeds / data tests / PASS / WARN / ERROR", () => {
+    expect(dbtClaimFailures(claims)).toEqual([]);
+  });
+});
+
+describe("readDbtTotals reads dbt's ARTIFACTS, not its stdout", () => {
+  // The first design parsed the `Finished running …` / `Done. PASS=…` summary lines. It
+  // was replaced after reading dbt's docs, because it would have rebuilt the defect
+  // sumSuiteLog already paid for: that gate shipped, went green locally, and went red in
+  // its first CI run because vitest colorizes and the pattern could not span the ANSI
+  // escapes. dbt colorizes identically. run_results.json holds one entry per executed node
+  // ("only executed nodes appear in the run results" — dbt's docs), which is exactly the
+  // "N build steps" claim, and needs no text parsing at all.
+  //
+  // Fixtures are the SHAPE of dbt 1.12.0's real artifacts, hand-written rather than copied
+  // wholesale so the pin states what it depends on: unique_id, status, and manifest's
+  // resource_type. resource_type is read from manifest by cross-reference because dbt's
+  // docs specify that ("only the unique_id is included … the full node object is recorded
+  // in manifest.json"); the unique_id's `<resource_type>.<pkg>.<name>` shape is only shown
+  // by example, never specified, so it is not relied on.
+  const rr = (results: Array<[string, string]>) => ({
+    metadata: { dbt_schema_version: RUN_RESULTS_SCHEMA },
+    results: results.map(([unique_id, status]) => ({ unique_id, status })),
+  });
+  const mf = (types: Record<string, string>) => ({
+    nodes: Object.fromEntries(Object.entries(types).map(([id, resource_type]) => [id, { resource_type }])),
   });
 
-  it("every `TOTAL=…` claim agrees with the step count stated beside it", () => {
-    const totals = DBT_DOCS.flatMap(([, text]) => [...text.matchAll(/TOTAL=(\d+)/g)].map((m) => Number(m[1])));
-    const steps = DBT_DOCS.flatMap(([, text]) =>
-      [...text.matchAll(/(\d+) dbt build steps/g)].map((m) => Number(m[1])),
+  const LIVE = rr([
+    ["model.switchboard.customer_360", "success"],
+    ["seed.switchboard.iso_4217_currencies", "success"],
+    ["test.switchboard.unique_iso_4217_currencies_currency_code", "pass"],
+    ["test.switchboard.assert_amounts_plausible", "warn"],
+  ]);
+  const LIVE_MF = mf({
+    "model.switchboard.customer_360": "model",
+    "seed.switchboard.iso_4217_currencies": "seed",
+    "test.switchboard.unique_iso_4217_currencies_currency_code": "test",
+    "test.switchboard.assert_amounts_plausible": "test",
+  });
+
+  it("counts executed nodes by their manifest resource_type, and aggregates dbt's PASS the way dbt prints it", () => {
+    // dbt's printed PASS= merges `success` (models/seeds) and `pass` (tests) — confirmed
+    // against the real 1.12.0 artifact, where 18 success + 82 pass is the printed PASS=100.
+    expect(readDbtTotals(LIVE, LIVE_MF)).toEqual({
+      steps: 4, models: 1, seeds: 1, dataTests: 2, pass: 3, warn: 1, error: 0,
+    });
+  });
+
+  it("REFUSES a moved artifact schema rather than counting fields whose meaning it has not verified", () => {
+    // dbt's docs: "Artifact versions may change in any minor version of dbt (v1.x.0)."
+    const moved = { ...LIVE, metadata: { dbt_schema_version: "https://schemas.getdbt.com/dbt/run-results/v7.json" } };
+    expect(() => readDbtTotals(moved, LIVE_MF)).toThrow(/schema/i);
+  });
+
+  it("REFUSES an executed node manifest does not carry, and a status it cannot classify — never a quietly smaller number", () => {
+    expect(() => readDbtTotals(LIVE, mf({}))).toThrow(/manifest\.json does not carry/);
+    const odd = rr([["model.switchboard.x", "teleported"]]);
+    expect(() => readDbtTotals(odd, mf({ "model.switchboard.x": "model" }))).toThrow(/unclassified dbt status/);
+    const oddType = rr([["thing.switchboard.x", "success"]]);
+    expect(() => readDbtTotals(oddType, mf({ "thing.switchboard.x": "exposure" }))).toThrow(/unclassified dbt resource_type/);
+  });
+
+  it("REFUSES an empty or malformed artifact — an unreadable build must not pass as agreement", () => {
+    expect(() => readDbtTotals(rr([]), mf({}))).toThrow(/zero nodes/);
+    expect(() => readDbtTotals({}, LIVE_MF)).toThrow();
+    expect(() => readDbtTotals(LIVE, {})).toThrow(/manifest/);
+  });
+
+  it("the docs agree with the artifacts of the build that is actually committed to CI", () => {
+    // Reads the real target/ when present (a live-fire leaves it); skipped rather than
+    // faked when absent, because the CI gate is the authority for this comparison.
+    const dir = fileURLToPath(new URL("../../warehouse/target/", import.meta.url));
+    if (!existsSync(`${dir}run_results.json`)) return;
+    const live = readDbtTotals(
+      JSON.parse(readFileSync(`${dir}run_results.json`, "utf8")),
+      JSON.parse(readFileSync(`${dir}manifest.json`, "utf8")),
     );
-    expect(totals.length, "no TOTAL= claim found — vacuous").toBeGreaterThanOrEqual(1);
-    expect(new Set([...totals, ...steps]).size, `dbt TOTAL= and 'build steps' disagree: totals ${totals}, steps ${steps}`).toBe(1);
+    expect(dbtClaimFailures(claims, live)).toEqual([]);
+  });
+
+  it("a build that disagrees with the docs is named field by field, with the sites to update", () => {
+    const drifted = { steps: 104, models: 15, seeds: 4, dataTests: 85, pass: 103, warn: 1, error: 0 };
+    const failures = dbtClaimFailures(claims, drifted);
+    expect(failures.join(" ")).toContain("seeds");
+    expect(failures.join(" ")).toContain("steps");
+    expect(failures.join(" ")).toContain("README.md");
+  });
+});
+
+describe("the other two README numbers about things a machine changes", () => {
+  // The cold review's follow-up sweep asked for every such number to be gated or
+  // explicitly judged safe. These two were accurate when swept — which is exactly what
+  // every drifted number was, the day before it drifted.
+  it("'across N workspaces' matches the workspaces that actually ran tests", () => {
+    const log = [
+      " Test Files  6 passed (6)",
+      "      Tests  59 passed (59)",
+      " Test Files  1 failed | 40 passed (41)",
+      "      Tests  1 failed | 677 passed (678)",
+    ].join("\n");
+    expect(countSuiteWorkspaces(log)).toBe(2);
+    expect(countSuiteWorkspaces("")).toBe(0); // fails closed; the gate refuses to compare against 0
+    expect(readmeWorkspaceClaim(readme)).toBe(9); // the word "nine", as the prose reads it
+  });
+
+  it("'N seeded fast-check properties' counts PROPERTIES, not fc.assert calls — the suite numbers them", () => {
+    // Load-bearing distinction: property 4 carries two cases, so the file runs 7 tests
+    // for 6 numbered properties. A gate that counted `fc.assert` would red on a true
+    // README, which is how a correct gate teaches people to ignore it.
+    const src = readFileSync(fileURLToPath(new URL("../../ingest/test/properties.test.ts", import.meta.url)), "utf8");
+    expect(countFastCheckProperties(src)).toBe(readmePropertyClaim(readme));
+    expect(countFastCheckProperties("describe('property 1: a', …) describe('property 1: b', …)")).toBe(1);
   });
 });

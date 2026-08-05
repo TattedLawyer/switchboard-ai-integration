@@ -92,7 +92,11 @@ describe("the configured deployment tenant reaches the PULL half", () => {
 
     // The door is configured for TENANT_X, exactly as a deployment with
     // SWITCHBOARD_TENANT_ID set would build it. Thin events land under TENANT_X.
-    const doorUrl = listen(createIngestApp(pool, TENANT_X));
+    // The served set is DECLARED, not inherited from the workspace's INGEST_SOURCES
+    // (cold review M2): this test is about hubcrm's tenant routing, so hubcrm is the
+    // deployment, and a future narrowing of the workspace default cannot silently
+    // change what this exercises.
+    const doorUrl = listen(createIngestApp(pool, TENANT_X, { enabledSources: ["hubcrm"] }));
     const stats = await hub.store.deliver({ webhookUrl: `${doorUrl}/webhooks/hubcrm` });
     expect(stats.failedBatches).toBe(0);
 
