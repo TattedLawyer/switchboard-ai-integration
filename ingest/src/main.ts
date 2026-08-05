@@ -30,6 +30,31 @@ const BACKFILL_INTERVAL_MS = intFromEnv("BACKFILL_INTERVAL_MS", 60_000, {
   min: 1,
   max: MAX_TIMER_DELAY_MS,
 });
+// PRE-3 (#21): resolved HERE, at module top level, alongside PORT and INGEST_ROLE —
+// which is what makes a mistyped INGEST_SOURCES a BOOT refusal rather than a silently
+// smaller pipeline discovered later (or never). Resolved once and passed down, so the
+// receiver's secret assertion and the worker's runners can never disagree about which
+// sources this deployment is running.
+const enabledSourceList = enabledSources();
+
+/**
+ * PRE-3 (#20): the per-source door secrets are a RECEIVER obligation, not a process
+ * obligation. `secretForSource` is reached from exactly two places, both door handlers
+ * in `server.ts` (the event door and the sheets nudge door), so a worker-only process
+ * can never consult one — yet `INGEST_ROLE=worker` refused to boot without
+ * `WEBHOOK_SECRET_<SOURCE>` for every enabled source.
+ *
+ * The failure direction that matters is the opposite one, and it is unchanged: a
+ * receiver — including the receiver half of `all` — still fails closed at boot with one
+ * aggregated error naming every missing variable (A2). Pinned in test/config.test.ts.
+ */
+export function assertRoleSecrets(
+  role: "receiver" | "worker" | "all",
+  sources: readonly Source[],
+): void {
+  if (role === "worker") return;
+  assertWebhookSecrets(sources);
+}
 
 // Factory to create a backfill runner with in-flight guard (prevents overlapping runs).
 // A7: routed through the connector seam — connectorFor picks the right paradigm per
@@ -215,7 +240,8 @@ export function createServiceWiring(
 async function main() {
   // Fail closed at boot, not on first request: one aggregated error naming every
   // missing secret (A2). Demo/local runs opt in via ALLOW_DEV_SECRETS=1.
-  assertWebhookSecrets(enabledSources());
+  // PRE-3 (#20): scoped to the roles that actually own a door.
+  assertRoleSecrets(ingestRole, enabledSourceList);
   // SEC-C1: the ONE tenant this deployment's doors write under, resolved once, here, at
   // boot — not per request, not from a payload claim, not from the signing secret. Threaded
   // explicitly into every door and onto the queue envelope from this single point.
@@ -242,7 +268,7 @@ async function main() {
   // only, for the same reason the interval loop is: backfill/catchUp belongs with the
   // roles that own event ingestion. A receiver-only process therefore hosts NO runner
   // and its nudge door keeps answering the honest 503 (see server.ts).
-  const wiring = isWorker ? createServiceWiring(pool, enabledSources(), deploymentTenantId) : undefined;
+  const wiring = isWorker ? createServiceWiring(pool, enabledSourceList, deploymentTenantId) : undefined;
 
   if (isReceiver) {
     // Create the HTTP receiver app with queue integration

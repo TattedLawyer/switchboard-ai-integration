@@ -35,9 +35,9 @@ without changing this table does not go green.
 
 | | Count | Derivation |
 |---|---|---|
-| **Open defects** | **40** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Open defects** | **38** | Part II top-level bullets that name an `Owner:` and are not struck |
 | **Design disclosures** | **40** | Part I top-level bullets |
-| **Paid** (struck entries) | **37** | Part III struck bullets, plus the cosmetic/low list |
+| **Paid** (struck entries) | **39** | Part III struck bullets, plus the cosmetic/low list |
 
 Why the owner predicate rather than a subtraction: Part II's own entry rule is that
 every open entry names an owner, so the four *paid* sub-items of the multi-tenancy
@@ -965,30 +965,6 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   variables the profile uses, and fail naming the mismatch rather than the symptom.
   Trigger: any deployment that separates the app database from the warehouse one.*
 
-- **`INGEST_ROLE=worker` demands door secrets it can never use** *(gate-H M9)* —
-  `main.ts` runs `assertWebhookSecrets(enabledSources())` before the role split, so a
-  worker-only process — no `app`, no `/webhooks/*` — refuses to boot without
-  `WEBHOOK_SECRET_*`. Reads against the role split RUNBOOK documents.
-
-  *Owner: CLOSE-4. Fix: assert door secrets only on the roles that mount doors.
-  Reason for deferral: fail-closed-on-secrets is a rule worth being careful about
-  relaxing, and the RED has to prove the receiver role still fails closed.*
-
-- **`INGEST_SOURCES` typos and empty values are silent** *(gate-H M10)* —
-  `sources.ts` uses `?? DEFAULT`, which fires only on `undefined`, then
-  `.filter(isSource)`, which drops unknown entries. `INGEST_SOURCES=hubcrm,stripfeed`
-  runs one source; `INGEST_SOURCES=` runs zero — no runners, no reconcile coverage,
-  no error — while the doors stay open (the entry above). `config.ts` states the
-  opposite doctrine for every other variable: "unset or empty → the default; present
-  and invalid → throw at boot, naming the variable". This one does not use
-  `choiceFromEnv`, and `sources.test.ts` pins the tolerance as intended behaviour, so
-  no test will ever object.
-
-  *Owner: CLOSE-4. Fix: route it through `choiceFromEnv`'s doctrine and rewrite the
-  pin that currently blesses the tolerance. Reason for deferral: changing a pin from
-  "asserts X" to "asserts not-X" is a deliberate decision that needs its own RED and
-  its own reasoning, not a rider on a fix wave.*
-
 - **Ephemeral test databases leak with no sweeper** *(gate-H M11, hygiene)* —
   `ingest/test/helpers/testdb.ts` has a careful, idempotent, termination-proof
   `cleanup()`, but nothing reclaims `switchboard_test_*` databases from a run that
@@ -1682,6 +1658,36 @@ it — is the part worth reading.
   2b** (`ingest/src/hmac.ts` and `mocks/core/src/hmac.ts` both live at head);
   it is **Phase 4** consolidation work, and the cross-compat tests above are
   what hold the pair together until then.
+
+## Pre-Phase-3 cleanup wave (PRE-3)
+
+- ~~**`INGEST_SOURCES` typos and empty values are silent** *(gate-H M10)* —
+  `sources.ts` uses `?? DEFAULT`, which fires only on `undefined`, then
+  `.filter(isSource)`, which drops unknown entries. `INGEST_SOURCES=hubcrm,stripfeed`
+  runs one source; `INGEST_SOURCES=` runs zero — no runners, no reconcile coverage,
+  no error — while the doors stay open.~~ *Paid (PRE-3, batch A):* `enabledSources()`
+  now obeys `config.ts`'s recorded doctrine — unknown token, blank entry and empty
+  value are each a boot refusal that names the variable, echoes the rejected value and
+  lists what would be accepted. Resolved at `main.ts` module top level alongside
+  `PORT`/`INGEST_ROLE`, so the refusal is a *boot* refusal rather than a smaller
+  pipeline discovered later. Empty deliberately diverges from the scalar parsers'
+  "empty means default" (the two readings — "explicitly zero sources" and "forgot to
+  set it" — are indistinguishable, and the wrong guess ingests nothing forever); the
+  error says to unset the variable to ask for the default. The `sources.test.ts` pin
+  that *blessed* the tolerance was flipped in its own RED, with the doctrine quoted as
+  the reasoning. Landed **before** the disabled-source door fix, deliberately: a door
+  mounted over an `enabledSources()` that can silently return `[]` is worse than the
+  open door it replaces.
+
+- ~~**`INGEST_ROLE=worker` demands door secrets it can never use** *(gate-H M9)* —
+  `main.ts` runs `assertWebhookSecrets(enabledSources())` before the role split, so a
+  worker-only process — no `app`, no `/webhooks/*` — refuses to boot without
+  `WEBHOOK_SECRET_*`.~~ *Paid (PRE-3, batch A):* `assertRoleSecrets(role, sources)`
+  scopes the assertion to the roles that mount a door. Confirmed before relaxing:
+  `secretForSource` is reached from exactly two call sites, both door handlers in
+  `server.ts` (the event door and the sheets nudge door), so a worker loses nothing.
+  The dangerous direction is pinned in the same RED — `receiver` **and** `all` still
+  fail closed with the aggregated error naming every missing variable.
 
 ## Cosmetic / low
 

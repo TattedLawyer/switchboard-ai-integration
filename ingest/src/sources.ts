@@ -53,10 +53,52 @@ export function baseUrlFor(source: Source): string {
 const DEFAULT_ENABLED: readonly Source[] = ["billing", "support"];
 
 // Which sources this deployment actually polls/reconciles. Scripts pin this explicitly;
-// code default is the feed trio (see above).
-export function enabledSources(): Source[] {
-  const raw = process.env.INGEST_SOURCES ?? DEFAULT_ENABLED.join(",");
-  return raw.split(",").map((s) => s.trim()).filter(isSource);
+// code default is the 2a feed pair (see above).
+//
+// PRE-3 (#21): STRICT, under `config.ts`'s recorded doctrine — "present and invalid →
+// throw at boot. The error text is an OPERATOR SURFACE: it names the variable, echoes
+// the rejected value, and states what would be accepted." This variable used to be the
+// one boot input outside that doctrine: `.filter(isSource)` silently dropped anything it
+// did not recognise, so `INGEST_SOURCES=hubcrm,stripfeed` ran one source and
+// `INGEST_SOURCES=` ran zero — in both cases with every webhook door still armed, which
+// is what made the disabled-source door (#15) dangerous rather than merely untidy.
+//
+// Empty deliberately DIVERGES from `intFromEnv`/`choiceFromEnv`, where empty means the
+// default. For a scalar knob the default is a working value; here "explicitly zero
+// sources" and "forgot to set it" are indistinguishable, and guessing wrong yields a
+// process that ingests nothing forever. So empty is a refusal that names the way to ask
+// for the default: unset the variable.
+//
+// The `env` parameter mirrors `config.ts`'s parsers so the wording can be pinned without
+// mutating the ambient environment.
+export function enabledSources(env: NodeJS.ProcessEnv = process.env): Source[] {
+  const raw = env.INGEST_SOURCES;
+  if (raw === undefined) return [...DEFAULT_ENABLED];
+
+  const accepted = `must be a comma-separated list of ${SOURCES.join(", ")}`;
+  if (raw.trim() === "") {
+    throw new Error(
+      `invalid INGEST_SOURCES "${raw}": must name at least one of ${SOURCES.join(", ")} — ` +
+        `unset INGEST_SOURCES to use the default (${DEFAULT_ENABLED.join(", ")})`,
+    );
+  }
+
+  const entries = raw.split(",").map((s) => s.trim());
+  const result: Source[] = [];
+  entries.forEach((entry, i) => {
+    // A blank entry gets its own complaint — `unknown source ""` would be unreadable,
+    // and the position is the only thing that locates a comma typo in a long list.
+    if (entry === "") {
+      throw new Error(
+        `invalid INGEST_SOURCES "${raw}": empty entry at position ${i + 1} — ${accepted}`,
+      );
+    }
+    if (!isSource(entry)) {
+      throw new Error(`invalid INGEST_SOURCES "${raw}": unknown source "${entry}" — ${accepted}`);
+    }
+    result.push(entry);
+  });
+  return result;
 }
 
 export function ledgerPathFor(source: Source): string | undefined {
