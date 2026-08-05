@@ -242,6 +242,34 @@ describe("L1 numeric contract at the trust boundary", () => {
         expect(q.rows[0].reason).toContain("^[A-Z]{3}$");
         expect(q.rows[0].reason).toContain('"usd"');
       });
+
+      // #37, the operator surface of the ALLOWLIST half. A shape-valid non-currency is a
+      // different operator story from a malformed one — "your vendor sent a code that is
+      // not a currency" versus "your vendor sent something that is not even a code" — and
+      // the quarantine reason is the only place a human meets either. It must therefore
+      // name the standard AND the published edition it was judged against, because "our
+      // vendored list is stale" is a live hypothesis a bare "invalid currency" would hide.
+      it("a shape-valid NON-currency quarantines through the real door, and the reason names ISO-4217, the published edition, and the value — distinguishably from the malformed-shape reason", async () => {
+        const res = await postSigned(
+          "billing",
+          evt("evt-sc-allowlist", "invoice.created", { amount_cents: 100, currency: "ABC" }),
+        );
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ quarantined: true });
+        const q = await pool.query(
+          "select reason from ingest.quarantine where payload->>'event_id' = 'evt-sc-allowlist'",
+        );
+        expect(q.rowCount).toBe(1);
+        expect(q.rows[0].reason).toContain("currency");
+        expect(q.rows[0].reason).toContain("ISO-4217");
+        expect(q.rows[0].reason).toContain("2026-01-01"); // the vendored list's own Pblshd
+        expect(q.rows[0].reason).toContain('"ABC"');
+        // Checklist line 5: each cause names itself and EXCLUDES its sibling. A
+        // shape-valid non-currency must not be reported as a shape failure.
+        expect(q.rows[0].reason).not.toContain("^[A-Z]{3}$");
+        // ...and the event stayed out of raw, exactly as a malformed code already did.
+        expect((await pool.query("select 1 from raw.raw_events where event_id = 'evt-sc-allowlist'")).rowCount).toBe(0);
+      });
     });
 
     describe("over-rejection guards: absent passes, valid codes pass, unknown types pass", () => {

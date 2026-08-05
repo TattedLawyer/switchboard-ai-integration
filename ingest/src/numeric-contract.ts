@@ -17,6 +17,8 @@
 // event types pass the ingest door unchanged (a vendor shipping a new type must never
 // cause a feed-wide quarantine); they simply cannot be CONSUMED until declared here.
 
+import { ISO_4217_PUBLISHED, isIso4217 } from "./iso4217-codes.js";
+
 export interface NumericFieldRule {
   /** Forbidden here so a rule carrying BOTH shapes (`integer: true` + `type: "string"`)
    *  is a COMPILE-TIME error. Without this, union excess-property checking admits the
@@ -44,6 +46,22 @@ export interface StringFieldRule {
   required: boolean;
   /** Anchored regex SOURCE (must carry its own ^…$) the value must fully match when present. */
   pattern: string;
+  /** Closed vocabulary the value must ALSO belong to, checked after `pattern`. Present
+   *  only where a shape check is genuinely weaker than the real rule (#37: `^[A-Z]{3}$`
+   *  admits 17,576 strings and ~180 of them are currencies). The pattern stays declared
+   *  alongside it on purpose — it is the cheap, self-describing shape gate that produces
+   *  the "not even the right shape" reason, and it keeps the anchoring assertion and the
+   *  emitted-bounds skip rule working unchanged for every rule in the table. */
+  allowlist?: {
+    /** Membership test. A function, not an array, so the door pays a Set lookup and the
+     *  generated list is not re-copied into the contract table. */
+    has: (value: string) => boolean;
+    /** Operator-facing name of the vocabulary, and where it came from — this string is
+     *  read by a human staring at a quarantine row, so it names the standard AND the
+     *  published edition, which is how "our list is stale" becomes a visible hypothesis
+     *  rather than an invisible one. */
+    describe: string;
+  };
 }
 
 export type FieldRule = NumericFieldRule | StringFieldRule;
@@ -68,9 +86,28 @@ const MONEY = { integer: true, required: true, signed: false, plausibleMax: null
 
 // currency is OPTIONAL by design: quarantining an event removes its non-monetary facts
 // until replay, so absent (legacy pre-currency events) must pass — only present-but-
-// malformed quarantines, with a reason naming the field. The pattern admits plausible
-// fakes like "ABC"; the ISO-4217 allowlist is registered follow-up work.
-const CURRENCY = { type: "string", required: false, pattern: "^[A-Z]{3}$" } as const;
+// malformed quarantines, with a reason naming the field.
+//
+// #37, closed: the shape gate is no longer the whole rule. `^[A-Z]{3}$` admits all 17,576
+// three-letter uppercase strings, of which ~176 are currencies we admit — "ABC" used to
+// walk in and become a unit the mart grouped by and refused sums across, indistinguishable
+// downstream from "USD". The allowlist is ISO-4217 as published by SIX (the maintenance
+// agency), vendored at vendor/iso-4217/list-one.xml and GENERATED into
+// iso4217-codes.ts — never hand-typed here, and never a second copy: dbt's three staging
+// models join the seed rendered from the same XML by the same script.
+//
+// Excluded from the published list, deliberately: XXX ("no currency" — admitting it lets
+// the absence of a currency through AS a currency) and XTS ("reserved for testing").
+// Rationale and refresh procedure: vendor/iso-4217/README.md.
+//
+// The failure mode is unchanged and no new class appears: a non-member quarantines with a
+// reason naming the field, exactly as a malformed code already did.
+const CURRENCY = {
+  type: "string",
+  required: false,
+  pattern: "^[A-Z]{3}$",
+  allowlist: { has: isIso4217, describe: `ISO-4217 (SIX list-one, published ${ISO_4217_PUBLISHED})` },
+} as const;
 
 // The hubcrm thin-event base: the researched metadata field set, all vendor-named
 // (camelCase — the payload is stored verbatim). occurredAt is the vendor's ms-epoch
@@ -289,6 +326,16 @@ export function numericContractViolation(
       }
       if (!re.test(v)) {
         return { field, reason: `${field} must match ${rule.pattern}, got ${renderValue(v)}` };
+      }
+      // Closed vocabulary, checked AFTER the shape gate so the two failures stay
+      // distinguishable on the operator's surface: "usd" is the wrong shape, "ABC" is the
+      // right shape and not a real value. Same outcome either way (quarantine, reason
+      // names the field) — no new class, per #37's scoping.
+      if (rule.allowlist && !rule.allowlist.has(v)) {
+        return {
+          field,
+          reason: `${field} must be a member of ${rule.allowlist.describe}, got ${renderValue(v)}`,
+        };
       }
       continue;
     }

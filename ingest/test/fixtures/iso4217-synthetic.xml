@@ -1,0 +1,1151 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  SYNTHETIC FIXTURE — NOT the ISO 4217 currency table.
+
+  Hand-authored in the SHAPE of SIX's list-one.xml so the generator's parser can be
+  exercised without shipping the third-party file. Every code here is invented: the
+  Q__ space is unassigned by ISO 4217, and the country and currency names are
+  nonsense. XXX and XTS appear because the admission logic must find its declared
+  exclusions in the published set and refuses if they are absent.
+
+  Deliberately NOT an excerpt of the real file. A redacted copy of list-one.xml under
+  another name would reintroduce exactly what this repo stopped shipping.
+-->
+<ISO_4217 Pblshd="1999-01-01">
+	<CcyTbl>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 000</CtryNm>
+			<CcyNm>Test Unit 000</CcyNm>
+			<Ccy>QAA</Ccy>
+			<CcyNbr>900</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 001</CtryNm>
+			<CcyNm>Test Unit 001</CcyNm>
+			<Ccy>QAB</Ccy>
+			<CcyNbr>901</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 002</CtryNm>
+			<CcyNm>Test Unit 002</CcyNm>
+			<Ccy>QAC</Ccy>
+			<CcyNbr>902</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 003</CtryNm>
+			<CcyNm>Test Unit 003</CcyNm>
+			<Ccy>QAD</Ccy>
+			<CcyNbr>903</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 004</CtryNm>
+			<CcyNm>Test Unit 004</CcyNm>
+			<Ccy>QAE</Ccy>
+			<CcyNbr>904</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 005</CtryNm>
+			<CcyNm>Test Unit 005</CcyNm>
+			<Ccy>QAF</Ccy>
+			<CcyNbr>905</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 006</CtryNm>
+			<CcyNm>Test Unit 006</CcyNm>
+			<Ccy>QAG</Ccy>
+			<CcyNbr>906</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 007</CtryNm>
+			<CcyNm>Test Unit 007</CcyNm>
+			<Ccy>QAH</Ccy>
+			<CcyNbr>907</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 008</CtryNm>
+			<CcyNm>Test Unit 008</CcyNm>
+			<Ccy>QAI</Ccy>
+			<CcyNbr>908</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 009</CtryNm>
+			<CcyNm>Test Unit 009</CcyNm>
+			<Ccy>QAJ</Ccy>
+			<CcyNbr>909</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 010</CtryNm>
+			<CcyNm>Test Unit 010</CcyNm>
+			<Ccy>QAK</Ccy>
+			<CcyNbr>910</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 011</CtryNm>
+			<CcyNm>Test Unit 011</CcyNm>
+			<Ccy>QAL</Ccy>
+			<CcyNbr>911</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 012</CtryNm>
+			<CcyNm>Test Unit 012</CcyNm>
+			<Ccy>QAM</Ccy>
+			<CcyNbr>912</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 013</CtryNm>
+			<CcyNm>Test Unit 013</CcyNm>
+			<Ccy>QAN</Ccy>
+			<CcyNbr>913</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 014</CtryNm>
+			<CcyNm>Test Unit 014</CcyNm>
+			<Ccy>QAO</Ccy>
+			<CcyNbr>914</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 015</CtryNm>
+			<CcyNm>Test Unit 015</CcyNm>
+			<Ccy>QAP</Ccy>
+			<CcyNbr>915</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 016</CtryNm>
+			<CcyNm>Test Unit 016</CcyNm>
+			<Ccy>QAQ</Ccy>
+			<CcyNbr>916</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 017</CtryNm>
+			<CcyNm>Test Unit 017</CcyNm>
+			<Ccy>QAR</Ccy>
+			<CcyNbr>917</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 018</CtryNm>
+			<CcyNm>Test Unit 018</CcyNm>
+			<Ccy>QAS</Ccy>
+			<CcyNbr>918</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 019</CtryNm>
+			<CcyNm>Test Unit 019</CcyNm>
+			<Ccy>QAT</Ccy>
+			<CcyNbr>919</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 020</CtryNm>
+			<CcyNm>Test Unit 020</CcyNm>
+			<Ccy>QAU</Ccy>
+			<CcyNbr>920</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 021</CtryNm>
+			<CcyNm>Test Unit 021</CcyNm>
+			<Ccy>QAV</Ccy>
+			<CcyNbr>921</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 022</CtryNm>
+			<CcyNm>Test Unit 022</CcyNm>
+			<Ccy>QAW</Ccy>
+			<CcyNbr>922</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 023</CtryNm>
+			<CcyNm>Test Unit 023</CcyNm>
+			<Ccy>QAX</Ccy>
+			<CcyNbr>923</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 024</CtryNm>
+			<CcyNm>Test Unit 024</CcyNm>
+			<Ccy>QAY</Ccy>
+			<CcyNbr>924</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 025</CtryNm>
+			<CcyNm>Test Unit 025</CcyNm>
+			<Ccy>QAZ</Ccy>
+			<CcyNbr>925</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 026</CtryNm>
+			<CcyNm>Test Unit 026</CcyNm>
+			<Ccy>QBA</Ccy>
+			<CcyNbr>926</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 027</CtryNm>
+			<CcyNm>Test Unit 027</CcyNm>
+			<Ccy>QBB</Ccy>
+			<CcyNbr>927</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 028</CtryNm>
+			<CcyNm>Test Unit 028</CcyNm>
+			<Ccy>QBC</Ccy>
+			<CcyNbr>928</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 029</CtryNm>
+			<CcyNm>Test Unit 029</CcyNm>
+			<Ccy>QBD</Ccy>
+			<CcyNbr>929</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 030</CtryNm>
+			<CcyNm>Test Unit 030</CcyNm>
+			<Ccy>QBE</Ccy>
+			<CcyNbr>930</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 031</CtryNm>
+			<CcyNm>Test Unit 031</CcyNm>
+			<Ccy>QBF</Ccy>
+			<CcyNbr>931</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 032</CtryNm>
+			<CcyNm>Test Unit 032</CcyNm>
+			<Ccy>QBG</Ccy>
+			<CcyNbr>932</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 033</CtryNm>
+			<CcyNm>Test Unit 033</CcyNm>
+			<Ccy>QBH</Ccy>
+			<CcyNbr>933</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 034</CtryNm>
+			<CcyNm>Test Unit 034</CcyNm>
+			<Ccy>QBI</Ccy>
+			<CcyNbr>934</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 035</CtryNm>
+			<CcyNm>Test Unit 035</CcyNm>
+			<Ccy>QBJ</Ccy>
+			<CcyNbr>935</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 036</CtryNm>
+			<CcyNm>Test Unit 036</CcyNm>
+			<Ccy>QBK</Ccy>
+			<CcyNbr>936</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 037</CtryNm>
+			<CcyNm>Test Unit 037</CcyNm>
+			<Ccy>QBL</Ccy>
+			<CcyNbr>937</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 038</CtryNm>
+			<CcyNm>Test Unit 038</CcyNm>
+			<Ccy>QBM</Ccy>
+			<CcyNbr>938</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 039</CtryNm>
+			<CcyNm>Test Unit 039</CcyNm>
+			<Ccy>QBN</Ccy>
+			<CcyNbr>939</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 040</CtryNm>
+			<CcyNm>Test Unit 040</CcyNm>
+			<Ccy>QBO</Ccy>
+			<CcyNbr>940</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 041</CtryNm>
+			<CcyNm>Test Unit 041</CcyNm>
+			<Ccy>QBP</Ccy>
+			<CcyNbr>941</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 042</CtryNm>
+			<CcyNm>Test Unit 042</CcyNm>
+			<Ccy>QBQ</Ccy>
+			<CcyNbr>942</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 043</CtryNm>
+			<CcyNm>Test Unit 043</CcyNm>
+			<Ccy>QBR</Ccy>
+			<CcyNbr>943</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 044</CtryNm>
+			<CcyNm>Test Unit 044</CcyNm>
+			<Ccy>QBS</Ccy>
+			<CcyNbr>944</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 045</CtryNm>
+			<CcyNm>Test Unit 045</CcyNm>
+			<Ccy>QBT</Ccy>
+			<CcyNbr>945</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 046</CtryNm>
+			<CcyNm>Test Unit 046</CcyNm>
+			<Ccy>QBU</Ccy>
+			<CcyNbr>946</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 047</CtryNm>
+			<CcyNm>Test Unit 047</CcyNm>
+			<Ccy>QBV</Ccy>
+			<CcyNbr>947</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 048</CtryNm>
+			<CcyNm>Test Unit 048</CcyNm>
+			<Ccy>QBW</Ccy>
+			<CcyNbr>948</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 049</CtryNm>
+			<CcyNm>Test Unit 049</CcyNm>
+			<Ccy>QBX</Ccy>
+			<CcyNbr>949</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 050</CtryNm>
+			<CcyNm>Test Unit 050</CcyNm>
+			<Ccy>QBY</Ccy>
+			<CcyNbr>950</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 051</CtryNm>
+			<CcyNm>Test Unit 051</CcyNm>
+			<Ccy>QBZ</Ccy>
+			<CcyNbr>951</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 052</CtryNm>
+			<CcyNm>Test Unit 052</CcyNm>
+			<Ccy>QCA</Ccy>
+			<CcyNbr>952</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 053</CtryNm>
+			<CcyNm>Test Unit 053</CcyNm>
+			<Ccy>QCB</Ccy>
+			<CcyNbr>953</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 054</CtryNm>
+			<CcyNm>Test Unit 054</CcyNm>
+			<Ccy>QCC</Ccy>
+			<CcyNbr>954</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 055</CtryNm>
+			<CcyNm>Test Unit 055</CcyNm>
+			<Ccy>QCD</Ccy>
+			<CcyNbr>955</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 056</CtryNm>
+			<CcyNm>Test Unit 056</CcyNm>
+			<Ccy>QCE</Ccy>
+			<CcyNbr>956</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 057</CtryNm>
+			<CcyNm>Test Unit 057</CcyNm>
+			<Ccy>QCF</Ccy>
+			<CcyNbr>957</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 058</CtryNm>
+			<CcyNm>Test Unit 058</CcyNm>
+			<Ccy>QCG</Ccy>
+			<CcyNbr>958</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 059</CtryNm>
+			<CcyNm>Test Unit 059</CcyNm>
+			<Ccy>QCH</Ccy>
+			<CcyNbr>959</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 060</CtryNm>
+			<CcyNm>Test Unit 060</CcyNm>
+			<Ccy>QCI</Ccy>
+			<CcyNbr>960</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 061</CtryNm>
+			<CcyNm>Test Unit 061</CcyNm>
+			<Ccy>QCJ</Ccy>
+			<CcyNbr>961</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 062</CtryNm>
+			<CcyNm>Test Unit 062</CcyNm>
+			<Ccy>QCK</Ccy>
+			<CcyNbr>962</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 063</CtryNm>
+			<CcyNm>Test Unit 063</CcyNm>
+			<Ccy>QCL</Ccy>
+			<CcyNbr>963</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 064</CtryNm>
+			<CcyNm>Test Unit 064</CcyNm>
+			<Ccy>QCM</Ccy>
+			<CcyNbr>964</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 065</CtryNm>
+			<CcyNm>Test Unit 065</CcyNm>
+			<Ccy>QCN</Ccy>
+			<CcyNbr>965</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 066</CtryNm>
+			<CcyNm>Test Unit 066</CcyNm>
+			<Ccy>QCO</Ccy>
+			<CcyNbr>966</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 067</CtryNm>
+			<CcyNm>Test Unit 067</CcyNm>
+			<Ccy>QCP</Ccy>
+			<CcyNbr>967</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 068</CtryNm>
+			<CcyNm>Test Unit 068</CcyNm>
+			<Ccy>QCQ</Ccy>
+			<CcyNbr>968</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 069</CtryNm>
+			<CcyNm>Test Unit 069</CcyNm>
+			<Ccy>QCR</Ccy>
+			<CcyNbr>969</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 070</CtryNm>
+			<CcyNm>Test Unit 070</CcyNm>
+			<Ccy>QCS</Ccy>
+			<CcyNbr>970</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 071</CtryNm>
+			<CcyNm>Test Unit 071</CcyNm>
+			<Ccy>QCT</Ccy>
+			<CcyNbr>971</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 072</CtryNm>
+			<CcyNm>Test Unit 072</CcyNm>
+			<Ccy>QCU</Ccy>
+			<CcyNbr>972</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 073</CtryNm>
+			<CcyNm>Test Unit 073</CcyNm>
+			<Ccy>QCV</Ccy>
+			<CcyNbr>973</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 074</CtryNm>
+			<CcyNm>Test Unit 074</CcyNm>
+			<Ccy>QCW</Ccy>
+			<CcyNbr>974</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 075</CtryNm>
+			<CcyNm>Test Unit 075</CcyNm>
+			<Ccy>QCX</Ccy>
+			<CcyNbr>975</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 076</CtryNm>
+			<CcyNm>Test Unit 076</CcyNm>
+			<Ccy>QCY</Ccy>
+			<CcyNbr>976</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 077</CtryNm>
+			<CcyNm>Test Unit 077</CcyNm>
+			<Ccy>QCZ</Ccy>
+			<CcyNbr>977</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 078</CtryNm>
+			<CcyNm>Test Unit 078</CcyNm>
+			<Ccy>QDA</Ccy>
+			<CcyNbr>978</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 079</CtryNm>
+			<CcyNm>Test Unit 079</CcyNm>
+			<Ccy>QDB</Ccy>
+			<CcyNbr>979</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 080</CtryNm>
+			<CcyNm>Test Unit 080</CcyNm>
+			<Ccy>QDC</Ccy>
+			<CcyNbr>980</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 081</CtryNm>
+			<CcyNm>Test Unit 081</CcyNm>
+			<Ccy>QDD</Ccy>
+			<CcyNbr>981</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 082</CtryNm>
+			<CcyNm>Test Unit 082</CcyNm>
+			<Ccy>QDE</Ccy>
+			<CcyNbr>982</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 083</CtryNm>
+			<CcyNm>Test Unit 083</CcyNm>
+			<Ccy>QDF</Ccy>
+			<CcyNbr>983</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 084</CtryNm>
+			<CcyNm>Test Unit 084</CcyNm>
+			<Ccy>QDG</Ccy>
+			<CcyNbr>984</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 085</CtryNm>
+			<CcyNm>Test Unit 085</CcyNm>
+			<Ccy>QDH</Ccy>
+			<CcyNbr>985</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 086</CtryNm>
+			<CcyNm>Test Unit 086</CcyNm>
+			<Ccy>QDI</Ccy>
+			<CcyNbr>986</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 087</CtryNm>
+			<CcyNm>Test Unit 087</CcyNm>
+			<Ccy>QDJ</Ccy>
+			<CcyNbr>987</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 088</CtryNm>
+			<CcyNm>Test Unit 088</CcyNm>
+			<Ccy>QDK</Ccy>
+			<CcyNbr>988</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 089</CtryNm>
+			<CcyNm>Test Unit 089</CcyNm>
+			<Ccy>QDL</Ccy>
+			<CcyNbr>989</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 090</CtryNm>
+			<CcyNm>Test Unit 090</CcyNm>
+			<Ccy>QDM</Ccy>
+			<CcyNbr>990</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 091</CtryNm>
+			<CcyNm>Test Unit 091</CcyNm>
+			<Ccy>QDN</Ccy>
+			<CcyNbr>991</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 092</CtryNm>
+			<CcyNm>Test Unit 092</CcyNm>
+			<Ccy>QDO</Ccy>
+			<CcyNbr>992</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 093</CtryNm>
+			<CcyNm>Test Unit 093</CcyNm>
+			<Ccy>QDP</Ccy>
+			<CcyNbr>993</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 094</CtryNm>
+			<CcyNm>Test Unit 094</CcyNm>
+			<Ccy>QDQ</Ccy>
+			<CcyNbr>994</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 095</CtryNm>
+			<CcyNm>Test Unit 095</CcyNm>
+			<Ccy>QDR</Ccy>
+			<CcyNbr>995</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 096</CtryNm>
+			<CcyNm>Test Unit 096</CcyNm>
+			<Ccy>QDS</Ccy>
+			<CcyNbr>996</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 097</CtryNm>
+			<CcyNm>Test Unit 097</CcyNm>
+			<Ccy>QDT</Ccy>
+			<CcyNbr>997</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 098</CtryNm>
+			<CcyNm>Test Unit 098</CcyNm>
+			<Ccy>QDU</Ccy>
+			<CcyNbr>998</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 099</CtryNm>
+			<CcyNm>Test Unit 099</CcyNm>
+			<Ccy>QDV</Ccy>
+			<CcyNbr>999</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 100</CtryNm>
+			<CcyNm>Test Unit 100</CcyNm>
+			<Ccy>QDW</Ccy>
+			<CcyNbr>1000</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 101</CtryNm>
+			<CcyNm>Test Unit 101</CcyNm>
+			<Ccy>QDX</Ccy>
+			<CcyNbr>1001</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 102</CtryNm>
+			<CcyNm>Test Unit 102</CcyNm>
+			<Ccy>QDY</Ccy>
+			<CcyNbr>1002</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 103</CtryNm>
+			<CcyNm>Test Unit 103</CcyNm>
+			<Ccy>QDZ</Ccy>
+			<CcyNbr>1003</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 104</CtryNm>
+			<CcyNm>Test Unit 104</CcyNm>
+			<Ccy>QEA</Ccy>
+			<CcyNbr>1004</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 105</CtryNm>
+			<CcyNm>Test Unit 105</CcyNm>
+			<Ccy>QEB</Ccy>
+			<CcyNbr>1005</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 106</CtryNm>
+			<CcyNm>Test Unit 106</CcyNm>
+			<Ccy>QEC</Ccy>
+			<CcyNbr>1006</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 107</CtryNm>
+			<CcyNm>Test Unit 107</CcyNm>
+			<Ccy>QED</Ccy>
+			<CcyNbr>1007</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 108</CtryNm>
+			<CcyNm>Test Unit 108</CcyNm>
+			<Ccy>QEE</Ccy>
+			<CcyNbr>1008</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 109</CtryNm>
+			<CcyNm>Test Unit 109</CcyNm>
+			<Ccy>QEF</Ccy>
+			<CcyNbr>1009</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 110</CtryNm>
+			<CcyNm>Test Unit 110</CcyNm>
+			<Ccy>QEG</Ccy>
+			<CcyNbr>1010</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 111</CtryNm>
+			<CcyNm>Test Unit 111</CcyNm>
+			<Ccy>QEH</Ccy>
+			<CcyNbr>1011</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 112</CtryNm>
+			<CcyNm>Test Unit 112</CcyNm>
+			<Ccy>QEI</Ccy>
+			<CcyNbr>1012</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 113</CtryNm>
+			<CcyNm>Test Unit 113</CcyNm>
+			<Ccy>QEJ</Ccy>
+			<CcyNbr>1013</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 114</CtryNm>
+			<CcyNm>Test Unit 114</CcyNm>
+			<Ccy>QEK</Ccy>
+			<CcyNbr>1014</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 115</CtryNm>
+			<CcyNm>Test Unit 115</CcyNm>
+			<Ccy>QEL</Ccy>
+			<CcyNbr>1015</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 116</CtryNm>
+			<CcyNm>Test Unit 116</CcyNm>
+			<Ccy>QEM</Ccy>
+			<CcyNbr>1016</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 117</CtryNm>
+			<CcyNm>Test Unit 117</CcyNm>
+			<Ccy>QEN</Ccy>
+			<CcyNbr>1017</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 118</CtryNm>
+			<CcyNm>Test Unit 118</CcyNm>
+			<Ccy>QEO</Ccy>
+			<CcyNbr>1018</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 119</CtryNm>
+			<CcyNm>Test Unit 119</CcyNm>
+			<Ccy>QEP</Ccy>
+			<CcyNbr>1019</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 120</CtryNm>
+			<CcyNm>Test Unit 120</CcyNm>
+			<Ccy>QEQ</Ccy>
+			<CcyNbr>1020</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 121</CtryNm>
+			<CcyNm>Test Unit 121</CcyNm>
+			<Ccy>QER</Ccy>
+			<CcyNbr>1021</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 122</CtryNm>
+			<CcyNm>Test Unit 122</CcyNm>
+			<Ccy>QES</Ccy>
+			<CcyNbr>1022</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 123</CtryNm>
+			<CcyNm>Test Unit 123</CcyNm>
+			<Ccy>QET</Ccy>
+			<CcyNbr>1023</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 124</CtryNm>
+			<CcyNm>Test Unit 124</CcyNm>
+			<Ccy>QEU</Ccy>
+			<CcyNbr>1024</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 125</CtryNm>
+			<CcyNm>Test Unit 125</CcyNm>
+			<Ccy>QEV</Ccy>
+			<CcyNbr>1025</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 126</CtryNm>
+			<CcyNm>Test Unit 126</CcyNm>
+			<Ccy>QEW</Ccy>
+			<CcyNbr>1026</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 127</CtryNm>
+			<CcyNm>Test Unit 127</CcyNm>
+			<Ccy>QEX</Ccy>
+			<CcyNbr>1027</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 128</CtryNm>
+			<CcyNm>Test Unit 128</CcyNm>
+			<Ccy>QEY</Ccy>
+			<CcyNbr>1028</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 129</CtryNm>
+			<CcyNm>Test Unit 129</CcyNm>
+			<Ccy>QEZ</Ccy>
+			<CcyNbr>1029</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 130</CtryNm>
+			<CcyNm>Test Unit 130</CcyNm>
+			<Ccy>QFA</Ccy>
+			<CcyNbr>1030</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 131</CtryNm>
+			<CcyNm>Test Unit 131</CcyNm>
+			<Ccy>QFB</Ccy>
+			<CcyNbr>1031</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 132</CtryNm>
+			<CcyNm>Test Unit 132</CcyNm>
+			<Ccy>QFC</Ccy>
+			<CcyNbr>1032</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 133</CtryNm>
+			<CcyNm>Test Unit 133</CcyNm>
+			<Ccy>QFD</Ccy>
+			<CcyNbr>1033</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 134</CtryNm>
+			<CcyNm>Test Unit 134</CcyNm>
+			<Ccy>QFE</Ccy>
+			<CcyNbr>1034</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 135</CtryNm>
+			<CcyNm>Test Unit 135</CcyNm>
+			<Ccy>QFF</Ccy>
+			<CcyNbr>1035</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 136</CtryNm>
+			<CcyNm>Test Unit 136</CcyNm>
+			<Ccy>QFG</Ccy>
+			<CcyNbr>1036</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 137</CtryNm>
+			<CcyNm>Test Unit 137</CcyNm>
+			<Ccy>QFH</Ccy>
+			<CcyNbr>1037</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 138</CtryNm>
+			<CcyNm>Test Unit 138</CcyNm>
+			<Ccy>QFI</Ccy>
+			<CcyNbr>1038</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 139</CtryNm>
+			<CcyNm>Test Unit 139</CcyNm>
+			<Ccy>QFJ</Ccy>
+			<CcyNbr>1039</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 140</CtryNm>
+			<CcyNm>Test Unit 140</CcyNm>
+			<Ccy>QFK</Ccy>
+			<CcyNbr>1040</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 141</CtryNm>
+			<CcyNm>Test Unit 141</CcyNm>
+			<Ccy>QFL</Ccy>
+			<CcyNbr>1041</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 142</CtryNm>
+			<CcyNm>Test Unit 142</CcyNm>
+			<Ccy>QFM</Ccy>
+			<CcyNbr>1042</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 143</CtryNm>
+			<CcyNm>Test Unit 143</CcyNm>
+			<Ccy>QFN</Ccy>
+			<CcyNbr>1043</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 144</CtryNm>
+			<CcyNm>Test Unit 144</CcyNm>
+			<Ccy>QFO</Ccy>
+			<CcyNbr>1044</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 145</CtryNm>
+			<CcyNm>Test Unit 145</CcyNm>
+			<Ccy>QFP</Ccy>
+			<CcyNbr>1045</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 146</CtryNm>
+			<CcyNm>Test Unit 146</CcyNm>
+			<Ccy>QFQ</Ccy>
+			<CcyNbr>1046</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 147</CtryNm>
+			<CcyNm>Test Unit 147</CcyNm>
+			<Ccy>QFR</Ccy>
+			<CcyNbr>1047</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 148</CtryNm>
+			<CcyNm>Test Unit 148</CcyNm>
+			<Ccy>QFS</Ccy>
+			<CcyNbr>1048</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 149</CtryNm>
+			<CcyNm>Test Unit 149</CcyNm>
+			<Ccy>QFT</Ccy>
+			<CcyNbr>1049</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 150</CtryNm>
+			<CcyNm>Test Unit 150</CcyNm>
+			<Ccy>QFU</Ccy>
+			<CcyNbr>1050</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 151</CtryNm>
+			<CcyNm>Test Unit 151</CcyNm>
+			<Ccy>QFV</Ccy>
+			<CcyNbr>1051</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 152</CtryNm>
+			<CcyNm>Test Unit 152</CcyNm>
+			<Ccy>QFW</Ccy>
+			<CcyNbr>1052</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 153</CtryNm>
+			<CcyNm>Test Unit 153</CcyNm>
+			<Ccy>QFX</Ccy>
+			<CcyNbr>1053</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 154</CtryNm>
+			<CcyNm>Test Unit 154</CcyNm>
+			<Ccy>QFY</Ccy>
+			<CcyNbr>1054</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 155</CtryNm>
+			<CcyNm>Test Unit 155</CcyNm>
+			<Ccy>QFZ</Ccy>
+			<CcyNbr>1055</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 156</CtryNm>
+			<CcyNm>Test Unit 156</CcyNm>
+			<Ccy>QGA</Ccy>
+			<CcyNbr>1056</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 157</CtryNm>
+			<CcyNm>Test Unit 157</CcyNm>
+			<Ccy>QGB</Ccy>
+			<CcyNbr>1057</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 158</CtryNm>
+			<CcyNm>Test Unit 158</CcyNm>
+			<Ccy>QGC</Ccy>
+			<CcyNbr>1058</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 159</CtryNm>
+			<CcyNm>Test Unit 159</CcyNm>
+			<Ccy>QGD</Ccy>
+			<CcyNbr>1059</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 160</CtryNm>
+			<CcyNm>Test Unit 160</CcyNm>
+			<Ccy>XXX</Ccy>
+			<CcyNbr>1060</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+		<CcyNtry>
+			<CtryNm>SYNTHETICA 161</CtryNm>
+			<CcyNm>Test Unit 161</CcyNm>
+			<Ccy>XTS</Ccy>
+			<CcyNbr>1061</CcyNbr>
+			<CcyMnrUnts>2</CcyMnrUnts>
+		</CcyNtry>
+	</CcyTbl>
+</ISO_4217>
