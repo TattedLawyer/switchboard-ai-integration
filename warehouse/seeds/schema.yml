@@ -56,14 +56,15 @@ seeds:
         data_tests: [not_null, unique]
   - name: iso_4217_currencies
     description: >
-      The ISO-4217 currency codes the pipeline accepts (#37), GENERATED from the vendored
-      SIX list-one.xml by scripts/generate-iso4217.ts — the same script and the same
+      The ISO-4217 currency codes the pipeline accepts (#37), GENERATED from SIX's
+      published list-one.xml by scripts/generate-iso4217.ts — the same script and the same
       source that render the ingest door's allowlist (ingest/src/iso4217-codes.ts). SIX is
-      the ISO-4217 maintenance agency; provenance, published date (Pblshd="2026-01-01"),
-      exclusions and the refresh procedure live in vendor/iso-4217/README.md. NEVER
-      hand-edit: regenerate and commit the diff (the consistency pins in
-      ingest/test/iso4217.test.ts red the suite when this file, the door's module and the
-      vendored XML disagree in any direction, byte-for-byte).
+      the ISO-4217 maintenance agency; the source file is NOT vendored in this repo, and
+      its URL, published date (Pblshd="2026-01-01"), SHA-256, exclusions and refresh
+      procedure live in vendor/iso-4217/README.md. NEVER hand-edit: regenerate and commit
+      the diff. ingest/test/iso4217.test.ts pins this file by GOLDEN BYTES, by an exact
+      count (176) and by named codes, so an edit here reds until the pin is deliberately
+      updated with it.
       Why it exists: the currency rule used to be the shape regex '^[A-Z]{3}$',
       hand-written in the contract and independently in all three consuming staging
       models — four copies, nothing mechanically diffing them, and all four admitting the

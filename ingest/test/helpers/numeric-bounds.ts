@@ -67,11 +67,11 @@ export async function createNumericBoundsFixture(pool: pg.Pool, table = "numeric
 }
 
 // ── #37: the ISO-4217 seed, same discipline ────────────────────────────────────────────
-// warehouse/seeds/iso_4217_currencies.csv is the dbt-side rendering of the vendored SIX
+// warehouse/seeds/iso_4217_currencies.csv is the dbt-side rendering of SIX's published
 // list-one.xml, emitted by scripts/generate-iso4217.ts from the SAME source as the door's
 // ingest/src/iso4217-codes.ts. Fixtures materialize THIS committed file — never a
 // re-typed subset — so a fixture can only disagree with dbt by the seed being stale, and
-// staleness is what the consistency pins in iso4217.test.ts red.
+// staleness is what the golden-byte pins in iso4217.test.ts red.
 export const ISO_4217_SEED_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
   "../../../warehouse/seeds/iso_4217_currencies.csv",

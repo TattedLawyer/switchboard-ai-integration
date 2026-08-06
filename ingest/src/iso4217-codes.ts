@@ -1,14 +1,15 @@
 // GENERATED FILE — DO NOT EDIT BY HAND.
 //
-// The ISO-4217 codes the ingest door admits, rendered from the vendored SIX list-one.xml
-// (vendor/iso-4217/ — source URL, published date and refresh procedure live in that
-// directory's README) by scripts/generate-iso4217.ts. Excluded as published-but-not-billable:
+// The ISO-4217 codes the ingest door admits, rendered by scripts/generate-iso4217.ts
+// from SIX's published list-one.xml. That source file is NOT vendored in this repo —
+// its URL, published date and SHA-256, and the refresh procedure, live in
+// vendor/iso-4217/README.md. Excluded as published-but-not-billable:
 // XTS, XXX — XXX is "no currency", XTS is "reserved for testing".
 //
-// Edit the vendored XML or the generator, never this file: ingest/test/iso4217.test.ts
-// re-derives this content from the XML and reds on any disagreement, in either direction.
+// Never edit this file by hand: re-run the generator against a freshly fetched source
+// and update the golden hashes in ingest/test/iso4217.test.ts in the same commit.
 
-/** The `Pblshd` attribute of the vendored list-one.xml this file was rendered from. */
+/** The `Pblshd` attribute of the list-one.xml this file was rendered from. */
 export const ISO_4217_PUBLISHED = "2026-01-01";
 
 /** Sorted, deduplicated, exclusions removed. 176 codes. */

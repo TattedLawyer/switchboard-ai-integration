@@ -248,7 +248,7 @@ describe("L1 numeric contract at the trust boundary", () => {
       // not a currency" versus "your vendor sent something that is not even a code" — and
       // the quarantine reason is the only place a human meets either. It must therefore
       // name the standard AND the published edition it was judged against, because "our
-      // vendored list is stale" is a live hypothesis a bare "invalid currency" would hide.
+      // list is stale" is a live hypothesis a bare "invalid currency" would hide.
       it("a shape-valid NON-currency quarantines through the real door, and the reason names ISO-4217, the published edition, and the value — distinguishably from the malformed-shape reason", async () => {
         const res = await postSigned(
           "billing",
@@ -262,7 +262,7 @@ describe("L1 numeric contract at the trust boundary", () => {
         expect(q.rowCount).toBe(1);
         expect(q.rows[0].reason).toContain("currency");
         expect(q.rows[0].reason).toContain("ISO-4217");
-        expect(q.rows[0].reason).toContain("2026-01-01"); // the vendored list's own Pblshd
+        expect(q.rows[0].reason).toContain("2026-01-01"); // the source list's own Pblshd
         expect(q.rows[0].reason).toContain('"ABC"');
         // Checklist line 5: each cause names itself and EXCLUDES its sibling. A
         // shape-valid non-currency must not be reported as a shape failure.

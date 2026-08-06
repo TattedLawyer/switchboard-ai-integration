@@ -92,9 +92,10 @@ const MONEY = { integer: true, required: true, signed: false, plausibleMax: null
 // three-letter uppercase strings, of which ~176 are currencies we admit — "ABC" used to
 // walk in and become a unit the mart grouped by and refused sums across, indistinguishable
 // downstream from "USD". The allowlist is ISO-4217 as published by SIX (the maintenance
-// agency), vendored at vendor/iso-4217/list-one.xml and GENERATED into
-// iso4217-codes.ts — never hand-typed here, and never a second copy: dbt's three staging
-// models join the seed rendered from the same XML by the same script.
+// agency) and GENERATED into iso4217-codes.ts — never hand-typed here, and never a second
+// copy: dbt's three staging models join the seed rendered from the same source by the same
+// script. The source table itself is NOT vendored in this repo; its URL, published date and
+// SHA-256 are recorded in vendor/iso-4217/README.md.
 //
 // Excluded from the published list, deliberately: XXX ("no currency" — admitting it lets
 // the absence of a currency through AS a currency) and XTS ("reserved for testing").

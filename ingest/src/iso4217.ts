@@ -1,16 +1,18 @@
-// #37 — the ISO-4217 allowlist's SOURCE-OF-TRUTH machinery: the parser for SIX's
-// published list-one.xml and the two renderers that turn it into the repo's two
-// committed artifacts (the door's TypeScript module and dbt's seed).
+// #37 — the ISO-4217 allowlist's machinery: the parser for SIX's published list-one.xml
+// and the two renderers that turn it into the repo's two committed artifacts (the door's
+// TypeScript module and dbt's seed).
 //
-// The list is never typed by hand and never fetched at build or run time. It is vendored
-// at vendor/iso-4217/list-one.xml (provenance, exclusions and refresh procedure in that
-// directory's README) and rendered by scripts/generate-iso4217.ts. This module is the
-// rendering code path, and it lives in shipped `src` for the same reason
-// numeric-bounds-seed.ts does: the consistency pins in ingest/test/iso4217.test.ts
-// exercise EXACTLY this code, so a stale or hand-edited committed artifact reds the
-// suite and re-running the generator is the fix.
+// The list is never typed by hand and never fetched at build or run time. The SOURCE FILE
+// IS NOT VENDORED HERE — this repo ships only the derived artifacts; provenance (URL,
+// published date, SHA-256 of the exact bytes) and the refresh procedure live in
+// vendor/iso-4217/README.md, and scripts/generate-iso4217.ts takes the path to a
+// locally-fetched copy as an argument. This module is the rendering code path, and it
+// lives in shipped `src` for the same reason numeric-bounds-seed.ts does: the pins in
+// ingest/test/iso4217.test.ts exercise EXACTLY this code — against a synthetic fixture,
+// since the real table is deliberately absent — while the committed artifacts are pinned
+// by golden bytes, count and content.
 //
-// No XML library. The vendored document is a flat, machine-generated, code-reviewed
+// No XML library. The source document is a flat, machine-generated, code-reviewed
 // table with no namespaces, no attributes on the elements we read, no CDATA and no
 // entity references inside them — so a scan for the `<Ccy>` leaf is sufficient AND is
 // itself reviewable, which a dependency would not be (the repo's zero-new-dependency
@@ -90,15 +92,16 @@ export function renderIso4217Module(list: ListOne): string {
   return [
     GENERATED_BANNER,
     "//",
-    "// The ISO-4217 codes the ingest door admits, rendered from the vendored SIX list-one.xml",
-    "// (vendor/iso-4217/ — source URL, published date and refresh procedure live in that",
-    `// directory's README) by scripts/generate-iso4217.ts. Excluded as published-but-not-billable:`,
+    "// The ISO-4217 codes the ingest door admits, rendered by scripts/generate-iso4217.ts",
+    "// from SIX's published list-one.xml. That source file is NOT vendored in this repo —",
+    `// its URL, published date and SHA-256, and the refresh procedure, live in`,
+    `// vendor/iso-4217/README.md. Excluded as published-but-not-billable:`,
     `// ${EXCLUDED_CODES.join(", ")} — XXX is "no currency", XTS is "reserved for testing".`,
     "//",
-    "// Edit the vendored XML or the generator, never this file: ingest/test/iso4217.test.ts",
-    "// re-derives this content from the XML and reds on any disagreement, in either direction.",
+    "// Never edit this file by hand: re-run the generator against a freshly fetched source",
+    "// and update the golden hashes in ingest/test/iso4217.test.ts in the same commit.",
     "",
-    `/** The \`Pblshd\` attribute of the vendored list-one.xml this file was rendered from. */`,
+    `/** The \`Pblshd\` attribute of the list-one.xml this file was rendered from. */`,
     `export const ISO_4217_PUBLISHED = ${JSON.stringify(list.published)};`,
     "",
     `/** Sorted, deduplicated, exclusions removed. ${codes.length} codes. */`,

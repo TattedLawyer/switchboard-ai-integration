@@ -21,8 +21,9 @@ import {
 // "ABC" walked in and became a currency the mart grouped and refused sums across, and
 // nothing anywhere could tell it from "USD". These pins are the membership rule.
 //
-// The list is not typed here — it is generated from the vendored SIX list-one.xml
-// (vendor/iso-4217/, provenance in its README) into ingest/src/iso4217-codes.ts. The
+// The list is not typed here — it is generated from SIX's published list-one.xml into
+// ingest/src/iso4217-codes.ts. That source file is NOT vendored; provenance is in
+// vendor/iso-4217/README.md. The
 // spot codes below are hand-named ON PURPOSE: they are the claim that the generated
 // artifact contains real currencies and not, say, an empty set that would make every
 // currency quarantine (an allowlist that admits nothing passes a "rejects ABC" test
@@ -57,7 +58,7 @@ describe("the door's currency gate is ISO-4217 MEMBERSHIP, not three-letter shap
   });
 
   it("BGN is NOT admitted — SIX withdrew it in the 2026-01-01 amendment when Bulgaria adopted the euro; a hand-typed list would still be admitting it, and nothing would say so", () => {
-    expect(currencyViolation("BGN"), "the vendored list is the live published one, not a remembered one").not.toBeNull();
+    expect(currencyViolation("BGN"), "the committed list is the live published one, not a remembered one").not.toBeNull();
   });
 
   it("case is not smoothed over: 'usd' is still refused (the door normalizes nothing — a lowercase code is a vendor bug the operator must see)", () => {
@@ -112,7 +113,7 @@ const sha256 = (path: string): string => createHash("sha256").update(readFileSyn
 // Golden bytes of the committed artifacts. These literals are the teeth: an edit to either
 // artifact — however consistent with the other — reds until someone also edits THIS line,
 // which is a deliberate, reviewable act rather than a silent drift.
-const CODES_MODULE_SHA256 = "3463a66acf9dc63f178bd6dc4268328f32b33671735d88e50ce55cd3515aa386";
+const CODES_MODULE_SHA256 = "d2ea3933cb0a7e777bd2178cab87a10ef5d3a0c192d76b3df19458c93dd6e1da";
 const SEED_SHA256 = "89aee96fe1349eb01dc74ac8d00b2b25c94cf70576c44be6f7b31f83cf912498";
 // SIX list-one.xml, Pblshd="2026-01-01", the bytes these artifacts were rendered from.
 // DOCUMENTARY ONLY — the file is not in this repo and nothing here can recompute it. It is

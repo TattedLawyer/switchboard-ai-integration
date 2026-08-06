@@ -96,8 +96,8 @@ models:
       - name: currency
         # Same rationale as amount_cents: currency is optional at the source; absent
         # stages as NULL, anything the ISO-4217 allowlist does not name quarantines at
-        # the door (#37 — the list is the iso_4217_currencies seed, generated from the
-        # vendored SIX list-one.xml), and doorless garbage is NULLed by the staging
+        # the door (#37 — the list is the iso_4217_currencies seed, generated from SIX's
+        # published list-one.xml), and doorless garbage is NULLed by the staging
         # guard, which joins that same seed. No not_null on purpose.
         description: A published ISO-4217 currency code, or NULL (unknown — the mart counts and refuses, never sums).
   - name: stg_support__csat

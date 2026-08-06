@@ -21,11 +21,14 @@ is generated from the "free-email-domains" npm package,
 Copyright (c) Kiko Beats (https://github.com/Kikobeats/free-email-domains),
 licensed under the MIT License.
 
-The ISO 4217 currency code list (vendor/iso-4217/list-one.xml, and the
-artifacts generated from it: ingest/src/iso4217-codes.ts and
-warehouse/seeds/iso_4217_currencies.csv) is published by SIX Group AG, the
-ISO 4217 Maintenance Agency, at
+The ISO 4217 currency code list is published by SIX Group AG, the ISO 4217
+Maintenance Agency, at
 https://www.six-group.com/en/products-services/financial-information/data-standards.html
-(list-one.xml, Pblshd="2026-01-01"). It is factual reference data — currency
-codes, names and minor units — reproduced unmodified with attribution.
-Provenance and refresh procedure: vendor/iso-4217/README.md.
+(list-one.xml, Pblshd="2026-01-01").
+
+SIX's file is NOT redistributed here. This repository ships only artifacts
+DERIVED from it — ingest/src/iso4217-codes.ts and
+warehouse/seeds/iso_4217_currencies.csv, which carry the set of currency codes
+this pipeline admits (the published list minus XXX and XTS). SIX is credited as
+the source of that list. The source file's URL, published date, SHA-256 and
+refresh procedure are recorded in vendor/iso-4217/README.md.

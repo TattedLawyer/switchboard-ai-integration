@@ -468,20 +468,21 @@ leaves it is gone from the source forever.
   *(updated PRE-3 — the allowlist landed.)* The rule is no longer the shape regex
   `^[A-Z]{3}$`, which admitted all 17,576 three-letter uppercase strings and therefore
   plausible fakes like "ABC". It is now MEMBERSHIP in ISO-4217 as published by SIX (the
-  standard's maintenance agency): `list-one.xml` is vendored at `vendor/iso-4217/` with
-  its published date, and `scripts/generate-iso4217.ts` renders it into the door's
+  standard's maintenance agency). SIX's `list-one.xml` is **not redistributed here** — only
+  the artifacts derived from it are; its URL, published date and SHA-256 are recorded at
+  `vendor/iso-4217/README.md`, and `scripts/generate-iso4217.ts` renders it into the door's
   allowlist (`ingest/src/iso4217-codes.ts`) *and* the dbt seed `iso_4217_currencies` that
   the three staging models now join. One source, two generated artifacts, drift pinned in
   every direction — the list is never hand-typed and never fetched at build or run time.
   `XXX` ("no currency") and `XTS` ("reserved for testing") are deliberately excluded.
-  The quarantine reason names the standard AND the published edition, so a stale vendored
-  list is a hypothesis the operator can form rather than an invisible one.
+  The quarantine reason names the standard AND the published edition, so a stale list is a
+  hypothesis the operator can form rather than an invisible one.
 
-  Disclosed with it, because the fix creates it: **the vendored list ages, and nothing
+  Disclosed with it, because the fix creates it: **the committed code set ages, and nothing
   automatically detects that it has.** SIX amends `list-one` when currencies are created
   or withdrawn, not on a calendar, so there is no cadence to schedule; refreshing is the
   documented manual procedure in `vendor/iso-4217/README.md`. The consequence of a stale
-  vendored list is bounded in the safe direction — a NEWLY created currency is refused at
+  list is bounded in the safe direction — a NEWLY created currency is refused at
   the door and shows up as a quarantine row naming the standard and the edition it was
   judged against, never as a wrong total — and a withdrawn one keeps being admitted until
   the next refresh. A build-time fetch would close the gap and was rejected: it makes the
@@ -1860,24 +1861,45 @@ it — is the part worth reading.
   hand-written independently in three staging models, so four copies of one rule existed
   with nothing mechanically diffing them.~~ *Paid (PRE-3):* the rule is now MEMBERSHIP,
   and the list is generated, never typed. SIX is the ISO-4217 maintenance agency; its
-  published `list-one.xml` (`Pblshd="2026-01-01"`) is vendored at `vendor/iso-4217/`
-  alongside a README recording the source URL, the published date, the exclusions and the
-  refresh procedure, and `scripts/generate-iso4217.ts` renders it into TWO committed
+  published `list-one.xml` (`Pblshd="2026-01-01"`) is the source, and
+  `scripts/generate-iso4217.ts` renders it into TWO committed
   artifacts — `ingest/src/iso4217-codes.ts` for the door and
   `warehouse/seeds/iso_4217_currencies.csv` for dbt, which the three staging models now
   JOIN instead of describing. This is the `numeric_bounds.csv` precedent applied exactly:
-  committed generated file, shipped renderer, generator script, and consistency pins that
-  red in every drift direction (revert-checked: neutering the membership branch reds 6
-  tests, a hand-edited module 5, a hand-edited seed 2, and moving the source XML under
-  stale artifacts 3). Door and warehouse are two renderings of one source, so they cannot
+  committed generated file, shipped renderer, generator script, and pins that red in every
+  drift direction (revert-checked: neutering the membership branch reds 6 tests, a
+  hand-edited module 5, a hand-edited seed 2, and moving the source under stale artifacts
+  3). Door and warehouse are two renderings of one source, so they cannot
   disagree about what a currency is. `XXX` and `XTS` are excluded deliberately, named in
   three places. Operator surface: a shape-valid non-currency quarantines with a reason
-  naming the standard AND the published edition it was judged against — so "our vendored
-  list is stale" is a hypothesis a human can form — and excluding the sibling shape-failure
+  naming the standard AND the published edition it was judged against — so "our list is
+  stale" is a hypothesis a human can form — and excluding the sibling shape-failure
   wording, so the two causes never wear each other's explanation. The list is live rather
   than remembered, and there is a pin that says so: `BGN` is REFUSED, because the
-  vendored amendment is the one that withdrew it for Bulgaria's euro adoption. A
+  source amendment is the one that withdrew it for Bulgaria's euro adoption. A
   hand-typed list would still be admitting it, and nothing would have said so.
+
+  *(amended after the licensing review — the source file is no longer in this repo at all.)*
+  SIX publishes `list-one.xml` for free download but attaches **no redistribution grant**,
+  and the only express term reachable from the download page is a site-wide terms-of-use
+  asserting copyright in "the entire content" and limiting use to "personal use". Shipping
+  the file rested on the argument that a currency table is uncopyrightable fact —
+  defensible, and what several comparable projects do, but an argument rather than a
+  permission. So the repo now ships **only the derived artifacts**, matching the dominant
+  ecosystem pattern (Debian `iso-codes`, `pycountry`, Datahub all publish derivations).
+  Provenance — URL, published date, SHA-256 of the exact bytes — is recorded in
+  `vendor/iso-4217/README.md`, and the generator takes a locally-fetched path as an
+  argument.
+
+  That trade has a cost, and naming it is the point: **nothing in the repo can recompute
+  the artifacts from the source any more**, so the old byte-identity pins against the XML
+  are gone and the recorded SHA-256 is documentary, not a check. The mutual "module and
+  seed agree" pin would have been a tautology on its own — it passes for any consistent
+  pair, including one with a code dropped from both. The guard is therefore CONTENT-based:
+  a golden SHA-256 of each committed artifact as a literal in the test, the exact admitted
+  count (176), fifteen named codes asserted present, both exclusions asserted absent, and
+  the generator exercised against a hand-authored SYNTHETIC fixture rather than an excerpt
+  of the real table. Changing an artifact now requires a matching visible edit to the pin.
 
 - ~~**Agent test files assign `DBT_SCHEMA` at module top-level and share one
   database** — order-dependent by construction, benign today *(audit)*.~~
