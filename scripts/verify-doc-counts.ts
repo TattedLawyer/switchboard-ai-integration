@@ -1,30 +1,61 @@
 #!/usr/bin/env tsx
-// The gate for the repo's two published headline numbers.
+// The gate for every published number this repo states about something a machine changes.
 //
-// Two checks, because they need different inputs:
+// It started as two headline numbers and is now eleven, across README, RUNBOOK and
+// KNOWN-ISSUES. The rule that earned each one a place here is the same: a number a human
+// maintains beside a thing a machine changes will drift, and the drift is invisible until
+// a stranger checks.
 //
-//   1. KNOWN-ISSUES.md's scoreboard against the file it scores. Pure text, no run
-//      needed — also pinned by ingest/test/doc-counts.test.ts, which is where a
-//      developer meets it first.
-//   2. README's test count against the SUITE. This one cannot live inside the suite
-//      (a test cannot count the run it is part of), so it reads the log of a real
-//      `npm test` and sums the per-workspace "Tests N passed" lines — exactly the
-//      summation the gate-H merge reviewer did by hand, mechanised.
-//   3. The dbt build's totals, stated in four doc sentences, against dbt's own
-//      run_results.json + manifest.json artifacts (cold review I1). Without --dbt-log the four sites are still checked
-//      against EACH OTHER, which is what catches the common case: a sibling missed.
-//      Adding one seed moved the DAG 98 → 101 and three of four sites went stale,
-//      including the RUNBOOK sentence an operator uses to decide the pipeline is broken.
+// FOUR groups of checks, split by the input each one needs:
+//
+//   1. TEXT ONLY — always run, no inputs.
+//      · KNOWN-ISSUES.md's scoreboard against the file it scores (open / disclosures /
+//        paid), also pinned by ingest/test/doc-counts.test.ts, which is where a developer
+//        meets it first.
+//      · README's test-count claims against EACH OTHER (three copies that must agree).
+//      · README's "N staging views" against warehouse/models/staging.
+//      · README's "N mock source servers" against the mocks/ workspaces (minus mock-core,
+//        which is the shared library, excluded BY NAME).
+//      · README's "N seeded fast-check properties" against the numbered properties in
+//        ingest/test/properties.test.ts.
+//      · The dbt claims against EACH OTHER — which is what catches the common case, a
+//        sibling missed. Adding one seed moved the DAG 98 -> 101 and three of four sites
+//        went stale, including the RUNBOOK sentence an operator uses to decide the
+//        pipeline is broken.
+//
+//   2. NEEDS --suite-log — README's test count and workspace count against the SUITE.
+//      Cannot live inside the suite (a test cannot count the run it is part of), so it
+//      reads the log of a real `npm test` and sums the per-workspace "Tests N passed"
+//      lines — the summation the gate-H merge reviewer did by hand, mechanised.
+//
+//   3. NEEDS --dbt-artifacts — the dbt totals against dbt's OWN run_results.json +
+//      manifest.json, never against its colorized stdout.
 //
 // Usage:
-//   npx tsx scripts/verify-doc-counts.ts                       # checks 1 and 3 (text only)
-//   npx tsx scripts/verify-doc-counts.ts --suite-log run.log   # + check 2
-//   npx tsx scripts/verify-doc-counts.ts --dbt-artifacts warehouse/target   # + check 3
+//   npx tsx scripts/verify-doc-counts.ts                                     # group 1 only
+//   npx tsx scripts/verify-doc-counts.ts --suite-log run.log                 # + group 2
+//   npx tsx scripts/verify-doc-counts.ts --dbt-artifacts warehouse/target    # + group 3
+//   (both flags together is what CI runs)
 //
-// Why the log rather than a fresh run: `npm test` is the expensive thing CI already
-// does, and re-running it to count it would double the CI's longest step to check a
-// number. Passing the log the real run produced also means the number checked is the
-// number that actually went green, not a second run's.
+// Omitting a flag runs the weaker check DELIBERATELY and says so on stdout. Misspelling
+// one is an error — see the parser note below.
+//
+// EXIT CODES, and they mean different things on purpose:
+//   0  every check that ran, passed
+//   1  a CHECK FAILED — a documented number disagrees with reality. Fix the document.
+//   2  USAGE ERROR — the command line was malformed. Fix the invocation; no check ran.
+// The split matters because the two need opposite responses, and a wrapper or an operator
+// reading only the exit code could not previously tell them apart. 2 is the conventional
+// usage-error code: Python's argparse documents "exit with a status code of 2" for an
+// invalid argument list, and POSIX getopt() treats an unrecognised option as an error
+// condition with its own return value and a stderr diagnostic on by default. Neither
+// standard says anything about this script — the convention is applied because the
+// distinction is operationally real here.
+//
+// Why a log rather than a fresh run: `npm test` is the expensive thing CI already does,
+// and re-running it to count it would double CI's longest step to check a number. Passing
+// the log the real run produced also means the number checked is the number that actually
+// went green, not a second run's.
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -50,14 +81,20 @@ const repoPath = (rel: string): string => fileURLToPath(new URL(`../${rel}`, imp
 const repoFile = (rel: string): string => readFileSync(repoPath(rel), "utf8");
 
 // Cold review M4: parse the command line EXHAUSTIVELY before doing any work. A flag this
-// script does not recognize is an error, not a silent fall-through to a weaker check —
-// `--dbt-log` (which our own RUNBOOK published) used to pass while verifying nothing.
+// script does not recognize is an error, not a silent fall-through to a weaker check.
+//
+// HISTORICAL NOTE — `--dbt-log` below is the flag that NEVER EXISTED. It is named here
+// only because our own RUNBOOK published it and it used to pass while verifying nothing:
+// flags were read with argv.indexOf, which structurally cannot tell "not asked for" from
+// "asked for, misspelled". The real flag is `--dbt-artifacts`, as the usage block above
+// states. This is the only place in this file that names the broken spelling.
+const USAGE_ERROR = 2; // not 1 — see the EXIT CODES note in the header
 let args;
 try {
   args = parseDocCountArgs(process.argv.slice(2));
 } catch (e) {
-  console.error(`doc counts FAILED: ${(e as Error).message}`);
-  process.exit(1);
+  console.error(`doc counts USAGE ERROR: ${(e as Error).message}`);
+  process.exit(USAGE_ERROR);
 }
 
 const failures: string[] = [];
@@ -194,6 +231,9 @@ if (args.dbtArtifacts !== undefined) {
 failures.push(...dbtClaimFailures(dbtClaims, liveDbt));
 
 if (failures.length > 0) {
+  // Exit 1, deliberately NOT the usage code: every check that could run, ran — and a
+  // documented number disagrees with reality. The fix is in a document, not in the
+  // command line.
   console.error(`\ndoc counts FAILED (${failures.length}):`);
   for (const f of failures) console.error(`  - ${f}`);
   process.exit(1);
