@@ -13,7 +13,9 @@
 // sentences are quoted inside the pin, so the edit that falsifies one reds a test whose
 // failure message points at the doc.
 import { describe, expect, it } from "vitest";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -382,3 +384,57 @@ describe("the two tree counts README states (cold review M5)", () => {
     expect(countMockSourceServers(["core", "billing", "support"])).toBe(2);
   });
 });
+
+// ── Usage error vs check failure: two different exit codes ─────────────────────────────
+//
+// M4 follow-up. Both `process.exit` sites returned 1, so "you invoked me wrong" and "the
+// docs are wrong" were indistinguishable to anything reading the exit code — a CI wrapper,
+// a shell `||`, an operator. Those need different responses: one is fixed by editing the
+// command line, the other by editing a document.
+//
+// 2 is the conventional usage-error code. Python's argparse documents it outright —
+// "it will print a message to sys.stderr and exit with a status code of 2" — and POSIX
+// getopt() treats an unrecognized option as an error condition with its own return value
+// and a stderr diagnostic on by default. Neither says anything about THIS script; the
+// 1-vs-2 split is applying that convention, and it is applied because the distinction is
+// operationally real here, not because a standard compels it.
+
+describe("exit codes distinguish a malformed invocation from a failed check", () => {
+  it("usage errors exit 2 — unknown flag, missing value, stray positional", () => {
+    for (const args of [["--dbt-log", "warehouse/target"], ["--suite-log"], ["warehouse/target"], ["--suite-log", "a", "--suite-log", "b"]]) {
+      const { code } = runGate(args);
+      expect(code, `${JSON.stringify(args)} is a usage error and must exit 2`).toBe(2);
+    }
+  });
+
+  it("a real verification failure exits 1 — the docs disagreeing with reality is NOT a usage error", () => {
+    // A well-formed command line pointing at a suite log that genuinely disagrees with
+    // README. No repo file is mutated: the disagreement is manufactured in the input.
+    const fake = join(tmpdir(), `doc-counts-exit-${process.pid}.log`);
+    writeFileSync(fake, " Test Files  1 passed (1)\n      Tests  5 passed (5)\n");
+    try {
+      const { code, out } = runGate(["--suite-log", fake]);
+      expect(code, "a drifted doc is a check failure, not a usage error").toBe(1);
+      expect(out).toContain("suite log sums to 5");
+    } finally {
+      rmSync(fake, { force: true });
+    }
+  });
+
+  it("success is still 0, and the deliberate weaker mode is still a success", () => {
+    expect(runGate([]).code).toBe(0);
+  });
+
+  it("the two failures are distinguishable in the OUTPUT too, not only in the code — a human reads the message", () => {
+    expect(runGate(["--dbt-log", "t"]).out).toContain("USAGE ERROR");
+    const fake = join(tmpdir(), `doc-counts-msg-${process.pid}.log`);
+    writeFileSync(fake, " Test Files  1 passed (1)\n      Tests  5 passed (5)\n");
+    try {
+      const out = runGate(["--suite-log", fake]).out;
+      expect(out).toContain("doc counts FAILED");
+      expect(out).not.toContain("USAGE ERROR");
+    } finally {
+      rmSync(fake, { force: true });
+    }
+  });
+}, 60_000);
