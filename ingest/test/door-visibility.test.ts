@@ -14,6 +14,7 @@ import { createIngestApp } from "../src/server.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { classifyRejection, secretForSource, signBody } from "../src/hmac.js";
 import { SOURCES } from "../src/sources.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -31,7 +32,7 @@ afterEach(() => {
 
 async function postTo(source: string, body: string, signature: string | undefined): Promise<number> {
   const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-  const srv = app.listen(0);
+  const srv = await listenLoopback(app);
   const port = (srv.address() as { port: number }).port;
   try {
     const headers: Record<string, string> = { "content-type": "application/json" };

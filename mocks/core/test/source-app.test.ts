@@ -7,6 +7,7 @@ import type { Server } from "node:http";
 import { createSourceApp } from "../src/source-app.js";
 import { signBody } from "../src/hmac.js";
 import { readLedger } from "../src/ledger.js";
+import { listenLoopback } from "../src/listen-loopback.js";
 
 let dir: string; let sink: Server; let sinkUrl: string;
 let received: { body: unknown; sig: string | undefined }[];
@@ -18,7 +19,7 @@ beforeEach(async () => {
     received.push({ body: req.body, sig: req.header("x-switchboard-signature") });
     res.sendStatus(200);
   });
-  await new Promise<void>((r) => { sink = app.listen(0, () => r()); });
+  sink = await listenLoopback(app);
   sinkUrl = `http://127.0.0.1:${(sink.address() as { port: number }).port}/hook`;
 });
 afterEach(() => { sink.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -29,7 +30,7 @@ describe("createSourceApp", () => {
       source: "billing", webhookUrl: sinkUrl, ledgerPath: join(dir, "l.jsonl"),
       script: (i) => ({ event_type: i % 2 === 0 ? "invoice.created" : "payment.succeeded", data: { id: `DEMO-I-${i}` } }),
     });
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     await fetch(`http://127.0.0.1:${port}/simulate`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -83,7 +84,7 @@ describe("createSourceApp /simulate start_index (B3)", () => {
     const appA = createSourceApp({
       source: "billing", webhookUrl: sinkUrl, ledgerPath: join(dir, "a.jsonl"), script,
     });
-    const srvA = appA.listen(0);
+    const srvA = await listenLoopback(appA);
     const portA = (srvA.address() as { port: number }).port;
     await fetch(`http://127.0.0.1:${portA}/simulate`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -97,7 +98,7 @@ describe("createSourceApp /simulate start_index (B3)", () => {
     const appB = createSourceApp({
       source: "billing", webhookUrl: sinkUrl, ledgerPath: join(dir, "b.jsonl"), script,
     });
-    const srvB = appB.listen(0);
+    const srvB = await listenLoopback(appB);
     const portB = (srvB.address() as { port: number }).port;
     await fetch(`http://127.0.0.1:${portB}/simulate`, request);
     srvB.close();
@@ -119,7 +120,7 @@ describe("createSourceApp /simulate start_index (B3)", () => {
     const app = createSourceApp({
       source: "billing", webhookUrl: sinkUrl, ledgerPath: join(dir, "d.jsonl"), script,
     });
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     await fetch(`http://127.0.0.1:${port}/simulate`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -137,7 +138,7 @@ describe("createSourceApp /simulate start_index (B3)", () => {
     const app = createSourceApp({
       source: "billing", webhookUrl: sinkUrl, ledgerPath: join(dir, "m.jsonl"), script,
     });
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     await fetch(`http://127.0.0.1:${port}/simulate`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -159,7 +160,7 @@ describe("createSourceApp /simulate start_index (B3)", () => {
     const app = createSourceApp({
       source: "billing", webhookUrl: sinkUrl, ledgerPath: join(dir, "r.jsonl"), script,
     });
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     await fetch(`http://127.0.0.1:${port}/simulate`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -191,7 +192,7 @@ describe("createSourceApp /status", () => {
       source: "billing", webhookUrl: sinkUrl, ledgerPath: join(dir, "s.jsonl"),
       script: (i) => ({ event_type: "invoice.created", data: { id: `DEMO-I-${i}` } }),
     });
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     const fresh = await (await fetch(`http://127.0.0.1:${port}/status`)).json();

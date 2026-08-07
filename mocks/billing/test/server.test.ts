@@ -7,6 +7,7 @@ import express from "express";
 import type { Server } from "node:http";
 import { readLedger } from "@switchboard/mock-core";
 import { createBillingApp } from "../src/server.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let dir: string;
 let received: { body: { event_id: string }; sig: string | undefined }[];
@@ -22,7 +23,7 @@ beforeEach(async () => {
     received.push({ body: req.body, sig: req.header("x-switchboard-signature") });
     res.sendStatus(200);
   });
-  await new Promise<void>((r) => { sink = app.listen(0, () => r()); });
+  sink = await listenLoopback(app);
   const addr = sink.address() as { port: number };
   sinkUrl = `http://127.0.0.1:${addr.port}/hook`;
 });
@@ -32,7 +33,7 @@ describe("mock billing", () => {
   it("simulate {count:10} → 10 ledger entries in the 5-slot cycle order, all signatures verify", async () => {
     const ledgerPath = join(dir, "l.jsonl");
     const billing = createBillingApp({ webhookUrl: sinkUrl, ledgerPath });
-    const srv = billing.listen(0);
+    const srv = await listenLoopback(billing);
     const port = (srv.address() as { port: number }).port;
     const res = await fetch(`http://127.0.0.1:${port}/simulate`, {
       method: "POST",
@@ -65,7 +66,7 @@ describe("mock billing", () => {
   it("faulted simulate: emitted + dropped === 20 and ledger still has all 20 (ledger never faulted)", async () => {
     const ledgerPath = join(dir, "l.jsonl");
     const billing = createBillingApp({ webhookUrl: sinkUrl, ledgerPath });
-    const srv = billing.listen(0);
+    const srv = await listenLoopback(billing);
     const port = (srv.address() as { port: number }).port;
     const res = await fetch(`http://127.0.0.1:${port}/simulate`, {
       method: "POST",

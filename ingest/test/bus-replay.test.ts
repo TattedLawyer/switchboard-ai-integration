@@ -7,6 +7,7 @@ import { freshTestDb, type TestDbResult } from "./helpers/testdb.js";
 import { BusReplayConnector, CASEBUS_SOURCE } from "../src/connectors/bus-replay.js";
 import { listGaps } from "../src/connectors/types.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task D pair 3 — the subscribe/replay connector's own disciplines.
 //
@@ -45,9 +46,9 @@ afterEach(async () => {
   await db.cleanup();
 });
 
-function listen(app: CasebusApp | express.Express): string {
+async function listen(app: CasebusApp | express.Express): Promise<string> {
   const e = "app" in app ? app.app : app;
-  const server = e.listen(0);
+  const server = await listenLoopback(e);
   servers.push(server);
   return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 }
@@ -72,7 +73,7 @@ describe("the drain: subscribe, consume, persist a cursor that is OURS", () => {
   it("with no stored cursor it subscribes EARLIEST and ingests the whole retained window", async () => {
     const mock = createCasebusApp({ seed: 42 });
     mock.stream.emit(37); // deliberately not a multiple of the batch size
-    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock), batchSize: 10 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(mock), batchSize: 10 });
 
     const report = await c.catchUpWithReport(pool);
     expect(report.ingested).toBe(37);
@@ -85,7 +86,7 @@ describe("the drain: subscribe, consume, persist a cursor that is OURS", () => {
   it("persists the replay id of the LAST verified-ingested event, plus the stream it came from", async () => {
     const mock = createCasebusApp({ seed: 42 });
     mock.stream.emit(12);
-    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock), batchSize: 5 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(mock), batchSize: 5 });
     await c.catchUp(pool);
 
     const cur = await cursorRow(pool);
@@ -99,7 +100,7 @@ describe("the drain: subscribe, consume, persist a cursor that is OURS", () => {
   it("a second drain with nothing new ingests ZERO and leaves the cursor where it was", async () => {
     const mock = createCasebusApp({ seed: 42 });
     mock.stream.emit(9);
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 4 }).catchUp(pool);
     const before = await cursorRow(pool);
 
@@ -111,7 +112,7 @@ describe("the drain: subscribe, consume, persist a cursor that is OURS", () => {
 
   it("resumes from the stored cursor across instances, ingesting only what is new", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(6);
     expect(await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool)).toBe(6);
     mock.stream.emit(7);
@@ -130,7 +131,7 @@ describe("the drain: subscribe, consume, persist a cursor that is OURS", () => {
         .type("application/x-ndjson")
         .send(JSON.stringify({ status: { code: "OK", stream_id: "s", has_more: true, latest_replay_id: null } }) + "\n");
     });
-    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(app), batchSize: 10 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(app), batchSize: 10 });
     await expect(c.catchUpWithReport(pool, { maxRounds: 50 })).rejects.toThrow(/has_more with an empty batch/);
   });
 
@@ -156,7 +157,7 @@ describe("the drain: subscribe, consume, persist a cursor that is OURS", () => {
             "\n",
         );
     });
-    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(app), batchSize: 10 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(app), batchSize: 10 });
     await expect(c.catchUpWithReport(pool, { maxRounds: 5 })).rejects.toThrow(/maxRounds/);
   });
 });
@@ -165,7 +166,7 @@ describe("at-least-once delivery: duplicates are absorbed AND counted", () => {
   it("a stream that re-serves events in-batch ingests each identity once and reports the redeliveries", async () => {
     const mock = createCasebusApp({ seed: 5, duplicate: { seed: 5, rate: 1 } });
     mock.stream.emit(20);
-    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock), batchSize: 100 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(mock), batchSize: 100 });
 
     const report = await c.catchUpWithReport(pool);
     expect(report.ingested).toBe(20);
@@ -176,7 +177,7 @@ describe("at-least-once delivery: duplicates are absorbed AND counted", () => {
   it("duplicates never become silence: a re-drain of an unchanged stream reports its duplicates too", async () => {
     const mock = createCasebusApp({ seed: 5 });
     mock.stream.emit(8);
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool);
     // Force a re-read of the same window by clearing the cursor the way an operator
     // restoring from an older backup would.
@@ -190,7 +191,7 @@ describe("at-least-once delivery: duplicates are absorbed AND counted", () => {
 describe("invalid cursor: two causes, told apart structurally because the wire will not say", () => {
   it("AGE-OUT → cause 'retention', bounds from the last ingested event to the earliest still retained, forward progress kept", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
 
     const old = mock.stream.emit(5, { ageS: 70 * 3600 });
     expect(await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool)).toBe(5);
@@ -216,7 +217,7 @@ describe("invalid cursor: two causes, told apart structurally because the wire w
 
   it("RESET → cause 'reset', even though the cursor is minutes old and the wire error is byte-identical", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
 
     mock.stream.emit(5);
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool);
@@ -240,7 +241,7 @@ describe("invalid cursor: two causes, told apart structurally because the wire w
 
   it("re-running after a fallback does not record a second gap for the same loss", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(3, { ageS: 71 * 3600 });
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool);
     mock.stream.emit(3);
@@ -253,7 +254,7 @@ describe("invalid cursor: two causes, told apart structurally because the wire w
 
   it("the fallback preset is configurable, and LATEST is the loss-maximizing choice it is: it abandons the retained window", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(4, { ageS: 71 * 3600 });
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool);
     mock.stream.emit(9);
@@ -271,7 +272,7 @@ describe("the standard door: schema gate, quarantine, and honest raw_body custod
   it("a poison event between healthy batchmates quarantines ALONE — batchmates land exactly once (attempt COUNTS, not just presence)", async () => {
     const mock = createCasebusApp({ seed: 42, poisonEmissionIndexes: [1] });
     mock.stream.emit(3); // healthy, poison, healthy — one batch
-    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock), batchSize: 100 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(mock), batchSize: 100 });
 
     const report = await c.catchUpWithReport(pool);
     expect(report.ingested).toBe(2);
@@ -296,7 +297,7 @@ describe("the standard door: schema gate, quarantine, and honest raw_body custod
   it("raw_body is the GENUINE per-event wire line — not a re-serialization, and re-parseable to the event we stored", async () => {
     const mock = createCasebusApp({ seed: 42 });
     mock.stream.emit(2);
-    await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock), batchSize: 100 }).catchUp(pool);
+    await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(mock), batchSize: 100 }).catchUp(pool);
 
     const res = await pool.query<{ event_id: string; raw_body: string | null }>(
       "select event_id, raw_body from raw.raw_events where source = $1 order by event_id",
@@ -318,7 +319,7 @@ describe("the standard door: schema gate, quarantine, and honest raw_body custod
 describe("tenancy — pinned with a NON-DEFAULT tenant (migration 006's floor, the Task C cold-review lesson)", () => {
   it("two tenants drain the same bus independently: separate cursors, separate raw rows, separate gaps", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(5, { ageS: 71 * 3600 });
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool);
     await new BusReplayConnector({ baseUrl, batchSize: 100, tenantId: TENANT_B }).catchUp(pool);
@@ -341,7 +342,7 @@ describe("tenancy — pinned with a NON-DEFAULT tenant (migration 006's floor, t
 describe("audit-write failure is LOUD (debt-burn A2): the gap ledger is a precondition, not a best effort", () => {
   it("a gap-ledger insert failure fails the run with the cursor unmoved — and the next healthy run re-detects the same loss", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(5, { ageS: 70 * 3600 });
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool);
     const deadCursor = (await cursorRow(pool))!.last_event_id;
@@ -406,11 +407,11 @@ describe("the cursor-liveness probe: transient failure is NOT a verdict (debt-bu
 
   it("a transient probe failure becomes integrity:{ok:false} for THIS source with its own wording — never a throw, never a gap row", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const realUrl = listen(mock);
+    const realUrl = await listen(mock);
     mock.stream.emit(6);
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: realUrl, batchSize: 100 }).catchUp(pool);
 
-    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(transientProbeProxy(realUrl)), batchSize: 100 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(transientProbeProxy(realUrl)), batchSize: 100 });
     const result = await c.reconcile(pool);
 
     // The window read succeeded; only the probe failed. The verdict is "this source's
@@ -430,7 +431,7 @@ describe("the cursor-liveness probe: transient failure is NOT a verdict (debt-bu
 
   it("the vendor's corrupted-cursor rejection still takes the GAP path — classification absorbs the transport blip, never the definitive verdict", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     // Backfill while young; age the cursor out afterwards so reconcile's probe is the
     // first surface to meet the corrupted rejection.
     mock.stream.emit(4, { ageS: 71 * 3600 });
@@ -450,7 +451,7 @@ describe("fetch discipline: a black-holed bus is a bounded failure, never a wedg
   it("a server that never answers times out loudly and leaves the cursor intact", async () => {
     const mock = createCasebusApp({ seed: 42 });
     mock.stream.emit(4);
-    const good = listen(mock);
+    const good = await listen(mock);
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: good, batchSize: 100 }).catchUp(pool);
     const before = await cursorRow(pool);
 
@@ -458,7 +459,7 @@ describe("fetch discipline: a black-holed bus is a bounded failure, never a wedg
     blackhole.get("/subscribe", () => {
       /* never responds */
     });
-    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(blackhole), batchSize: 100, timeoutMs: 300 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(blackhole), batchSize: 100, timeoutMs: 300 });
     await expect(c.catchUpWithReport(pool)).rejects.toThrow(/timed out/);
     expect(await cursorRow(pool)).toEqual(before);
   });
@@ -468,7 +469,7 @@ describe("reconcile: the retained window is the truth, read independently of the
   it("a clean world reconciles exactly; the report labels the window as the ledger-equivalent", async () => {
     const mock = createCasebusApp({ seed: 42 });
     mock.stream.emit(15);
-    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock), batchSize: 4 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(mock), batchSize: 4 });
     await c.catchUp(pool);
 
     const result = await c.reconcile(pool);
@@ -480,14 +481,14 @@ describe("reconcile: the retained window is the truth, read independently of the
   it("an unreadable bus produces NO report — an integrity failure, not confident meaningless diffs", async () => {
     const broken = express();
     broken.get("/subscribe", (_req, res) => res.status(500).send("boom"));
-    const result = await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(broken) }).reconcile(pool);
+    const result = await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(broken) }).reconcile(pool);
     expect(result.integrity.ok).toBe(false);
     expect(result.report).toBeUndefined();
   });
 
   it("events ingested before they aged out are normal metabolism (agedOutRaw), never flagged as extra", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(4, { ageS: 71 * 3600 });
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool);
     mock.stream.emit(5);
@@ -515,7 +516,7 @@ describe("reconcile: the retained window is the truth, read independently of the
 describe("M4: status frames without stream_id — unknown identity stays unknown", () => {
   it("a cursor advanced under identity-omitting frames records NULL stream identity — never the PREVIOUS stream's id resurrected by coalesce", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
 
     mock.stream.emit(3);
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool);
@@ -536,7 +537,7 @@ describe("M4: status frames without stream_id — unknown identity stays unknown
 
   it("the downstream mislabel, end-to-end: after an omitting-frame recovery, an ordinary AGE-OUT must be cause 'retention' — not 'reset' derived from a stale coalesced identity", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
 
     // Run 1: normal drain on stream 1 — cursor carries stream 1's identity.
     mock.stream.emit(3, { ageS: 70 * 3600 });
@@ -570,7 +571,7 @@ describe("M4: status frames without stream_id — unknown identity stays unknown
 
   it("boundary: identity observed EARLIER IN THE SAME RUN still binds — a mid-run omitting frame does not amnesia a cursor whose stream was just seen", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
 
     mock.stream.emit(5);
     // batchSize 2 → multiple rounds; frames 2+ omit stream_id, frame 1 carries it.

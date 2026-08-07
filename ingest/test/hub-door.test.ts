@@ -6,6 +6,7 @@ import { createIngestApp } from "../src/server.js";
 import { secretForSource, signBody } from "../src/hmac.js";
 import { createHubStore, type ThinEvent } from "../../mocks/hubcrm/src/index.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task C pair 3 — the BATCH webhook door (disclosed decision: the generic door in
 // server.ts detects the hubcrm source and hands the whole request to the connector
@@ -30,7 +31,7 @@ beforeAll(async () => {
   pool = result.pool;
   cleanup = result.cleanup;
   const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-  srv = app.listen(0);
+  srv = await listenLoopback(app);
   port = (srv.address() as { port: number }).port;
 });
 afterAll(async () => {

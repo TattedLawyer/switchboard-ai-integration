@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateManifest, readLedger, verifyLedgerChain } from "@switchboard/mock-core";
 import { createHubcrmApp, createHubStore, OPS_UNTIL_MERGES_COMPLETE, type ThinEvent } from "../src/index.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task C pair 2 — the HubSpot-STYLE thin-webhook CRM mock's own truth.
 //
@@ -27,7 +28,7 @@ afterEach(() => {
 });
 
 /** A local receiver standing in for the ingest batch door: records every batch body. */
-function receiver(): { url: string; batches: ThinEvent[][]; headers: string[] } {
+async function receiver(): Promise<{ url: string; batches: ThinEvent[][]; headers: string[] }> {
   const batches: ThinEvent[][] = [];
   const headers: string[] = [];
   const app = express();
@@ -37,12 +38,12 @@ function receiver(): { url: string; batches: ThinEvent[][]; headers: string[] } 
     headers.push(String(req.header("x-switchboard-signature")));
     res.status(202).json({ stored: true });
   });
-  srv = app.listen(0);
+  srv = await listenLoopback(app);
   return { url: `http://127.0.0.1:${(srv.address() as { port: number }).port}/webhooks/hubcrm`, batches, headers };
 }
 
-function listen(app: express.Express): string {
-  const s = app.listen(0);
+async function listen(app: express.Express): Promise<string> {
+  const s = await listenLoopback(app);
   srv = s;
   return `http://127.0.0.1:${(s.address() as { port: number }).port}`;
 }
@@ -128,7 +129,7 @@ describe("thin event shape (research: metadata-only, sparse by design)", () => {
 
 describe("batched delivery (research: ≤100 events/request, ordering NOT guaranteed, retries re-deliver with attemptNumber+1)", () => {
   it("delivers pending events in signed batches of at most batch_size (≤100), covering every non-dropped event exactly once with no faults", async () => {
-    const r = receiver();
+    const r = await receiver();
     const store = createHubStore({ seed: 42 });
     const emitted = store.simulate(180);
     const stats = await store.deliver({ webhookUrl: r.url, batchSize: 100 });
@@ -147,7 +148,7 @@ describe("batched delivery (research: ≤100 events/request, ordering NOT guaran
   });
 
   it("duplicate fault: an event is re-delivered in a LATER request with attemptNumber incremented (same eventId — idempotency's job downstream)", async () => {
-    const r = receiver();
+    const r = await receiver();
     const store = createHubStore({ seed: 42 });
     store.simulate(40);
     const stats = await store.deliver({
@@ -170,7 +171,7 @@ describe("batched delivery (research: ≤100 events/request, ordering NOT guaran
   });
 
   it("drop fault: dropped events are NEVER delivered but their store effects are real — the 10-retries-then-gone loss the paradigm admits", async () => {
-    const r = receiver();
+    const r = await receiver();
     const store = createHubStore({ seed: 42 });
     const emitted = store.simulate(40);
     const stats = await store.deliver({ webhookUrl: r.url, batchSize: 10, faultPlan: { seed: 3, dropRate: 0.25 } });
@@ -180,7 +181,7 @@ describe("batched delivery (research: ≤100 events/request, ordering NOT guaran
   });
 
   it("out-of-order faults: shuffle scrambles WITHIN a batch, holdover defers events to LATER batches — delivery order is not emission order in either axis", async () => {
-    const r = receiver();
+    const r = await receiver();
     const store = createHubStore({ seed: 42 });
     const emitted = store.simulate(60);
     await store.deliver({
@@ -203,7 +204,8 @@ describe("batched delivery (research: ≤100 events/request, ordering NOT guaran
       if (failures-- > 0) return res.status(500).json({ error: "flaky" });
       res.status(202).json({ stored: true });
     });
-    const url = `http://127.0.0.1:${((srv = app.listen(0)).address() as { port: number }).port}/hook`;
+    srv = await listenLoopback(app);
+    const url = `http://127.0.0.1:${(srv.address() as { port: number }).port}/hook`;
 
     const store = createHubStore({ seed: 42 });
     store.simulate(4);
@@ -219,7 +221,7 @@ describe("batched delivery (research: ≤100 events/request, ordering NOT guaran
 describe("hydration API (fetch-time state; 404 after deletion; 429/5xx injection; the store is the reconcile truth)", () => {
   it("GET /objects/:type/:id serves the CURRENT record; a mutation after the notify is what the fetch sees (the D7 race made real)", async () => {
     const { app, store } = createHubcrmApp({ seed: 42 });
-    const base = listen(app);
+    const base = await listen(app);
     store.simulate(30);
     const changed = store.emittedEvents().filter((e) => e.propertyName === "amount_cents");
     expect(changed.length).toBeGreaterThan(0);
@@ -234,7 +236,7 @@ describe("hydration API (fetch-time state; 404 after deletion; 429/5xx injection
 
   it("a deleted object answers 404 — deleted-before-fetch becomes the connector's tombstone", async () => {
     const { app, store } = createHubcrmApp({ seed: 42 });
-    const base = listen(app);
+    const base = await listen(app);
     store.simulate(30);
     const deletion = store.emittedEvents().find((e) => e.subscriptionType.endsWith(".deletion"));
     expect(deletion).toBeDefined();
@@ -249,7 +251,7 @@ describe("hydration API (fetch-time state; 404 after deletion; 429/5xx injection
       read429: { seed: 1, rate: 0.5 },
       poisonObjectIds: [],
     });
-    const base = listen(app);
+    const base = await listen(app);
     store.simulate(10);
     const anyObject = store.allObjects()[0];
     const statuses = new Set<number>();
@@ -260,7 +262,7 @@ describe("hydration API (fetch-time state; 404 after deletion; 429/5xx injection
     expect(statuses.has(200)).toBe(true);
 
     const poisoned = createHubcrmApp({ seed: 42, poisonObjectIds: [anyObject.objectId] });
-    const base2 = listen(poisoned.app);
+    const base2 = await listen(poisoned.app);
     poisoned.store.simulate(10);
     for (let i = 0; i < 3; i++) {
       expect((await fetch(`${base2}/objects/${anyObject.objectType}/${anyObject.objectId}`)).status).toBe(500);
@@ -269,7 +271,7 @@ describe("hydration API (fetch-time state; 404 after deletion; 429/5xx injection
 
   it("GET /objects/:type lists the full current store — the ledger-equivalent reconcile reads; deleted objects are gone from it", async () => {
     const { app, store } = createHubcrmApp({ seed: 42 });
-    const base = listen(app);
+    const base = await listen(app);
     store.simulate(30);
     const deleted = store.emittedEvents().filter((e) => e.subscriptionType === "deal.deletion").map((e) => e.objectId);
     const res = await fetch(`${base}/objects/deal`);
@@ -281,7 +283,7 @@ describe("hydration API (fetch-time state; 404 after deletion; 429/5xx injection
 
   it("GET /status carries the house freshness probe (instance_id, fresh, seq)", async () => {
     const { app } = createHubcrmApp({ seed: 42 });
-    const base = listen(app);
+    const base = await listen(app);
     const body = (await (await fetch(`${base}/status`)).json()) as Record<string, unknown>;
     expect(body.service).toBe("mock-hubcrm");
     expect(body.fresh).toBe(true);
@@ -405,7 +407,7 @@ describe("F-1c emission ledger (chaos-port prerequisite)", () => {
     const ledgerPath = join(dir, "ledger-hubcrm.jsonl");
     const store = createHubStore({ seed: 42, ledgerPath });
     store.simulate(OPS_UNTIL_MERGES_COMPLETE);
-    const { url } = receiver();
+    const { url } = await receiver();
     // A drop-heavy plan: the ledger is the emission record, not the delivery record.
     await store.deliver({ webhookUrl: url, faultPlan: { seed: 7, dropRate: 0.5 } });
 

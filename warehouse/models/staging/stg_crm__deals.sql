@@ -48,8 +48,10 @@ select
     case when pg_input_is_valid(properties ->> 'amount_cents', 'bigint')
          then (properties ->> 'amount_cents')::bigint end as amount_cents,
     -- L5: currency carried, not discarded; constrained to MEMBERSHIP in the generated
-    -- ISO-4217 seed (#37), the same list the door enforces from the same vendored source
-    -- — never a re-typed rule. The script's currency-CLEAR (propertyValue null) surfaces
+    -- ISO-4217 seed (#37), the same list the door enforces — both rendered by the same
+    -- script from the same published table, which this repo does NOT ship (see
+    -- vendor/iso-4217/README.md) — never a re-typed rule.
+    -- The script's currency-CLEAR (propertyValue null) surfaces
     -- here as NULL — "unknown", counted and refused by the mart, never summed; a
     -- fictional code now lands in that same NULL rather than passing as a unit.
     case when (properties ->> 'currency') in (select currency_code from {{ ref('iso_4217_currencies') }})

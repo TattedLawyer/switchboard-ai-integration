@@ -30,12 +30,20 @@ describe("listenReady — the mock-boot race, converted to ready-or-loud", () =>
     const port = (holder.address() as { port: number }).port;
     await new Promise<void>((r) => holder.close(() => r()));
 
+    // The stub stands in for a server that binds and then never accepts. It must honour
+    // the real `listen(port, host, cb)` contract listenLoopback awaits — the callback and
+    // the `error` listener registration — or the test measures the stub, not the retry.
     const deadApp = {
-      listen: (): Server =>
-        ({
+      listen: (_port: number, _host: string, cb?: () => void): Server => {
+        const stub = {
           address: () => ({ port }),
           close: () => undefined,
-        }) as unknown as Server,
+          once: () => stub,
+          removeListener: () => stub,
+        };
+        if (cb !== undefined) setImmediate(cb);
+        return stub as unknown as Server;
+      },
     } as unknown as express.Express;
 
     await expect(listenReady(deadApp, { attempts: 3 })).rejects.toThrow(

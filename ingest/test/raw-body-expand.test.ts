@@ -27,6 +27,7 @@ import { pollOnce } from "../src/backfill.js";
 import { quarantineEvent, replayQuarantined, replayAllQuarantined } from "../src/quarantine.js";
 import { ingestEvent, DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { createBillingApp } from "../../mocks/billing/src/server.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -48,7 +49,7 @@ const postSigned = async (
   source: string,
   body: string,
 ): Promise<Response> => {
-  const srv = app.listen(0);
+  const srv = await listenLoopback(app);
   const port = (srv.address() as { port: number }).port;
   try {
     return await fetch(`http://127.0.0.1:${port}/webhooks/${source}`, {
@@ -130,7 +131,7 @@ describe("poll door — no per-event wire bytes exist, so none are invented", ()
   it("poll-ingested events have raw_body IS NULL and are otherwise unchanged", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rawbody-poll-"));
     const feed = createBillingApp({ webhookUrl: "http://127.0.0.1:1", ledgerPath: join(dir, "l.jsonl") });
-    const srv: Server = feed.listen(0);
+    const srv: Server = await listenLoopback(feed);
     const port = (srv.address() as { port: number }).port;
     try {
       await fetch(`http://127.0.0.1:${port}/simulate`, {

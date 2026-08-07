@@ -36,6 +36,7 @@ import { createIngestApp } from "../src/server.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { secretForSource, signBody } from "../src/hmac.js";
 import type { Source } from "../src/sources.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -61,7 +62,7 @@ async function postTo(
   signature: string | undefined,
 ): Promise<Reply> {
   const app = createIngestApp(pool, DEFAULT_TENANT_ID, { enabledSources: enabled });
-  const srv = app.listen(0);
+  const srv = await listenLoopback(app);
   const port = (srv.address() as { port: number }).port;
   try {
     const headers: Record<string, string> = { "content-type": "application/json" };

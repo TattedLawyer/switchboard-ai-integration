@@ -6,6 +6,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { createHubcrmApp, OPS_UNTIL_MERGES_COMPLETE, type HubcrmApp } from "../../mocks/hubcrm/src/index.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task C pair 3 — the SECOND ORACLE (D7): under chaos, every thin event that reached raw
 // ends in exactly ONE of three states — hydrated snapshot, tombstone (a snapshot-table
@@ -30,8 +31,8 @@ afterEach(async () => {
   await cleanup();
 });
 
-function listen(app: express.Express): string {
-  const s = app.listen(0);
+async function listen(app: express.Express): Promise<string> {
+  const s = await listenLoopback(app);
   servers.push(s);
   return `http://127.0.0.1:${(s.address() as { port: number }).port}`;
 }
@@ -47,7 +48,7 @@ async function connector(baseUrl: string) {
 }
 
 async function deliver(hub: HubcrmApp, faultSeed?: number): Promise<void> {
-  const doorUrl = listen(createIngestApp(pool, DEFAULT_TENANT_ID));
+  const doorUrl = await listen(createIngestApp(pool, DEFAULT_TENANT_ID));
   await hub.store.deliver({
     webhookUrl: `${doorUrl}/webhooks/hubcrm`,
     batchSize: 20,
@@ -65,7 +66,7 @@ describe("the hydration trichotomy under chaos", () => {
     const poisonId = probe.store.allObjects()[0].objectId;
 
     const hub = createHubcrmApp({ seed: 77, read429: { seed: 5, rate: 0.2 }, poisonObjectIds: [poisonId] });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
     hub.store.simulate(40);
     await deliver(hub, 11);
     hub.store.simulate(20);
@@ -115,7 +116,7 @@ describe("the hydration trichotomy under chaos", () => {
 
   it("a fault-free world reconciles CLEAN: no missing, no extra, no drift, nothing pending — and deletions count as metabolism, not discrepancies", async () => {
     const hub = createHubcrmApp({ seed: 9 });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
     hub.store.simulate(40);
     await deliver(hub);
 
@@ -137,7 +138,7 @@ describe("the hydration trichotomy under chaos", () => {
 
   it("webhook loss is DETECTED, per class: an all-events-dropped object is missing; a dropped LATER property change is drift (latest snapshot ≠ store); a dropped deletion is extra-shaped absence — each named, none papered over", async () => {
     const hub = createHubcrmApp({ seed: 21 });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
 
     // Deliver a clean history first, hydrate it.
     hub.store.simulate(30);
@@ -148,7 +149,7 @@ describe("the hydration trichotomy under chaos", () => {
     // Now: mutations whose webhooks are ALL dropped (the 10-retries-then-gone loss).
     const before = hub.store.emittedEvents().length;
     hub.store.simulate(20);
-    const doorUrl = listen(createIngestApp(pool, DEFAULT_TENANT_ID));
+    const doorUrl = await listen(createIngestApp(pool, DEFAULT_TENANT_ID));
     await hub.store.deliver({
       webhookUrl: `${doorUrl}/webhooks/hubcrm`,
       faultPlan: { seed: 1, dropRate: 1 }, // everything lost
@@ -191,7 +192,7 @@ describe("the hydration trichotomy under chaos", () => {
 describe("merge-aware reconcile (F-1b: the merged-away are explained, the survivor is hydrated)", () => {
   it("a fault-free run past the merge ops reconciles CLEAN: consumed ids are neither extra nor missing but counted mergedAwayRaw; the survivor snapshot carries hs_merged_object_ids", async () => {
     const hub = createHubcrmApp({ seed: 42 });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
     hub.store.simulate(OPS_UNTIL_MERGES_COMPLETE); // named constant: all creates + both merges enacted
     await deliver(hub);
 

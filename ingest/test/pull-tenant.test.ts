@@ -34,6 +34,7 @@ import { createIngestApp } from "../src/server.js";
 import { createHubcrmApp } from "../../mocks/hubcrm/src/index.js";
 import { createBillingApp } from "../../mocks/billing/src/server.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 const INGEST_DIR = fileURLToPath(new URL("..", import.meta.url));
 /** A deliberately NON-default tenant: the whole point is that the default hides the defect. */
@@ -59,8 +60,8 @@ afterEach(async () => {
   await cleanup();
 });
 
-function listen(app: express.Express): string {
-  const s = app.listen(0);
+async function listen(app: express.Express): Promise<string> {
+  const s = await listenLoopback(app);
   servers.push(s);
   return `http://127.0.0.1:${(s.address() as { port: number }).port}`;
 }
@@ -87,7 +88,7 @@ function runBackfill(env: Record<string, string>): Promise<{ code: number; out: 
 describe("the configured deployment tenant reaches the PULL half", () => {
   it("hubcrm: the hydration pump processes the rows the door wrote — it does not scan an empty nil-tenant lane", async () => {
     const hub = createHubcrmApp({ seed: 91 });
-    const hubUrl = listen(hub.app);
+    const hubUrl = await listen(hub.app);
     hub.store.simulate(6);
 
     // The door is configured for TENANT_X, exactly as a deployment with
@@ -96,7 +97,7 @@ describe("the configured deployment tenant reaches the PULL half", () => {
     // (cold review M2): this test is about hubcrm's tenant routing, so hubcrm is the
     // deployment, and a future narrowing of the workspace default cannot silently
     // change what this exercises.
-    const doorUrl = listen(createIngestApp(pool, TENANT_X, { enabledSources: ["hubcrm"] }));
+    const doorUrl = await listen(createIngestApp(pool, TENANT_X, { enabledSources: ["hubcrm"] }));
     const stats = await hub.store.deliver({ webhookUrl: `${doorUrl}/webhooks/hubcrm` });
     expect(stats.failedBatches).toBe(0);
 
@@ -135,7 +136,7 @@ describe("the configured deployment tenant reaches the PULL half", () => {
     // The mock delivers to a black hole, so the push path is ours to drive by hand and the
     // pull path sees every event as un-ingested — the recovery shape this test is about.
     const billing = createBillingApp({ ledgerPath, webhookUrl: "http://127.0.0.1:1" });
-    const billingUrl = listen(billing);
+    const billingUrl = await listen(billing);
     await fetch(`${billingUrl}/simulate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -218,7 +219,7 @@ describe("a configured deployment can still run its own reconcile", () => {
   it("bare reconcile on a deployment with SWITCHBOARD_TENANT_ID set is NOT refused as though --tenant had been passed", async () => {
     const ledgerPath = join(dir, "ledger-support.jsonl");
     const support = createBillingApp({ ledgerPath, webhookUrl: "http://127.0.0.1:1" });
-    const supportUrl = listen(support);
+    const supportUrl = await listen(support);
     await fetch(`${supportUrl}/simulate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -251,7 +252,7 @@ describe("a configured deployment can still run its own reconcile", () => {
   it("PRE-3 #24 · an EXPLICIT --tenant naming THIS deployment's own tenant is allowed — identical scope to a bare run must get an identical answer", async () => {
     const ledgerPath = join(dir, "ledger-support.jsonl");
     const support = createBillingApp({ ledgerPath, webhookUrl: "http://127.0.0.1:1" });
-    const supportUrl = listen(support);
+    const supportUrl = await listen(support);
     await fetch(`${supportUrl}/simulate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -282,7 +283,7 @@ describe("a configured deployment can still run its own reconcile", () => {
   it("an EXPLICIT --tenant naming a different tenant is still refused for a ledger-feed source", async () => {
     const ledgerPath = join(dir, "ledger-support.jsonl");
     const support = createBillingApp({ ledgerPath, webhookUrl: "http://127.0.0.1:1" });
-    const supportUrl = listen(support);
+    const supportUrl = await listen(support);
 
     const res = await runReconcile({
       SWITCHBOARD_TENANT_ID: TENANT_X,

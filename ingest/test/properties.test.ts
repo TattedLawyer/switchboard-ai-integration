@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verifyLedgerChain, DEFAULT_LEDGER_HMAC_KEY } from "../src/reconcile.js";
 import { writeGoldenLedger, type EntryInput } from "./helpers/golden-ledger.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Property-based claim-pinning suite (fast-check). Every property here is expected GREEN at
 // HEAD: these lock the L1-G1/G2/G5/G9 fix classes (and the ledger torn-write fix) so they
@@ -158,7 +159,7 @@ describe("property 1: ingest-boundary totality — validly-signed requests never
 
   it("never 5xx; 202 ⇒ payload landed in raw.raw_events or ingest.quarantine (never neither)", async () => {
     const app = createIngestApp(pool, DEFAULT_TENANT_ID); // direct mode, like nul-payload.test.ts
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     try {
       await fc.assert(

@@ -1868,8 +1868,14 @@ it — is the part worth reading.
   JOIN instead of describing. This is the `numeric_bounds.csv` precedent applied exactly:
   committed generated file, shipped renderer, generator script, and pins that red in every
   drift direction (revert-checked: neutering the membership branch reds 6 tests, a
-  hand-edited module 5, a hand-edited seed 2, and moving the source under stale artifacts
-  3). Door and warehouse are two renderings of one source, so they cannot
+  hand-edited module 5, a hand-edited seed 2). A fourth revert-check — moving the source
+  file under stale artifacts, which red 3 — was performed when the file was in the tree and
+  is **no longer performable**: the file is gone (see the amendment below), and the pins it
+  exercised went with it. Standing in its place, and revert-checked at head: mutating BOTH
+  committed artifacts CONSISTENTLY — the mutation the retired stale-source check could not
+  see and the mutual module/seed tripwire passes — reds **6** tests in
+  `ingest/test/iso4217.test.ts`, on the two golden-byte hashes, the spot-code list and the
+  three door assertions. Door and warehouse are two renderings of one source, so they cannot
   disagree about what a currency is. `XXX` and `XTS` are excluded deliberately, named in
   three places. Operator surface: a shape-valid non-currency quarantines with a reason
   naming the standard AND the published edition it was judged against — so "our list is

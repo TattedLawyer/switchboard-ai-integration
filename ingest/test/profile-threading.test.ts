@@ -7,6 +7,7 @@ import type express from "express";
 import { generateManifest, type Profile } from "../../mocks/core/src/index.js";
 import { createBillingApp } from "../../mocks/billing/src/server.js";
 import { createSupportApp } from "../../mocks/support/src/server.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Phase 2b Task E: `profile` threads through the three 2a mock servers the same way
 // `seed` does — an optional opts field, defaulting to generic — and surfaces on the
@@ -24,7 +25,7 @@ function baseOpts(): { webhookUrl: string; ledgerPath: string } {
 }
 
 async function getJson(app: express.Express, path: string): Promise<unknown> {
-  const srv = app.listen(0);
+  const srv = await listenLoopback(app);
   servers.push(srv);
   const port = (srv.address() as { port: number }).port;
   const res = await fetch(`http://127.0.0.1:${port}${path}`);

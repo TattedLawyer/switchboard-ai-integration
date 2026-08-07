@@ -38,3 +38,4 @@ export {
   type SourceEventSpec,
   type EventScript,
 } from "./source-app.js";
+export { listenLoopback, listenLoopbackPort } from "./listen-loopback.js";

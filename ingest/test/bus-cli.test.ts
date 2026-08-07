@@ -13,6 +13,7 @@ import {
 import { listGaps, recordGap } from "../src/connectors/types.js";
 import { BusReplayConnector } from "../src/connectors/bus-replay.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task D pair 4 — the STANDING OPERATOR-SURFACE CHECKLIST (born from Gate-H catching this
 // class four times, binding): every new result field this connector produces is CONSUMED
@@ -48,8 +49,8 @@ afterEach(async () => {
   await cleanup();
 });
 
-function listen(app: CasebusApp): string {
-  const s = app.app.listen(0);
+async function listen(app: CasebusApp): Promise<string> {
+  const s = await listenLoopback(app.app);
   servers.push(s);
   return `http://127.0.0.1:${(s.address() as { port: number }).port}`;
 }
@@ -112,7 +113,7 @@ async function makeAgeOutGap(
 describe("backfill CLI — the drain's numbers, INCLUDING the ones only this paradigm produces", () => {
   it("prints ingested counts and, when at-least-once redelivers, the duplicates it absorbed", async () => {
     const mock = createCasebusApp({ seed: 5, duplicate: { seed: 5, rate: 1 } });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(12);
 
     const res = await runCli("src/cli/backfill.ts", baseUrl);
@@ -125,7 +126,7 @@ describe("backfill CLI — the drain's numbers, INCLUDING the ones only this par
 
   it("an AGE-OUT gap prints loudly with bounds and cause, and the drain still exits 0 (forward progress succeeded; reconcile is the gate)", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     const { detectingRun, lostEventId, farEventId } = await makeAgeOutGap(mock, baseUrl);
 
     // What the test's NAME has always claimed, now actually asserted (helper): shared
@@ -141,7 +142,7 @@ describe("backfill CLI — the drain's numbers, INCLUDING the ones only this par
 
   it("the run AFTER a fallback says nothing about the gap — which is exactly why asserting on it proved nothing (review I2, pinned so the vacuity cannot come back)", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     await makeAgeOutGap(mock, baseUrl);
 
     // The cursor is valid again, so this drain is ordinary and silent about the loss.
@@ -157,7 +158,7 @@ describe("backfill CLI — the drain's numbers, INCLUDING the ones only this par
 
   it("a RESET gap names the reset — never 'aged out of the retention window', which would send the operator to the wrong investigation", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(5);
     await runCli("src/cli/backfill.ts", baseUrl);
 
@@ -172,7 +173,7 @@ describe("backfill CLI — the drain's numbers, INCLUDING the ones only this par
 describe("reconcile CLI — paradigm-honest integrity, every bucket printed, and the acknowledgement gate", () => {
   it("clean world: a BUS integrity line (NOT 'ledger hash chain'), the window labeled as the ledger-equivalent, PASS, exit 0", async () => {
     const mock = createCasebusApp({ seed: 9 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(20);
     await runCli("src/cli/backfill.ts", baseUrl);
 
@@ -195,7 +196,7 @@ describe("reconcile CLI — paradigm-honest integrity, every bucket printed, and
 
   it("an UNACKNOWLEDGED gap FAILS the run, exit 1, with the gap number an operator can act on", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     await makeAgeOutGap(mock, baseUrl);
 
     const res = await runCli("src/cli/reconcile.ts", baseUrl);
@@ -214,7 +215,7 @@ describe("reconcile CLI — paradigm-honest integrity, every bucket printed, and
 
   it("once acknowledged the SAME gap is still printed, still listed, and no longer reds the run — a standing disclosed condition, not a permanent red", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     await makeAgeOutGap(mock, baseUrl);
 
     const gaps = await listGaps(pool, DEFAULT_TENANT, "casebus");
@@ -237,7 +238,7 @@ describe("reconcile CLI — paradigm-honest integrity, every bucket printed, and
 
   it("a NEW gap after an acknowledgement reds the run again — acknowledging one loss never blanket-silences the next", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     await makeAgeOutGap(mock, baseUrl);
     const first = await listGaps(pool, DEFAULT_TENANT, "casebus");
     await runCli("src/cli/gap-ack.ts", baseUrl, ["--source", "casebus", "--id", String(first[0].id), "--by", "oncall"]);
@@ -258,7 +259,7 @@ describe("reconcile CLI — paradigm-honest integrity, every bucket printed, and
 describe("gap-ack CLI — the operator path, and its refusals", () => {
   it("lists open gaps with their ids, bounds and causes when asked to list", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     await makeAgeOutGap(mock, baseUrl);
 
     const res = await runCli("src/cli/gap-ack.ts", baseUrl, ["--list"]);
@@ -270,7 +271,7 @@ describe("gap-ack CLI — the operator path, and its refusals", () => {
 
   it("refuses an id that does not exist rather than reporting a success that acknowledged nothing", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     const res = await runCli("src/cli/gap-ack.ts", baseUrl, ["--source", "casebus", "--id", "424242", "--by", "oncall"]);
     expect(res.code).toBe(1);
     expect(res.out).toMatch(/no gap #424242/i);
@@ -278,7 +279,7 @@ describe("gap-ack CLI — the operator path, and its refusals", () => {
 
   it("requires an operator identity: an anonymous acknowledgement is not an acknowledgement", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     const res = await runCli("src/cli/gap-ack.ts", baseUrl, ["--source", "casebus", "--id", "1"]);
     expect(res.code).toBe(1);
     expect(res.out).toMatch(/--by/);
@@ -288,7 +289,7 @@ describe("gap-ack CLI — the operator path, and its refusals", () => {
 describe("operator-CLI scoping (debt-burn A5): recorded state over configured scope, and explicit tenancy", () => {
   it("gap-ack --list defaults to ALL recorded gap state for the tenant — a loss on a source outside INGEST_SOURCES is flagged, never invisible; --source still narrows", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     await makeAgeOutGap(mock, baseUrl); // a loss on the ENABLED source
     // A loss recorded on a source NOT in this deployment's INGEST_SOURCES (env pins
     // casebus only) — exactly the row the enabledSources() iteration used to hide from
@@ -318,7 +319,7 @@ describe("operator-CLI scoping (debt-burn A5): recorded state over configured sc
   });
 
   it("gap-ack --tenant scopes listing AND acknowledgement; without the flag the default tenant's behavior is unchanged (non-default-tenant pin)", async () => {
-    const baseUrl = listen(createCasebusApp({ seed: 42 }));
+    const baseUrl = await listen(createCasebusApp({ seed: 42 }));
     await recordGap(pool, {
       tenantId: TENANT_B,
       source: "casebus",
@@ -351,7 +352,7 @@ describe("operator-CLI scoping (debt-burn A5): recorded state over configured sc
   });
 
   it("a BARE --tenant refuses identically on BOTH CLIs — never a silent fall-back that reconciles the default tenant while the operator believes it was tenant X (checklist line 6)", async () => {
-    const baseUrl = listen(createCasebusApp({ seed: 42 }));
+    const baseUrl = await listen(createCasebusApp({ seed: 42 }));
     // Same condition, equally rich behavior across surfaces: a flag whose value was
     // forgotten (or swallowed by the shell) must be a refusal on every CLI that takes
     // it, with the same wording — a bare --tenant that quietly runs the DEFAULT tenant
@@ -365,7 +366,7 @@ describe("operator-CLI scoping (debt-burn A5): recorded state over configured sc
 
   it("reconcile --tenant runs THAT tenant's reconcile: tenant B's standing loss reds and prints under the flag, and the default run stays clean (non-default-tenant pin)", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(4);
     // Both tenants drain the same bus; only tenant B carries a recorded loss.
     await runCli("src/cli/backfill.ts", baseUrl);
@@ -391,7 +392,7 @@ describe("operator-CLI scoping (debt-burn A5): recorded state over configured sc
   });
 
   it("a gap recorded on a source REMOVED from the SOURCES registry is listable AND acknowledgeable — record outranks config on the ack path, as the listing already got; a source unknown to BOTH stays refused (close F9)", async () => {
-    const baseUrl = listen(createCasebusApp({ seed: 42 }));
+    const baseUrl = await listen(createCasebusApp({ seed: 42 }));
     // A loss recorded under a source that is no longer (or never was) a registry
     // literal — the exact row the isSource gate made visible-but-unacceptable.
     await recordGap(pool, {
@@ -425,7 +426,7 @@ describe("operator-CLI scoping (debt-burn A5): recorded state over configured sc
 
   it("a WELL-FORMED but UNKNOWN --tenant refuses on BOTH CLIs with 'no recorded state' — never a clean PASS or an empty listing indistinguishable from health (close F8)", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(3);
     await runCli("src/cli/backfill.ts", baseUrl); // the DEFAULT tenant has state — the DB is live, the tenant is the typo
     const UNKNOWN = "99999999-9999-4999-8999-999999999999";
@@ -449,7 +450,7 @@ describe("operator-CLI scoping (debt-burn A5): recorded state over configured sc
   });
 
   it("reconcile --tenant REFUSES ledger-feed sources by name rather than silently answering cross-tenant — their reconcile is not tenant-scoped", async () => {
-    const baseUrl = listen(createCasebusApp({ seed: 42 }));
+    const baseUrl = await listen(createCasebusApp({ seed: 42 }));
     const res = await runCli("src/cli/reconcile.ts", baseUrl, ["--tenant", TENANT_B], {
       INGEST_SOURCES: "crm",
       LEDGER_PATH_CRM: "/tmp/burn1-a5-ledger-does-not-exist.jsonl",
@@ -464,7 +465,7 @@ describe("operator-CLI scoping (debt-burn A5): recorded state over configured sc
 describe("the disclosure must survive the incident (cold review I1)", () => {
   it("an UNREACHABLE source with a standing unacknowledged gap STILL prints the loss and the next step — the moment an operator is actually reading this output", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const server = mock.app.listen(0);
+    const server = await listenLoopback(mock.app);
     servers.push(server);
     const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     await makeAgeOutGap(mock, baseUrl);
@@ -488,7 +489,7 @@ describe("the disclosure must survive the incident (cold review I1)", () => {
 
   it("a TRANSIENT probe failure keeps the standing disclosure AND the rest of the run: integrity red for that source only, no fabricated gap row, later sources still processed (debt-burn A1)", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     await makeAgeOutGap(mock, baseUrl); // one STANDING recorded loss
 
     // The incident: the bus serves the whole window fine (EARLIEST), then blips on the
@@ -504,7 +505,7 @@ describe("the disclosure must survive the incident (cold review I1)", () => {
       const upstream = await fetch(`${baseUrl}/subscribe?${qs}`);
       res.status(upstream.status).type("application/x-ndjson").send(await upstream.text());
     });
-    const proxySrv = proxy.listen(0);
+    const proxySrv = await listenLoopback(proxy);
     servers.push(proxySrv);
     const proxyUrl = `http://127.0.0.1:${(proxySrv.address() as { port: number }).port}`;
 
@@ -538,7 +539,7 @@ describe("the disclosure must survive the incident (cold review I1)", () => {
 
   it("a reconcile-path gap INSERT failure is CONTAINED per source: standing state + a named FAIL for the thrown source, later sources still print, and record-before-report is unweakened — no report lines, no gap row (close F13, the A2 residue)", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     // One PRIOR recorded loss — the standing disclosure that must survive the incident.
     await recordGap(pool, {
       tenantId: DEFAULT_TENANT,
@@ -592,7 +593,7 @@ describe("the disclosure must survive the incident (cold review I1)", () => {
 
   it("a gap detected DURING the run is labelled as such, so 'standing' means what it says", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     // Backfill runs while the cursor is still young; the age-out happens after it, so
     // reconcile is the first surface to see the dead cursor.
     mock.stream.emit(4, { ageS: 70 * 3600 });
@@ -612,7 +613,7 @@ describe("the disclosure must survive the incident (cold review I1)", () => {
 describe("paradigm-honest PASS line (cold review M1)", () => {
   it("a clean bus PASSes against its RETAINED WINDOW — there is no ledger in this paradigm", async () => {
     const mock = createCasebusApp({ seed: 9 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(12);
     await runCli("src/cli/backfill.ts", baseUrl);
 
@@ -628,7 +629,7 @@ describe("paradigm-honest PASS line (cold review M1)", () => {
 describe("service log — the loop consumes the report, not just a number", () => {
   it("createBackfillRunner surfaces the unclosable gap on the loud channel (console.error), naming the cause", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(5);
     const { createBackfillRunner } = await import("../src/main.js");
 
@@ -651,7 +652,7 @@ describe("service log — the loop consumes the report, not just a number", () =
 
   it("the service log also prints the catch-up COUNTS (cold review M3): for a paradigm where redelivery is the steady state, a loop that logs neither ingested nor absorbed is indistinguishable from one doing nothing", async () => {
     const mock = createCasebusApp({ seed: 5, duplicate: { seed: 5, rate: 1 } });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(9);
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

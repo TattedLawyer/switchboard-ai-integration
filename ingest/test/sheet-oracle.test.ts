@@ -21,6 +21,7 @@ import {
   resolveHeaderMapping,
 } from "../src/connectors/sheet-canonical.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task A5 — sheets as a first-class source. Two RED→GREEN pairs, named:
 //   pair 1 "registration + nudge": the registry arm + env conventions resolve end-to-end
@@ -53,9 +54,9 @@ afterEach(async () => {
   await cleanup();
 });
 
-function startSheet(opts?: Partial<SheetsAppOptions>): { sheets: SheetsApp; baseUrl: string } {
+async function startSheet(opts?: Partial<SheetsAppOptions>): Promise<{ sheets: SheetsApp; baseUrl: string }> {
   const sheets = createSheetsApp({ seed: 7, rowCount: 6, ...opts });
-  srv = sheets.app.listen(0);
+  srv = await listenLoopback(sheets.app);
   const port = (srv.address() as { port: number }).port;
   return { sheets, baseUrl: `http://127.0.0.1:${port}` };
 }
@@ -71,8 +72,8 @@ function mkConnector(baseUrl: string): SheetSnapshotConnector {
   });
 }
 
-function startIngest(app: ReturnType<typeof createIngestApp>): { port: number } {
-  ingestSrv = app.listen(0);
+async function startIngest(app: ReturnType<typeof createIngestApp>): Promise<{ port: number }> {
+  ingestSrv = await listenLoopback(app);
   return { port: (ingestSrv.address() as { port: number }).port };
 }
 
@@ -125,7 +126,7 @@ async function quarantineRows(
 
 describe("A5 pair 1 — registration: sheets resolves through the registry and its env conventions", () => {
   it("connectorFor('sheets') is the snapshot connector wired to SHEETS_BASE_URL — catchUp and reconcile work end-to-end through the registry, no direct construction", async () => {
-    const { baseUrl } = startSheet();
+    const { baseUrl } = await startSheet();
     process.env.SHEETS_BASE_URL = baseUrl;
 
     const c = connectorFor("sheets", DEFAULT_TENANT_ID);
@@ -148,9 +149,9 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
     // is a thin {sheet_id, range, occurred_at} hint whose only meaning is "read the
     // sheet soon"; the sheet's truth is re-readable at will, so a forged or unsigned
     // nudge preserves nothing and is pure noise. Reject, don't file.
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = mkConnector(baseUrl);
-    const { port } = startIngest(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: () => c.nudge(pool) }));
+    const { port } = await startIngest(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: () => c.nudge(pool) }));
     const body = notification(sheets);
 
     const unsigned = await postNudge(port, body);
@@ -164,9 +165,9 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
   });
 
   it("a signed nudge answers 202 and the early catchUp actually RAN — the ingested delta is observable in raw", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = mkConnector(baseUrl);
-    const { port } = startIngest(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: () => c.nudge(pool) }));
+    const { port } = await startIngest(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: () => c.nudge(pool) }));
 
     const body = notification(sheets);
     const res = await postNudge(port, body, signBody(body, "demo-secret-sheets"));
@@ -191,8 +192,8 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
     delete process.env.ALLOW_DEV_SECRETS;
     delete process.env.WEBHOOK_SECRET_SHEETS;
     try {
-      const { sheets } = startSheet();
-      const { port } = startIngest(createIngestApp(pool, DEFAULT_TENANT_ID)); // sheets never configured here
+      const { sheets } = await startSheet();
+      const { port } = await startIngest(createIngestApp(pool, DEFAULT_TENANT_ID)); // sheets never configured here
       const body = notification(sheets);
 
       const unsigned = await postNudge(port, body);
@@ -210,8 +211,8 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
   });
 
   it("a signed nudge in a process with NO sheets runner wired answers 503 — accepting a nudge that can have no effect would be a lie to the channel", async () => {
-    const { sheets } = startSheet();
-    const { port } = startIngest(createIngestApp(pool, DEFAULT_TENANT_ID)); // no sheetsNudge hook
+    const { sheets } = await startSheet();
+    const { port } = await startIngest(createIngestApp(pool, DEFAULT_TENANT_ID)); // no sheetsNudge hook
     const body = notification(sheets);
     const res = await postNudge(port, body, signBody(body, "demo-secret-sheets"));
     expect(res.status).toBe(503);
@@ -225,7 +226,7 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
     // POSTed here would mint a foreign id in that lane and poison every later diff. So
     // the door 404s BY NAME — not the generic "unknown source" fallback — and points at
     // the one push surface sheets actually has.
-    const { port } = startIngest(createIngestApp(pool, DEFAULT_TENANT_ID));
+    const { port } = await startIngest(createIngestApp(pool, DEFAULT_TENANT_ID));
     const body = JSON.stringify({
       event_id: "sheet-rk-0001-deadbeefdeadbeef",
       event_type: "sheet.row_upserted",
@@ -253,8 +254,8 @@ describe("A5 pair 1 — nudge door: HMAC-verified, thin, latency-only", () => {
     // survivors arrive as real HTTP posts through the HMAC door, and correctness comes
     // ONLY from the periodic catchUp cycles — which read the sheet's own truth.
     let c!: SheetSnapshotConnector;
-    const { port } = startIngest(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: () => c.nudge(pool) }));
-    const { sheets, baseUrl } = startSheet({
+    const { port } = await startIngest(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: () => c.nudge(pool) }));
+    const { sheets, baseUrl } = await startSheet({
       seed: 21,
       webhookUrl: `http://127.0.0.1:${port}/connectors/sheets/nudge`,
       trigger: { dropRate: 0.85 },
@@ -389,7 +390,7 @@ describe("A5 pair 2 — stage-1 oracle: convergence under every seeded fault pla
 
   for (const plan of ["calm", "messy", "bulk", "hostile"] as const) {
     it(`plan "${plan}": ${STEPS} seeded steps with interleaved cycles → sheet ⇄ raw converges, every quarantined row accounted`, async () => {
-      const { sheets, baseUrl } = startSheet({ seed: PLAN_SEEDS[plan], rowCount: 8 });
+      const { sheets, baseUrl } = await startSheet({ seed: PLAN_SEEDS[plan], rowCount: 8 });
       const c = mkConnector(baseUrl);
       await c.catchUp(pool); // baseline: the seeded book ingests
 
@@ -420,7 +421,7 @@ describe("A5 pair 2 — stage-1 oracle: convergence under every seeded fault pla
 
 describe("A5 pair 2 — quarantine accounting, pinned at the edges", () => {
   it("M2: a blank row ingests CLEAN as a field-less upsert — fields absent per the contract's absence rule, nothing quarantined", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = mkConnector(baseUrl);
     await c.catchUp(pool);
 
@@ -437,7 +438,7 @@ describe("A5 pair 2 — quarantine accounting, pinned at the edges", () => {
   });
 
   it("M4: garbage currencies quarantine 4-of-5 — '' degrades to ABSENT and ingests clean; the four real garbage variants (INCLUDING the shape-valid non-currency 'ABC') quarantine naming currency", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = mkConnector(baseUrl);
     await c.catchUp(pool);
 
@@ -475,7 +476,7 @@ describe("A5 pair 2 — quarantine accounting, pinned at the edges", () => {
   });
 
   it("fix-after-quarantine (THE pin): 'quarantined-current' means the row's LATEST content failed the door — a fixed row counts clean, and the identity holds at every stage", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = mkConnector(baseUrl);
     await c.catchUp(pool);
     const [rk1, rk2] = sheets.sheet.metadata().slice(0, 2).map((m) => m.rowKey);
@@ -523,7 +524,7 @@ describe("A5 pair 2 — standing scenarios", () => {
     // standing scenario drives the editor primitives directly — the brief's sanctioned
     // fallback — and toggles three rows A→B→A→… for eight cycles. Pre-A4.1 the first
     // full toggle left reconcile permanently stale; here every cycle must read clean.
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = mkConnector(baseUrl);
     await c.catchUp(pool);
 
@@ -549,7 +550,7 @@ describe("A5 pair 2 — standing scenarios", () => {
   });
 
   it("429-heavy seed: a 35% read-quota storm end-to-end — cycles retry through it (bounded, seeded, observed) and convergence is still reached", async () => {
-    const { sheets, baseUrl } = startSheet({
+    const { sheets, baseUrl } = await startSheet({
       seed: 11,
       rowCount: 6,
       read429: { seed: 5, rate: 0.35 },
@@ -606,7 +607,7 @@ describe("A5 pair 2 — standing scenarios", () => {
 // different workspace, with nothing here to say so. That is what this comment is for.
 describe("PRE-3 #33 — the connector survives a column reorder because it resolves by name, not position", () => {
   it("a reorder between cycles produces NO events: same rows, same content, same hashes", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = mkConnector(baseUrl);
     const first = await c.catchUp(pool);
     expect(first).toBeGreaterThan(0);
@@ -630,7 +631,7 @@ describe("PRE-3 #33 — the connector survives a column reorder because it resol
   });
 
   it("reconcile stays clean across the reorder — the gate does not read a permutation as drift", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = mkConnector(baseUrl);
     await c.catchUp(pool);
     sheets.sheet.apply({ type: "move_column", from: COL.notes, to: COL.clientName });
@@ -642,7 +643,7 @@ describe("PRE-3 #33 — the connector survives a column reorder because it resol
   });
 
   it("a REAL edit still lands after a reorder — the reorder must not deafen the connector", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = mkConnector(baseUrl);
     await c.catchUp(pool);
     sheets.sheet.apply({ type: "move_column", from: COL.status, to: COL.email });

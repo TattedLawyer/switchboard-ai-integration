@@ -7,6 +7,7 @@ import { COL, createSheetsApp, type SheetsApp } from "../../mocks/sheets/src/ind
 import { freshTestDb } from "./helpers/testdb.js";
 import { SheetSnapshotConnector } from "../src/connectors/sheet-snapshot.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Gate-H cold review I1 (+ Minor 6) — the reconcile CLI path itself, exercised as the
 // operator runs it (`INGEST_SOURCES=sheets npm run reconcile -w ingest`), because the
@@ -39,9 +40,9 @@ afterEach(async () => {
   await cleanup();
 });
 
-function startSheet(): { sheets: SheetsApp; baseUrl: string } {
+async function startSheet(): Promise<{ sheets: SheetsApp; baseUrl: string }> {
   const sheets = createSheetsApp({ seed: 7, rowCount: 6 });
-  srv = sheets.app.listen(0);
+  srv = await listenLoopback(sheets.app);
   const port = (srv.address() as { port: number }).port;
   return { sheets, baseUrl: `http://127.0.0.1:${port}` };
 }
@@ -74,7 +75,7 @@ function runReconcileCli(baseUrl: string): Promise<{ code: number; stdout: strin
 
 describe("reconcile CLI × sheets (cold review I1/M6)", () => {
   it("a converged sheet PASSES with exit 0 — and the integrity line states what was actually verified for the snapshot paradigm, never 'ledger hash chain'", async () => {
-    const { baseUrl } = startSheet();
+    const { baseUrl } = await startSheet();
     const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
     await c.catchUp(pool);
 
@@ -92,7 +93,7 @@ describe("reconcile CLI × sheets (cold review I1/M6)", () => {
   });
 
   it("I1 (the false-PASS pin): a cell edited after a clean ingest = stale drift — the CLI must FAIL, exit nonzero, and NAME the stale row_key", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
     await c.catchUp(pool);
 
@@ -185,7 +186,7 @@ describe("A8 on the real CLI — an enabled ledger-feed source with no ledger pa
 // run forever.
 describe("PRE-3 #14 — reconcile can see a mapped column that vanished", () => {
   it("the degraded column is NAMED on the reconcile report's operator surface", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
     await c.catchUp(pool);
     // A human renames a mapped, NON-KEY column to something the column map does not
@@ -206,7 +207,7 @@ describe("PRE-3 #14 — reconcile can see a mapped column that vanished", () => 
   });
 
   it("the verdict is a PASS that NAMES the standing condition — never the bare clean line, never a hard red", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
     await c.catchUp(pool);
     sheets.sheet.apply({ type: "rename_header", column: COL.amount, name: "$$ (Q3 rollup)" });
@@ -224,7 +225,7 @@ describe("PRE-3 #14 — reconcile can see a mapped column that vanished", () => 
   });
 
   it("a healthy sheet still prints the bucket at ZERO and the ordinary clean PASS — the category is never inferred from silence", async () => {
-    const { baseUrl } = startSheet();
+    const { baseUrl } = await startSheet();
     const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl });
     await c.catchUp(pool);
 

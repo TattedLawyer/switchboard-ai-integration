@@ -346,10 +346,23 @@ export function countSuiteWorkspaces(log: string): number {
 const NUMBER_WORDS: Record<string, number> = {
   four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
 };
+/** M3 (cold review): this was `NUMBER_WORDS[w] ?? Number(w) ?? null`, and `Number("many")`
+ *  is `NaN`, not nullish — so `?? null` never fired and the intended "the claim is gone"
+ *  branch was unreachable for a word form the table does not carry. The gate still failed
+ *  (NaN never equals a real count) but with the wrong diagnostic: "claims NaN workspaces"
+ *  instead of "this gate has nothing to check". NaN is the absence of a reading, so it is
+ *  reported as one. */
+function claimedNumber(word: string): number | null {
+  const fromWord = NUMBER_WORDS[word];
+  if (fromWord !== undefined) return fromWord;
+  const n = Number(word);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function readmeWorkspaceClaim(markdown: string): number | null {
   const m = /across (\w+) workspaces/.exec(markdown);
   if (!m) return null;
-  return NUMBER_WORDS[m[1]] ?? Number(m[1]) ?? null;
+  return claimedNumber(m[1]);
 }
 
 /** README's "N seeded fast-check properties". The suite numbers its properties
@@ -441,5 +454,5 @@ export function countMockSourceServers(dirNames: readonly string[]): number {
 }
 export function readmeMockServerClaim(markdown: string): number | null {
   const m = /(\w+) mock source servers/.exec(markdown);
-  return m ? (NUMBER_WORDS[m[1]] ?? Number(m[1]) ?? null) : null;
+  return m ? claimedNumber(m[1]) : null;
 }

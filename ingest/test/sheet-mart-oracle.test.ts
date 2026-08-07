@@ -16,6 +16,7 @@ import {
   resolveHeaderMapping,
 } from "../src/connectors/sheet-canonical.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task A6 — warehouse consumption of the sheets source (stage 2 of the two-stage oracle).
 // Three RED→GREEN pairs, named:
@@ -728,9 +729,9 @@ const chainWarehouse = async (db: pg.Pool): Promise<void> => {
   })}`);
 };
 
-function startSheet(opts?: Partial<SheetsAppOptions>): { sheets: SheetsApp; baseUrl: string } {
+async function startSheet(opts?: Partial<SheetsAppOptions>): Promise<{ sheets: SheetsApp; baseUrl: string }> {
   const sheets = createSheetsApp({ seed: 7, rowCount: 6, ...opts });
-  srv = sheets.app.listen(0);
+  srv = await listenLoopback(sheets.app);
   const port = (srv.address() as { port: number }).port;
   return { sheets, baseUrl: `http://127.0.0.1:${port}` };
 }
@@ -848,7 +849,7 @@ const expectMartMatchesStaging = async (db: pg.Pool): Promise<void> => {
 describe("A6 pair 3 — stage-2 oracle: sheet ⇄ mart", () => {
   it("calm run over the manifest universe: every sheet client tier-1 resolves to its manifest company and the mart's sheet columns equal hand-computed truth", async () => {
     await seedCrmUniverse(pool);
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = mkConnector(baseUrl);
     await c.catchUp(pool);
     for (let i = 1; i <= 8; i++) {
@@ -908,7 +909,7 @@ describe("A6 pair 3 — stage-2 oracle: sheet ⇄ mart", () => {
 
   for (const plan of ["messy", "hostile"] as const) {
     it(`${plan} run: CLEAN sheet rows ⇄ mart state exactly; quarantined-current rows' CURRENT content is excluded from staging AND the mart counters account for every staged row`, async () => {
-      const { sheets, baseUrl } = startSheet({ seed: plan === "messy" ? 102 : 104, rowCount: 8 });
+      const { sheets, baseUrl } = await startSheet({ seed: plan === "messy" ? 102 : 104, rowCount: 8 });
       const c = mkConnector(baseUrl);
       await c.catchUp(pool);
       for (let i = 1; i <= 24; i++) {
@@ -958,7 +959,7 @@ describe("A6 pair 3 — stage-2 oracle: sheet ⇄ mart", () => {
   }
 
   it("tombstone pin, end-to-end: a deleted row leaves staging AND its client's mart row; re-adding the same content (new row birth) brings the client back", async () => {
-    const { sheets, baseUrl } = startSheet({ rowCount: 4 });
+    const { sheets, baseUrl } = await startSheet({ rowCount: 4 });
     const c = mkConnector(baseUrl);
     // A manifest contact whose email is NOT already in the seeded sheet: the client's
     // mart presence is then owned entirely by the row we control.

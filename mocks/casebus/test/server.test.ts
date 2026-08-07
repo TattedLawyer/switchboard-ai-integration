@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { generateManifest } from "@switchboard/mock-core";
 import { createCasebusApp, REPLAY_PRESETS } from "../src/index.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task D pair 1 — the event-bus subscribe/replay mock's own truth.
 //
@@ -38,7 +39,7 @@ async function subscribe(
   a: ReturnType<typeof createCasebusApp>,
   qs = "",
 ): Promise<{ status: number; text: string; frames: Frame[]; body: Frame | null }> {
-  const srv = a.app.listen(0);
+  const srv = await listenLoopback(a.app);
   const port = (srv.address() as { port: number }).port;
   try {
     const res = await fetch(`http://127.0.0.1:${port}/subscribe${qs}`);
@@ -51,7 +52,7 @@ async function subscribe(
 }
 
 async function post(a: ReturnType<typeof createCasebusApp>, path: string, body: unknown) {
-  const srv = a.app.listen(0);
+  const srv = await listenLoopback(a.app);
   const port = (srv.address() as { port: number }).port;
   try {
     const res = await fetch(`http://127.0.0.1:${port}${path}`, {
@@ -66,7 +67,7 @@ async function post(a: ReturnType<typeof createCasebusApp>, path: string, body: 
 }
 
 async function get(a: ReturnType<typeof createCasebusApp>, path: string) {
-  const srv = a.app.listen(0);
+  const srv = await listenLoopback(a.app);
   const port = (srv.address() as { port: number }).port;
   try {
     const res = await fetch(`http://127.0.0.1:${port}${path}`);

@@ -6,6 +6,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { StripeFeedConnector, type StripeFeedGap } from "../src/connectors/stripe-feed.js";
 import { numericContractViolation } from "../src/numeric-contract.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task B pair 2 — the stripe-feed connector's door discipline, pinned against SCRIPTED
 // stub feeds (the real mock drives pair 3's oracle; these stubs let each pin control
@@ -49,10 +50,10 @@ const evt = (id: string, created: number, amount = 1000): StubEvent => ({
 });
 
 /** Serve a scripted response per request index; records every /v1/events URL seen. */
-function scriptedFeed(pages: ((req: express.Request, res: express.Response) => void)[]): {
+async function scriptedFeed(pages: ((req: express.Request, res: express.Response) => void)[]): Promise<{
   baseUrl: Promise<string>;
   urls: string[];
-} {
+}> {
   const urls: string[] = [];
   let i = 0;
   const app = express();
@@ -62,7 +63,7 @@ function scriptedFeed(pages: ((req: express.Request, res: express.Response) => v
     i++;
     handler(req, res);
   });
-  srv = app.listen(0);
+  srv = await listenLoopback(app);
   const baseUrl = Promise.resolve(`http://127.0.0.1:${(srv.address() as { port: number }).port}`);
   return { baseUrl, urls };
 }
@@ -86,7 +87,7 @@ async function storedCursor(): Promise<string | null> {
 describe("has_more is the ONLY termination signal (both directions pinned)", () => {
   it("a page WITH events but has_more=false ends the drain — no further request is made", async () => {
     const t = NOW_S() - 60;
-    const { baseUrl, urls } = scriptedFeed([
+    const { baseUrl, urls } = await scriptedFeed([
       (_req, res) => res.json(pageBody([evt("evt_a1", t), evt("evt_a2", t)], false)),
     ]);
     const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
@@ -96,7 +97,7 @@ describe("has_more is the ONLY termination signal (both directions pinned)", () 
 
   it("an EMPTY page with has_more=true CONTINUES — emptiness is not done-ness (the f1e7ac4 class, killed by mechanism)", async () => {
     const t = NOW_S() - 60;
-    const { baseUrl, urls } = scriptedFeed([
+    const { baseUrl, urls } = await scriptedFeed([
       (_req, res) => res.json(pageBody([], true)),
       (_req, res) => res.json(pageBody([evt("evt_b1", t)], false)),
     ]);
@@ -108,7 +109,7 @@ describe("has_more is the ONLY termination signal (both directions pinned)", () 
 
   it("a SHORT page (fewer events than limit) with has_more=true continues — count never infers done-ness", async () => {
     const t = NOW_S() - 60;
-    const { baseUrl, urls } = scriptedFeed([
+    const { baseUrl, urls } = await scriptedFeed([
       (_req, res) => res.json(pageBody([evt("evt_c1", t)], true)),
       (_req, res) => res.json(pageBody([evt("evt_c2", t + 1)], false)),
     ]);
@@ -118,7 +119,7 @@ describe("has_more is the ONLY termination signal (both directions pinned)", () 
   });
 
   it("an endless empty-but-has_more feed is a BOUNDED failure, not a wedge: maxRounds stops it loudly", async () => {
-    const { baseUrl } = scriptedFeed([(_req, res) => res.json(pageBody([], true))]);
+    const { baseUrl } = await scriptedFeed([(_req, res) => res.json(pageBody([], true))]);
     const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
     await expect(c.catchUp(pool, { maxRounds: 5 })).rejects.toThrow(/maxRounds|rounds/i);
     expect(await storedCursor()).toBeNull(); // nothing processed, nothing advanced
@@ -128,7 +129,7 @@ describe("has_more is the ONLY termination signal (both directions pinned)", () 
 describe("cursor discipline — ours, never the feed's", () => {
   it("persists the id of an event WE processed (max created, id tiebreak) and IGNORES any feed-supplied resume hint", async () => {
     const t = NOW_S() - 60;
-    const { baseUrl } = scriptedFeed([
+    const { baseUrl } = await scriptedFeed([
       // Response position deliberately disagrees with created order, and the body dangles
       // a skip-forward bait the connector must never touch.
       (_req, res) =>
@@ -141,7 +142,7 @@ describe("cursor discipline — ours, never the feed's", () => {
 
   it("orders ingestion by created (id tiebreak), never by response position", async () => {
     const t = NOW_S() - 60;
-    const { baseUrl } = scriptedFeed([
+    const { baseUrl } = await scriptedFeed([
       (_req, res) => res.json(pageBody([evt("evt_e2", t + 5), evt("evt_e1", t), evt("evt_e0", t)], false)),
     ]);
     const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
@@ -153,7 +154,7 @@ describe("cursor discipline — ours, never the feed's", () => {
   it("a mid-drain failure leaves the cursor at the last fully-processed page; the re-run resumes with no loss and no duplicates", async () => {
     const t = NOW_S() - 60;
     let phase2 = false;
-    const { baseUrl } = scriptedFeed([
+    const { baseUrl } = await scriptedFeed([
       (_req, res) => res.json(pageBody([evt("evt_f1", t), evt("evt_f2", t + 1)], true)),
       (req, res) => {
         if (!phase2) return res.status(500).json({ error: { type: "api_error", message: "boom" } });
@@ -174,7 +175,7 @@ describe("cursor discipline — ours, never the feed's", () => {
   it("a quarantined event is preserved+replayable and the cursor advances past it — batchmates ingest; nothing delivered is dropped", async () => {
     const t = NOW_S() - 60;
     const bad = evt("evt_g2", t + 1, -500); // negative amount: the contract quarantines it
-    const { baseUrl } = scriptedFeed([
+    const { baseUrl } = await scriptedFeed([
       (_req, res) => res.json(pageBody([evt("evt_g1", t), bad], false)),
     ]);
     const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
@@ -211,7 +212,7 @@ describe("the retention boundary — the paradigm's honest loss", () => {
       `insert into ingest.cursors (tenant_id, source, last_seq, last_event_id)
        values ('00000000-0000-0000-0000-000000000000', 'stripefeed', 0, 'evt_h1')`,
     );
-    const { baseUrl } = scriptedFeed([
+    const { baseUrl } = await scriptedFeed([
       (req, res) => {
         if (req.query.starting_after === "evt_h1") {
           return res.status(400).json({
@@ -238,7 +239,7 @@ describe("the retention boundary — the paradigm's honest loss", () => {
   });
 
   it("a 400 that is NOT the aged-cursor shape stays a loud failure — never silently treated as retention", async () => {
-    const { baseUrl } = scriptedFeed([
+    const { baseUrl } = await scriptedFeed([
       (_req, res) =>
         res.status(400).json({ error: { type: "invalid_request_error", param: "limit", message: "Invalid integer" } }),
     ]);
@@ -249,7 +250,7 @@ describe("the retention boundary — the paradigm's honest loss", () => {
 
 describe("fetch discipline (register L1-G4 paid here)", () => {
   it("a black-holed feed is a BOUNDED loud failure via AbortSignal.timeout — never a wedge; cursor intact", async () => {
-    const { baseUrl } = scriptedFeed([(_req, _res) => void 0 /* never responds */]);
+    const { baseUrl } = await scriptedFeed([(_req, _res) => void 0 /* never responds */]);
     const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl, timeoutMs: 150 });
     const t0 = Date.now();
     await expect(c.catchUp(pool)).rejects.toThrow(/timed out/i);
@@ -260,7 +261,7 @@ describe("fetch discipline (register L1-G4 paid here)", () => {
   it("429s retry with bounded deterministic backoff, then succeed", async () => {
     const t = NOW_S() - 60;
     let calls = 0;
-    const { baseUrl, urls } = scriptedFeed([
+    const { baseUrl, urls } = await scriptedFeed([
       (_req, res) => {
         calls++;
         if (calls <= 2) {
@@ -288,7 +289,7 @@ describe("fetch discipline (register L1-G4 paid here)", () => {
     // can never contain the cursor event itself on an honest feed.
     const t = NOW_S() - 60;
     const page = pageBody([evt("evt_j1", t), evt("evt_j2", t + 1)], true);
-    const { baseUrl } = scriptedFeed([(_req, res) => res.json(page)]);
+    const { baseUrl } = await scriptedFeed([(_req, res) => res.json(page)]);
     const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl });
     const result = await c.reconcile(pool);
     expect(result.integrity.ok).toBe(false);
@@ -338,7 +339,7 @@ describe("addendum — one malformed `created` must not blind a thirty-day windo
     const good = [evt("evt_a", now - 100), evt("evt_b", now - 90)];
     const malformed = { ...evt("evt_bad", now - 95), created: "2026-07-30T00:00:00Z" as unknown as number };
 
-    const { baseUrl } = scriptedFeed([
+    const { baseUrl } = await scriptedFeed([
       (_req, res) => res.json(pageBody([...good, malformed] as StubEvent[], false)),
     ]);
     const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl, pageLimit: 100 });
@@ -381,7 +382,7 @@ describe("addendum — one malformed `created` must not blind a thirty-day windo
     );
 
     const malformed = { ...evt("evt_bad", now - 95), created: null as unknown as number };
-    const { baseUrl } = scriptedFeed([
+    const { baseUrl } = await scriptedFeed([
       (_req, res) => res.json(pageBody([evt("evt_a", now - 100), malformed] as StubEvent[], false)),
     ]);
     const c = new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl, pageLimit: 100 });
@@ -407,7 +408,7 @@ describe("addendum — one malformed `created` must not blind a thirty-day windo
 
     // Same candidate SET, two arrival orders — malformed last, then malformed first.
     const cursorFor = async (page1: StubEvent[]): Promise<string | undefined> => {
-      const { baseUrl, urls } = scriptedFeed([
+      const { baseUrl, urls } = await scriptedFeed([
         (_req, res) => res.json(pageBody(page1, true)),
         (_req, res) => res.json(pageBody([], false)),
       ]);
@@ -430,7 +431,7 @@ describe("addendum — one malformed `created` must not blind a thirty-day windo
   it("a missing IDENTITY is still fatal — there is nothing to compare against raw", async () => {
     const now = NOW_S();
     const noId = { ...evt("evt_a", now - 100), id: undefined as unknown as string };
-    const { baseUrl } = scriptedFeed([(_req, res) => res.json(pageBody([noId] as StubEvent[], false))]);
+    const { baseUrl } = await scriptedFeed([(_req, res) => res.json(pageBody([noId] as StubEvent[], false))]);
 
     const result = await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await baseUrl, pageLimit: 100 }).reconcile(pool);
     expect(result.integrity.ok).toBe(false);

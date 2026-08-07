@@ -4,6 +4,7 @@ import type { Server } from "node:http";
 import { signBody } from "@switchboard/mock-core";
 import { COL } from "../src/seed.js";
 import { createSheetsApp, type SheetsAppOptions } from "../src/server.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let sink: Server;
 let sinkUrl: string;
@@ -21,7 +22,7 @@ beforeEach(async () => {
     });
     res.sendStatus(200);
   });
-  await new Promise<void>((r) => { sink = app.listen(0, () => r()); });
+  sink = await listenLoopback(app);
   sinkUrl = `http://127.0.0.1:${(sink.address() as { port: number }).port}/hook`;
 });
 afterEach(() => sink.close());
@@ -31,7 +32,7 @@ afterEach(() => { for (const s of servers.splice(0)) s.close(); });
 
 async function boot(opts: SheetsAppOptions) {
   const built = createSheetsApp(opts);
-  const srv = await new Promise<Server>((r) => { const s = built.app.listen(0, () => r(s)); });
+  const srv = await listenLoopback(built.app);
   servers.push(srv);
   return { url: `http://127.0.0.1:${(srv.address() as { port: number }).port}`, ...built };
 }

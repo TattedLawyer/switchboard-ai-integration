@@ -16,6 +16,7 @@ import { ingestEvent, DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { createIngestApp } from "../src/server.js";
 import { secretForSource, signBody } from "../src/hmac.js";
 import { resolveDeploymentTenant } from "../src/config.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 const TENANT_A = "11111111-1111-1111-1111-111111111111";
 const TENANT_B = "22222222-2222-2222-2222-222222222222";
@@ -80,7 +81,7 @@ describe("SEC-C2 — quarantine replay keeps the row in its own tenant's lane", 
 describe("SEC-C1 — the webhook door expresses the deployment's configured tenant", () => {
   it("a signed webhook stores under the tenant the door was constructed with", async () => {
     const app = createIngestApp(pool, TENANT_A);
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     try {
       const event = evt("evt-tenant-door-a");
@@ -102,7 +103,7 @@ describe("SEC-C1 — the webhook door expresses the deployment's configured tena
 
   it("a quarantined webhook payload is filed under the door's tenant, so replay cannot relocate it", async () => {
     const app = createIngestApp(pool, TENANT_B);
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     try {
       const bogus = { bogus: "door-tenant-b" };

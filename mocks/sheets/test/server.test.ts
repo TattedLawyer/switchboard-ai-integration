@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Server } from "node:http";
 import { COL } from "../src/seed.js";
 import { createSheetsApp, type SheetsApp } from "../src/server.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 const servers: Server[] = [];
 afterEach(() => { for (const s of servers.splice(0)) s.close(); });
 
 async function boot(opts: Parameters<typeof createSheetsApp>[0]): Promise<{ url: string } & SheetsApp> {
   const built = createSheetsApp(opts);
-  const srv = await new Promise<Server>((r) => { const s = built.app.listen(0, () => r(s)); });
+  const srv = await listenLoopback(built.app);
   servers.push(srv);
   const { port } = srv.address() as { port: number };
   return { url: `http://127.0.0.1:${port}`, ...built };

@@ -156,7 +156,16 @@ if (args.suiteLog !== undefined) {
   const wsReal = countSuiteWorkspaces(readFileSync(path, "utf8"));
   if (wsClaim === null) {
     failures.push("README.md: the 'across N workspaces' claim is gone — this gate has nothing to check");
-  } else if (wsReal > 0 && wsClaim !== wsReal) {
+  } else if (wsReal === 0) {
+    // M1 (cold review): this was `wsReal > 0 && …`, so a change in vitest's `Test Files N
+    // passed` line shape made countSuiteWorkspaces return 0 and the check SKIP in silence
+    // — the LESS-DATA-IS-NOT-AN-ERROR mode its sibling three lines up already fails closed
+    // on. Zero workspace blocks in a full-suite log is a broken measurement, not agreement.
+    failures.push(
+      `${path}: no "Test Files N passed" lines — the workspace count could not be measured, ` +
+        `so README's claim of ${wsClaim} workspaces was not checked. A zero must not read as agreement`,
+    );
+  } else if (wsClaim !== wsReal) {
     failures.push(`README.md claims ${wsClaim} workspaces; the suite log holds ${wsReal} workspace blocks`);
   }
 } else {

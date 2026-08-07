@@ -4,6 +4,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { signBody } from "../src/hmac.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -13,7 +14,7 @@ afterEach(async () => { await cleanup(); });
 const sign = (body: string, secret: string) => signBody(body, secret);
 
 const post = async (app: ReturnType<typeof createIngestApp>, path: string, body: string, secret: string) => {
-  const srv = app.listen(0);
+  const srv = await listenLoopback(app);
   const port = (srv.address() as { port: number }).port;
   const res = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: "POST",

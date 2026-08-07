@@ -29,6 +29,7 @@ import { SheetSnapshotConnector } from "../ingest/src/connectors/sheet-snapshot.
 import { HubHydrateConnector } from "../ingest/src/connectors/hub-hydrate.js";
 import { StripeFeedConnector } from "../ingest/src/connectors/stripe-feed.js";
 import { BusReplayConnector } from "../ingest/src/connectors/bus-replay.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // ── the hubcrm leg's op count, DERIVED, not chosen by accident ─────────────────────────
 // 300 = 30 whole script cycles, and every term below is load-bearing:
@@ -75,9 +76,10 @@ async function main() {
   // than an error. That is exactly how this was caught: with the default in force the
   // hubcrm door 404'd and the run failed downstream with "hubcrm leg hydrated no contact
   // emails" instead of anything naming the door.
-  const ingestSrv = createIngestApp(pool, DEFAULT_TENANT_ID, {
+  // no enqueue → direct synchronous ingest
+  const ingestSrv = await listenLoopback(createIngestApp(pool, DEFAULT_TENANT_ID, {
     enabledSources: ["hubcrm", "support", "sheets", "casebus", "stripefeed"],
-  }).listen(0); // no enqueue → direct synchronous ingest
+  }));
   const ingestPort = (ingestSrv.address() as { port: number }).port;
 
   // ── hubcrm: thin webhook batches through the REAL door, hydration pump interleaved ──
@@ -87,7 +89,7 @@ async function main() {
   // at every cycle boundary hydrates every object at least once WHILE ALIVE — the
   // snapshot that merge_edges later translates the consumed ids through.
   const hub = createHubcrmApp({ seed: 42, webhookUrl: `http://127.0.0.1:${ingestPort}/webhooks/hubcrm` });
-  const hubSrv = hub.app.listen(0);
+  const hubSrv = await listenLoopback(hub.app);
   const hubPort = (hubSrv.address() as { port: number }).port;
   const hubConnector = new HubHydrateConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: `http://127.0.0.1:${hubPort}` });
   for (let done = 0; done < HUB.ops; done += HUB.opsPerCycle) {
@@ -119,7 +121,7 @@ async function main() {
   const chargeBound = NUMERIC_CONTRACT["charge.succeeded"].amount_cents.plausibleMax;
   if (chargeBound === undefined) throw new Error("charge.succeeded declares no plausibleMax — the F7 fixture row needs one");
   const feed = createStripeFeedApp({ seed: 42, amountCentsAt: { 2: chargeBound + 1 } });
-  const feedSrv = feed.app.listen(0);
+  const feedSrv = await listenLoopback(feed.app);
   const feedPort = (feedSrv.address() as { port: number }).port;
   const feedRes = await fetch(`http://127.0.0.1:${feedPort}/simulate`, {
     method: "POST", headers: { "content-type": "application/json" },
@@ -131,7 +133,7 @@ async function main() {
 
   // ── casebus: emit, then drain the subscription through the pull connector ───────────
   const bus = createCasebusApp({ seed: 42 });
-  const busSrv = bus.app.listen(0);
+  const busSrv = await listenLoopback(bus.app);
   const busPort = (busSrv.address() as { port: number }).port;
   const busRes = await fetch(`http://127.0.0.1:${busPort}/simulate`, {
     method: "POST", headers: { "content-type": "application/json" },
@@ -146,7 +148,7 @@ async function main() {
     webhookUrl: `http://127.0.0.1:${ingestPort}/webhooks/support`,
     ledgerPath: "out/ci/ledger-support.jsonl",
   });
-  const supportSrv = supportApp.listen(0);
+  const supportSrv = await listenLoopback(supportApp);
   const supportPort = (supportSrv.address() as { port: number }).port;
   const supportRes = await fetch(`http://127.0.0.1:${supportPort}/simulate`, {
     method: "POST", headers: { "content-type": "application/json" },
@@ -162,7 +164,7 @@ async function main() {
   // and CI's dbt leg builds stg_sheets__rows + the identity/mart extensions from REAL
   // pipeline output).
   const sheets = createSheetsApp({ seed: SHEETS.seed, rowCount: SHEETS.rowCount });
-  const sheetsSrv = sheets.app.listen(0);
+  const sheetsSrv = await listenLoopback(sheets.app);
   const sheetsPort = (sheetsSrv.address() as { port: number }).port;
   const connector = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: `http://127.0.0.1:${sheetsPort}` });
 

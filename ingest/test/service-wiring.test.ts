@@ -9,6 +9,7 @@ import { signBody, assertWebhookSecrets } from "../src/hmac.js";
 import { enabledSources, type Source } from "../src/sources.js";
 import { createBackfillRunner } from "../src/main.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task A7 — service wiring: the long-running service's interval loop routes through the
 // connector seam, and the nudge door gets a real host. One RED→GREEN pair, four
@@ -39,8 +40,8 @@ afterEach(async () => {
   await cleanup();
 });
 
-function listen(app: express.Express): string {
-  const srv = app.listen(0);
+async function listen(app: express.Express): Promise<string> {
+  const srv = await listenLoopback(app);
   servers.push(srv);
   return `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
 }
@@ -49,7 +50,7 @@ function listen(app: express.Express): string {
  *  filtering — the runner drives catchUp, whose empty-page stop condition needs the feed
  *  to answer "nothing new" once the cursor passes the tail). Records every request path —
  *  the pins below assert which endpoints the loop actually spoke to. */
-function recordedFeed(events: { seq: number }[]): { baseUrl: string; paths: string[] } {
+async function recordedFeed(events: { seq: number }[]): Promise<{ baseUrl: string; paths: string[] }> {
   const paths: string[] = [];
   const app = express();
   app.use((req, _res, next) => {
@@ -61,18 +62,18 @@ function recordedFeed(events: { seq: number }[]): { baseUrl: string; paths: stri
     const page = events.filter((e) => e.seq > after);
     res.json({ events: page, last_seq: page.length > 0 ? page[page.length - 1].seq : after });
   });
-  return { baseUrl: listen(app), paths };
+  return { baseUrl: await listen(app), paths };
 }
 
 /** The real sheets mock wrapped in a path recorder, optionally gating /snapshot behind a
  *  latch so a cycle can be held in flight while a nudge arrives. */
-function recordedSheet(opts?: { gateSnapshot?: boolean }): {
+async function recordedSheet(opts?: { gateSnapshot?: boolean }): Promise<{
   baseUrl: string;
   paths: string[];
   /** Resolves once a /snapshot request is actually being held at the gate. */
   held: Promise<void>;
   release: () => void;
-} {
+}> {
   const sheets = createSheetsApp({ seed: 7, rowCount: 6 });
   const paths: string[] = [];
   let releaseGate = () => {};
@@ -93,7 +94,7 @@ function recordedSheet(opts?: { gateSnapshot?: boolean }): {
     next();
   });
   app.use(sheets.app);
-  return { baseUrl: listen(app), paths, held, release: releaseGate };
+  return { baseUrl: await listen(app), paths, held, release: releaseGate };
 }
 
 const feedEvent = (id: string, seq: number) => ({
@@ -127,7 +128,7 @@ function captureLogs(): { logs: string[]; restore: () => void } {
 describe("A7 obligation 1 — seam routing is behavior-preserving for the feed sources", () => {
   for (const source of ["crm", "billing", "support"] as const) {
     it(`${source}: the interval runner polls /events, lands every event, advances the cursor, and a rerun ingests nothing — exactly the pre-seam loop`, async () => {
-      const { baseUrl, paths } = recordedFeed([
+      const { baseUrl, paths } = await recordedFeed([
         feedEvent(`${source}-evt-1`, 1),
         feedEvent(`${source}-evt-2`, 2),
         feedEvent(`${source}-evt-3`, 3),
@@ -167,7 +168,7 @@ describe("A7 obligation 1 — seam routing is behavior-preserving for the feed s
       const page = after < 1 ? [feedEvent("support-slow-1", 1)] : [];
       res.json({ events: page, last_seq: page.length > 0 ? 1 : after });
     });
-    const baseUrl = listen(app);
+    const baseUrl = await listen(app);
 
     const { logs, restore } = captureLogs();
     try {
@@ -193,7 +194,7 @@ describe("A7 obligation 1 — seam routing is behavior-preserving for the feed s
 
 describe("A7 obligation 2 — the service loop routes sheets through the seam", () => {
   it("the sheets runner drives snapshot catchUp — every seeded row lands, and the loop NEVER touches /events on the sheets base URL", async () => {
-    const { baseUrl, paths } = recordedSheet();
+    const { baseUrl, paths } = await recordedSheet();
 
     const runBackfill = createBackfillRunner(pool, "sheets", baseUrl, DEFAULT_TENANT_ID);
     await runBackfill();
@@ -242,10 +243,10 @@ describe("A7 obligation 3 — nudge hosting through the service wiring", () => {
 
   it("a signed nudge on the wiring-hosted door RUNS the early catchUp (delta observable in raw); unsigned stays 401 with no effect", async () => {
     const createServiceWiring = await loadCreateServiceWiring();
-    const { baseUrl } = recordedSheet();
+    const { baseUrl } = await recordedSheet();
     process.env.SHEETS_BASE_URL = baseUrl;
     const wiring = createServiceWiring(pool, ["sheets"], DEFAULT_TENANT_ID);
-    const ingestUrl = listen(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: wiring.sheetsNudge }));
+    const ingestUrl = await listen(createIngestApp(pool, DEFAULT_TENANT_ID, { sheetsNudge: wiring.sheetsNudge }));
     const body = JSON.stringify({
       sheet_id: "sheet-test",
       range: "A2:I2",
@@ -274,7 +275,7 @@ describe("A7 obligation 3 — nudge hosting through the service wiring", () => {
 
   it("a nudge during a running cycle COALESCES — skipped, never queued: one snapshot read total; a later idle nudge reads again", async () => {
     const createServiceWiring = await loadCreateServiceWiring();
-    const sheet = recordedSheet({ gateSnapshot: true });
+    const sheet = await recordedSheet({ gateSnapshot: true });
     process.env.SHEETS_BASE_URL = sheet.baseUrl;
     const wiring = createServiceWiring(pool, ["sheets"], DEFAULT_TENANT_ID);
     const runSheets = wiring.runners.find((r) => r.source === "sheets")!.run;

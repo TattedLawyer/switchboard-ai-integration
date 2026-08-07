@@ -10,6 +10,7 @@ import { replayQuarantined } from "../src/quarantine.js";
 import { ingestEvent, DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { secretForSource, signBody } from "../src/hmac.js";
 import type { Source } from "../src/sources.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Same resolution pattern as helpers/load-model.ts: the warehouse tree lives two levels up
 // from this test file. The registry test below scans the REAL model text on disk, so a new
@@ -32,7 +33,7 @@ beforeAll(async () => {
   pool = result.pool;
   cleanup = result.cleanup;
   const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-  srv = app.listen(0);
+  srv = await listenLoopback(app);
   port = (srv.address() as { port: number }).port;
 });
 afterAll(async () => {

@@ -1,7 +1,8 @@
 import type { Server } from "node:http";
 import type express from "express";
+import { listenLoopback } from "@switchboard/mock-core";
 
-// F-1b rider (register: stripefeed CLI flake, 2026-08-01 sighting): `app.listen(0)`
+// F-1b rider (register: stripefeed CLI flake, 2026-08-01 sighting): `await listenLoopback(app)`
 // hands back a bound port, but under full-suite load the first fetch against it can
 // still die (`fetch failed`, no assertion reached) — a boot race that failed a green
 // run with an infrastructure error. This helper converts that race into either a
@@ -17,7 +18,7 @@ export async function listenReady(
   opts: { attempts?: number; probePath?: string } = {},
 ): Promise<{ server: Server; baseUrl: string }> {
   const { attempts = 10, probePath = "/" } = opts;
-  const server = app.listen(0);
+  const server = await listenLoopback(app);
   const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {

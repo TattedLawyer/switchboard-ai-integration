@@ -11,6 +11,7 @@ import { reconcile, verifyLedgerChain } from "../src/reconcile.js";
 import { connectorFor, connectorKinds } from "../src/connectors/index.js";
 import { SOURCES } from "../src/sources.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Phase 2b Task 1 — the connector seam.
 //
@@ -53,7 +54,7 @@ async function startLedgerMock(count: number): Promise<void> {
   // arrive via the pull path, which is what these tests are about. Same pattern as
   // backfill.test.ts. The ledger still records every event, so it remains the full expectation.
   const app = createBillingApp({ ledgerPath, webhookUrl: "http://127.0.0.1:1" });
-  srv = app.listen(0);
+  srv = await listenLoopback(app);
   const port = (srv.address() as { port: number }).port;
   baseUrl = `http://127.0.0.1:${port}`;
   await fetch(`${baseUrl}/simulate`, {

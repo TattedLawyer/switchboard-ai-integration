@@ -7,6 +7,7 @@ import { runMigrations } from "../src/migrate.js";
 import { StripeFeedConnector, type StripeFeedReconcileReport } from "../src/connectors/stripe-feed.js";
 import { acknowledgeGap, listGaps, recordGap } from "../src/connectors/types.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task D pair 2 — the DURABLE gap ledger, and the retrofit that makes it real for two
 // paradigms at once.
@@ -48,8 +49,8 @@ afterEach(async () => {
   await db.cleanup();
 });
 
-function listen(app: StripeFeedApp): string {
-  const server = app.app.listen(0);
+async function listen(app: StripeFeedApp): Promise<string> {
+  const server = await listenLoopback(app.app);
   srv = server;
   return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 }
@@ -217,7 +218,7 @@ describe("acknowledgement — the workflow Task B deliberately left open", () =>
 describe("the stripefeed retrofit — the register said BUILD ONCE, BOTH CONNECTORS WRITE", () => {
   it("a retention fallback persists its gap, and a FRESH connector instance still reports it (per-process amnesia is over)", async () => {
     const mock = createStripeFeedApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
 
     mock.feed.emit(8, { ageS: 26 * 86_400 });
     expect(await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, pageLimit: 10 }).catchUp(pool)).toBe(8);
@@ -245,7 +246,7 @@ describe("the stripefeed retrofit — the register said BUILD ONCE, BOTH CONNECT
 
   it("re-draining after the fallback does not manufacture a second gap row for the same loss", async () => {
     const mock = createStripeFeedApp({ seed: 7 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.feed.emit(5, { ageS: 26 * 86_400 });
     await new StripeFeedConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, pageLimit: 10 }).catchUp(pool);
     mock.feed.emit(4);

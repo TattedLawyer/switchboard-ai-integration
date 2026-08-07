@@ -7,6 +7,7 @@ import express from "express";
 import type { Server } from "node:http";
 import { readLedger } from "@switchboard/mock-core";
 import { createSupportApp } from "../src/server.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let dir: string;
 let received: { body: { event_id: string }; sig: string | undefined }[];
@@ -22,7 +23,7 @@ beforeEach(async () => {
     received.push({ body: req.body, sig: req.header("x-switchboard-signature") });
     res.sendStatus(200);
   });
-  await new Promise<void>((r) => { sink = app.listen(0, () => r()); });
+  sink = await listenLoopback(app);
   const addr = sink.address() as { port: number };
   sinkUrl = `http://127.0.0.1:${addr.port}/hook`;
 });
@@ -32,7 +33,7 @@ describe("mock support", () => {
   it("simulate {count:8} → 8 ledger entries in the 4-slot cycle order, ticket.* embed requester fields + sla_due_at, all signatures verify", async () => {
     const ledgerPath = join(dir, "l.jsonl");
     const support = createSupportApp({ webhookUrl: sinkUrl, ledgerPath });
-    const srv = support.listen(0);
+    const srv = await listenLoopback(support);
     const port = (srv.address() as { port: number }).port;
     const res = await fetch(`http://127.0.0.1:${port}/simulate`, {
       method: "POST",
@@ -71,7 +72,7 @@ describe("mock support", () => {
   it("faulted simulate: emitted + dropped === 20 and ledger still has all 20 (ledger never faulted)", async () => {
     const ledgerPath = join(dir, "l.jsonl");
     const support = createSupportApp({ webhookUrl: sinkUrl, ledgerPath });
-    const srv = support.listen(0);
+    const srv = await listenLoopback(support);
     const port = (srv.address() as { port: number }).port;
     const res = await fetch(`http://127.0.0.1:${port}/simulate`, {
       method: "POST",

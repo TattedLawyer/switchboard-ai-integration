@@ -9,6 +9,7 @@ import { createIngestApp } from "../src/server.js";
 // shape is exactly what produced this range's live ci-fixture miss.
 const SERVED = { enabledSources: ["hubcrm", "billing"] } as const;
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // C3 (phase-close review): the demo/chaos scripts proved the MOCKS were the servers they
 // started (fresh_wait) but proved only port-liveness for ingest on 4002. That gap is not
@@ -35,7 +36,7 @@ afterEach(() => {
 });
 
 async function getStatus(app: ReturnType<typeof createIngestApp>) {
-  const srv = app.listen(0);
+  const srv = await listenLoopback(app);
   try {
     const port = (srv.address() as { port: number }).port;
     const res = await fetch(`http://localhost:${port}/status`);

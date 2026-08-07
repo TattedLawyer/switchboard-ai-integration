@@ -7,6 +7,7 @@ import { BusReplayConnector, CASEBUS_SOURCE } from "../src/connectors/bus-replay
 import type { BusReconcileReport } from "../src/connectors/bus-replay.js";
 import { listGaps } from "../src/connectors/types.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task D pair 4 — the oracle: connector vs the REAL mock, seeded, in-process.
 //
@@ -30,8 +31,8 @@ afterEach(async () => {
   await db.cleanup();
 });
 
-function listen(app: CasebusApp): string {
-  const s = app.app.listen(0);
+async function listen(app: CasebusApp): Promise<string> {
+  const s = await listenLoopback(app.app);
   servers.push(s);
   return `http://127.0.0.1:${(s.address() as { port: number }).port}`;
 }
@@ -49,7 +50,7 @@ describe("oracle 1 — full drain ⇄ the retained window, exactly", () => {
   it("drains everything the bus retains, payload-faithful, and a re-drain ingests ZERO", async () => {
     const mock = createCasebusApp({ seed: 42 });
     mock.stream.emit(53); // deliberately not a multiple of the batch size
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 10 });
 
     const first = await c.catchUpWithReport(pool);
@@ -79,7 +80,7 @@ describe("oracle 2 — at-least-once duplicate absorption, COUNTED", () => {
   it("every event delivered twice lands once, and the redeliveries are reported rather than swallowed", async () => {
     const mock = createCasebusApp({ seed: 13, duplicate: { seed: 13, rate: 1 } });
     mock.stream.emit(30);
-    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock), batchSize: 7 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(mock), batchSize: 7 });
 
     const report = await c.catchUpWithReport(pool);
     expect(report.ingested).toBe(30);
@@ -94,7 +95,7 @@ describe("oracle 2 — at-least-once duplicate absorption, COUNTED", () => {
   it("partial redelivery (a realistic rate, not the everything knob) still converges exactly", async () => {
     const mock = createCasebusApp({ seed: 8, duplicate: { seed: 3, rate: 0.35 } });
     mock.stream.emit(40);
-    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: listen(mock), batchSize: 6 });
+    const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl: await listen(mock), batchSize: 6 });
     const report = await c.catchUpWithReport(pool);
     expect(report.ingested).toBe(40);
     expect(report.duplicates).toBeGreaterThan(0); // the fault really fired
@@ -106,7 +107,7 @@ describe("oracle 3 — crash mid-drain: resume from the persisted cursor, no los
   it("a drain killed after one batch resumes exactly where it stopped", async () => {
     const mock = createCasebusApp({ seed: 42 });
     mock.stream.emit(35);
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
 
     // "Crash": a bounded run that stops mid-window. maxRounds makes the connector refuse
     // to CLAIM a finished drain — the cursor is still consistent, which is the property
@@ -129,7 +130,7 @@ describe("oracle 3 — crash mid-drain: resume from the persisted cursor, no los
 describe("oracle 4 — age-out mid-run: the honest, bounded loss report", () => {
   it("aged-out cursor → gap with cause 'retention', correct bounds, forward progress, and a durable record", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
 
     // Chapter 1: history ingested while the window still holds it (70h old — inside both
     // the bus's 72h window and the ingest door's occurred_at gate).
@@ -173,7 +174,7 @@ describe("oracle 4 — age-out mid-run: the honest, bounded loss report", () => 
 describe("oracle 5 — stream reset mid-run: the SAME wire error, a different diagnosis", () => {
   it("reset → gap with cause 'reset' on a cursor that is seconds old, and the cursor rebinds to the new stream", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
 
     const before = mock.stream.emit(11);
     expect(await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool)).toBe(11);
@@ -208,7 +209,7 @@ describe("oracle 5 — stream reset mid-run: the SAME wire error, a different di
 
   it("a reset with NOTHING retained afterwards still reports the loss, with an honestly unknown far edge", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(5);
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool);
     mock.stream.reset(); // empty stream, new identity
@@ -225,7 +226,7 @@ describe("oracle 5 — stream reset mid-run: the SAME wire error, a different di
 describe("oracle 6 — opaque-id safety: arithmetic on a replay id is provably wrong", () => {
   it("the successor of a replay id, computed the way an ordinal-minded connector would, is NOT a valid cursor", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(20);
 
     const retained = mock.stream.retained();
@@ -254,7 +255,7 @@ describe("oracle 6 — opaque-id safety: arithmetic on a replay id is provably w
 describe("oracle 7 — the poison event, co-batched (standing rule)", () => {
   it("a poisoned event between healthy batchmates is quarantined alone; the window still reconciles with the poison accounted for", async () => {
     const mock = createCasebusApp({ seed: 42, poisonEmissionIndexes: [3, 4] });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
     mock.stream.emit(12);
     const c = new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 12 });
 
@@ -276,7 +277,7 @@ describe("oracle 7 — the poison event, co-batched (standing rule)", () => {
 describe("oracle 8 — reconcile-first detection must not file a POORER record than catchUp-first (cold review I2)", () => {
   it("a gap first observed by reconcile names the far edge by ID, exactly as a catchUp-first gap would", async () => {
     const mock = createCasebusApp({ seed: 42 });
-    const baseUrl = listen(mock);
+    const baseUrl = await listen(mock);
 
     const aged = mock.stream.emit(9, { ageS: 70 * 3600 });
     await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(pool);
@@ -307,7 +308,7 @@ describe("oracle 8 — reconcile-first detection must not file a POORER record t
     // them would pin the wall clock, not the connector — a flake wearing an oracle's hat.
     const build = async (p: pg.Pool, reconcileFirst: boolean) => {
       const mock = createCasebusApp({ seed: 42 });
-      const baseUrl = listen(mock);
+      const baseUrl = await listen(mock);
       const aged = mock.stream.emit(9, { ageS: 70 * 3600 });
       await new BusReplayConnector({ tenantId: DEFAULT_TENANT_ID, baseUrl, batchSize: 100 }).catchUp(p);
       const fresh = mock.stream.emit(7);

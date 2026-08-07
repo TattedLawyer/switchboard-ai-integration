@@ -9,6 +9,7 @@ import { expectParadigmIntegrityLine } from "./helpers/operator-surface.js";
 import { createIngestApp } from "../src/server.js";
 import { createHubcrmApp, type HubcrmApp } from "../../mocks/hubcrm/src/index.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task C pair 4 — the STANDING CHECKLIST (born from Gate-H 4-for-4, binding): every new
 // result field the connector produces is CONSUMED AND PRINTED by the shipped operator
@@ -37,8 +38,8 @@ afterEach(async () => {
   await cleanup();
 });
 
-function listen(app: express.Express): string {
-  const s = app.listen(0);
+async function listen(app: express.Express): Promise<string> {
+  const s = await listenLoopback(app);
   servers.push(s);
   return `http://127.0.0.1:${(s.address() as { port: number }).port}`;
 }
@@ -68,7 +69,7 @@ function runCli(script: "src/cli/backfill.ts" | "src/cli/reconcile.ts", baseUrl:
 }
 
 async function deliver(hub: HubcrmApp): Promise<void> {
-  const doorUrl = listen(createIngestApp(pool, DEFAULT_TENANT_ID));
+  const doorUrl = await listen(createIngestApp(pool, DEFAULT_TENANT_ID));
   const stats = await hub.store.deliver({ webhookUrl: `${doorUrl}/webhooks/hubcrm` });
   if (stats.failedBatches > 0) throw new Error("test delivery failed");
 }
@@ -80,7 +81,7 @@ describe("backfill CLI — the hydration pump's numbers reach the terminal", () 
     const poisonId = probe.store.allObjects()[0].objectId;
 
     const hub = createHubcrmApp({ seed: 31, poisonObjectIds: [poisonId] });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
     hub.store.simulate(30);
     await deliver(hub);
 
@@ -97,7 +98,7 @@ describe("backfill CLI — the hydration pump's numbers reach the terminal", () 
 describe("reconcile CLI — paradigm-honest integrity + every bucket printed", () => {
   it("clean world: object-store integrity line (NOT 'ledger hash chain'), object counts labeled as the store, tombstoned metabolism, PASS, exit 0", async () => {
     const hub = createHubcrmApp({ seed: 9 });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
     hub.store.simulate(40);
     await deliver(hub);
     await runCli("src/cli/backfill.ts", baseUrl); // hydrate first
@@ -116,14 +117,14 @@ describe("reconcile CLI — paradigm-honest integrity + every bucket printed", (
 
   it("webhook loss: dropped mutations make missing/drifted NONZERO, each object named, FAIL, exit 1 — loss is never a silent PASS", async () => {
     const hub = createHubcrmApp({ seed: 21 });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
     hub.store.simulate(30);
     await deliver(hub);
     await runCli("src/cli/backfill.ts", baseUrl);
 
     // The 10-retries-then-gone loss: mutations whose webhooks never arrive.
     hub.store.simulate(20);
-    const doorUrl = listen(createIngestApp(pool, DEFAULT_TENANT_ID));
+    const doorUrl = await listen(createIngestApp(pool, DEFAULT_TENANT_ID));
     await hub.store.deliver({ webhookUrl: `${doorUrl}/webhooks/hubcrm`, faultPlan: { seed: 1, dropRate: 1 } });
 
     const res = await runCli("src/cli/reconcile.ts", baseUrl);
@@ -142,7 +143,7 @@ describe("reconcile CLI — paradigm-honest integrity + every bucket printed", (
     const poisonId = probe.store.allObjects()[0].objectId;
 
     const hub = createHubcrmApp({ seed: 31, poisonObjectIds: [poisonId] });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
     hub.store.simulate(30);
     await deliver(hub);
     await runCli("src/cli/backfill.ts", baseUrl);
@@ -162,7 +163,7 @@ describe("service log — the loop consumes the report, not just a number", () =
     const poisonId = probe.store.allObjects()[0].objectId;
 
     const hub = createHubcrmApp({ seed: 31, poisonObjectIds: [poisonId] });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
     hub.store.simulate(20);
     await deliver(hub);
 
@@ -192,7 +193,7 @@ describe("the pump's zero cycle and the cursorless paradigm's incident line", ()
     // "hydrated 0 snapshot(s), 0 tombstone(s) … from <url>", which is indistinguishable
     // from a healthy quiet hour with a dead object store behind it.
     const probe = createHubcrmApp({ seed: 77 });
-    const res = await runCli("src/cli/backfill.ts", listen(probe.app));
+    const res = await runCli("src/cli/backfill.ts", await listen(probe.app));
     expect(res.code).toBe(0);
     expect(res.out).toContain("was NOT contacted this cycle");
     expect(res.out).toContain("reachability is unproven");

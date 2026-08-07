@@ -9,6 +9,7 @@ import { createBillingApp } from "../../mocks/billing/src/server.js";
 import { freshTestDb } from "./helpers/testdb.js";
 import { pollOnce, catchUp } from "../src/backfill.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -31,7 +32,7 @@ describe("backfill", () => {
     // skipped entirely (never attempted), so all 30 events land only in the ledger and poll
     // is the only recovery path.
     const feed = createBillingApp({ webhookUrl: "http://127.0.0.1:1", ledgerPath: join(dir, "l.jsonl") });
-    const srv: Server = feed.listen(0);
+    const srv: Server = await listenLoopback(feed);
     const port = (srv.address() as { port: number }).port;
     const baseUrl = `http://127.0.0.1:${port}`;
 
@@ -81,7 +82,7 @@ describe("backfill", () => {
       webhookUrl: "http://127.0.0.1:1",
       ledgerPath: join(dir, "l2.jsonl"),
     });
-    const srv: Server = feed.listen(0);
+    const srv: Server = await listenLoopback(feed);
     const port = (srv.address() as { port: number }).port;
     const baseUrl = `http://127.0.0.1:${port}`;
 
@@ -109,7 +110,7 @@ describe("backfill", () => {
       webhookUrl: "http://127.0.0.1:1",
       ledgerPath: join(dir, "l3.jsonl"),
     });
-    const srv: Server = feed.listen(0);
+    const srv: Server = await listenLoopback(feed);
     const port = (srv.address() as { port: number }).port;
     const baseUrl = `http://127.0.0.1:${port}`;
 
@@ -177,7 +178,7 @@ describe("the cursor is OURS on the poll path too (debt-burn A9)", () => {
       const events = after === 0 ? all.slice(0, 3) : all.filter((e) => e.seq > after);
       res.json({ events, last_seq: 13 });
     });
-    const srv: Server = app.listen(0);
+    const srv: Server = await listenLoopback(app);
     const baseUrl = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
 
     const first = await pollOnce(pool, "billing", baseUrl, { tenantId: DEFAULT_TENANT_ID });
@@ -200,7 +201,7 @@ describe("the cursor is OURS on the poll path too (debt-burn A9)", () => {
     app.get("/events", () => {
       /* never responds */
     });
-    const srv: Server = app.listen(0);
+    const srv: Server = await listenLoopback(app);
     const baseUrl = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
 
     await expect(pollOnce(pool, "billing", baseUrl, { tenantId: DEFAULT_TENANT_ID, timeoutMs: 300 })).rejects.toThrow(/timed out after 300ms/);
@@ -234,7 +235,7 @@ describe("backfill occurred_at gate (the third door)", () => {
 
   it("quarantines a feed event whose occurred_at would throw the staging cast", async () => {
     const bad = { ...goodEvent("evt-bad"), occurred_at: "2026-13-45", seq: 1 };
-    const srv: Server = feedWith([bad]).listen(0);
+    const srv: Server = await listenLoopback(feedWith([bad]));
     const port = (srv.address() as { port: number }).port;
 
     await pollOnce(pool, "billing", `http://127.0.0.1:${port}`, { tenantId: DEFAULT_TENANT_ID });
@@ -249,7 +250,7 @@ describe("backfill occurred_at gate (the third door)", () => {
 
   it("quarantines a well-formed but out-of-window occurred_at that would pin state forever", async () => {
     const bad = { ...goodEvent("evt-9999"), occurred_at: "9999-12-31T00:00:00Z", seq: 1 };
-    const srv: Server = feedWith([bad]).listen(0);
+    const srv: Server = await listenLoopback(feedWith([bad]));
     const port = (srv.address() as { port: number }).port;
 
     await pollOnce(pool, "billing", `http://127.0.0.1:${port}`, { tenantId: DEFAULT_TENANT_ID });
@@ -281,7 +282,7 @@ describe("backfill occurred_at gate (the third door)", () => {
 
     const app = express();
     app.get("/events", (_req, res) => res.type("application/json").send(pageText));
-    const srv: Server = app.listen(0);
+    const srv: Server = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     const result = await pollOnce(pool, "billing", `http://127.0.0.1:${port}`, { tenantId: DEFAULT_TENANT_ID });
@@ -309,7 +310,7 @@ describe("backfill occurred_at gate (the third door)", () => {
   it("still ingests valid feed events, and advances the cursor past a quarantined one", async () => {
     const events = [goodEvent("evt-1"), { ...goodEvent("evt-2"), occurred_at: "nope", seq: 2 },
                     { ...goodEvent("evt-3"), seq: 3 }];
-    const srv: Server = feedWith(events).listen(0);
+    const srv: Server = await listenLoopback(feedWith(events));
     const port = (srv.address() as { port: number }).port;
 
     await pollOnce(pool, "billing", `http://127.0.0.1:${port}`, { tenantId: DEFAULT_TENANT_ID });
@@ -348,7 +349,7 @@ describe("catchUp: the rounds budget is loud, and no-progress is structural (the
         last_seq: 0,
       });
     });
-    const srv: Server = app.listen(0);
+    const srv: Server = await listenLoopback(app);
     const baseUrl = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
 
     // maxRounds generous on purpose: the structural check must fire LONG before the
@@ -367,7 +368,7 @@ describe("catchUp: the rounds budget is loud, and no-progress is structural (the
       const after = Number(req.query.after ?? 0) || 0;
       res.json({ events: [goodEvent(`evt-deep-${after + 1}`, after + 1)], last_seq: after + 1 });
     });
-    const srv: Server = app.listen(0);
+    const srv: Server = await listenLoopback(app);
     const baseUrl = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
 
     await expect(catchUp(pool, "billing", baseUrl, { tenantId: DEFAULT_TENANT_ID, maxRounds: 3 })).rejects.toThrow(

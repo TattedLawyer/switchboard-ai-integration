@@ -4,8 +4,8 @@
 
 This repository ships only the **derived** artifacts: the ISO-4217 codes the pipeline
 admits, rendered into a TypeScript module for the ingest door and a CSV seed for dbt.
-SIX's `list-one.xml` itself is **not vendored**, and never has been in any commit reachable
-from this branch.
+SIX's `list-one.xml` itself is **not shipped here**: the repo carries the derived artifacts
+and the provenance recorded below, not the source file.
 
 Why: SIX publishes the table for public download but attaches **no redistribution grant or
 licence** to it, and the only express term reachable from the download page is a site-wide

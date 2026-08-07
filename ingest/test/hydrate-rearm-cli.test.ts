@@ -14,6 +14,7 @@ import {
 } from "../src/connectors/hub-hydrate.js";
 import { recordGap } from "../src/connectors/types.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Close D2 (the split's close half) — the hydration-DLQ re-arm CLI, pinned by
 // child-process runs of the real entrypoint (operator-surface checklist lines 1/3/5).
@@ -45,8 +46,8 @@ afterEach(async () => {
   await cleanup();
 });
 
-function listen(app: express.Express): string {
-  const s = app.listen(0);
+async function listen(app: express.Express): Promise<string> {
+  const s = await listenLoopback(app);
   servers.push(s);
   return `http://127.0.0.1:${(s.address() as { port: number }).port}`;
 }
@@ -68,7 +69,7 @@ function runCli(args: string[]): Promise<{ code: number; out: string }> {
 async function deliverThroughDoor(hub: HubcrmApp): Promise<void> {
   const { createIngestApp } = await import("../src/server.js");
   const ingest = createIngestApp(pool, DEFAULT_TENANT_ID);
-  const s = ingest.listen(0);
+  const s = await listenLoopback(ingest);
   try {
     const stats = await hub.store.deliver({
       webhookUrl: `http://127.0.0.1:${(s.address() as { port: number }).port}/webhooks/hubcrm`,
@@ -100,7 +101,7 @@ describe("hydrate-rearm CLI — the re-armed event is ACTUALLY re-fetched by the
     poisoned.store.simulate(1); // one op → one thin event (company creation)
     await deliverThroughDoor(poisoned);
     const eventId = String(poisoned.store.emittedEvents()[0].eventId);
-    const poisonedUrl = listen(poisoned.app);
+    const poisonedUrl = await listen(poisoned.app);
 
     const dlqReport = await connector(poisonedUrl).catchUpWithReport(pool);
     expect(dlqReport.hydrationDlq).toBe(1);
@@ -109,7 +110,7 @@ describe("hydrate-rearm CLI — the re-armed event is ACTUALLY re-fetched by the
     // The vendor side is FIXED: same seed, same ops, no poison — byte-same store.
     const healed = createHubcrmApp({ seed: 13 });
     healed.store.simulate(1);
-    const healedUrl = listen(healed.app);
+    const healedUrl = await listen(healed.app);
 
     // NEGATIVE CONTROL (the pre-CLI world): a healed vendor does not un-dead-letter
     // anything — the pump still skips the DLQ'd id. This is the terminal-until-operator-

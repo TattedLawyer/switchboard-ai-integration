@@ -12,6 +12,7 @@ import { ingestEvent, DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { SheetSnapshotConnector } from "../src/connectors/sheet-snapshot.js";
 import { canonicalStringify } from "../src/connectors/sheet-canonical.js";
 import type { SourceEvent } from "../src/event-schema.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task A4 — the sheet-snapshot connector. Two RED→GREEN pairs, named:
 //   pair 1 "connector core":        obligations 1–8, 11, 12 (catchUp, diff, canonical
@@ -39,9 +40,9 @@ afterEach(async () => {
   await cleanup();
 });
 
-function startSheet(opts?: Partial<SheetsAppOptions>): { sheets: SheetsApp; baseUrl: string } {
+async function startSheet(opts?: Partial<SheetsAppOptions>): Promise<{ sheets: SheetsApp; baseUrl: string }> {
   const sheets = createSheetsApp({ seed: 7, rowCount: 6, ...opts });
-  srv = sheets.app.listen(0);
+  srv = await listenLoopback(sheets.app);
   const port = (srv.address() as { port: number }).port;
   return { sheets, baseUrl: `http://127.0.0.1:${port}` };
 }
@@ -64,7 +65,7 @@ async function rawSheetEvents(db: pg.Pool): Promise<{ event_id: string; event_ty
 
 describe("A4 pair 1 — connector core: idempotency manufactured from content", () => {
   it("obligation 1: first catchUp ingests every data row; a second identical catchUp ingests zero — stateless idempotency by construction", async () => {
-    const { baseUrl } = startSheet();
+    const { baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
 
     const first = await c.catchUp(pool);
@@ -86,7 +87,7 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
   });
 
   it("obligation 2: one cell edit → exactly one new upsert with a new content hash; untouched rows produce nothing", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
     const before = await rawSheetEvents(pool);
@@ -106,7 +107,7 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
   });
 
   it("obligation 3 (load-bearing): insert-above shifts every position — ZERO spurious events for the shifted rows", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
     const idsBefore = new Set((await rawSheetEvents(pool)).map((r) => r.event_id));
@@ -125,7 +126,7 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
   });
 
   it("obligation 4: delete → one sheet.row_deleted; re-adding the same content births a new rowKey → fresh upsert id, not a duplicate", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
 
@@ -154,7 +155,7 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
   });
 
   it("obligation 5: a human copy-paste duplicate (new rowKey, same content) is its own upsert — different rowKey ⇒ different id, same content hash", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
 
@@ -173,7 +174,7 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
   });
 
   it("obligation 6: messy rows quarantine per-row with reasons naming the field; clean rows in the same batch ingest — never batch-fatal", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
 
     const [rkA, rkB] = [sheets.sheet.metadata()[0].rowKey, sheets.sheet.metadata()[1].rowKey];
@@ -200,7 +201,7 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
   });
 
   it("obligation 7: header renames WITHIN the alias map keep fields mapped and produce zero spurious events — the hash is over canonical fields, not raw labels", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
 
@@ -220,7 +221,7 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
   });
 
   it("obligation 8a: a rename OUTSIDE the alias map degrades that field to absent — events still flow and the degradation is noted", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
 
@@ -247,7 +248,7 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
   });
 
   it("obligation 8b: a KEY column renamed out of the map fails catchUp loudly, naming the headers it saw — never guess", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     sheets.sheet.apply({ type: "rename_header", column: COL.email, name: "Contact Info" });
 
@@ -258,7 +259,7 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
   });
 
   it("nudge() is a coalescing early catchUp — two concurrent nudges share ONE run (single-flight); lossiness of the channel that calls it is irrelevant to correctness", async () => {
-    const { baseUrl } = startSheet();
+    const { baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     const [a, b] = await Promise.all([c.nudge(pool), c.nudge(pool)]);
     // Coalesced: both callers observe the SAME run's count. Two separate runs would
@@ -269,7 +270,7 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
   });
 
   it("obligation 12: rawBody custody — ingested sheet events carry the connector's canonical JSON in raw.raw_events.raw_body", async () => {
-    const { baseUrl } = startSheet();
+    const { baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
 
@@ -287,7 +288,7 @@ describe("A4 pair 1 — connector core: idempotency manufactured from content", 
 
 describe("A4 pair 2 — reconcile + resilience", () => {
   it("obligation 9a: after a clean catchUp, reconcile reports clean — and reconcile NEVER writes", async () => {
-    const { baseUrl } = startSheet();
+    const { baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
 
@@ -312,7 +313,7 @@ describe("A4 pair 2 — reconcile + resilience", () => {
   });
 
   it("obligation 9b: direct sheet mutation WITHOUT a catchUp — the report names the drifted row_keys by category", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
 
@@ -333,7 +334,7 @@ describe("A4 pair 2 — reconcile + resilience", () => {
   });
 
   it("obligation 9c: a 429 storm mid-reconcile is an integrity failure with NO report — a diff against an unreadable sheet would be confident and meaningless", async () => {
-    const { baseUrl } = startSheet({ read429: { seed: 11, rate: 1 } });
+    const { baseUrl } = await startSheet({ read429: { seed: 11, rate: 1 } });
     const c = connectorFor(baseUrl);
 
     const result = await c.reconcile(pool);
@@ -346,7 +347,7 @@ describe("A4 pair 2 — reconcile + resilience", () => {
     // Seed chosen from the mock's documented deterministic draw-per-request stream:
     // mulberry32(7) opens 1,1,0 at rate 0.5 → the single combined /snapshot read (I4)
     // answers 429 twice, then serves. Deterministic, so "retries observed" cannot flake.
-    const { baseUrl } = startSheet({ read429: { seed: 7, rate: 0.5 } });
+    const { baseUrl } = await startSheet({ read429: { seed: 7, rate: 0.5 } });
     const c = connectorFor(baseUrl);
 
     expect(await c.catchUp(pool)).toBe(6);
@@ -360,7 +361,7 @@ describe("A4 pair 2 — reconcile + resilience", () => {
     blackHole.get("/snapshot", () => {
       /* accept the request, answer never — the wedge shape under test */
     });
-    const bhSrv: Server = blackHole.listen(0);
+    const bhSrv: Server = await listenLoopback(blackHole);
     const port = (bhSrv.address() as { port: number }).port;
     try {
       const c = new SheetSnapshotConnector({ tenantId: DEFAULT_TENANT_ID,
@@ -398,7 +399,7 @@ describe("cold review I4 — atomic snapshot: one combined read per cycle", () =
       next();
     });
     wrapper.use(sheets.app);
-    srv = wrapper.listen(0);
+    srv = await listenLoopback(wrapper);
     const port = (srv.address() as { port: number }).port;
     const c = connectorFor(`http://127.0.0.1:${port}`);
 
@@ -425,7 +426,7 @@ describe("A4.1 — supersession counter: a human's undo must land", () => {
     (await rawSheetEvents(db)).filter((r) => dataOf(r).row_key === rk);
 
   it("F1a (the test the fix exists for): A→B→A — the revert LANDS as a third event with -r1, raw latest-state = A, reconcile CLEAN", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
 
@@ -457,7 +458,7 @@ describe("A4.1 — supersession counter: a human's undo must land", () => {
   });
 
   it("F1b: idempotency survives — the counter fires only on diff-change; an unchanged sheet still catches up to zero, with no runaway -r suffixes", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
 
@@ -476,7 +477,7 @@ describe("A4.1 — supersession counter: a human's undo must land", () => {
   });
 
   it("F1c: A→B→A→B→A soak — every swing lands with an incrementing n, reconcile clean after each catchUp", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
 
@@ -508,7 +509,7 @@ describe("A4.1 — supersession counter: a human's undo must land", () => {
   });
 
   it("F1d: crash-window self-healing — a cycle that died right after writing the -r1 event costs nothing: next catchUp emits zero, and the counter keeps counting on top of the orphan", async () => {
-    const { sheets, baseUrl } = startSheet();
+    const { sheets, baseUrl } = await startSheet();
     const c = connectorFor(baseUrl);
     await c.catchUp(pool);
 

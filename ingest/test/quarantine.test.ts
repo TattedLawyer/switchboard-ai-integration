@@ -5,6 +5,7 @@ import { createIngestApp } from "../src/server.js";
 import { listQuarantine, quarantineEvent, replayAllQuarantined, replayQuarantined } from "../src/quarantine.js";
 import { ingestEvent, DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { secretForSource, signBody } from "../src/hmac.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -27,7 +28,7 @@ const validEvent = {
 describe("quarantine", () => {
   it("invalid POST to /webhooks/crm returns 202 {quarantined: true} and creates quarantine row with reason", async () => {
     const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     const invalidPayload = { bogus: true };
@@ -133,7 +134,7 @@ describe("quarantine", () => {
 
     it("an otherwise-valid signed event with occurred_at 'not-a-date' is quarantined, not stored", async () => {
       const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-      const srv = app.listen(0);
+      const srv = await listenLoopback(app);
       const port = (srv.address() as { port: number }).port;
       try {
         const res = await postSigned(port, gateEvent("evt-gate-garbage", "not-a-date"));
@@ -157,7 +158,7 @@ describe("quarantine", () => {
 
     it("a non-ISO-shaped date ('20260722') is quarantined, not stored", async () => {
       const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-      const srv = app.listen(0);
+      const srv = await listenLoopback(app);
       const port = (srv.address() as { port: number }).port;
       try {
         const res = await postSigned(port, gateEvent("evt-gate-basic-format", "20260722"));
@@ -176,7 +177,7 @@ describe("quarantine", () => {
       // Relative date on purpose: a hardcoded literal would age out of the A6 window
       // and turn this into a time-bomb test.
       const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-      const srv = app.listen(0);
+      const srv = await listenLoopback(app);
       const port = (srv.address() as { port: number }).port;
       try {
         const res = await postSigned(port, gateEvent("evt-gate-valid", new Date().toISOString()));
@@ -193,7 +194,7 @@ describe("quarantine", () => {
 
     it("A6: occurred_at older than 30 days is quarantined — stale history must not pin latest-state", async () => {
       const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-      const srv = app.listen(0);
+      const srv = await listenLoopback(app);
       const port = (srv.address() as { port: number }).port;
       try {
         const stale = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
@@ -209,7 +210,7 @@ describe("quarantine", () => {
 
     it("A6: occurred_at in the future beyond 5 minutes is quarantined — '9999-12-31' would otherwise pin an entity's state forever, undislodgeable by any later correct event", async () => {
       const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-      const srv = app.listen(0);
+      const srv = await listenLoopback(app);
       const port = (srv.address() as { port: number }).port;
       try {
         for (const [id, ts] of [
@@ -229,7 +230,7 @@ describe("quarantine", () => {
 
     it("A6: the window edges store — 29 days old and 4 minutes ahead (ordinary clock skew is tolerated)", async () => {
       const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-      const srv = app.listen(0);
+      const srv = await listenLoopback(app);
       const port = (srv.address() as { port: number }).port;
       try {
         for (const [id, ts] of [
@@ -269,7 +270,7 @@ describe("quarantine", () => {
 
   it("valid POST to /webhooks/crm returns 202 {stored: true} and creates raw row (direct ingest path)", async () => {
     const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     const event = {

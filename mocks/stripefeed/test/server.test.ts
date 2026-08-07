@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { generateManifest } from "@switchboard/mock-core";
 import { createStripeFeedApp, type FeedEvent } from "../src/index.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task B pair 1 — the Stripe-STYLE events feed's own truth.
 //
@@ -19,7 +20,7 @@ async function getPage(
   qs = "",
 ): Promise<{ status: number; body: any }> {
   // In-process: drive the express app on an ephemeral listener per call.
-  const srv = a.app.listen(0);
+  const srv = await listenLoopback(a.app);
   const port = (srv.address() as { port: number }).port;
   try {
     const res = await fetch(`http://127.0.0.1:${port}/v1/events${qs}`);
@@ -199,7 +200,7 @@ describe("30-day retention — the paradigm's honest data-loss boundary (mock cl
 describe("house conventions — /simulate and /status process honesty", () => {
   it("POST /simulate advances the stream (and optionally the clock) and reports seq", async () => {
     const a = app();
-    const srv = a.app.listen(0);
+    const srv = await listenLoopback(a.app);
     const port = (srv.address() as { port: number }).port;
     try {
       const res = await fetch(`http://127.0.0.1:${port}/simulate`, {
@@ -245,7 +246,7 @@ describe("house conventions — /simulate and /status process honesty", () => {
 
   it("GET /status tells the truth about freshness: instance_id, fresh flips after the first emission, seq counts emissions", async () => {
     const a = app();
-    const srv = a.app.listen(0);
+    const srv = await listenLoopback(a.app);
     const port = (srv.address() as { port: number }).port;
     try {
       const before = await (await fetch(`http://127.0.0.1:${port}/status`)).json();

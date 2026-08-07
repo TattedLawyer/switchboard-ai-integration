@@ -290,6 +290,22 @@ describe("the other two README numbers about things a machine changes", () => {
     expect(readmeWorkspaceClaim(readme)).toBe(9); // the word "nine", as the prose reads it
   });
 
+  it("M3: an UNREADABLE claim word reads as null ('this gate has nothing to check'), never NaN", () => {
+    // `Number("several")` is NaN and NaN is not nullish, so the old `?? null` never fired:
+    // the gate failed with "claims NaN workspaces" — a diagnostic pointing at the README's
+    // number rather than at the gate's inability to read one. Both call sites, because
+    // this is a two-member family and the sibling is the reason it is pinned.
+    expect(readmeWorkspaceClaim("run across several workspaces")).toBeNull();
+    expect(readmeMockServerClaim("we run several mock source servers")).toBeNull();
+    // digits and table words still read
+    expect(readmeWorkspaceClaim("run across 11 workspaces")).toBe(11);
+    expect(readmeWorkspaceClaim("run across eleven workspaces")).toBe(11);
+    expect(readmeMockServerClaim("six mock source servers")).toBe(6);
+    // and a missing claim is still null, not 0
+    expect(readmeWorkspaceClaim("nothing to see")).toBeNull();
+    expect(readmeMockServerClaim("nothing to see")).toBeNull();
+  });
+
   it("'N seeded fast-check properties' counts PROPERTIES, not fc.assert calls — the suite numbers them", () => {
     // Load-bearing distinction: property 4 carries two cases, so the file runs 7 tests
     // for 6 numbered properties. A gate that counted `fc.assert` would red on a true

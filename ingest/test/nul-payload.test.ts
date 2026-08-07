@@ -5,6 +5,7 @@ import { createIngestApp } from "../src/server.js";
 import { quarantineEvent } from "../src/quarantine.js";
 import { secretForSource, signBody } from "../src/hmac.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -36,7 +37,7 @@ describe("NUL-bearing payloads are quarantined, never 500'd, never dropped", () 
 
   it("schema-VALID signed payload with \\u0000 in a field → 202 quarantined, payload preserved, no raw row", async () => {
     const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     const event = {
@@ -74,7 +75,7 @@ describe("NUL-bearing payloads are quarantined, never 500'd, never dropped", () 
 
   it("schema-FAILING signed payload with \\u0000 → 202 quarantined (quarantine itself is NUL-safe)", async () => {
     const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     const payload = { bogus: "bad \u0000 field", marker: "nul-schema-fail" };
@@ -103,7 +104,7 @@ describe("NUL-bearing payloads are quarantined, never 500'd, never dropped", () 
         enqueued++;
       },
     });
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     const event = {
@@ -143,7 +144,7 @@ describe("NUL-bearing payloads are quarantined, never 500'd, never dropped", () 
 
   it("non-NUL payloads are unaffected: literal backslash-u0000 TEXT (not a real NUL) still stores normally", async () => {
     const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     // The six literal characters \u0000 inside a string are jsonb-safe (the backslash itself is
@@ -183,7 +184,7 @@ describe("NUL-bearing payloads are quarantined, never 500'd, never dropped", () 
 describe("deep nesting and lone surrogates never 500, never drop a signed payload", () => {
   it("deeply-nested (999, at the depth bound) NUL-free payload takes the NORMAL path → 202 stored in raw.raw_events, NOT quarantined", async () => {
     const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     // 999 nested arrays sits exactly AT the depth bound for this event shape (root object +
@@ -226,7 +227,7 @@ describe("deep nesting and lone surrogates never 500, never drop a signed payloa
         enqueued++;
       },
     });
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     // JSON.stringify serializes the lone surrogate as the 6-char \ud800 escape — the exact wire
@@ -319,7 +320,7 @@ describe("depth-capped payloads are quarantined as raw text, never 500'd, never 
     // raw_events insert is the call that RangeErrors. (Queue mode dies the same way inside
     // boss.send's jsonb write; the divert point below is upstream of both.)
     const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     const rawBody = deepEventText("evt-depth-10k", 10000);
@@ -351,7 +352,7 @@ describe("depth-capped payloads are quarantined as raw text, never 500'd, never 
 
   it("boundary, over side: 1000 nested arrays (one container past the bound) → 202 quarantined", async () => {
     const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     const rawBody = deepEventText("evt-depth-1000", 1000);
@@ -393,7 +394,7 @@ describe("depth-capped payloads are quarantined as raw text, never 500'd, never 
 
   it("pin: well-formed astral-plane pairs (emoji) in a KEY and a VALUE are NOT false-positived → 202 stored", async () => {
     const app = createIngestApp(pool, DEFAULT_TENANT_ID);
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     // An emoji is a full surrogate PAIR — well-formed, jsonb-safe. The lone-surrogate detector

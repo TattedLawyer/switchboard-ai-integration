@@ -6,6 +6,7 @@ import { freshTestDb } from "./helpers/testdb.js";
 import { numericContractViolation } from "../src/numeric-contract.js";
 import { createHubcrmApp, type HubcrmApp } from "../../mocks/hubcrm/src/index.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Task C pair 3 — hydration: thin events become full records, honestly.
 //
@@ -33,8 +34,8 @@ afterEach(async () => {
   await cleanup();
 });
 
-function listen(app: express.Express): string {
-  const s = app.listen(0);
+async function listen(app: express.Express): Promise<string> {
+  const s = await listenLoopback(app);
   srv = s;
   return `http://127.0.0.1:${(s.address() as { port: number }).port}`;
 }
@@ -47,7 +48,7 @@ async function deliverThroughDoor(hub: HubcrmApp): Promise<void> {
   // ci-fixture miss, where a 404'd door made the universe smaller and surfaced three
   // steps downstream as a confusing result rather than as a closed door.
   const ingest = createIngestApp(pool, DEFAULT_TENANT_ID, { enabledSources: ["hubcrm"] });
-  const s = ingest.listen(0);
+  const s = await listenLoopback(ingest);
   try {
     const stats = await hub.store.deliver({
       webhookUrl: `http://127.0.0.1:${(s.address() as { port: number }).port}/webhooks/hubcrm`,
@@ -202,7 +203,7 @@ describe("explicit null on an OPTIONAL field is ABSENT-EQUIVALENT (decided at th
 describe("hydration: every thin event meets exactly one fate", () => {
   it("hydrates fetch-TIME state into the snapshot table: a mutation between notify and fetch means the snapshot is NEWER than the event (the D7 race, stored honestly)", async () => {
     const hub = createHubcrmApp({ seed: 42 });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
     hub.store.simulate(23); // includes multiple changes to the same objects
     await deliverThroughDoor(hub);
 
@@ -231,7 +232,7 @@ describe("hydration: every thin event meets exactly one fate", () => {
 
   it("deleted-before-fetch: the 404 becomes a tombstone row (snapshot null, tombstone true) — the deletion event AND the orphaned creation both resolve", async () => {
     const hub = createHubcrmApp({ seed: 42 });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
     hub.store.simulate(30); // slots 8/9: create-then-delete in the same run
     await deliverThroughDoor(hub);
 
@@ -252,7 +253,7 @@ describe("hydration: every thin event meets exactly one fate", () => {
 
   it("429s are retried with bounded backoff inside the run and still hydrate; a PERSISTENTLY failing object exhausts its attempts into the hydration DLQ — and the pump never re-fetches a DLQ'd event", async () => {
     const hub = createHubcrmApp({ seed: 42, read429: { seed: 3, rate: 0.2 } });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
     hub.store.simulate(12);
     await deliverThroughDoor(hub);
     const poisonTarget = hub.store.allObjects()[0];
@@ -260,7 +261,7 @@ describe("hydration: every thin event meets exactly one fate", () => {
     // Rebuild the app with the same seed + a poison id so one object ALWAYS 500s.
     srv?.close();
     const hub2 = createHubcrmApp({ seed: 42, read429: { seed: 3, rate: 0.2 }, poisonObjectIds: [poisonTarget.objectId] });
-    const baseUrl2 = listen(hub2.app);
+    const baseUrl2 = await listen(hub2.app);
     hub2.store.simulate(12);
 
     const c = await connector(baseUrl2);
@@ -288,7 +289,7 @@ describe("hydration: every thin event meets exactly one fate", () => {
 
   it("a hydrated snapshot is VENDOR DATA: a record failing the field contract is quarantined with a named reason + DLQ'd — visible, never silently stored (and null currency is NOT that case: cleared passes)", async () => {
     const hub = createHubcrmApp({ seed: 42 });
-    const baseUrl = listen(hub.app);
+    const baseUrl = await listen(hub.app);
     hub.store.simulate(23);
     await deliverThroughDoor(hub);
 
@@ -332,7 +333,7 @@ describe("hydration: every thin event meets exactly one fate", () => {
 
 describe("reconcile's latest-event tiebreak is TOTAL, including the event_id tail", () => {
   it("two events at the IDENTICAL received_at instant: the event_id tail decides, so the compared snapshot is the successor's — node-pg hands back Date objects, and `a === b` on two Dates is false", async () => {
-    const baseUrl = listen(storeApp({ company: [{ objectId: 111, properties: { name: "current" } }] }));
+    const baseUrl = await listen(storeApp({ company: [{ objectId: 111, properties: { name: "current" } }] }));
     const occurredAtMs = Date.UTC(2026, 0, 1, 12, 0, 0);
     const receivedAt = "2026-01-01T12:00:01.000Z";
 
@@ -366,7 +367,7 @@ const TENANT_B = "11111111-1111-1111-1111-111111111111";
 
 describe("the hydration DLQ is tenant-scoped, because raw uniqueness is (tenant_id, source, event_id)", () => {
   it("two tenants legitimately share a vendor event id: tenant A's DLQ'd event must not suppress tenant B's — B hydrates, and B's DLQ listing is its own", async () => {
-    const baseUrl = listen(storeApp({ company: [{ objectId: 222, properties: { name: "b-co" } }] }));
+    const baseUrl = await listen(storeApp({ company: [{ objectId: 222, properties: { name: "b-co" } }] }));
     const occurredAtMs = Date.UTC(2026, 0, 2, 9, 0, 0);
     const sharedId = "3816279531"; // one vendor id, two tenants, two different events
 
@@ -409,7 +410,7 @@ describe("a dead-lettered hydration is terminal in the RETENTION sense too", () 
   it("the DLQ job's keep_until is decades out, not pg-boss's 14-day default — an operator-visible dead letter that evaporates would put the event back in limbo", async () => {
     await insertThin({ eventId: "hub-terminal", eventType: "company.propertyChange", occurredAtMs: Date.UTC(2026, 0, 3), receivedAt: "2026-01-03T00:00:01.000Z", data: { occurredAt: Date.UTC(2026, 0, 3) } });
 
-    const c = await connector(listen(storeApp({})));
+    const c = await connector(await listen(storeApp({})));
     expect((await c.catchUpWithReport(pool)).hydrationDlq).toBe(1);
 
     const { HYDRATE_DLQ } = await import("../src/connectors/hub-hydrate.js");
