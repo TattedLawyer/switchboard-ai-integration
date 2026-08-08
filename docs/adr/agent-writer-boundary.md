@@ -146,29 +146,73 @@ breach of the write claim, but an unexamined widening of the read surface.
   guarantees the property is the first tier: the Postgres ACL, which grants `switchboard_agent`
   `usage` and `select` and nothing else, and which no amount of cleverness in `agent/src/` can widen.
 
-### 🛑 Where this control stops, deliberately
+### 🛑 What this check is, and what it is not — the deliberate stopping point
 
-Recorded so the next implementer does not read the absence of a fifth round as an oversight.
+**The CI sweep over `agent/src/` is *assurance evidence*, not an enforcement mechanism.** In NIST's
+vocabulary, assurance is the grounds for justified confidence that a claim has been or will be
+achieved — it is not the thing that achieves it. What achieves it is the database: the
+`switchboard_agent` role is granted `usage` and `select` and nothing else, and INSERT, UPDATE, DELETE
+and CREATE are refused by PostgreSQL with SQLSTATE `42501` — executed against a live server in
+`agent/test/db-privileges.test.ts`, not asserted on paper.
 
-Four rounds of adversarial review, four defeats, each one layer past where the tests stopped:
-**spelling** (regex out-spelled by `import { Pool }`) → **the predicate** (a whitelist and an
-opaque-is-a-finding inversion) → **input selection** (a `.mjs` nobody collected; a relative path into
-`node_modules`) → **the trust boundary of the exemption** (a permitted entrypoint exporting the
-driver class outward). The reviewer's read, which we accept, is that the next layer is *whatever the
-control grants rather than checks*, and that the bottom has not been demonstrated.
+The sweep is a seat belt for ordinary mistakes: it catches a contributor who reaches for a second
+pool or a write-capable credential without meaning to, which is nearly all of them. It provides no
+guarantee against someone who means to. It reasons over the source in one directory, so it cannot see
+a transitive npm dependency that opens its own connection, code that does not exist at build time, or
+a deliberately obscured path; four rounds of adversarial review each found one further evasion, and
+we assume a fifth exists.
 
-**We stop here anyway, and the reason is the tiering.** The property is already guaranteed at tier 1
-by the database, independently verified and untouched through all four rounds — `switchboard_agent`'s
-ACL still reads `=r`, and `agent/test/db-privileges.test.ts` still proves `42501` against a live
-server. This sweep is tier-3 *supporting evidence* for a claim the database enforces. Iterating
-further buys diminishing protection on a control that is not the guarantee, while each additional
-round risks the corpus reading as a stronger claim than the layering supports — which is the precise
-failure mode this ADR exists to prevent.
+**Conceded explicitly, because it is the strongest objection: this control is default-permit by
+construction.** Its rules enumerate what is forbidden — spellings, specifiers, extensions, exports —
+and permit everything they failed to enumerate. That is why four rounds each found one more way, and
+why a fifth round would not change the shape of the thing. It is also why the size of its corpus is
+evidence that *known* evasions are covered and never a claim of completeness.
 
-If a future task needs a genuine boundary here rather than a legibility control, the answer is not a
-fifth round of static analysis. It is an enforcement mechanism the code cannot talk its way past: OS
-or container isolation of the agent process, or narrowing further at the database, where the
-guarantee already lives.
+**An author with commit access to this repository is outside this check's threat model, deliberately
+and permanently: no static analysis of a repository can constrain the person who writes it.** We do
+not treat that as an open defect.
+
+A genuine boundary here would be an enforcement mechanism the code cannot argue with — OS or
+container isolation of the agent process, or a further narrowing at the database, where the guarantee
+already lives — not a fifth round of static analysis.
+
+**Nothing in this tier may be cited in support of the customer-facing claim. That claim rests on the
+database role alone.** If tier 3 is ever quoted to a customer, an auditor, or in a security
+questionnaire as evidence that the agent cannot write, this paragraph has failed and the claim is
+overstated.
+
+#### Why we stopped here, and on what authority
+
+We stopped **by decision, not because the bottom was demonstrated.** The reviewer's read — which we
+accept — is that the next layer is whatever the control grants rather than checks, and the four
+defeats form a progression, each one layer past where the tests had stopped: spelling (a regex
+out-spelled by an ordinary named import) → the predicate → input selection (a `.mjs` nobody
+collected; a relative path into `node_modules`) → the trust boundary of the entrypoint exemption (a
+permitted file exporting the driver class outward).
+
+**No authoritative source sets a stopping threshold for iterated adversarial review.** We looked and
+found none, and we are not going to manufacture one — there is no standard that says "four rounds is
+enough," and this decision does not rest on a rule of that kind. It rests on the tiering: the
+property is already guaranteed at tier 1 by a **default-deny** mechanism that was untouched through
+all four rounds, so further investment in a default-permit control that is not the guarantee buys
+diminishing protection while increasing the risk that its corpus reads as a stronger claim than the
+layering supports. The generic obligation this follows is the cost-benefit one — do not owe
+investment to a mechanism whose goal is adequately supported elsewhere.
+
+#### The published analogue, verified
+
+The closest published precedent is Node.js's own permission model, which ships marked *Stable* while
+stating its limits in the manual rather than in a comment. Quoted from
+<https://nodejs.org/api/permissions.html>, verified character-for-character against the page's raw
+HTML on 2026-08-08 rather than through a markdown-rendering fetch:
+
+> The permission model implements a "seat belt" approach, which prevents trusted code from
+> unintentionally changing files or using resources that access has not explicitly been granted to.
+> It does not provide security guarantees in the presence of malicious code.
+
+That is the shape this section copies: name the population of errors caught, name the population not
+caught, name the intended use, and do not claim completeness. Full sourcing for the decision is in
+`.superpowers/sdd/control-vs-evidence-research.md`.
 
 ### Residual risk, stated plainly
 

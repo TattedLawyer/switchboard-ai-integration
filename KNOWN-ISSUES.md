@@ -666,18 +666,24 @@ meets only the tier's headline will over-read it.
   driver class outward, which every other layer then passed legitimately). Each
   was fixed and each is now a permanent case in a corpus that runs the shipped
   predicate. We stopped there **by decision, not because the bottom was
-  demonstrated** — the reviewer's read, which we accept, is that the next layer is
-  whatever the control grants rather than checks. The reasoning for stopping is in
-  `docs/adr/agent-writer-boundary.md` ("Where this control stops, deliberately")
-  and is short: the property is already guaranteed at tier 1 by the Postgres ACL,
-  which is independently verified, was untouched through all four rounds, and
-  which nothing written in `agent/src/` can widen. This sweep is supporting
-  evidence for that guarantee, not the guarantee, and iterating it further would
-  buy diminishing protection while risking the corpus reading as a stronger claim
-  than the layering supports. It is listed as a design disclosure rather than a
-  defect because closing it properly means enforcement the code cannot argue with
-  — OS or container isolation of the agent process — which this repository does
-  not ship and will not claim.
+  demonstrated** — the next layer is whatever the control grants rather than
+  checks, and the control is **default-permit by construction**: its rules
+  enumerate what is forbidden and permit everything they failed to enumerate,
+  which is exactly why each round found one more way. The sweep is **assurance
+  evidence, not an enforcement mechanism** — grounds for justified confidence that
+  the claim holds, not the thing that makes it hold. What makes it hold is tier 1,
+  a **default-deny** database ACL that was untouched through all four rounds and
+  that nothing written in `agent/src/` can widen. **No authoritative source sets a
+  stopping threshold for iterated adversarial review; we looked and found none, so
+  this decision rests on that tiering argument and not on any rule that "four
+  rounds is enough."** Full reasoning in `docs/adr/agent-writer-boundary.md`
+  ("What this check is, and what it is not"), sourcing in
+  `.superpowers/sdd/control-vs-evidence-research.md`. **Nothing in this tier may
+  be cited in support of the customer-facing claim, which rests on the database
+  role alone.** It is listed as a design disclosure rather than a defect because
+  closing it properly means enforcement the code cannot argue with — OS or
+  container isolation of the agent process — which this repository does not ship
+  and will not claim.
 
 ## Agent writer boundary — credential locality, not OS sandboxing (Phase 3 / A1)
 
