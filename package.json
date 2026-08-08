@@ -11,7 +11,8 @@
     "mocks/hubcrm",
     "mocks/casebus",
     "ingest",
-    "agent"
+    "agent",
+    "approval"
   ],
   "engines": {
     "node": ">=22"
