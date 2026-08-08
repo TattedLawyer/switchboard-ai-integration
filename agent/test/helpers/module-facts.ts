@@ -59,6 +59,18 @@ export interface ModuleFacts {
   /** Constructions of a class obtained from `pg`, with the source text of the argument. */
   poolConstructions: { form: string; argText: string }[];
   /**
+   * Values this module EXPORTS that derive from a driver binding.
+   *
+   * BYPASS-C: the entrypoints are exempt from "no driver binding here" and "no pool here",
+   * and nothing constrained what an exempted file hands OUT. One line —
+   * `export const PoolCtor = pg.Pool;` — and any ordinary module could
+   * `import { PoolCtor } from "./run-propose.js"` and construct a full-privilege pool: the
+   * consumer binds no driver, so its own facts stay empty and every rule passes on a file
+   * doing exactly the thing the pin forbids. Every previous round attacked a file smuggling
+   * the driver IN; this is the exemption laundering it OUT.
+   */
+  exportedDriverValues: string[];
+  /**
    * Things the parser could not resolve. NON-EMPTY IS A VIOLATION — a computed specifier
    * or a computed env key defeats every assertion built on the facts above, so it must
    * fail loudly rather than analyse to nothing.
@@ -90,6 +102,7 @@ export function analyzeModule(rel: string, source: string): ModuleFacts {
     pgBindings: [],
     envAccesses: [],
     poolConstructions: [],
+    exportedDriverValues: [],
     opaque: [],
   };
   const text = (n: ts.Node): string => n.getText(sf).replace(/\s+/g, " ").slice(0, 120);
@@ -250,25 +263,98 @@ export function analyzeModule(rel: string, source: string): ModuleFacts {
   ts.forEachChild(sf, (n) => {
     const collect = (node: ts.Node): void => {
       if (ts.isNewExpression(node)) {
-        const e = node.expression;
         const argText = node.arguments?.map((a) => text(a)).join(", ") ?? "";
-        if (ts.isIdentifier(e) && facts.pgBindings.includes(e.text)) {
-          facts.poolConstructions.push({ form: `new ${e.text}(…)`, argText });
-        } else if (
-          ts.isPropertyAccessExpression(e) &&
-          ts.isIdentifier(e.expression) &&
-          facts.pgBindings.includes(e.expression.text)
-        ) {
-          facts.poolConstructions.push({
-            form: `new ${e.expression.text}.${e.name.text}(…)`,
-            argText,
-          });
+        // The LEFTMOST identifier of the chain, so `new pg.native.Client(…)` is recognised
+        // as a pg construction. The previous version only unwrapped ONE property access, so
+        // any two-hop path off the driver namespace escaped rule 4's argument check
+        // entirely — a grant nothing had checked, found by probing what the corpus permits
+        // rather than what it forbids.
+        let root: ts.Node = node.expression;
+        while (ts.isPropertyAccessExpression(root)) root = root.expression;
+        if (ts.isIdentifier(root) && facts.pgBindings.includes(root.text)) {
+          facts.poolConstructions.push({ form: `new ${text(node.expression)}(…)`, argText });
         }
       }
       ts.forEachChild(node, collect);
     };
     collect(n);
   });
+
+  // ── what this module hands OUT (BYPASS-C) ───────────────────────────────────────────
+  // A fixpoint, because laundering can go through aliases: `const A = pg.Pool; const B = A;
+  // export const C = B;`. Three rounds is far past what any real chain needs, and the cost
+  // of an extra round is nothing next to the cost of missing one.
+  const derived = new Set<string>(facts.pgBindings);
+  const referencesDerived = (node: ts.Node): boolean => {
+    let hit = false;
+    const scan = (n: ts.Node): void => {
+      if (hit) return;
+      if (ts.isIdentifier(n) && derived.has(n.text)) hit = true;
+      else ts.forEachChild(n, scan);
+    };
+    ts.forEachChild(node, scan);
+    return hit;
+  };
+  const declaredNames = (stmt: ts.Node): string[] => {
+    if (ts.isVariableStatement(stmt)) {
+      return stmt.declarationList.declarations
+        .filter((d) => ts.isIdentifier(d.name))
+        .map((d) => (d.name as ts.Identifier).text);
+    }
+    if ((ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt)) && stmt.name) {
+      return [stmt.name.text];
+    }
+    return [];
+  };
+  for (let round = 0; round < 3; round++) {
+    for (const stmt of sf.statements) {
+      if (referencesDerived(stmt)) for (const nm of declaredNames(stmt)) derived.add(nm);
+    }
+  }
+  const isExported = (stmt: ts.Node): boolean =>
+    ts.canHaveModifiers(stmt) &&
+    (ts.getModifiers(stmt) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+  /**
+   * An exported FUNCTION that touches the driver is allowed exactly when it proves
+   * statically that it hands nothing back: an explicit `void` or `Promise<void>` return
+   * annotation. `run-propose.ts`'s `main(): Promise<void>` builds the read-only pool, uses
+   * it and ends it — legitimate, and the annotation is what makes that checkable instead
+   * of a judgement call about the body.
+   *
+   * A missing annotation is a VIOLATION, not a pass. `export function getPool() { return
+   * new pg.Pool(…); }` is a factory laundering the pool exactly as effectively as exporting
+   * the class, and inference would let it through silently. Requiring the annotation makes
+   * the author state the property the rule depends on.
+   */
+  const returnsNothing = (stmt: ts.Node): boolean => {
+    if (!ts.isFunctionDeclaration(stmt)) return false;
+    const t = stmt.type;
+    if (!t) return false; // unannotated: cannot be shown to hand nothing back
+    const txt = t.getText(sf).replace(/\s+/g, "");
+    return txt === "void" || txt === "Promise<void>";
+  };
+
+  for (const stmt of sf.statements) {
+    if (isExported(stmt)) {
+      if (returnsNothing(stmt)) continue;
+      for (const nm of declaredNames(stmt)) {
+        if (derived.has(nm)) facts.exportedDriverValues.push(nm);
+      }
+    }
+    // `export { PoolCtor }` — a local binding exported separately from its declaration.
+    if (ts.isExportDeclaration(stmt) && !stmt.moduleSpecifier && stmt.exportClause) {
+      if (ts.isNamedExports(stmt.exportClause)) {
+        for (const el of stmt.exportClause.elements) {
+          const local = (el.propertyName ?? el.name).text;
+          if (derived.has(local)) facts.exportedDriverValues.push(local);
+        }
+      }
+    }
+    // `export default pg.Pool`
+    if (ts.isExportAssignment(stmt) && referencesDerived(stmt)) {
+      facts.exportedDriverValues.push("default");
+    }
+  }
 
   return facts;
 }
@@ -353,6 +439,17 @@ export function writerBoundaryViolations(
     //    importer of that file a pool site by proxy.
     if (f.pgBindings.includes("<re-export>")) {
       out.push(`${f.rel}: re-exports a database module, laundering the binding`);
+    }
+    // BYPASS-C. The entrypoints are exempt from holding the driver; they are NOT exempt
+    // from handing it out. Without this, the exemption is a hole exactly the width of one
+    // `export const PoolCtor = pg.Pool;` — and that line is what a well-meaning "share the
+    // pool so we stop constructing two" refactor produces. It reads as innocent in review,
+    // which is why it needs a rule rather than a convention.
+    for (const name of f.exportedDriverValues) {
+      out.push(
+        `${f.rel}: exports "${name}", which derives from the database driver — an ` +
+          `exempted file may hold the driver, never hand it out`,
+      );
     }
     if (f.pgBindings.length > 0 && !isEntrypoint) {
       out.push(`${f.rel}: binds the database driver (${f.pgBindings.join(", ")})`);

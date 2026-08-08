@@ -36,7 +36,7 @@ without changing this table does not go green.
 | | Count | Derivation |
 |---|---|---|
 | **Open defects** | **35** | Part II top-level bullets that name an `Owner:` and are not struck |
-| **Design disclosures** | **41** | Part I top-level bullets |
+| **Design disclosures** | **42** | Part I top-level bullets |
 | **Paid** (struck entries) | **47** | Part III struck bullets, plus the cosmetic/low list |
 
 Why the owner predicate rather than a subtraction: Part II's own entry rule is that
@@ -641,6 +641,43 @@ and none is started. Effort classes are estimates by the maintainer.
 5. **End-user surface (4–8 weeks).** Scheduler, delivery channel, auth,
    approval UI. Today's user surface is a Markdown file on the operator's
    disk.
+
+## The agent-source sweep is a legibility control, not a boundary (Phase 3 / A1)
+
+
+The published claim about the agent's read-only access has three tiers, and the
+third — "no module under `agent/src/` constructs a second pool or reads a
+full-privilege credential" — is checked by static analysis in CI plus a runtime
+observation on one code path. Its ceiling is disclosed here because a reader who
+meets only the tier's headline will over-read it.
+
+- **A determined author inside this repository can defeat the sweep, and the size
+  of its test corpus is not a claim to the contrary.** It is a TypeScript-AST
+  analysis over one directory (`agent/src/**`) plus a patch on
+  `pg.Client.prototype.connect` that observes the connections the boot test's
+  child process actually opens. It therefore cannot see a transitive npm
+  dependency opening its own connection, cannot see code that does not exist at
+  build time, and reasons only about the directory it reads. **Four rounds of
+  adversarial review each found one further evasion, every time one layer past
+  wherever the tests had stopped** — the regex being out-spelled by
+  `import { Pool } from "pg"`; the predicate; input selection (a `.mjs` file
+  nobody collected, and a relative path reaching into `node_modules`); and finally
+  the trust boundary of the entrypoint exemption (a permitted file exporting the
+  driver class outward, which every other layer then passed legitimately). Each
+  was fixed and each is now a permanent case in a corpus that runs the shipped
+  predicate. We stopped there **by decision, not because the bottom was
+  demonstrated** — the reviewer's read, which we accept, is that the next layer is
+  whatever the control grants rather than checks. The reasoning for stopping is in
+  `docs/adr/agent-writer-boundary.md` ("Where this control stops, deliberately")
+  and is short: the property is already guaranteed at tier 1 by the Postgres ACL,
+  which is independently verified, was untouched through all four rounds, and
+  which nothing written in `agent/src/` can widen. This sweep is supporting
+  evidence for that guarantee, not the guarantee, and iterating it further would
+  buy diminishing protection while risking the corpus reading as a stronger claim
+  than the layering supports. It is listed as a design disclosure rather than a
+  defect because closing it properly means enforcement the code cannot argue with
+  — OS or container isolation of the agent process — which this repository does
+  not ship and will not claim.
 
 ## Agent writer boundary — credential locality, not OS sandboxing (Phase 3 / A1)
 

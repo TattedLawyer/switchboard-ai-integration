@@ -40,13 +40,19 @@ directing an agent fleet under an evidence-gated process — is described in
    whose `current_user` is not that role. Precisely "start", not "serve every
    call": the check runs once per entrypoint, before any work, on the one pool
    that entrypoint opens — and no other pool may exist, which is what (c) is for;
-   *(c) enforced in CI, about the code and not about your deployment* — no module
-   under `agent/src/` constructs a second pool or reads a full-privilege
-   credential. That last one proves the agent never *needs* write authority; it
-   does not by itself prove a given operator withheld it, which is what (a) and
-   (b) are for. One honest limit, disclosed in `KNOWN-ISSUES.md`: on a single-box
-   self-hosted deployment both processes likely run as the same OS user, so this
-   is **credential locality, not OS sandboxing**.
+   *(c) checked in CI, about the code in one directory, and deliberately the
+   weakest of the three* — no module under `agent/src/` that the analysis can see
+   binds the database driver, constructs a second pool, hands the driver out, or
+   reads a full-privilege credential. Read that qualifier as load-bearing: this is
+   a static sweep plus a runtime check on one code path, **not** a security
+   boundary and not enforcement. It catches ordinary mistakes, which is most of
+   them; it cannot see a dependency opening its own connection, and a determined
+   author inside the repo can defeat it — four rounds of adversarial review each
+   found one more way, and we stopped by decision rather than because the bottom
+   was reached (the reasoning is in the ADR). The guarantee is (a), the database.
+   Two honest limits, both disclosed in `KNOWN-ISSUES.md`: that ceiling, and — on
+   a single-box self-hosted deployment — that both processes likely run as the
+   same OS user, making this **credential locality, not OS sandboxing**.
    The approval-gated action and richer behavioral safety testing are being built
    in Phase 3.
 
@@ -174,7 +180,7 @@ reporting a clean run.
   idempotency-keyed, because an approval queue no human can triage disables the
   human-approval constraint rather than merely annoying it. Its client-facing
   login and approval page are the next task; the door is real today.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 1142 tests, the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 1147 tests, the
   dbt build — 101 dbt build steps (15 models, 3 seeds, 83 data tests) — the agent
   action-safety eval, and the identity oracle, against a real Postgres service
   container
@@ -189,7 +195,7 @@ reporting a clean run.
   on a slow machine, and a leftover mock server inherited across steps sharing a
   process table. Each is narrated with its run ID in the
   [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
-- 1142 automated tests, green in CI and locally — including a seeded
+- 1147 automated tests, green in CI and locally — including a seeded
   property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety under
   arbitrary torn writes. That count is not maintained by hand: CI runs
@@ -218,7 +224,7 @@ reporting a clean run.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 1142 tests green across ten workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
+| Suite | `npm test` + dbt | 1147 tests green across ten workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
 
 ## What's coming (built in phases, in public)
 

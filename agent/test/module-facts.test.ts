@@ -193,6 +193,63 @@ export const pool = new pg.Pool({ connectionString: agentConnectionString(), use
     because: /overrides connection field/,
   },
   {
+    name: "I. a permitted entrypoint EXPORTS the driver class, laundering it outward (round 4 reviewer)",
+    files: {
+      "host/run-propose.ts": `import pg from "pg";
+import { agentConnectionString } from "./agent-db.js";
+export const PoolCtor = pg.Pool;
+export const pool = new pg.Pool({ connectionString: agentConnectionString(), max: 1 });`,
+      "host/agent-db.ts": "export const agentConnectionString = (): string => '';",
+      "host/laundered-writer.ts": `import { PoolCtor } from "./run-propose.js";
+export const writerPool = new PoolCtor({ connectionString: process.argv[2] });
+export async function writeProposal(t: string) {
+  return writerPool.query("insert into approval.proposals (action_type) values ($1)", [t]);
+}`,
+    },
+    // Every layer is satisfied LEGITIMATELY by the consumer: swept file, specifier resolving
+    // to a file the sweep read, no driver binding of its own, no opaque construct, a
+    // credential from process.argv that no rule inspects. The only thing that was ever
+    // wrong is upstream, in what the exempted file handed out.
+    because: /exports "PoolCtor", which derives from the database driver/,
+  },
+  {
+    name: "J. laundering through an ALIAS CHAIN, so the export does not name pg directly (mine)",
+    files: {
+      "host/run-report.ts": `import pg from "pg";
+const A = pg.Pool;
+const B = A;
+export { B };`,
+    },
+    because: /exports "B", which derives from the database driver/,
+  },
+  {
+    name: "K. two-hop driver path inside an entrypoint: new pg.native.Client (mine)",
+    files: {
+      "host/run-propose.ts": `import pg from "pg";
+import { agentConnectionString } from "./agent-db.js";
+export const pool = new pg.Pool({ connectionString: agentConnectionString(), max: 1 });
+const sneaky = new pg.native.Client({ connectionString: process.argv[2] });
+void sneaky;`,
+      "host/agent-db.ts": "export const agentConnectionString = (): string => '';",
+    },
+    // Found by probing what the corpus GRANTS rather than what it forbids: the construction
+    // rule unwrapped exactly one property access, so anything two hops off the driver
+    // namespace was never recorded as a construction and never had its argument checked.
+    because: /new pg\.native\.Client.*is not built from/,
+  },
+  {
+    name: "L. exported FACTORY returning a pool, with inference hiding the return type (mine)",
+    files: {
+      "host/run-report.ts": `import pg from "pg";
+export function getPool() {
+  return new pg.Pool({ connectionString: process.argv[2] });
+}`,
+    },
+    // The narrowing that let `main(): Promise<void>` through must not also let this through.
+    // An unannotated export is a violation precisely because inference would be silent.
+    because: /exports "getPool", which derives from the database driver/,
+  },
+  {
     name: "G. an unlisted module whose ONLY violation is the whitelist (pins the shared config)",
     files: {
       "host/hash.ts": `import { createHash } from "node:crypto";
@@ -269,12 +326,26 @@ await assertAgentRole(pool);`;
       checkTree({
         "host/run-propose.ts": `import pg from "pg";
 import { agentConnectionString } from "./agent-db.js";
-export const pool = new pg.Pool({ connectionString: agentConnectionString(), max: 1 });`,
+const pool = new pg.Pool({ connectionString: agentConnectionString(), max: 1 });
+void pool;`,
         "host/agent-db.ts": `export const agentConnectionString = (): string => process.env.AGENT_DATABASE_URL ?? "";`,
         "mcp/server.ts": `import type pg from "pg";\nexport const f = (p: pg.Pool): void => void p;`,
         "host/notes.md": "not code, and not swept — the escape hatch, exercised",
       }),
     ).toEqual([]);
+  });
+
+  it("an exported function that PROVES it hands nothing back is legal (the narrowing, pinned)", () => {
+    // run-propose.ts exports `main(): Promise<void>`, which builds the read-only pool, uses
+    // it and ends it. Without this guard the BYPASS-C rule would forbid the entrypoint's own
+    // shape, and the fix would be to weaken the rule rather than to keep the property.
+    const legit = `import pg from "pg";
+import { agentConnectionString } from "./agent-db.js";
+export async function main(): Promise<void> {
+  const pool = new pg.Pool({ connectionString: agentConnectionString(), max: 1 });
+  await pool.end();
+}`;
+    expect(check("host/run-propose.ts", legit, ["host/agent-db.ts"])).toEqual([]);
   });
 
   it("a type-only driver import is NOT a violation — it binds nothing at runtime", () => {

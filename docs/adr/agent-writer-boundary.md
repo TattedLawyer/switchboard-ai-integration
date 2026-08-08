@@ -127,13 +127,48 @@ breach of the write claim, but an unexamined widening of the read surface.
   `switchboard_agent` (`assertAgentRole`). "Start", deliberately, not "serve every call": the check
   runs once per entrypoint, before any work, against the single pool that entrypoint opens.
   `createMcpServer` receives a pool it did not open, so an assertion there would be a late check of
-  someone else's decision; what makes the boot check sufficient is that no other pool may exist,
-  which is the third tier's job.
-- **Enforced in CI, about the code and not about your deployment:** no module under `agent/src/`
-  constructs a second pool or reads a full-privilege credential, and a boot test runs the proposal
-  path with no such credential present. This proves the agent *never needs* write authority; it
-  does not, by itself, prove that a given operator withheld it — which is what the two tiers above
-  are for.
+  someone else's decision. What would make the boot check cover every query is that no other pool
+  exists — which the third tier *checks* but, as stated there, does not *guarantee*. So this tier is
+  exact about its own scope: it guarantees the pool the entrypoint opens is the read-only role. A
+  second pool opened elsewhere would not be caught here, and is refused by the first tier, where the
+  guarantee actually lives.
+- **Checked in CI, about the code in one directory, and weaker than the two tiers above:** no module
+  under `agent/src/` *that this analysis can see* binds the database driver, constructs a second
+  pool, hands the driver out, or reads a full-privilege credential — and a boot test runs the
+  proposal path with no such credential present, observing at runtime that every connection the
+  process opens authenticates as `switchboard_agent`. Read the qualifier as load-bearing. This is a
+  static sweep over one directory plus a runtime observation of one code path. **It is not a security
+  boundary and it does not enforce anything** — it catches ordinary mistakes, which is most of them.
+  It cannot see a transitive npm dependency opening its own connection, it cannot see code that does
+  not exist at build time, and a determined author inside this repository can defeat it. Four rounds
+  of adversarial review each found one further way, so assume a fifth exists. The size of its test
+  corpus is evidence that known evasions are covered, **not** a claim of completeness. What actually
+  guarantees the property is the first tier: the Postgres ACL, which grants `switchboard_agent`
+  `usage` and `select` and nothing else, and which no amount of cleverness in `agent/src/` can widen.
+
+### 🛑 Where this control stops, deliberately
+
+Recorded so the next implementer does not read the absence of a fifth round as an oversight.
+
+Four rounds of adversarial review, four defeats, each one layer past where the tests stopped:
+**spelling** (regex out-spelled by `import { Pool }`) → **the predicate** (a whitelist and an
+opaque-is-a-finding inversion) → **input selection** (a `.mjs` nobody collected; a relative path into
+`node_modules`) → **the trust boundary of the exemption** (a permitted entrypoint exporting the
+driver class outward). The reviewer's read, which we accept, is that the next layer is *whatever the
+control grants rather than checks*, and that the bottom has not been demonstrated.
+
+**We stop here anyway, and the reason is the tiering.** The property is already guaranteed at tier 1
+by the database, independently verified and untouched through all four rounds — `switchboard_agent`'s
+ACL still reads `=r`, and `agent/test/db-privileges.test.ts` still proves `42501` against a live
+server. This sweep is tier-3 *supporting evidence* for a claim the database enforces. Iterating
+further buys diminishing protection on a control that is not the guarantee, while each additional
+round risks the corpus reading as a stronger claim than the layering supports — which is the precise
+failure mode this ADR exists to prevent.
+
+If a future task needs a genuine boundary here rather than a legibility control, the answer is not a
+fifth round of static analysis. It is an enforcement mechanism the code cannot talk its way past: OS
+or container isolation of the agent process, or narrowing further at the database, where the
+guarantee already lives.
 
 ### Residual risk, stated plainly
 
