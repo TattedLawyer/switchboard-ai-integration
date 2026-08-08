@@ -16,6 +16,7 @@ import {
   proposalToken,
 } from "./config.js";
 import { createApprovalApp } from "./server.js";
+import { startSweeper } from "./expiry.js";
 
 export const REQUIRED_APPROVAL_ROLE = "switchboard_approval";
 
@@ -45,11 +46,17 @@ export async function main(): Promise<void> {
   assertApprovalConfig();
   const pool = new pg.Pool({ connectionString: approvalConnectionString() });
   await assertApprovalRole(pool);
+  const tenantId = resolveTenantId();
   const app = createApprovalApp(pool, {
-    tenantId: resolveTenantId(),
+    tenantId,
     proposalToken: proposalToken(),
     pendingCap: pendingCap(),
   });
+  // A2/T5 — one of expiry's THREE enforcement points, and the least important of them.
+  // The door's cap count and the queue read query both filter on `expires_at`
+  // independently, so a dead sweeper degrades promptness, not correctness. That is why it
+  // logs its failures instead of taking the process down with it.
+  startSweeper(pool, tenantId);
   const port = Number(process.env.APPROVAL_PORT ?? 4009);
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
     throw new Error(`invalid APPROVAL_PORT "${process.env.APPROVAL_PORT}"`);

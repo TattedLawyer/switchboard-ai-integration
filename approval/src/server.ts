@@ -95,9 +95,23 @@ export function createApprovalApp(pool: pg.Pool, opts: ApprovalAppOptions): expr
         // racy under concurrency by construction; the race can overshoot the cap by the
         // number of concurrent posters, which for a single agent host is bounded and
         // acceptable. Saying so beats implying an exactness this does not have.
+        // A2/T5 — THE COUNT IS VALIDITY-FILTERED, and that is what makes the wedge heal.
+        // Before A2 this counted every pending row forever, so one burst 429'd the door
+        // PERMANENTLY, legitimate proposals included: nothing could move a pending row to
+        // a terminal state. An expired row is genuinely dead — the sweeper will restate
+        // it and the queue read hides it — so holding cap budget for it is holding budget
+        // for nothing.
+        //
+        // 🚨 THE FILTER IS DUPLICATED HERE ON PURPOSE, not centralised into the sweeper.
+        // A sweeper alone fails open during exactly the outage that matters; this clause
+        // heals the queue with NO process running at all.
+        //
+        // The numeral is unchanged (100) and the comment in config.ts says why it must
+        // now be read differently: it counts UNEXPIRED pending rows, a different quantity
+        // under the same number.
         const pending = await pool.query(
           `select count(*)::int as n from approval.proposals
-            where tenant_id = $1 and state = 'pending'`,
+            where tenant_id = $1 and state = 'pending' and expires_at > now()`,
           [opts.tenantId],
         );
         if ((pending.rows[0].n as number) >= opts.pendingCap) {
