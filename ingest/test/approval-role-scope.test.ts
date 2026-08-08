@@ -115,9 +115,28 @@ describe("A1: switchboard_approval holds exactly the privileges the door needs",
     expect(back.rows.map((r) => r.idempotency_key)).toContain("acl-probe-1");
   });
 
-  it("cannot UPDATE or DELETE a proposal (42501) — the door only appends", async () => {
+  it("cannot UPDATE a FROZEN column or DELETE a proposal (42501) — the door only appends", async () => {
+    // RETARGETED BY A2/T3, and the retarget is not a weakening. A2 deliberately grants
+    // `UPDATE (state, decided_at)` — COLUMN-level — so the old probe (`set state =
+    // 'approved'`) would now red for a LEGITIMATE reason: the privilege it asserted absent
+    // is one the design chose to add. The property this test exists to hold is that the
+    // door only APPENDS to the parts of a proposal a human judged, and that property is
+    // now carried by the FROZEN columns, which the role has no UPDATE privilege on at all.
+    //
+    // A2/T3's own suite (`migration-015-enforcement.test.ts`) holds the other half — that
+    // `state` cannot be moved to `approved` or `rejected` without a same-transaction
+    // decision row naming an approver — and pins the column grant against
+    // `information_schema.column_privileges`, which is where a COLUMN grant is visible.
+    // `pg_class.relacl`, asserted above, cannot see one; that is the blind spot, and it is
+    // named here rather than left for someone to rediscover.
     await expect(
-      approval.query(`update approval.proposals set state = 'approved'`),
+      approval.query(`update approval.proposals set payload = '{}'::jsonb`),
+    ).rejects.toMatchObject({ code: "42501" });
+    await expect(
+      approval.query(`update approval.proposals set rationale = 'rewritten'`),
+    ).rejects.toMatchObject({ code: "42501" });
+    await expect(
+      approval.query(`update approval.proposals set idempotency_key = 'stolen'`),
     ).rejects.toMatchObject({ code: "42501" });
     await expect(approval.query(`delete from approval.proposals`)).rejects.toMatchObject({
       code: "42501",

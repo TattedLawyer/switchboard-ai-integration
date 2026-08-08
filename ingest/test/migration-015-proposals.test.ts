@@ -261,9 +261,34 @@ describe("A2/T2: the three-step column add survives a NON-EMPTY table", () => {
     expect(new Date(r.rows[0].expires_at as string).getTime()).toBeLessThan(Date.now());
   });
 
-  it("and that backfilled row can never be approved", async () => {
-    await expect(
-      scratch.query(`update approval.proposals set state = 'approved' where id = $1`, [legacyId]),
-    ).rejects.toMatchObject({ code: "23514" });
+  it("and that backfilled row can never be approved — even by a fully legitimate approval", async () => {
+    // mutation: delete the `proposals_legacy_never_approved` constraint from 015 -> red.
+    //           RUN ✅ 2026-08-08
+    //
+    // The decision row is written FOR REAL, in the same transaction, naming a real
+    // approver — so the trigger's own predicate is SATISFIED and the ONLY thing left
+    // refusing this update is the legacy CHECK. Without that setup the trigger would
+    // refuse first and this pin would be vacuous: it would stay green with the constraint
+    // deleted, which is precisely the shape this plan was rejected for four times.
+    const u = (
+      await scratch.query(`insert into approval.users (email) values ($1) returning id`, [
+        `legacy-probe-${Math.random().toString(36).slice(2)}@example.com`,
+      ])
+    ).rows[0].id as string;
+    const c = await scratch.connect();
+    try {
+      await c.query("begin");
+      await c.query(
+        `insert into approval.decisions (proposal_id, kind, approver_user_id, renderer_version)
+         values ($1, 'approved', $2, 'v0')`,
+        [legacyId, u],
+      );
+      await expect(
+        c.query(`update approval.proposals set state = 'approved' where id = $1`, [legacyId]),
+      ).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await c.query("rollback").catch(() => {});
+      c.release();
+    }
   });
 });

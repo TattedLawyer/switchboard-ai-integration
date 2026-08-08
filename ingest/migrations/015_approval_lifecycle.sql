@@ -135,3 +135,259 @@ drop index if exists approval.proposals_pending_by_tenant;
 create index proposals_pending_by_tenant_expiry
   on approval.proposals (tenant_id, expires_at)
   where state = 'pending';
+
+-- ---------------------------------------------------------------------------------------
+-- PART 2 — the tables an approval needs, the grants, and the trigger.
+-- ---------------------------------------------------------------------------------------
+
+-- THE APPROVER LIST. A STRICT SUBSET, and the strictness is the point: `id`, `email`,
+-- `created_at`, `disabled_at`, and NOTHING ELSE. No role column, no permissions column, no
+-- password, no tenant column — `docs/adr/approver-identity.md:140-144` makes any of those a
+-- STOP-and-report, and this shape leaves A0b's work purely ADDITIVE. A0b owns login,
+-- session, resolving an email to a user, and extending this table.
+--
+-- WHY A2 CREATES IT AT ALL rather than waiting for A0b: so `approver_user_id` is a real
+-- foreign key from the FIRST migration that records a decision. The alternative — a
+-- nullable approver, or a text approver "temporarily" — makes an unattributed approval
+-- REPRESENTABLE, which `approver-identity.md:149-150` forbids in terms and which would
+-- weaken §3.11's claim to buy a schedule.
+create table approval.users (
+  id          uuid primary key default gen_random_uuid(),
+  email       text        not null,
+  created_at  timestamptz not null default now(),
+  disabled_at timestamptz
+);
+
+-- `citext` is REJECTED: no migration in this repo issues `create extension`, and A2 is not
+-- the place to start. So: `text` plus a unique index on `lower(email)`.
+--
+-- 🚨 THIS INDEX IS STORAGE HYGIENE ONLY AND MUST NEVER BECOME A COMPARISON PREDICATE.
+-- `lower()` is NOT identity-preserving for mailboxes — U+212A KELVIN SIGN lower-cases to
+-- `k`, U+0130 collides with `i`, both measured on PG 16.14 — and RFC 5321 §2.3.11 makes
+-- the local part case-sensitive and the mailbox owner's business. A2 performs NO email
+-- comparison anywhere; resolving an address to a user is A0b's concern, and A0b inherits
+-- this warning. Promoting this index into a security predicate would reintroduce the
+-- homoglyph defect that a whole rejected design was built on.
+create unique index users_email_lower_unique on approval.users (lower(email));
+
+-- THE DECISION. Multi-row per proposal BY DESIGN: `dismissed` rows accumulate, because an
+-- explicit "Not now" is a decision that does not move the proposal (§3.7).
+create table approval.decisions (
+  id               uuid primary key default gen_random_uuid(),
+  proposal_id      uuid not null references approval.proposals(id),
+  -- `dismissed` is the third outcome and it has no state transition. MCP's accept/decline/
+  -- cancel is right in spirit, but `cancel` is a MODAL-DISMISSAL event and a web page has
+  -- no modal: we cannot distinguish "considered it and walked away" from "closed the
+  -- laptop", and recording the second as the first manufactures evidence about a human's
+  -- state of mind. Passive navigation records nothing at all.
+  kind             text not null check (kind in ('approved', 'rejected', 'dismissed')),
+  -- NEVER a string. An approval whose approver is free text is an unattributed approval
+  -- wearing a name (`approver-identity.md:149-150`).
+  approver_user_id uuid not null references approval.users(id),
+  reason           text,
+  -- AUDIT METADATA ONLY. 🚨 `renderer_version` IS NEVER READ IN THE REQUEST PATH and must
+  -- never become a predicate. The runtime check that once compared it was deleted: it had
+  -- no nameable threat (the payload is immutable and the approval is attributable
+  -- regardless of what rendered it) and a concrete cost (after any renderer deploy, every
+  -- approved-but-unexecuted proposal would refuse execution permanently, destroying a real
+  -- human approval with no recovery path in this workstream). An unused column with an
+  -- obvious comparison available is a re-entry point; this comment is the guard on it.
+  renderer_version text not null,
+  -- THE SAME-TRANSACTION DISCRIMINATOR. Not `xmin`: `xmin` is a 32-bit `xid` and wraps,
+  -- while `txid_current()` is a 64-bit epoch'd `bigint`, so comparing them is correct only
+  -- within one epoch and SILENTLY WRONG afterwards — a failure that appears only on a
+  -- long-lived database and looks like nothing. `pg_current_xact_id()` returns `xid8` and
+  -- is epoch-safe, on both the default here and the comparison in the trigger.
+  xact_id          xid8 not null default pg_current_xact_id(),
+  -- Distinct from the proposal's `created_at`; the delta between them IS the staleness
+  -- evidence an auditor wants.
+  decided_at       timestamptz not null default now(),
+  -- A rejection with no reason is not a decision anyone can review later. Enforced by the
+  -- database rather than by the form, because the form is not the thing that has to be
+  -- true. Whitespace is not a reason.
+  constraint decisions_rejection_needs_reason
+    check (kind <> 'rejected' or (reason is not null and btrim(reason) <> ''))
+);
+
+-- THE TRIGGER READS THIS INDEX ON EVERY APPROVE AND EVERY REJECT. Postgres creates no
+-- index for a foreign key, so without it the lookup is a sequential scan over an
+-- append-only table that only grows. Nothing breaks and no test reds without it — the cost
+-- is invisible until it is a migration on a live table rather than a line in this file.
+-- Free now, not free later. (rev-8 review, Minor M-1.)
+create index decisions_by_proposal_kind on approval.decisions (proposal_id, kind);
+
+-- THE EXECUTION LOG. Append-only. A `started` row with no terminal sibling IS the
+-- crash-mid-send state, and `at` on that row is what makes it queryable BY AGE.
+--
+-- 🚨 A2 BUILDS NO AUTO-REAPER, DELIBERATELY. A timer that flips a live in-flight send to
+-- `failed` is worse than a stuck row. So `executing` is a permanently non-terminal row
+-- class with no timer-drivable exit, A2 makes it DETECTABLE, and A5 owns the reaper
+-- contract — deciding, with knowledge of the vendor's delivery semantics, when a `started`
+-- row may be adjudicated. Not a cap wedge: `executing` rows sit outside the pending count.
+create table approval.executions (
+  id               uuid primary key default gen_random_uuid(),
+  proposal_id      uuid not null references approval.proposals(id),
+  kind             text not null check (kind in ('started', 'succeeded', 'failed')),
+  -- Propagated to the vendor. Whether the C5 provider HONOURS it is a C5 acceptance
+  -- criterion, never an A2 assumption.
+  idempotency_key  text not null,
+  vendor_reference text,
+  error            text,
+  at               timestamptz not null default now()
+);
+
+-- The amendment author's FK, deferred from part 1 because `approval.users` did not exist
+-- yet. CHECK-enforced BOTH ways: a human-authored amendment MUST name its author, and an
+-- agent-authored proposal must NOT carry one.
+alter table approval.proposals
+  add constraint proposals_authored_by_user_fk
+  foreign key (authored_by_user_id) references approval.users(id);
+alter table approval.proposals
+  add constraint proposals_human_author_attributed
+  check ((authored_by = 'human') = (authored_by_user_id is not null));
+
+-- ---------------------------------------------------------------------------------------
+-- THE TRIGGER. An invariant belongs in the database; a workflow does not.
+--
+-- That line is JUDGMENT — no source draws it, and the repo must say so rather than imply
+-- an authority it does not have. What follows is ~30 lines of ASSERTION: frozen columns,
+-- the legal transition set, and the decision-row requirement. The transition WORKFLOW
+-- stays in TypeScript.
+--
+-- NO `SECURITY DEFINER`, deliberately. It would buy enforcement only for callers who
+-- consented to use it, while importing PUBLIC-EXECUTE-by-default and the `search_path`
+-- misuse surface. (And note for whoever is tempted later: CVE-2018-1058 is a CLIENT-
+-- APPLICATION CVE and the project's guide for it contains no `SECURITY DEFINER` advice —
+-- the hazard here is ordinary documented guidance, not a CVE. If one is ever created, the
+-- full recipe is mandatory: `SET search_path = <schema>, pg_temp` with pg_temp LAST,
+-- `REVOKE ALL ... FROM PUBLIC`, then a selective `GRANT EXECUTE`.)
+--
+-- Being invoker-rights has one consequence that is load-bearing and invisible: the lookup
+-- below runs with the CALLER's privileges, so `SELECT` on `approval.decisions` is a HARD
+-- RUNTIME PREREQUISITE of both human-driven transitions. The grant block gives it. A
+-- future least-privilege narrowing to `insert` only would break EVERY approval with
+-- `permission denied for table decisions` — an error naming the wrong table.
+-- ---------------------------------------------------------------------------------------
+create function approval.proposals_guard() returns trigger
+language plpgsql
+as $guard$
+begin
+  -- (a) FROZEN COLUMNS. What the human approved cannot change afterwards, on any path,
+  -- including paths nobody has written yet. This is the guarantee A2 actually makes about
+  -- her data — not anything about what her browser painted.
+  if new.payload         is distinct from old.payload
+  or new.payload_hash    is distinct from old.payload_hash
+  or new.rationale       is distinct from old.rationale
+  or new.idempotency_key is distinct from old.idempotency_key
+  or new.action_type     is distinct from old.action_type
+  or new.created_at      is distinct from old.created_at
+  or new.supersedes      is distinct from old.supersedes
+  or new.authored_by     is distinct from old.authored_by
+  then
+    raise exception 'frozen column is immutable'
+      using detail = 'payload, payload_hash, rationale, idempotency_key, action_type, '
+                     'created_at, supersedes and authored_by never change after insert';
+  end if;
+
+  if new.state is distinct from old.state then
+    -- (b) THE LEGAL TRANSITION SET (§3.4). Terminal means terminal: a re-proposal is a NEW
+    -- ROW, never a resurrection. `approved -> pending` is absent because an approval that
+    -- can be un-made is not evidence, and `executing -> approved` is absent because that
+    -- is the retry loop that double-sends.
+    if not (
+         (old.state = 'pending'   and new.state in ('approved', 'rejected', 'expired', 'superseded'))
+      or (old.state = 'approved'  and new.state in ('expired', 'executing'))
+      or (old.state = 'executing' and new.state in ('executed', 'execution_failed'))
+    ) then
+      raise exception 'illegal proposal transition: % -> %', old.state, new.state;
+    end if;
+
+    -- (c) A HUMAN DISPOSITION WITH NO ATTRIBUTABLE HUMAN IS NOT REPRESENTABLE.
+    --
+    -- The predicate covers `approved` AND `rejected`, not `approved` alone. Scoped to
+    -- `approved`, a bare `update ... set state = 'rejected' where state = 'pending'` was
+    -- MEASURED to succeed: UPDATE 6, zero decision rows, no error. A rejection is a human
+    -- decision, and if the database does not require the human then the word is not
+    -- evidence of one.
+    --
+    -- MACHINE-DRIVEN TERMINAL TRANSITIONS ARE DELIBERATELY EXEMPT, and that distinction is
+    -- the whole content of the rule: `pending -> expired` (the sweeper) and
+    -- `pending -> superseded` (amendment, and render-time duplicate collapse) carry no
+    -- decision row BECAUSE NOBODY DECIDED. This is also why the emergency manual drain
+    -- targets `expired` and not `rejected` — an operator draining a wedged queue is not
+    -- deciding anything, and recording their bulk action as `rejected` would be a
+    -- fabricated decision.
+    --
+    -- MATCHING KIND, and SAME TRANSACTION. Matching kind, because `approval.decisions` is
+    -- append-only and multi-row: without it a prior `dismissed` row satisfies the check
+    -- for `approved`. Same transaction, because without it a decision row committed at any
+    -- point in the past satisfies it forever.
+    if new.state in ('approved', 'rejected') then
+      if not exists (
+        select 1 from approval.decisions d
+         where d.proposal_id = new.id
+           and d.kind        = new.state
+           and d.xact_id     = pg_current_xact_id()
+      ) then
+        raise exception 'a % transition requires an approval.decisions row of kind %, naming an approver, written in the SAME transaction', new.state, new.state;
+      end if;
+    end if;
+  end if;
+
+  return new;
+end
+$guard$;
+
+-- 🚨 THE ENTIRE CONTROL, AND THERE IS NO BELT. Two revisions of this design credited a
+-- schema-wide belt and both were measured inert on PG 16: `REVOKE ... ON ALL FUNCTIONS IN
+-- SCHEMA` is a ONE-SHOT LOOP over existing objects, and `ALTER DEFAULT PRIVILEGES ...
+-- REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC` stores NO `pg_default_acl` row at all, so a
+-- later function keeps `proacl` NULL and an unprivileged role executes it fine. That line
+-- was attempted, measured ineffective, and MUST NOT BE RE-ADDED.
+--
+-- ORDERING IS THE FIX. The revoke comes immediately AFTER the create, in the same
+-- implicit transaction, so there is no window. Revoking PUBLIC EXECUTE on a trigger
+-- function does not stop the trigger firing — verified.
+--
+-- 015 CREATES EXACTLY ONE FUNCTION, and its name is counted and asserted, so the pin's
+-- subject set is KNOWN rather than assumed empty. Any later migration that adds a function
+-- to this schema must revoke it in the same file: nothing automatic protects it.
+revoke execute on function approval.proposals_guard() from public;
+
+create trigger proposals_guard
+  before update on approval.proposals
+  for each row execute function approval.proposals_guard();
+
+-- ---------------------------------------------------------------------------------------
+-- GRANTS. Written down table by table, in 014's precedent, so every pin below is against a
+-- grant the design chose rather than one an implementer happened to write.
+-- ---------------------------------------------------------------------------------------
+
+-- COLUMN-LEVEL, NEVER TABLE-LEVEL. Two subtleties, both documented and both load-bearing:
+--   · "any nontrivial UPDATE will require SELECT privilege as well", so this grant is
+--     necessarily larger than `UPDATE (state)` alone — 014 already granted SELECT;
+--   · "the table-level grant is unaffected by a column-level operation" — so if TABLE-level
+--     UPDATE is ever granted here, later column-level REVOKEs do nothing. That is a
+--     migration-ordering hazard, not a theoretical one, and it is why this is the only
+--     UPDATE grant in the file.
+grant update (state, decided_at) on approval.proposals to switchboard_approval;
+
+-- Append-only, both of them. The `42501` on UPDATE/DELETE is the guarantee, and it is
+-- pinned against these lines rather than against whatever an implementer chose.
+grant select, insert on approval.decisions  to switchboard_approval;
+grant select, insert on approval.executions to switchboard_approval;
+
+-- SELECT ONLY. The role that RECORDS approvals must not be able to MINT approvers. It can
+-- already forge an approval naming a real user — the database authenticates nobody, and
+-- KNOWN-ISSUES discloses that — so this is not categorical; what it buys is that the set
+-- of people who can approve is not writable by the thing that records approvals. The first
+-- row is created by an operator through `ingest/src/cli/approval-user-add.ts`, connecting
+-- as the migration owner.
+grant select on approval.users to switchboard_approval;
+
+-- No DELETE anywhere. No grant option anywhere. And nothing — not one privilege, on any of
+-- these objects — to `switchboard_agent`, which is named here only to be denied, in 014's
+-- idiom, so the intent is legible in the migration a reviewer reads and not only in a test.
+revoke all on approval.users      from switchboard_agent;
+revoke all on approval.decisions  from switchboard_agent;
+revoke all on approval.executions from switchboard_agent;
