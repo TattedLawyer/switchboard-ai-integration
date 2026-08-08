@@ -26,8 +26,27 @@ directing an agent fleet under an evidence-gated process — is described in
    exactly one read-only tool (anything else is rejected by the protocol layer,
    and a test pins that), and the assistant's database connection runs as a
    **read-only Postgres role** — a write is refused by the database itself, also
-   pinned by tests. The approval-gated action and richer behavioral safety
-   testing are being built in Phase 3.
+   pinned by tests. **No write-capable credential exists anywhere in the agent
+   process at all**: when the agent proposes an action it returns a typed object,
+   and a separate service — the one the client's approver logs into — validates
+   and records it. Stated in the three tiers it is actually enforced at, because
+   the differences matter:
+   *(a) database-enforced, at runtime, in every deployment* — the agent's
+   connection authenticates as a role holding `usage` and `select` and nothing
+   else, and INSERT/UPDATE/DELETE/CREATE are refused with SQLSTATE `42501`, proven
+   by running those statements against a live database;
+   *(b) enforced at process start, in every deployment* — the agent refuses to
+   boot without its own credential and refuses to serve tools on any connection
+   whose `current_user` is not that role;
+   *(c) enforced in CI, about the code and not about your deployment* — no module
+   under `agent/src/` constructs a second pool or reads a full-privilege
+   credential. That last one proves the agent never *needs* write authority; it
+   does not by itself prove a given operator withheld it, which is what (a) and
+   (b) are for. One honest limit, disclosed in `KNOWN-ISSUES.md`: on a single-box
+   self-hosted deployment both processes likely run as the same OS user, so this
+   is **credential locality, not OS sandboxing**.
+   The approval-gated action and richer behavioral safety testing are being built
+   in Phase 3.
 
 Anyone can verify the claims: one command (`./scripts/demo.sh`) runs the entire
 system and produces the report. No accounts, no API keys, nothing to sign up for.
@@ -144,7 +163,16 @@ reporting a clean run.
 - A worker that generates the Monday revenue-risk report — with a timeout and
   fallback so the report generates even when the AI service is down, and per-call
   cost logging.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 1041 tests, the
+- An **approval service** that records what the agent proposes. It exists so the
+  agent does not have to: the agent posts a validated object to an authenticated,
+  loopback-bound door, and this service performs the INSERT as a non-owner role
+  holding `select` and `insert` on one table and nothing else — deliberately not
+  the migration owner, which could grant privileges back to the agent's role and
+  so retire the read-only claim rather than defeat it. Proposals are capped and
+  idempotency-keyed, because an approval queue no human can triage disables the
+  human-approval constraint rather than merely annoying it. Its client-facing
+  login and approval page are the next task; the door is real today.
+- **CI:** the `ci` workflow runs on every push — typecheck, all 1111 tests, the
   dbt build — 101 dbt build steps (15 models, 3 seeds, 83 data tests) — the agent
   action-safety eval, and the identity oracle, against a real Postgres service
   container
@@ -159,7 +187,7 @@ reporting a clean run.
   on a slow machine, and a leftover mock server inherited across steps sharing a
   process table. Each is narrated with its run ID in the
   [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
-- 1041 automated tests, green in CI and locally — including a seeded
+- 1111 automated tests, green in CI and locally — including a seeded
   property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety under
   arbitrary torn writes. That count is not maintained by hand: CI runs
@@ -188,7 +216,7 @@ reporting a clean run.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 1041 tests green across nine workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
+| Suite | `npm test` + dbt | 1111 tests green across ten workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
 
 ## What's coming (built in phases, in public)
 
