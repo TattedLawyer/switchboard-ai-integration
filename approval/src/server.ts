@@ -14,6 +14,8 @@ import express from "express";
 import { timingSafeEqual } from "node:crypto";
 import type pg from "pg";
 import { parseProposal } from "./proposal.js";
+import { payloadHash } from "./canonical.js";
+import { PROPOSAL_TTL_HOURS, TERMINAL_PROPOSAL_STATES } from "./config.js";
 
 export interface ApprovalAppOptions {
   /** SEC-C1: the ONE tenant this deployment writes under, resolved at boot and passed
@@ -112,6 +114,13 @@ export function createApprovalApp(pool: pg.Pool, opts: ApprovalAppOptions): expr
           return;
         }
 
+        // A2/T4. The hash is computed here, over the CANONICAL serialisation, and it has
+        // EXACTLY ONE JOB: telling a retry of the same call apart from a different
+        // proposal reusing a key. It is not a TOCTOU control, not a display binding, and
+        // it is not what makes the payload immutable — that is the column grant and the
+        // trigger in migration 015.
+        const canonicalHash = payloadHash(proposal.payload);
+
         // FLOOD CONTROL, half one. `on conflict do nothing` + a follow-up read makes a
         // replay a no-op at the DATABASE (the unique index) rather than at the door, so a
         // second poster racing the first cannot produce two rows. Returns the ORIGINAL
@@ -119,30 +128,89 @@ export function createApprovalApp(pool: pg.Pool, opts: ApprovalAppOptions): expr
         // to a caller that retried after a timeout.
         const ins = await pool.query(
           `insert into approval.proposals
-             (tenant_id, idempotency_key, action_type, payload, rationale)
-           values ($1, $2, $3, $4::jsonb, $5)
+             (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash,
+              expires_at)
+           values ($1, $2, $3, $4::jsonb, $5, $6,
+                   now() + make_interval(hours => $7::int))
            on conflict (tenant_id, idempotency_key) do nothing
-           returning id, state`,
+           returning id, state, payload`,
           [
             opts.tenantId,
             proposal.idempotency_key,
             proposal.action_type,
             JSON.stringify(proposal.payload),
             proposal.rationale,
+            canonicalHash,
+            PROPOSAL_TTL_HOURS,
           ],
         );
         if (ins.rowCount === 1) {
+          // WHICH BYTES ARE AUTHORITATIVE. The stored bytes must BE the hashed bytes, or
+          // `payload_hash` describes something other than the row it sits on. So the door
+          // re-hashes what the database returned and refuses LOUDLY on divergence rather
+          // than shipping a row whose hash is about a different object. (T1 pins the
+          // equivalence directly; this is the runtime half, and it has never fired.)
+          const storedHash = payloadHash(ins.rows[0].payload as Record<string, unknown>);
+          if (storedHash !== canonicalHash) {
+            throw new Error(
+              "payload hash diverged across the insert: the stored bytes are not the " +
+                `hashed bytes (sent ${canonicalHash.slice(0, 12)}..., stored ` +
+                `${storedHash.slice(0, 12)}...)`,
+            );
+          }
           res.status(201).json({ id: ins.rows[0].id, state: ins.rows[0].state });
           return;
         }
+
         const existing = await pool.query(
-          `select id, state from approval.proposals
+          `select id, state, payload_hash from approval.proposals
             where tenant_id = $1 and idempotency_key = $2`,
           [opts.tenantId, proposal.idempotency_key],
         );
+        const row = existing.rows[0] as { id: string; state: string; payload_hash: string };
+
+        // SAME KEY, DIFFERENT PAYLOAD — 422, and NO ROW IS WRITTEN. Before A2 this was a
+        // silent first-write-wins: the door answered 200 with the ORIGINAL proposal's id
+        // and the second payload was discarded while the caller was told it succeeded.
+        // The IETF idempotency draft and Stripe both do this — "errors if they're not the
+        // same to prevent accidental misuse". The response deliberately carries NO id, so
+        // a caller cannot mistake it for a recorded proposal.
+        if (row.payload_hash !== canonicalHash) {
+          res.status(422).json({
+            error: "idempotency key reused with a DIFFERENT payload",
+            detail:
+              "this key already names a proposal whose payload differs from the one just " +
+              "sent. Nothing was recorded. A key identifies ONE logical attempt to ask; a " +
+              "different ask is a different key.",
+            idempotency_key: proposal.idempotency_key,
+          });
+          return;
+        }
+
+        // SAME KEY, SAME PAYLOAD, BUT THE EXISTING ROW IS DEAD. The unique index
+        // `proposals_idempotency_unique` is permanent and STATE-BLIND, and A2 adds expiry
+        // — so without this branch the sequence "broker away, row expires at the TTL,
+        // agent re-proposes the identical ask" answers `200 {duplicate:true}` pointing at
+        // a terminal row. Nothing would be queued, no card rendered, and every future
+        // attempt under that key would hit the same corpse. The caller must be able to
+        // tell a queued ask from a dead one, so a terminal row gets its own status.
+        if (TERMINAL_PROPOSAL_STATES.has(row.state)) {
+          res.status(409).json({
+            error: "idempotency key already reached a TERMINAL state",
+            detail:
+              "this ask was already disposed of and nothing is queued. A deliberate " +
+              "re-ask after a terminal outcome is a NEW key.",
+            id: row.id,
+            state: row.state,
+            duplicate: true,
+            terminal: true,
+          });
+          return;
+        }
+
         res.status(200).json({
-          id: existing.rows[0].id,
-          state: existing.rows[0].state,
+          id: row.id,
+          state: row.state,
           duplicate: true,
         });
       } catch (err) {

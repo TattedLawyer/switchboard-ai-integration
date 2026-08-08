@@ -94,6 +94,11 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+  // Children first: A2 added `approval.decisions` / `approval.executions`, which reference
+  // proposals with no ON DELETE CASCADE — a decision is evidence, and evidence does not
+  // evaporate when the row it is about is removed.
+  await admin.query("delete from approval.executions");
+  await admin.query("delete from approval.decisions");
   await admin.query("delete from approval.proposals");
   vi.unstubAllEnvs();
 });
@@ -241,12 +246,42 @@ describe("A1: flood control — the approval queue stays triageable", () => {
   it("the cap counts PENDING rows only — a triaged queue accepts again", async () => {
     for (let i = 0; i < 5; i++) await post(body());
     expect((await post(body())).status).toBe(429);
-    // A human decides on one. (Done as admin: the approval role has no UPDATE — that
-    // lifecycle transition and its grant belong to A0b's approval page.)
-    await admin.query(
-      `update approval.proposals set state = 'rejected'
-        where id = (select id from approval.proposals limit 1)`,
-    );
+    // A human decides on one.
+    //
+    // 🚨 THIS BLOCK USED TO BE A BARE `update ... set state = 'rejected'`, AND A2 BROKE IT
+    // ON PURPOSE. That one-liner is exactly the exploit the widened trigger predicate
+    // closes: a proposal reaching a terminal HUMAN disposition with no attributable human
+    // anywhere. It succeeded silently before migration 015 and now raises
+    //   "a rejected transition requires an approval.decisions row of kind rejected,
+    //    naming an approver, written in the SAME transaction"
+    // — which is the guarantee working, discovered by this test rather than asserted by
+    // it. So the triage is now performed the only way the database permits: a real
+    // approver, a real reason, one transaction.
+    //
+    // (Still done as `admin`: seeding an approver is the operator CLI's privilege, not the
+    // approval role's, and A0b owns the page that would drive this for real.)
+    const approver = (
+      await admin.query(`insert into approval.users (email) values ($1) returning id`, [
+        `triage-${Math.random().toString(36).slice(2)}@example.com`,
+      ])
+    ).rows[0].id as string;
+    const victim = (
+      await admin.query(`select id from approval.proposals limit 1`)
+    ).rows[0].id as string;
+    const c = await admin.connect();
+    try {
+      await c.query("begin");
+      await c.query(
+        `insert into approval.decisions (proposal_id, kind, approver_user_id, reason,
+                                         renderer_version)
+         values ($1, 'rejected', $2, 'triaging the queue in a test', 'test')`,
+        [victim, approver],
+      );
+      await c.query(`update approval.proposals set state = 'rejected' where id = $1`, [victim]);
+      await c.query("commit");
+    } finally {
+      c.release();
+    }
     expect((await post(body())).status).toBe(201);
   });
 });

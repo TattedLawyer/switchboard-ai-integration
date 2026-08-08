@@ -101,3 +101,45 @@ export function assertApprovalConfig(): void {
   }
   pendingCap(); // range-check now, at boot, not on the first proposal
 }
+
+/**
+ * HOW LONG AN ASK STAYS ASKABLE. 72 hours.
+ *
+ * 🚨 JUDGMENT, WITH NO SOURCE. No published work gives a number for this, and this one is
+ * not derived from evidence about anything. It is surfaced as owner decision R5 rather
+ * than left as an unexplained constant, because the first revision of this design failed
+ * in exactly that way: an unsourced number in a place nobody greps.
+ *
+ * SCOPE: A5 owns TTL *values* and may revise this. A2 owns it only because the door has to
+ * write `expires_at` at insert, so A2 must pick a number it does not own.
+ *
+ * KEEP IN SYNC with migration 015's backfill (`created_at + interval '72 hours'`), which
+ * is what a row predating A2 gets. The two are pinned together by
+ * `approval/test/door-idempotency.test.ts` ("a 72-hour expiry") and
+ * `ingest/test/migration-015-proposals.test.ts`.
+ *
+ * WHAT THE NUMBER OPERATIONALLY MEANS, said plainly rather than buried: an APPROVED row
+ * that is not executed within it becomes `expired`, which is terminal — a destroyed human
+ * decision, with no re-proposal path inside A2 (that is A5's). Harmless today because
+ * nobody can approve until A0b ships login. Unsafe the day A0b lands without A5.
+ */
+export const PROPOSAL_TTL_HOURS = 72;
+
+/**
+ * The states from which nothing further happens. A proposal in one of these is DISPOSED
+ * OF: it is not queued, no card renders for it, and no execution will follow.
+ *
+ * The door needs this set because `proposals_idempotency_unique` is permanent and
+ * STATE-BLIND. Without it, a re-proposal under a key whose row has expired unread is
+ * answered as though the ask were still queued.
+ *
+ * `pending`, `approved` and `executing` are deliberately absent: each is a live row with
+ * something still to happen to it.
+ */
+export const TERMINAL_PROPOSAL_STATES: ReadonlySet<string> = new Set([
+  "rejected",
+  "expired",
+  "superseded",
+  "executed",
+  "execution_failed",
+]);
