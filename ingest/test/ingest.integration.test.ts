@@ -3,6 +3,8 @@ import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { secretForSource, signBody } from "../src/hmac.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -16,8 +18,8 @@ afterAll(async () => { await cleanup(); });
 
 describe("ingest webhook", () => {
   it("stores a CRM event as raw jsonb", async () => {
-    const app = createIngestApp(pool);
-    const srv = app.listen(0);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     const event = {
       event_id: "evt-1",

@@ -75,10 +75,12 @@ export async function quarantineEvent(
   // always does). Required for depth-diverted payloads: re-deriving text via JSON.stringify is
   // exactly the call that RangeErrors past ~6.6k nesting, so raw_body rows must come from the
   // original wire text, never a re-stringify.
-  rawBody?: string,
+  rawBody: string | undefined,
   // A quarantined payload is still that tenant's data. Untagged, an operator replaying it
-  // would inject it into whichever tenant's lane the default points at.
-  tenantId: string = "00000000-0000-0000-0000-000000000000"
+  // would inject it into whichever tenant's lane the default points at. REQUIRED since
+  // CLOSE-3 (SEC-C1): the default made the two push doors' omission invisible, so every
+  // quarantined webhook payload was filed under the nil tenant regardless of who sent it.
+  tenantId: string
 ): Promise<void> {
   // A NUL- or lone-surrogate-bearing payload cannot go into the jsonb payload column (Postgres
   // 22P05 / 22P02), and one nested past the depth bound would kill JSON.stringify / jsonb
@@ -161,23 +163,50 @@ export interface QuarantineRow {
   reason: string;
   event_id: string | null;
   received_at: Date;
+  // C4: how many times replay has been TRIED on this row, and when last. The operator
+  // question dead-lettering exists to answer — "has this been tried, is it safely
+  // replayable?" — is unanswerable without them, and depth alone is uninterpretable.
+  attempts: number;
+  last_attempt_at: Date | null;
 }
 
-export async function listQuarantine(pool: pg.Pool): Promise<QuarantineRow[]> {
+/**
+ * SEC-C2: scoped to ONE tenant. Unscoped, `npm run quarantine` listed every tenant's rows
+ * and — run bare — replayed all of them into the nil tenant. The three sibling operator
+ * CLIs (gap-ack, hydrate-rearm, reconcile) were already tenant-scoped; quarantine, the
+ * oldest of the four, never got the memo.
+ */
+export async function listQuarantine(pool: pg.Pool, tenantId: string): Promise<QuarantineRow[]> {
   const res = await pool.query(
-    `select id, source, reason, payload->>'event_id' as event_id, received_at
+    `select id, source, reason, payload->>'event_id' as event_id, received_at,
+            attempts, last_attempt_at
        from ingest.quarantine
-      where replayed_at is null
+      where replayed_at is null and tenant_id = $1
       order by id`,
+    [tenantId],
   );
   return res.rows.map((r) => ({ ...r, id: Number(r.id) }));
 }
 
+/**
+ * The injected `ingest` callback carries an options object with a REQUIRED tenantId, so
+ * `ingestEvent` is assignable and a callback that cannot express a tenant is a compile
+ * error. This is the seam the fix could have failed silently in: widen the select without
+ * widening this type and replay passes a tenant that the injected function discards.
+ */
+export type QuarantineIngest = (
+  pool: pg.Pool,
+  source: string,
+  event: SourceEvent,
+  opts: { tenantId: string },
+) => Promise<"inserted" | "duplicate">;
+
 export async function replayAllQuarantined(
   pool: pg.Pool,
-  ingest: (pool: pg.Pool, source: string, event: SourceEvent) => Promise<"inserted" | "duplicate">,
+  ingest: QuarantineIngest,
+  tenantId: string,
 ): Promise<{ replayed: number; stillInvalid: number }> {
-  const pending = await listQuarantine(pool);
+  const pending = await listQuarantine(pool, tenantId);
   let replayed = 0;
   let stillInvalid = 0;
   for (const row of pending) {
@@ -191,18 +220,30 @@ export async function replayAllQuarantined(
 export async function replayQuarantined(
   pool: pg.Pool,
   id: number,
-  ingest: (pool: pg.Pool, source: string, event: SourceEvent) => Promise<"inserted" | "duplicate">
+  ingest: QuarantineIngest
 ): Promise<"replayed" | "still-invalid"> {
-  // Fetch the quarantined payload (and its recorded source, so replay re-ingests
-  // under the same source the event originally arrived on)
+  // Fetch the quarantined payload, its recorded source (so replay re-ingests under the
+  // same source the event originally arrived on) and its recorded TENANT. The tenant is
+  // the whole of SEC-C2: migration 006 added the column so "an operator replaying a row
+  // cannot replay it into someone else's lane", and this select is the one place that
+  // promise was not kept — the row's own tenant was read by nothing on the replay path.
   const result = await pool.query(
-    "select payload, source from ingest.quarantine where id = $1",
+    "select payload, source, tenant_id from ingest.quarantine where id = $1",
     [id]
   );
 
   if (result.rowCount === 0) {
     throw new Error(`Quarantine row ${id} not found`);
   }
+
+  // C4: record the attempt BEFORE the outcome is known — "tried" is a fact about the
+  // operation, not about its success. Both dispositions below (replayed / still-invalid)
+  // leave the same trace, so a permanently-unreplayable row shows its mounting attempt
+  // count instead of looking forever untouched.
+  await pool.query(
+    "update ingest.quarantine set attempts = attempts + 1, last_attempt_at = now() where id = $1",
+    [id],
+  );
 
   const payload = result.rows[0].payload;
 
@@ -212,8 +253,12 @@ export async function replayQuarantined(
     return "still-invalid";
   }
 
-  // If valid, ingest the event under its originally-recorded source
-  await ingest(pool, result.rows[0].source, parsed.data);
+  // If valid, ingest the event under its originally-recorded source. raw_body is left
+  // NULL deliberately (2b-D4): quarantine rows store EITHER a jsonb payload OR raw_body
+  // text (quarantineEvent's two shapes), and only payload-bearing rows can pass the schema
+  // gate above — so a replayable row has no wire bytes to hand over, and the quarantine
+  // table itself retains custody for the rows that do.
+  await ingest(pool, result.rows[0].source, parsed.data, { tenantId: result.rows[0].tenant_id });
 
   // Set replayed_at timestamp
   await pool.query(

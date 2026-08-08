@@ -2,6 +2,9 @@ name: switchboard
 version: "1.0.0"
 profile: switchboard
 model-paths: ["models"]
+seeds:
+  switchboard:
+    +schema: analytics
 models:
   switchboard:
     staging:

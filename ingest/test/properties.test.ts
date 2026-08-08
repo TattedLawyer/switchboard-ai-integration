@@ -3,7 +3,7 @@ import fc from "fast-check";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp, type SourceEvent } from "../src/server.js";
-import { ingestEvent } from "../src/ingest-event.js";
+import { ingestEvent, DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { secretForSource, signBody, verifySignature } from "../src/hmac.js";
 import { jsonbUnstorableReason, MAX_JSONB_NESTING_DEPTH } from "../src/quarantine.js";
 import { createQueue, enqueueEvent, startWorker, fetchDlq, queueName } from "../src/queue.js";
@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verifyLedgerChain, DEFAULT_LEDGER_HMAC_KEY } from "../src/reconcile.js";
 import { writeGoldenLedger, type EntryInput } from "./helpers/golden-ledger.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Property-based claim-pinning suite (fast-check). Every property here is expected GREEN at
 // HEAD: these lock the L1-G1/G2/G5/G9 fix classes (and the ledger torn-write fix) so they
@@ -157,8 +158,8 @@ describe("property 1: ingest-boundary totality — validly-signed requests never
   );
 
   it("never 5xx; 202 ⇒ payload landed in raw.raw_events or ingest.quarantine (never neither)", async () => {
-    const app = createIngestApp(pool); // direct mode, like nul-payload.test.ts
-    const srv = app.listen(0);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID); // direct mode, like nul-payload.test.ts
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     try {
       await fc.assert(
@@ -264,7 +265,7 @@ describe("property 2: dedup is multiset-delivery invariant", () => {
         for (const { evt, i } of shuffled) if (!firstAccepted.has(i)) firstAccepted.set(i, evt);
 
         // Phase A: sequential delivery of the whole multiset.
-        for (const { evt } of shuffled) await ingestEvent(pool, "crm", evt);
+        for (const { evt } of shuffled) await ingestEvent(pool, "crm", evt, { tenantId: DEFAULT_TENANT_ID });
 
         // Exactly N rows for this run's events, payload = first-accepted for each.
         const rows = await pool.query(
@@ -281,7 +282,7 @@ describe("property 2: dedup is multiset-delivery invariant", () => {
 
         // Phase B: re-deliver the ENTIRE multiset concurrently (Promise.all). Every call must
         // resolve "duplicate" and nothing may change.
-        const results = await Promise.all(shuffled.map(({ evt }) => ingestEvent(pool, "crm", evt)));
+        const results = await Promise.all(shuffled.map(({ evt }) => ingestEvent(pool, "crm", evt, { tenantId: DEFAULT_TENANT_ID })));
         expect(results.every((r) => r === "duplicate")).toBe(true);
 
         const rowsAfterB = await pool.query(
@@ -486,7 +487,7 @@ describe("property 5: random poison/healthy batch partitions — healthy ingest 
         },
       } as unknown as pg.Pool;
 
-      await startWorker(boss, selectivePool);
+      await startWorker(boss, selectivePool, { tenantId: DEFAULT_TENANT_ID });
 
       let run = 0;
       await fc.assert(
@@ -503,7 +504,7 @@ describe("property 5: random poison/healthy batch partitions — healthy ingest 
             if (!mask.includes(false)) mask[size - 1] = false;
 
             // Clean slate per run (schema exists: createQueue ran above).
-            await pool.query("truncate table raw.raw_events, ingest.outbox restart identity");
+            await pool.query("truncate table raw.raw_events, ingest.ingest_journal restart identity");
             await pool.query("delete from pgboss.job");
             attempts.clear();
 
@@ -513,11 +514,11 @@ describe("property 5: random poison/healthy batch partitions — healthy ingest 
 
             // Enqueue the whole batch in (random-partition) order before the worker's next poll
             // picks it up, so poison and healthy events share fetch batches.
-            for (const id of ids) await enqueueEvent(boss, "crm", ev(id));
+            for (const id of ids) await enqueueEvent(boss, "crm", ev(id), { tenantId: DEFAULT_TENANT_ID });
 
             // Wait until every poison job dead-lettered and every healthy event is ingested.
             await pollUntil(async () => {
-              const dlqIds = new Set((await fetchDlq(boss, 20)).map((j) => j.data.event_id));
+              const dlqIds = new Set((await fetchDlq(boss, DEFAULT_TENANT_ID)).map((j) => j.data.event_id));
               if (![...poisonIds].every((id) => dlqIds.has(id))) return false;
               const n = await pool.query("select count(*)::int as n from raw.raw_events");
               return n.rows[0].n === healthyIds.length;
@@ -534,7 +535,7 @@ describe("property 5: random poison/healthy batch partitions — healthy ingest 
             for (const id of poisonIds) expect(attempts.get(id)).toBe(2);
 
             // ...and the DLQ holds EXACTLY the poison ids, all under the crm queue.
-            const dlqJobs = await fetchDlq(boss, 20);
+            const dlqJobs = await fetchDlq(boss, DEFAULT_TENANT_ID);
             expect(dlqJobs.map((j) => j.data.event_id).sort()).toEqual([...poisonIds].sort());
             expect(dlqJobs.every((j) => j.source === "crm")).toBe(true);
 

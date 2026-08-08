@@ -7,9 +7,10 @@ import type { Server } from "node:http";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { replayQuarantined } from "../src/quarantine.js";
-import { ingestEvent } from "../src/ingest-event.js";
+import { ingestEvent, DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { secretForSource, signBody } from "../src/hmac.js";
 import type { Source } from "../src/sources.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 // Same resolution pattern as helpers/load-model.ts: the warehouse tree lives two levels up
 // from this test file. The registry test below scans the REAL model text on disk, so a new
@@ -31,8 +32,8 @@ beforeAll(async () => {
   const result = await freshTestDb();
   pool = result.pool;
   cleanup = result.cleanup;
-  const app = createIngestApp(pool);
-  srv = app.listen(0);
+  const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+  srv = await listenLoopback(app);
   port = (srv.address() as { port: number }).port;
 });
 afterAll(async () => {
@@ -198,6 +199,151 @@ describe("L1 numeric contract at the trust boundary", () => {
     });
   });
 
+  describe("declared string fields: currency validated at the door (Task A2)", () => {
+    // The count-presence trade, accepted and documented: quarantining an event over a bad
+    // currency removes its NON-monetary facts until replay. That is why ABSENT must pass
+    // (legacy pre-currency events flow untouched) and why the reason must NAME the field.
+    describe("rejections: present-but-malformed currency quarantines event-level, naming currency", () => {
+      const currencyCases: Array<{ label: string; id: string; currency: unknown }> = [
+        { label: "lowercase 'usd'", id: "evt-sc-lower", currency: "usd" },
+        { label: "injection garbage 'EUR;drop table x'", id: "evt-sc-inject", currency: "EUR;drop table x" },
+        { label: "overlong junk string (500 chars)", id: "evt-sc-long", currency: "Z".repeat(500) },
+        { label: "non-string 123", id: "evt-sc-nonstr", currency: 123 },
+        { label: "trailing space 'USD ' (pattern is fully anchored)", id: "evt-sc-trail", currency: "USD " },
+        { label: "embedded match 'XUSDX' (pattern is fully anchored)", id: "evt-sc-anchor", currency: "XUSDX" },
+      ];
+      for (const { label, id, currency } of currencyCases) {
+        it(`invoice.created with ${label} is quarantined, names currency, raw untouched`, async () => {
+          const res = await postSigned("billing", evt(id, "invoice.created", { amount_cents: 12500, currency }));
+          await expectQuarantinedNaming(id, res, "currency");
+        });
+      }
+
+      it("invoice.voided with lowercase 'chf' is quarantined — the rule is live on every declared type, not just invoice.created", async () => {
+        const res = await postSigned(
+          "billing",
+          evt("evt-sc-voided", "invoice.voided", { amount_cents: 100, currency: "chf" }),
+        );
+        await expectQuarantinedNaming("evt-sc-voided", res, "currency");
+      });
+
+      it("the reason states the expected shape and the got-value, for the operator", async () => {
+        // Self-sufficient: seeds its own quarantine row rather than reading the sibling
+        // rejection test's write (order/skip coupling — review M1).
+        const res = await postSigned(
+          "billing",
+          evt("evt-sc-reason", "invoice.created", { amount_cents: 100, currency: "usd" }),
+        );
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ quarantined: true });
+        const q = await pool.query(
+          "select reason from ingest.quarantine where payload->>'event_id' = 'evt-sc-reason'",
+        );
+        expect(q.rowCount).toBe(1);
+        expect(q.rows[0].reason).toContain("^[A-Z]{3}$");
+        expect(q.rows[0].reason).toContain('"usd"');
+      });
+
+      // #37, the operator surface of the ALLOWLIST half. A shape-valid non-currency is a
+      // different operator story from a malformed one — "your vendor sent a code that is
+      // not a currency" versus "your vendor sent something that is not even a code" — and
+      // the quarantine reason is the only place a human meets either. It must therefore
+      // name the standard AND the published edition it was judged against, because "our
+      // list is stale" is a live hypothesis a bare "invalid currency" would hide.
+      it("a shape-valid NON-currency quarantines through the real door, and the reason names ISO-4217, the published edition, and the value — distinguishably from the malformed-shape reason", async () => {
+        const res = await postSigned(
+          "billing",
+          evt("evt-sc-allowlist", "invoice.created", { amount_cents: 100, currency: "ABC" }),
+        );
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ quarantined: true });
+        const q = await pool.query(
+          "select reason from ingest.quarantine where payload->>'event_id' = 'evt-sc-allowlist'",
+        );
+        expect(q.rowCount).toBe(1);
+        expect(q.rows[0].reason).toContain("currency");
+        expect(q.rows[0].reason).toContain("ISO-4217");
+        expect(q.rows[0].reason).toContain("2026-01-01"); // the source list's own Pblshd
+        expect(q.rows[0].reason).toContain('"ABC"');
+        // Checklist line 5: each cause names itself and EXCLUDES its sibling. A
+        // shape-valid non-currency must not be reported as a shape failure.
+        expect(q.rows[0].reason).not.toContain("^[A-Z]{3}$");
+        // ...and the event stayed out of raw, exactly as a malformed code already did.
+        expect((await pool.query("select 1 from raw.raw_events where event_id = 'evt-sc-allowlist'")).rowCount).toBe(0);
+      });
+    });
+
+    describe("over-rejection guards: absent passes, valid codes pass, unknown types pass", () => {
+      it("ABSENT currency on invoice.created still ingests — legacy pre-currency events must flow (load-bearing)", async () => {
+        const res = await postSigned("billing", evt("evt-sc-absent", "invoice.created", { amount_cents: 9900 }));
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ stored: true });
+        const raw = await pool.query("select 1 from raw.raw_events where event_id = 'evt-sc-absent'");
+        expect(raw.rowCount).toBe(1);
+      });
+
+      for (const [id, source, type, currency] of [
+        ["evt-sc-usd", "billing", "invoice.created", "USD"],
+        ["evt-sc-eur", "crm", "deal.updated", "EUR"],
+        ["evt-sc-php", "billing", "invoice.paid", "PHP"],
+      ] as const) {
+        it(`valid currency ${currency} on ${type} ingests`, async () => {
+          const res = await postSigned(source, evt(id, type, { amount_cents: 5000, currency }));
+          expect(res.status).toBe(202);
+          expect(await res.json()).toEqual({ stored: true });
+          const raw = await pool.query("select 1 from raw.raw_events where event_id = $1", [id]);
+          expect(raw.rowCount).toBe(1);
+        });
+      }
+
+      it("an UNKNOWN event_type with garbage currency ingests untouched — new vendor types must never cause a feed-wide quarantine", async () => {
+        const res = await postSigned(
+          "billing",
+          evt("evt-sc-unknown", "invoice.refunded", { amount_cents: 100, currency: "usd;drop" }),
+        );
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ stored: true });
+        const raw = await pool.query("select 1 from raw.raw_events where event_id = 'evt-sc-unknown'");
+        expect(raw.rowCount).toBe(1);
+      });
+    });
+
+    describe("robustness: rendering stays total at declared string fields", () => {
+      it("a 7000-deep nested array as currency returns a violation naming currency and does NOT throw", async () => {
+        const { numericContractViolation } = await contractModule();
+        let deep: unknown = "USD";
+        for (let i = 0; i < 7000; i++) deep = [deep];
+        const violation = numericContractViolation("invoice.created", { amount_cents: 100, currency: deep });
+        expect(violation).not.toBeNull();
+        expect(violation!.field).toBe("currency");
+        expect(violation!.reason).toContain("currency");
+      });
+    });
+
+    // The compile-time both-shape pin for `type?: never` (review I2) lives in
+    // ingest/src/numeric-contract.ts, NOT here: ingest/tsconfig.json includes only
+    // "src", so nothing typechecks this test dir and a @ts-expect-error here would
+    // enforce nothing (re-review R1).
+
+    describe("replay door", () => {
+      it("a webhook-quarantined bad-currency event stays 'still-invalid' on replay", async () => {
+        const bad = evt("evt-sc-replay", "invoice.created", { amount_cents: 100, currency: "usd" });
+        const res = await postSigned("billing", bad);
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ quarantined: true });
+
+        const row = await pool.query(
+          "select id from ingest.quarantine where payload->>'event_id' = 'evt-sc-replay'",
+        );
+        expect(row.rowCount).toBe(1);
+        const result = await replayQuarantined(pool, row.rows[0].id, ingestEvent);
+        expect(result).toBe("still-invalid");
+        const raw = await pool.query("select 1 from raw.raw_events where event_id = 'evt-sc-replay'");
+        expect(raw.rowCount).toBe(0);
+      });
+    });
+  });
+
   describe("registry completeness", () => {
     it("every event_type consumed by any warehouse model is declared in NUMERIC_CONTRACT", async () => {
       const { NUMERIC_CONTRACT } = await contractModule();
@@ -210,12 +356,60 @@ describe("L1 numeric contract at the trust boundary", () => {
         const sql = readFileSync(join(modelsDir, f), "utf8");
         for (const m of sql.matchAll(/'([a-z_]+\.[a-z_]+)'/g)) consumed.add(m[1]);
       }
-      expect(consumed.size).toBeGreaterThanOrEqual(14); // 13 staging + company.merged; guards a silent scan break
+      // The floor guards a silent SCAN break (a regex or directory change that stops
+      // finding event types), not the exact count. F-1c moved it 16 → 11 deliberately:
+      // the staging switch consolidated the warehouse onto fewer, richer faithful
+      // event types (customer/invoice.finalized/charge.* on the envelope feed,
+      // company.merge on the thin-webhook side — its state models filter snapshots by
+      // object_type, not event_type — case.* on the bus, csat.recorded on the 2a
+      // support feed, sheet.* unchanged).
+      expect(consumed.size).toBeGreaterThanOrEqual(11);
       const declared = Object.keys(NUMERIC_CONTRACT);
       for (const type of consumed) {
         // NOT toHaveProperty: vitest treats "invoice.created" as a nested path.
         expect(declared, `event_type '${type}' is consumed by a warehouse model but undeclared`).toContain(type);
       }
+      // A4 declared the sheet.* types ahead of consumption (the door had to accept the
+      // events first); A6 landed the consuming staging model, so consumed caught up to
+      // 16. Task B grew DECLARATIONS to 19 (the stripefeed types, ahead of consumption
+      // — Task F owns the staging switch), so the declared floor moves with them and
+      // each declared-but-unconsumed type is pinned BY NAME: until a model consumes it,
+      // this pin is the only thing that stops a declaration from vanishing silently.
+      // SPEC CHANGE (Task D, deliberate): the floor moves 19 → 35. The jump is not this
+      // task alone — Task C's hubcrm thin-event and hydrated-snapshot types were declared
+      // without raising the floor, so the pin had gone slack by 12 and would not have
+      // noticed them vanishing. Task D adds 4 (the casebus case lifecycle) and the floor
+      // is re-tightened to the true count, deliberately, so it goes back to doing its job.
+      // F-1c: +1 — `company.merge` enters the contract in the same commit merge_edges
+      // starts consuming it (the flip's same-commit rule), and the floor moves with it.
+      //
+      // PHASE-CLOSE DECISION (D1, deliberate): the pin is EQUALITY, not a floor. A floor
+      // is one-directional — it catches shrinkage only until growth re-slackens it, which
+      // is exactly the Task C incident this comment block records (slack by 12, undetected
+      // through two reviews). Snapshot/schema-freeze practice asserts exact state with a
+      // deliberate explicit-update workflow (jest -u; buf breaking against a pinned
+      // baseline), and this is the cheapest possible snapshot: one integer.
+      //
+      // THE WORKFLOW IS THE MECHANISM: any commit that declares or retires an event type
+      // in NUMERIC_CONTRACT must move this number IN THE SAME COMMIT, stating why. That
+      // friction is the detector — a declaration that appears without this line moving is
+      // a red suite, which is precisely what the floor could not promise. Review lens
+      // stays as equality's complement: diff this number against the declaration diff.
+      expect(declared.length).toBe(36);
+      expect(declared).toContain("company.merge");
+      expect(declared).toContain("sheet.row_upserted");
+      expect(declared).toContain("sheet.row_deleted");
+      expect(declared).toContain("invoice.finalized");
+      expect(declared).toContain("charge.succeeded");
+      expect(declared).toContain("charge.failed");
+      // hubcrm (Task C), pinned by name here for the first time — see the note above.
+      expect(declared).toContain("company.propertyChange");
+      expect(declared).toContain("hubcrm.deal.snapshot");
+      // casebus (Task D): the Service-Cloud-case lifecycle, declared ahead of consumption.
+      expect(declared).toContain("case.created");
+      expect(declared).toContain("case.comment.added");
+      expect(declared).toContain("case.updated");
+      expect(declared).toContain("case.closed");
     });
   });
 });

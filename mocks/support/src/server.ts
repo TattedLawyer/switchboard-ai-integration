@@ -1,8 +1,11 @@
 import express from "express";
-import { createSourceApp, generateManifest, type EventScript } from "@switchboard/mock-core";
+import { createSourceApp, generateManifest, type EventScript, type Profile } from "@switchboard/mock-core";
 
-export function createSupportApp(opts: { webhookUrl: string; ledgerPath: string; seed?: number }): express.Express {
-  const { requesters, tickets } = generateManifest(opts.seed ?? 42).support;
+export function createSupportApp(opts: { webhookUrl: string; ledgerPath: string; seed?: number; profile?: Profile }): express.Express {
+  // Task E: `profile` threads exactly like `seed` (generic by default; unknown names
+  // refuse at startup, naming the valid set). Threading only — everything else in this
+  // 2a mock stays frozen (its event script and routes are the faithful-source baseline).
+  const { requesters, tickets } = generateManifest(opts.seed ?? 42, opts.profile).support;
   const byId = new Map(requesters.map((r) => [r.id, r]));
   // 4-slot cycle: ticket.created, ticket.updated, ticket.solved, csat.recorded.
   // All 14 requesters covered by the first 14 tickets (index 55).

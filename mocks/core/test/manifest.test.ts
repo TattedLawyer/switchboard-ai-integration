@@ -38,8 +38,8 @@ describe("generateManifest", () => {
     const s = [...m.expectations.tier1.support, ...m.expectations.tier2.support, ...m.expectations.manualReview.support];
     expect(s.sort()).toEqual(m.support.requesters.map((r) => r.id).sort());
   });
-  it("stubs non-generic profiles until 2b (the seam exists, the content does not)", () => {
-    expect(() => generateManifest(42, "plumbing")).toThrow(/Phase 2b/);
+  it("the 2a stub is gone: a vertical profile generates a full manifest instead of throwing (Phase 2b Task E)", () => {
+    expect(generateManifest(42, "plumbing").crm.companies).toHaveLength(22);
   });
   it("crossSystemCompanyIds equals the independently-computed set of companies present in all three systems", () => {
     const m = generateManifest();

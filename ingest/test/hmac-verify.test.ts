@@ -7,6 +7,8 @@ import {
   secretForSource as mocksSecretForSource,
   signBody as mocksSignBody,
 } from "../../mocks/core/src/hmac.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -27,8 +29,8 @@ const event = {
 
 describe("webhook HMAC verification", () => {
   it("valid signature -> 202", async () => {
-    const app = createIngestApp(pool);
-    const srv = app.listen(0);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     const body = JSON.stringify(event);
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
@@ -41,8 +43,8 @@ describe("webhook HMAC verification", () => {
   });
 
   it("tampered body -> 401, not quarantined", async () => {
-    const app = createIngestApp(pool);
-    const srv = app.listen(0);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     const body = JSON.stringify(event);
     const sig = signBody(body, secretForSource("crm"));
@@ -61,8 +63,8 @@ describe("webhook HMAC verification", () => {
   });
 
   it("missing signature header -> 401", async () => {
-    const app = createIngestApp(pool);
-    const srv = app.listen(0);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
       method: "POST",

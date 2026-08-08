@@ -17,7 +17,7 @@ per real entity, which means deciding — defensibly — which records are the s
 | Tier | Rule | Evidence recorded |
 |---|---|---|
 | 1 | Exact email match: the external record's email equals a CRM contact email (or a company's `owner_email`) | `email=<the matching email>` |
-| 2 | Normalized domain **and** normalized company name both match (lowercase, strip leading `www.`, strip `Inc/LLC/Ltd/Corp` suffixes) | `domain+name=<normalized pair>` |
+| 2 | Normalized domain **and** normalized company name both match. Name normalization (Task F, pinned per-vector in both languages): NFC, invisible-character handling (ZWSP/NBSP), lowercase, `&`→`and`, whitespace collapse, one trailing legal suffix stripped (`Inc/LLC/Ltd/Corp/Co/PLLC`, optional comma/period), trailing punctuation stripped; domain: lowercase, strip leading `www.`. A match whose domain is a **free email provider** (seed `free_email_domains`) demotes to manual review with the provider named — freemail domains carry no company signal | `domain+name=<normalized pair>`, or `free-email domain=<provider> … manual review` |
 | 3 | Unmatched → the entity lands in `manual_review` and gets its own provisional identity (`<source>:<id>`) — never silently guessed onto a CRM company | `unmatched` |
 
 Lowest tier wins deterministically (a final `distinct on ... order by matched_tier` makes
@@ -42,10 +42,12 @@ fail for the right reason.
 *negatives*: an unmatched entity lands in `manual_review` instead of being guessed. The
 symmetric risk is a false *positive* — tier 1 over-merging two genuinely distinct
 companies that share an email (the classic case: an outsourced bookkeeper's freemail
-address on both companies' billing records). The guard: when a tier-1 email matches
-**more than one** candidate canonical company, the entity is demoted to `manual_review`
-with the ambiguity recorded as evidence (`ambiguous email=... matched N canonical
-companies`) rather than merged onto either. The residual risk is the single-candidate
+address on both companies' billing records). The guard (per-ENTITY since Task F's L2-G3
+fix): when an entity's email evidence — one shared address, or several addresses across
+its records — spans **more than one** distinct canonical company, the entity is demoted
+to `manual_review` with the ambiguity recorded as evidence (`ambiguous email=... matched
+N canonical companies`, or the cross-group form naming the conflicting counts) rather
+than merged onto any. Tier 2's guard composes the same way over (domain, name) tuples. The residual risk is the single-candidate
 collision — a shared email that happens to match exactly one CRM company while actually
 belonging to a different real-world one. No deterministic rule can detect that from the
 email alone; it is exactly the case the sampled human audit of resolved links (see the

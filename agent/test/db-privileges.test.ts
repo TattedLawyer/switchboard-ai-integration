@@ -5,14 +5,24 @@
 // These tests run real statements through the agent role's own connection and assert
 // Postgres refuses them with 42501 (insufficient_privilege) — and that the one thing the
 // role exists to do (read the analytics schema) still works.
-process.env.DBT_SCHEMA = "agent_priv_test";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
 import pg from "pg";
 import { runMigrations } from "../../ingest/src/migrate.js";
 import { agentConnectionString } from "../src/host/agent-db.js";
 
 const SCHEMA = "agent_priv_test";
+// PRE-3 (#41): scoped to this suite instead of assigned at module top level. A bare
+// `process.env.DBT_SCHEMA = ...` above the imports is a side effect of IMPORT, so it
+// outlives this file the moment these suites share a process — which is exactly the
+// parallelisation trigger the register entry names. `vi.stubEnv` undoes itself.
+beforeAll(() => {
+  vi.stubEnv("DBT_SCHEMA", SCHEMA);
+});
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 let admin: pg.Pool;
 let agent: pg.Pool;
 

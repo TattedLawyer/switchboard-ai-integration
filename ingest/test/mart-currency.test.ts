@@ -34,10 +34,21 @@ beforeEach(async () => {
       deal_id text, company_id text, status text, amount_cents bigint, currency text
     );
     create table tmp_invoices (
-      invoice_id text, customer_id text, amount_cents bigint, status text, currency text
+      invoice_id text, customer_id text, amount_cents bigint, status text, currency text,
+      is_unlikely_amount boolean not null default false
     );
-    create table tmp_payments (customer_id text, status text);
+    create table tmp_payments (customer_id text, status text,
+      is_unlikely_amount boolean not null default false);
     create table tmp_csat (ticket_id text, score int);
+    -- A6 mechanical: customer_360 gained ref('stg_sheets__rows'); this suite's concerns
+    -- are billing/deal/csat currency semantics, so the fixture stays EMPTY. The sheet
+    -- column pins live in sheet-mart-oracle.test.ts.
+    create table tmp_sheet_rows (
+      row_key text primary key, client_email text, client_name text, company_name text,
+      amount_cents bigint, currency text, status text, label text, content_hash text,
+      client_key text not null, detected_at timestamptz not null default now(),
+      received_at timestamptz not null default now()
+    );
   `);
 });
 
@@ -56,6 +67,7 @@ const MART_SQL = loadModel("models/marts/customer_360.sql", {
   stg_billing__invoices: "tmp_invoices",
   stg_billing__payments: "tmp_payments",
   stg_support__csat: "tmp_csat",
+  stg_sheets__rows: "tmp_sheet_rows",
 });
 
 /** One CRM entity (self-canonical) resolved to one billing customer. */
@@ -430,6 +442,54 @@ describe("customer_360 — unknown-currency rows and the CSAT base are visibly c
       expect(row.has_data_warnings).toBe(true);
     });
 
+    // Wave 5 (Task G): the Unlikely Value flag joins the OR. Gate-H lesson applied —
+    // each trigger pin ISOLATES its term: one row, one term, with every other honesty
+    // signal asserted clean, so deleting the term fails HERE and nowhere else.
+    it("trigger: one UNLIKELY payment amount alone raises the warning — payment-side term isolated (all other signals provably clean on this fixture)", async () => {
+      await seedEntity("C-32", "cust-32");
+      await pool.query(`insert into tmp_payments values ('cust-32', 'succeeded', true)`);
+
+      const row = await martRow("C-32");
+      expect(Number(row.unlikely_amount_payment_count)).toBe(1);
+      expect(Number(row.unlikely_amount_invoice_count)).toBe(0);
+      expect(row.has_data_warnings).toBe(true);
+      // The discriminators: every sibling OR term is clean — the new term did the firing.
+      expect(row.has_unusable_amounts).toBe(false);
+      expect(row.has_mixed_currency).toBe(false);
+      expect(Number(row.null_currency_invoice_count)).toBe(0);
+      expect(Number(row.null_currency_deal_count)).toBe(0);
+      expect(Number(row.null_currency_sheet_count)).toBe(0);
+      expect(Number(row.null_score_count)).toBe(0);
+    });
+
+    it("trigger: one UNLIKELY invoice amount alone raises the warning — invoice-side term isolated — and the amount STAYS in the sums (flagged is not refused)", async () => {
+      await seedEntity("C-33", "cust-33");
+      await pool.query(`insert into tmp_invoices values ('inv-33', 'cust-33', 4000, 'paid', 'USD', true)`);
+
+      const row = await martRow("C-33");
+      expect(Number(row.unlikely_amount_invoice_count)).toBe(1);
+      expect(Number(row.unlikely_amount_payment_count)).toBe(0);
+      expect(row.has_data_warnings).toBe(true);
+      // Flagged, never dropped: unlike the currency machinery this signal REFUSES nothing.
+      expect(row.total_invoiced_cents).toBe("4000");
+      expect(row.billing_currency).toBe("USD");
+      // Discriminators — the sibling terms are clean.
+      expect(row.has_unusable_amounts).toBe(false);
+      expect(row.has_mixed_currency).toBe(false);
+      expect(Number(row.null_currency_invoice_count)).toBe(0);
+      expect(Number(row.null_score_count)).toBe(0);
+    });
+
+    it("an ordinary (unflagged) payment raises NO warning and zero unlikely counters — the flag has no false positives at the mart layer", async () => {
+      await seedEntity("C-34", "cust-34");
+      await pool.query(`insert into tmp_payments values ('cust-34', 'succeeded', false)`);
+
+      const row = await martRow("C-34");
+      expect(Number(row.unlikely_amount_payment_count)).toBe(0);
+      expect(Number(row.unlikely_amount_invoice_count)).toBe(0);
+      expect(row.has_data_warnings).toBe(false);
+    });
+
     it("trigger: an unusable CSAT score raises the warning", async () => {
       await seedEntity("C-29", "cust-29");
       await pool.query(`insert into tmp_resolution values ('support', 'req-29', 'C-29', 1)`);
@@ -477,6 +537,7 @@ const SINGULAR_SQL = loadModel("tests/assert_no_mixed_currency_totals.sql", {
   stg_billing__invoices: "tmp_invoices",
   stg_crm__deals: "tmp_deals",
   int_crm__canonical_companies: "tmp_canonical",
+  stg_sheets__rows: "tmp_sheet_rows",
 });
 
 describe("assert_no_mixed_currency_totals — the singular test's predicate itself", () => {

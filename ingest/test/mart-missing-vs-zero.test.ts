@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
+import { createIso4217Fixture, createNumericBoundsFixture, ISO_4217_REF } from "./helpers/numeric-bounds.js";
 
 // L3 (missing is not zero): after L2, malformed amounts sit in staging as NULLs. The mart's
 // `coalesce(sum(...), 0)` renders those NULLs as confident zeros — an entity whose amounts
@@ -33,10 +34,23 @@ beforeEach(async () => {
       status text, solved_at timestamptz, sla_due_at timestamptz
     );
     create table tmp_deals (deal_id text, company_id text, status text, amount_cents bigint, currency text);
-    create table tmp_invoices (invoice_id text, customer_id text, amount_cents bigint, status text, currency text);
-    create table tmp_payments (customer_id text, status text);
+    create table tmp_invoices (invoice_id text, customer_id text, amount_cents bigint, status text, currency text,
+      is_unlikely_amount boolean not null default false);
+    create table tmp_payments (customer_id text, status text,
+      is_unlikely_amount boolean not null default false);
     create table tmp_csat (ticket_id text, score int);
+    -- A6 mechanical: customer_360 gained ref('stg_sheets__rows'); empty fixture only —
+    -- the sheet column pins live in sheet-mart-oracle.test.ts.
+    create table tmp_sheet_rows (
+      row_key text primary key, client_email text, client_name text, company_name text,
+      amount_cents bigint, currency text, status text, label text, content_hash text,
+      client_key text not null, detected_at timestamptz not null default now(),
+      received_at timestamptz not null default now()
+    );
   `);
+  // Wave 5 (Task G): the chained real-staging load below joins ref('numeric_bounds').
+  await createNumericBoundsFixture(pool);
+  await createIso4217Fixture(pool);
 });
 
 afterEach(async () => {
@@ -54,6 +68,7 @@ const MART_SQL = loadModel("models/marts/customer_360.sql", {
   stg_billing__invoices: "tmp_invoices",
   stg_billing__payments: "tmp_payments",
   stg_support__csat: "tmp_csat",
+  stg_sheets__rows: "tmp_sheet_rows",
 });
 
 /** One CRM entity (self-canonical) resolved to one billing customer. */
@@ -141,28 +156,35 @@ describe("customer_360 — missing amount is not zero (L3)", () => {
       occurredAt: string,
       amount: string,
     ): Promise<void> => {
+      // F-1c: stripefeed-sourced — invoice state rides invoice.finalized envelopes.
       await pool.query(
         `insert into raw.raw_events (source, event_id, event_type, payload)
-         values ('billing', $1, $2, $3::jsonb)`,
+         values ('stripefeed', $1, $2, $3::jsonb)`,
         [
           eventId,
           eventType,
           JSON.stringify({
             occurred_at: occurredAt,
-            data: { id: "inv-9", customer_id: "cust-5", amount_cents: amount, currency: "USD" },
+            data: { id: "inv-9", object: "invoice", customer_id: "cust-5", amount_cents: amount, currency: "USD" },
           }),
         ],
       );
     };
     // OLDER event: good amount. NEWER event (same invoice, later occurred_at): malformed.
-    await insertRaw("evt-1", "invoice.created", "2026-01-05T00:00:00.000Z", "5000");
-    await insertRaw("evt-2", "invoice.paid", "2026-01-06T00:00:00.000Z", "abc");
+    await insertRaw("evt-1", "invoice.finalized", "2026-01-05T00:00:00.000Z", "5000");
+    await insertRaw("evt-2", "invoice.finalized", "2026-01-06T00:00:00.000Z", "abc");
+    // A successful charge for the invoice: paid state derives from the charge family.
+    await pool.query(
+      `insert into raw.raw_events (source, event_id, event_type, payload)
+       values ('stripefeed', 'evt-3', 'charge.succeeded', $1::jsonb)`,
+      [JSON.stringify({ occurred_at: "2026-01-06T01:00:00.000Z", data: { id: "ch-9", object: "charge", invoice_id: "inv-9", customer_id: "cust-5", amount_cents: 5000, currency: "USD" } })],
+    );
 
     // Chain the REAL staging model (raw → latest-state, L2 safe cast) into the mart fixture.
     await pool.query(`
-      insert into tmp_invoices (invoice_id, customer_id, amount_cents, status, currency)
-      select invoice_id, customer_id, amount_cents, status, currency
-      from (${loadModel("models/staging/stg_billing__invoices.sql")}) s
+      insert into tmp_invoices (invoice_id, customer_id, amount_cents, status, currency, is_unlikely_amount)
+      select invoice_id, customer_id, amount_cents, status, currency, is_unlikely_amount
+      from (${loadModel("models/staging/stg_billing__invoices.sql", { numeric_bounds: "numeric_bounds", ...ISO_4217_REF })}) s
     `);
     // Sanity: staging really did pick the newer row and NULL its amount.
     const stg = await pool.query("select * from tmp_invoices where invoice_id = 'inv-9'");

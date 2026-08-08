@@ -7,47 +7,245 @@ import { createIngestApp, type SourceEvent } from "./server.js";
 import { assertWebhookSecrets } from "./hmac.js";
 import { baseUrlFor, enabledSources, type Source } from "./sources.js";
 import { createQueue, enqueueEvent, startWorker } from "./queue.js";
-import { catchUp } from "./backfill.js";
+import { catchUpReporter, connectorFor, formatUnclosableGap, type UnclosableGap } from "./connectors/index.js";
+import type { SheetCatchUpReport } from "./connectors/sheet-snapshot.js";
+import type { StripeFeedCatchUpReport } from "./connectors/stripe-feed.js";
+import type { BusReplayCatchUpReport } from "./connectors/bus-replay.js";
+import type { HubHydrationReport } from "./connectors/hub-hydrate.js";
+import { choiceFromEnv, intFromEnv, MAX_TIMER_DELAY_MS, resolveDeploymentTenant } from "./config.js";
 
 const pool = getPool();
-const port = Number(process.env.PORT ?? 4002);
-const ingestRole = (process.env.INGEST_ROLE ?? "all").toLowerCase();
+// B1: strict boot parsing (config.ts) — a typo'd PORT/interval/role is a boot refusal
+// naming the variable, never NaN into listen(), a ~1ms hot loop, or a role that
+// silently does nothing.
+const port = intFromEnv("PORT", 4002, { min: 1, max: 65535 });
+const ingestRole = choiceFromEnv("INGEST_ROLE", "all", ["receiver", "worker", "all"]);
 // Backfill cadence: pg-boss's boss.schedule() only supports cron-granularity (minimum
 // 1-minute resolution) scheduling of a job insertion, and still needs a boss.work()
 // consumer plus its own queue to actually run the poll — extra queue/DLQ wiring for no
 // benefit here, since backfill has no per-run payload and no retry/DLQ semantics of its
 // own (catchUp already retries internally). A plain setInterval in the receiver process
 // is simpler, gives the same ~1-minute cadence, and needs no additional pg-boss objects.
-const BACKFILL_INTERVAL_MS = Number(process.env.BACKFILL_INTERVAL_MS ?? 60_000);
+const BACKFILL_INTERVAL_MS = intFromEnv("BACKFILL_INTERVAL_MS", 60_000, {
+  min: 1,
+  max: MAX_TIMER_DELAY_MS,
+});
+// PRE-3 (#21): resolved HERE, at module top level, alongside PORT and INGEST_ROLE —
+// which is what makes a mistyped INGEST_SOURCES a BOOT refusal rather than a silently
+// smaller pipeline discovered later (or never). Resolved once and passed down, so the
+// receiver's secret assertion and the worker's runners can never disagree about which
+// sources this deployment is running.
+const enabledSourceList = enabledSources();
+
+/**
+ * PRE-3 (#20): the per-source door secrets are a RECEIVER obligation, not a process
+ * obligation. `secretForSource` is reached from exactly two places, both door handlers
+ * in `server.ts` (the event door and the sheets nudge door), so a worker-only process
+ * can never consult one — yet `INGEST_ROLE=worker` refused to boot without
+ * `WEBHOOK_SECRET_<SOURCE>` for every enabled source.
+ *
+ * The failure direction that matters is the opposite one, and it is unchanged: a
+ * receiver — including the receiver half of `all` — still fails closed at boot with one
+ * aggregated error naming every missing variable (A2). Pinned in test/config.test.ts.
+ */
+export function assertRoleSecrets(
+  role: "receiver" | "worker" | "all",
+  sources: readonly Source[],
+): void {
+  if (role === "worker") return;
+  assertWebhookSecrets(sources);
+}
 
 // Factory to create a backfill runner with in-flight guard (prevents overlapping runs).
+// A7: routed through the connector seam — connectorFor picks the right paradigm per
+// source (ledger-feed sources keep the exact catchUp this loop always called, pinned by
+// connector-seam.test.ts + the service-wiring regression pins; sheets gets the snapshot
+// connector instead of a once-a-minute 404 against /events). One connector per runner,
+// constructed once: the seam's registry may resolve construction-time config.
 export function createBackfillRunner(
   pgPool: pg.Pool,
   source: Source,
   baseUrl: string,
+  /** CLOSE-3 fix round: REQUIRED — the same tenant the doors write under. */
+  tenantId: string,
 ): () => Promise<void> {
+  const connector = connectorFor(source, tenantId);
   let running = false;
   return async () => {
     if (running) {
-      console.log("backfill still running, skipping tick");
+      // B4: every per-source line carries its source — a multi-source service log
+      // with anonymous lines cannot be triaged.
+      console.log(`[${source}] backfill still running, skipping tick`);
       return;
     }
 
     running = true;
     try {
-      await catchUp(pgPool, source, baseUrl);
+      // Gate-H cold review C1: the service loop consumes the REPORT where the connector
+      // offers one — a retention-boundary fallback is not an error (the catch below
+      // never fires for it), so without this the service log showed nothing at all
+      // while events were permanently lost. Same shared phrasing as the CLIs.
+      const reporter = catchUpReporter(connector);
+      if (reporter) {
+        // ── Exhaustive-consumption contract, SERVICE-LOG surface (Task F — the last of
+        // checklist line 1's three surfaces to come under the compile wall; KNOWN-ISSUES
+        // entry struck in the same commit). Same mechanism as cli/backfill.ts: each kind
+        // rest-destructures its connector's OWN widened report shape and types the
+        // remainder EMPTY, so a field added to any of the five shapes without a decided
+        // service-log surface is a tsc error here before any test or reviewer. The
+        // printing below reads ONLY these bindings; the `as` casts are the producer
+        // guarantee (each connector's catchUpWithReport returns its own shape for its
+        // own kind), exactly as in the CLIs.
+        const report = await reporter.catchUpWithReport(pgPool, { baseUrl });
+        let counts: { ingested: number; duplicates: number; quarantined: number };
+        let gaps: readonly UnclosableGap[] | undefined;
+        let degradations: readonly string[] | undefined;
+        let hydration:
+          | { hydrated: number; tombstoned: number; hydrationDlq: number; hydrationPending: number }
+          | undefined;
+        switch (connector.kind) {
+          case "ledger-feed": {
+            // No widened shape today — the base seam shape IS its contract (reachable
+            // only if a ledger-feed connector ever grows a reporter), destructured full.
+            const {
+              ingested, duplicates, quarantined, gaps: g, degradations: d,
+              hydrated, tombstoned, hydrationDlq, hydrationPending, ...rest
+            } = report;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            gaps = g;
+            degradations = d;
+            hydration =
+              hydrated !== undefined
+                ? { hydrated, tombstoned: tombstoned ?? 0, hydrationDlq: hydrationDlq ?? 0, hydrationPending: hydrationPending ?? 0 }
+                : undefined;
+            break;
+          }
+          case "sheet-snapshot": {
+            const { ingested, duplicates, quarantined, degradations: d, ...rest } =
+              report as SheetCatchUpReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            degradations = d;
+            break;
+          }
+          case "stripe-feed": {
+            const { ingested, duplicates, quarantined, gaps: g, ...rest } =
+              report as StripeFeedCatchUpReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            gaps = g;
+            break;
+          }
+          case "bus-replay": {
+            const { ingested, duplicates, quarantined, gaps: g, ...rest } =
+              report as BusReplayCatchUpReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            gaps = g;
+            break;
+          }
+          case "hub-hydrate": {
+            const { ingested, duplicates, quarantined, hydrated, tombstoned, hydrationDlq, hydrationPending, ...rest } =
+              report as HubHydrationReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            hydration = { hydrated, tombstoned, hydrationDlq, hydrationPending };
+            break;
+          }
+        }
+        // Cold review M3: the standing checklist is "both CLIs AND the service log", and
+        // this loop consumed the failure fields while printing none of the WORK. For a
+        // subscribe/replay source, where at-least-once redelivery is the steady state, a
+        // loop that logs neither ingested nor absorbed counts is indistinguishable from
+        // one that is doing nothing at all. Suppressed when the cycle was a genuine no-op
+        // so a quiet system stays quiet.
+        if (counts.ingested > 0 || counts.duplicates > 0 || counts.quarantined > 0) {
+          console.log(
+            `[${source}] catch-up: ingested ${counts.ingested}, ${counts.duplicates} duplicate(s) absorbed ` +
+              `by idempotent ingest, ${counts.quarantined} quarantined`,
+          );
+        }
+        // Hydration WORK surfaces on the same quiet-when-zero terms as the counts line:
+        // for the pump paradigm, hydrated/tombstoned ARE the cycle's work product, and a
+        // wall that consumed them into silence would satisfy the compiler while starving
+        // the operator (checklist line 1 is "consumed AND printed, or discarded with a
+        // named reason" — these are printed).
+        if (hydration !== undefined && (hydration.hydrated > 0 || hydration.tombstoned > 0)) {
+          console.log(
+            `[${source}] hydration: ${hydration.hydrated} snapshot(s), ${hydration.tombstoned} tombstone(s) this cycle`,
+          );
+        }
+        for (const gap of gaps ?? []) console.error(formatUnclosableGap(source, gap));
+        // Sheets degradations reach the service log on the loud channel, matching the
+        // CLI surface — previously consumed by the base-shape read and printed nowhere.
+        for (const note of degradations ?? []) console.error(`[${source}] degradation: ${note}`);
+        // Task C standing checklist: the hydration paradigm's failures reach the
+        // service log on the same loud channel as gaps — a dead-lettered hydration is
+        // an event whose full record we could not obtain, and a log that stays silent
+        // about it is the exact class the Gate-H cold review caught (C1/I1).
+        if ((hydration?.hydrationDlq ?? 0) > 0) {
+          console.error(
+            `[${source}] HYDRATION DLQ: ${hydration!.hydrationDlq} event(s) dead-lettered this run — ` +
+              "terminal, preserved, listed by reconcile; replay is an operator act (RUNBOOK)",
+          );
+        }
+        if ((hydration?.hydrationPending ?? 0) > 0) {
+          console.log(
+            `[${source}] hydration pending: ${hydration!.hydrationPending} event(s) waiting on the rate budget — next cycle continues`,
+          );
+        }
+      } else {
+        await connector.catchUp(pgPool, { baseUrl });
+      }
     } catch (err) {
-      console.error("backfill round failed:", err);
+      console.error(`[${source}] backfill round failed:`, err);
     } finally {
       running = false;
     }
   };
 }
 
+/**
+ * The service's per-source wiring, composed once so the interval loop and the nudge door
+ * share the SAME runner — and therefore the same overlap guard (A7). `sheetsNudge` is
+ * defined exactly when sheets is enabled: the nudge door's early catchUp IS the sheets
+ * runner. A nudge that arrives while a cycle is running COALESCES — the guard skips it,
+ * it is never queued — because the connector is stateless: the next cycle reads a fresh
+ * snapshot and re-diffs from scratch anyway, so a queued re-run could only repeat the
+ * same work the in-flight cycle is already doing.
+ */
+export interface ServiceWiring {
+  runners: { source: Source; run: () => Promise<void>; baseUrl: string }[];
+  sheetsNudge?: () => Promise<void>;
+}
+
+export function createServiceWiring(
+  pgPool: pg.Pool,
+  sources: Source[],
+  // CLOSE-3 fix round: REQUIRED, and the same value the doors get. This seam is where the
+  // wave's tenant threading stopped — the runners were constructed without it, so the
+  // scheduled pull half wrote into the nil lane while the push half wrote the configured
+  // one. On hubcrm that stopped hydration entirely and silently.
+  tenantId: string,
+): ServiceWiring {
+  const runners = sources.map((source) => {
+    const baseUrl = baseUrlFor(source);
+    return { source, run: createBackfillRunner(pgPool, source, baseUrl, tenantId), baseUrl };
+  });
+  const sheets = runners.find((r) => r.source === "sheets");
+  return { runners, sheetsNudge: sheets?.run };
+}
+
 async function main() {
   // Fail closed at boot, not on first request: one aggregated error naming every
   // missing secret (A2). Demo/local runs opt in via ALLOW_DEV_SECRETS=1.
-  assertWebhookSecrets(enabledSources());
+  // PRE-3 (#20): scoped to the roles that actually own a door.
+  assertRoleSecrets(ingestRole, enabledSourceList);
+  // SEC-C1: the ONE tenant this deployment's doors write under, resolved once, here, at
+  // boot — not per request, not from a payload claim, not from the signing secret. Threaded
+  // explicitly into every door and onto the queue envelope from this single point.
+  const deploymentTenantId = resolveDeploymentTenant();
 
   let boss: PgBoss | undefined;
   let app: express.Express | undefined;
@@ -65,16 +263,31 @@ async function main() {
     boss = await createQueue(connectionUrl);
   }
 
+  // A7: the per-source wiring — seam-routed interval runners plus (when sheets is
+  // enabled) the nudge hook that shares the sheets runner's overlap guard. Worker-role
+  // only, for the same reason the interval loop is: backfill/catchUp belongs with the
+  // roles that own event ingestion. A receiver-only process therefore hosts NO runner
+  // and its nudge door keeps answering the honest 503 (see server.ts).
+  const wiring = isWorker ? createServiceWiring(pool, enabledSourceList, deploymentTenantId) : undefined;
+
   if (isReceiver) {
     // Create the HTTP receiver app with queue integration
     const enqueue = boss
-      ? async (source: Source, event: SourceEvent): Promise<void> => {
-          // Route each event onto its own source's queue.
-          await enqueueEvent(boss!, source, event);
+      ? async (source: Source, event: SourceEvent, rawBody: string, tenantId: string): Promise<void> => {
+          // Route each event onto its own source's queue; the wire bytes ride the job
+          // envelope so the worker can store raw_body (2b-D4 expand).
+          await enqueueEvent(boss!, source, event, { tenantId, rawBody });
         }
       : undefined;
 
-    app = createIngestApp(pool, { enqueue });
+    // PRE-3 (#15): the doors are mounted over the SAME resolved source list the runners
+    // and the secret assertion use — one resolution, so the door a vendor can reach and
+    // the lane a backfill/reconcile covers can never disagree.
+    app = createIngestApp(pool, deploymentTenantId, {
+      enqueue,
+      sheetsNudge: wiring?.sheetsNudge,
+      enabledSources: enabledSourceList,
+    });
     server = app.listen(port, () =>
       console.log(`ingest receiver listening on :${port} (role: ${ingestRole})`)
     );
@@ -82,24 +295,24 @@ async function main() {
 
   if (isWorker && boss) {
     // Start the per-source workers
-    await startWorker(boss, pool);
+    await startWorker(boss, pool, { tenantId: deploymentTenantId });
     console.log(`ingest worker started (role: ${ingestRole})`);
   }
 
   // Periodic backfill: recovers events whose webhook delivery was dropped/failed. Must not
   // run in a receiver-only process (that role only accepts pushes; backfill belongs with
   // the worker/all roles that also own event ingestion). One runner + interval per enabled
-  // source, each polling that source's own feed and cursor.
-  if (isWorker) {
-    for (const source of enabledSources()) {
-      const baseUrl = baseUrlFor(source);
-      const runBackfill = createBackfillRunner(pool, source, baseUrl);
-      runBackfill().catch(() => {
+  // source, each driving that source's own connector and cursor through the seam (A7) —
+  // ledger-feed sources poll their /events feed exactly as before; sheets runs snapshot
+  // catchUp cycles instead of 404ing a feed it never had.
+  if (wiring) {
+    for (const { source, run, baseUrl } of wiring.runners) {
+      run().catch(() => {
         /* initial run errors already logged */
       });
       backfillTimers.push(
         setInterval(() => {
-          runBackfill().catch(() => {
+          run().catch(() => {
             /* errors already logged */
           });
         }, BACKFILL_INTERVAL_MS),

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
-import { runMigrations, appliedMigrations } from "../src/migrate.js";
+import { runMigrations, appliedMigrations, MIGRATION_LOCK_KEYS } from "../src/migrate.js";
 
 // G3 — migration tracking.
 //
@@ -67,5 +67,60 @@ describe("migration tracking", () => {
     const applied = await appliedMigrations(pool);
     const names = applied.map((m) => m.filename);
     expect(names).toEqual([...names].sort());
+  });
+});
+
+describe("concurrent-boot advisory lock (close F14) — session lock on ONE dedicated client, held for the whole run, always released", () => {
+  const KEYS = MIGRATION_LOCK_KEYS;
+
+  it("runMigrations WAITS while another session holds the migration lock, and proceeds when it is released — two racing boots serialize instead of interleaving DDL", async () => {
+    const holder = await pool.connect();
+    try {
+      await holder.query("select pg_advisory_lock($1, $2)", [...KEYS]);
+      let finished = false;
+      const run = runMigrations(pool).then(() => {
+        finished = true;
+      });
+      // Long enough that an un-locked runMigrations (all files already applied → pure
+      // reads) would have finished many times over.
+      await new Promise((r) => setTimeout(r, 500));
+      expect(finished, "runMigrations completed while the migration lock was HELD — no lock was taken, or it was taken on a different pooled connection than the one running the migrations (the pool.query no-op the research names)").toBe(false);
+      await holder.query("select pg_advisory_unlock($1, $2)", [...KEYS]);
+      await run;
+      expect(finished).toBe(true);
+    } finally {
+      holder.release();
+    }
+  });
+
+  it("releases the lock on SUCCESS (try/finally): immediately after runMigrations returns, another session can take it", async () => {
+    await runMigrations(pool);
+    const probe = await pool.connect();
+    try {
+      const res = await probe.query("select pg_try_advisory_lock($1, $2) as got", [...KEYS]);
+      expect(res.rows[0].got, "the migration lock is still held after a successful run — a leaked session lock deadlocks every future boot").toBe(true);
+      await probe.query("select pg_advisory_unlock($1, $2)", [...KEYS]);
+    } finally {
+      probe.release();
+    }
+  });
+
+  it("releases the lock on FAILURE too — a refused run must not deadlock the next boot", async () => {
+    const prev = process.env.DBT_SCHEMA;
+    process.env.DBT_SCHEMA = "Not A Valid Identifier!";
+    try {
+      await expect(runMigrations(pool)).rejects.toThrow(/invalid DBT_SCHEMA/);
+    } finally {
+      if (prev === undefined) delete process.env.DBT_SCHEMA;
+      else process.env.DBT_SCHEMA = prev;
+    }
+    const probe = await pool.connect();
+    try {
+      const res = await probe.query("select pg_try_advisory_lock($1, $2) as got", [...KEYS]);
+      expect(res.rows[0].got).toBe(true);
+      await probe.query("select pg_advisory_unlock($1, $2)", [...KEYS]);
+    } finally {
+      probe.release();
+    }
   });
 });

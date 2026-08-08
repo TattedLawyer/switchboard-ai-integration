@@ -1,8 +1,10 @@
 import express from "express";
-import { createSourceApp, generateManifest, type EventScript } from "@switchboard/mock-core";
+import { createSourceApp, generateManifest, type EventScript, type Profile } from "@switchboard/mock-core";
 
-export function createBillingApp(opts: { webhookUrl: string; ledgerPath: string; seed?: number }): express.Express {
-  const { customers, invoices } = generateManifest(opts.seed ?? 42).billing;
+export function createBillingApp(opts: { webhookUrl: string; ledgerPath: string; seed?: number; profile?: Profile }): express.Express {
+  // Task E: `profile` threads exactly like `seed` (generic by default; unknown names
+  // refuse at startup, naming the valid set).
+  const { customers, invoices } = generateManifest(opts.seed ?? 42, opts.profile).billing;
   // 5-slot cycle: customer.created, invoice.created, payment.succeeded, invoice.paid,
   // then alternating payment.failed / invoice.voided. All 16 customers covered by index 79.
   const script: EventScript = (i) => {

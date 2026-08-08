@@ -34,7 +34,15 @@ models:
       - name: status
         data_tests:
           - accepted_values:
-              values: [created, paid, voided]
+              arguments:
+                values: [created, paid, voided]
+      - name: is_unlikely_amount
+        description: >
+          Unlikely Value flag at row grain (Wave 5) — true when amount_cents exceeds the
+          contract's plausibleMax for invoice.finalized, joined from the emitted
+          numeric_bounds seed. Above-bound rows are accepted and surfaced
+          (assert_amounts_plausible, warn), never dropped; NULL amounts stay false.
+        data_tests: [not_null]
   - name: stg_billing__payments
     columns:
       - name: payment_id
@@ -45,7 +53,14 @@ models:
       - name: status
         data_tests:
           - accepted_values:
-              values: [succeeded, failed]
+              arguments:
+                values: [succeeded, failed]
+      - name: is_unlikely_amount
+        description: >
+          Unlikely Value flag at row grain (Wave 5) — true when amount_cents exceeds the
+          contract's plausibleMax for the row's charge.* event type, joined from the
+          emitted numeric_bounds seed. Accepted and surfaced, never dropped; NULL false.
+        data_tests: [not_null]
   - name: stg_support__tickets
     columns:
       - name: ticket_id
@@ -53,7 +68,38 @@ models:
       - name: status
         data_tests:
           - accepted_values:
-              values: [open, solved]
+              arguments:
+                values: [open, solved]
+  - name: stg_sheets__rows
+    columns:
+      - name: row_key
+        data_tests: [unique, not_null]
+      - name: client_key
+        # C4 (debt-burn): deliberately HALF the dbt key-pair convention — not_null
+        # without unique. This model's grain is row_key (one row per live sheet row);
+        # client_key is the manufactured pre-resolution CLIENT id and legitimately
+        # repeats across a client's rows, so unique here would red on correct data.
+        # The pair lives where client_key IS the grain: identity_resolution keys its
+        # sheets arm on it (resolution_key unique+not_null covers it post-collapse).
+        # not_null is a decay tripwire: both derivation branches ('email:'/'row:')
+        # are non-null by construction, so a NULL means the minting expression in
+        # stg_sheets__rows.sql decayed or a doorless row arrived without a row_key.
+        data_tests: [not_null]
+        description: Manufactured sheets client id ('email:<lower-trimmed addr>' or 'row:<row_key>') — the join spine shared by identity_resolution's sheets arm and customer_360's sheets legs; non-unique at this model's row grain by design.
+      - name: amount_cents
+        # Deliberately NO not_null (contrast invoices/payments L4 decay detection):
+        # sheet amount cells are OPTIONAL by the field contract — an empty cell arrives
+        # as an ABSENT field and stages as NULL by design, while an unparseable cell
+        # quarantines at the door and never reaches raw. NULL here is a normal state of
+        # the source, not evidence of decayed enforcement.
+        description: Amount in cents; NULL when the source cell is blank (absent-by-design) or a doorless row failed the L2 safe cast.
+      - name: currency
+        # Same rationale as amount_cents: currency is optional at the source; absent
+        # stages as NULL, anything the ISO-4217 allowlist does not name quarantines at
+        # the door (#37 — the list is the iso_4217_currencies seed, generated from SIX's
+        # published list-one.xml), and doorless garbage is NULLed by the staging
+        # guard, which joins that same seed. No not_null on purpose.
+        description: A published ISO-4217 currency code, or NULL (unknown — the mart counts and refuses, never sums).
   - name: stg_support__csat
     columns:
       - name: csat_id

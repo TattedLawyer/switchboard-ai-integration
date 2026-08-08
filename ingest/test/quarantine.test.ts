@@ -3,8 +3,9 @@ import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { listQuarantine, quarantineEvent, replayAllQuarantined, replayQuarantined } from "../src/quarantine.js";
-import { ingestEvent } from "../src/ingest-event.js";
+import { ingestEvent, DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { secretForSource, signBody } from "../src/hmac.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -26,8 +27,8 @@ const validEvent = {
 
 describe("quarantine", () => {
   it("invalid POST to /webhooks/crm returns 202 {quarantined: true} and creates quarantine row with reason", async () => {
-    const app = createIngestApp(pool);
-    const srv = app.listen(0);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     const invalidPayload = { bogus: true };
@@ -77,7 +78,7 @@ describe("quarantine", () => {
 
   it("quarantineEvent then replayQuarantined with valid payload returns 'replayed', creates raw row, and sets replayed_at", async () => {
     // Insert valid payload directly into quarantine
-    await quarantineEvent(pool, "crm", validEvent, "manual quarantine for testing");
+    await quarantineEvent(pool, "crm", validEvent, "manual quarantine for testing", undefined, DEFAULT_TENANT_ID);
 
     const quarantineRow = await pool.query(
       "select id, replayed_at from ingest.quarantine where payload->>'event_id' = $1",
@@ -132,8 +133,8 @@ describe("quarantine", () => {
     });
 
     it("an otherwise-valid signed event with occurred_at 'not-a-date' is quarantined, not stored", async () => {
-      const app = createIngestApp(pool);
-      const srv = app.listen(0);
+      const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+      const srv = await listenLoopback(app);
       const port = (srv.address() as { port: number }).port;
       try {
         const res = await postSigned(port, gateEvent("evt-gate-garbage", "not-a-date"));
@@ -156,8 +157,8 @@ describe("quarantine", () => {
     });
 
     it("a non-ISO-shaped date ('20260722') is quarantined, not stored", async () => {
-      const app = createIngestApp(pool);
-      const srv = app.listen(0);
+      const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+      const srv = await listenLoopback(app);
       const port = (srv.address() as { port: number }).port;
       try {
         const res = await postSigned(port, gateEvent("evt-gate-basic-format", "20260722"));
@@ -175,8 +176,8 @@ describe("quarantine", () => {
     it("a valid, current ISO-8601 occurred_at still stores", async () => {
       // Relative date on purpose: a hardcoded literal would age out of the A6 window
       // and turn this into a time-bomb test.
-      const app = createIngestApp(pool);
-      const srv = app.listen(0);
+      const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+      const srv = await listenLoopback(app);
       const port = (srv.address() as { port: number }).port;
       try {
         const res = await postSigned(port, gateEvent("evt-gate-valid", new Date().toISOString()));
@@ -192,8 +193,8 @@ describe("quarantine", () => {
     });
 
     it("A6: occurred_at older than 30 days is quarantined — stale history must not pin latest-state", async () => {
-      const app = createIngestApp(pool);
-      const srv = app.listen(0);
+      const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+      const srv = await listenLoopback(app);
       const port = (srv.address() as { port: number }).port;
       try {
         const stale = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
@@ -208,8 +209,8 @@ describe("quarantine", () => {
     });
 
     it("A6: occurred_at in the future beyond 5 minutes is quarantined — '9999-12-31' would otherwise pin an entity's state forever, undislodgeable by any later correct event", async () => {
-      const app = createIngestApp(pool);
-      const srv = app.listen(0);
+      const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+      const srv = await listenLoopback(app);
       const port = (srv.address() as { port: number }).port;
       try {
         for (const [id, ts] of [
@@ -228,8 +229,8 @@ describe("quarantine", () => {
     });
 
     it("A6: the window edges store — 29 days old and 4 minutes ahead (ordinary clock skew is tolerated)", async () => {
-      const app = createIngestApp(pool);
-      const srv = app.listen(0);
+      const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+      const srv = await listenLoopback(app);
       const port = (srv.address() as { port: number }).port;
       try {
         for (const [id, ts] of [
@@ -252,7 +253,7 @@ describe("quarantine", () => {
       // stayed loose while the webhook gate tightened, an operator replay would put garbage
       // into raw and the staging timestamptz cast would take the whole build down.
       const garbage = gateEvent("evt-gate-replay", "not-a-date");
-      await quarantineEvent(pool, "crm", garbage, "schema validation failed");
+      await quarantineEvent(pool, "crm", garbage, "schema validation failed", undefined, DEFAULT_TENANT_ID);
       const row = await pool.query(
         "select id from ingest.quarantine where payload->>'event_id' = 'evt-gate-replay'",
       );
@@ -268,8 +269,8 @@ describe("quarantine", () => {
   });
 
   it("valid POST to /webhooks/crm returns 202 {stored: true} and creates raw row (direct ingest path)", async () => {
-    const app = createIngestApp(pool);
-    const srv = app.listen(0);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     const event = {
@@ -313,9 +314,9 @@ describe("A7: quarantine operator surface", () => {
       occurred_at: new Date().toISOString(),
       data: { id: "DEMO-C-0001" },
     };
-    await quarantineEvent(pool, "crm", validEvt, "schema validation failed");
-    await quarantineEvent(pool, "billing", { nonsense: true }, "schema validation failed");
-    const rows = await listQuarantine(pool);
+    await quarantineEvent(pool, "crm", validEvt, "schema validation failed", undefined, DEFAULT_TENANT_ID);
+    await quarantineEvent(pool, "billing", { nonsense: true }, "schema validation failed", undefined, DEFAULT_TENANT_ID);
+    const rows = await listQuarantine(pool, DEFAULT_TENANT_ID);
     const valid = rows.find((r) => r.event_id === "evt-q-a7-valid");
     expect(valid).toMatchObject({ source: "crm", reason: "schema validation failed" });
     expect(typeof valid?.id).toBe("number");
@@ -325,7 +326,7 @@ describe("A7: quarantine operator surface", () => {
     // Replay the valid one; it must vanish from the pending list.
     const outcome = await replayQuarantined(pool, valid!.id, ingestEvent);
     expect(outcome).toBe("replayed");
-    const after = await listQuarantine(pool);
+    const after = await listQuarantine(pool, DEFAULT_TENANT_ID);
     expect(after.find((r) => r.id === valid!.id)).toBeUndefined();
   });
 
@@ -336,14 +337,14 @@ describe("A7: quarantine operator surface", () => {
       occurred_at: new Date().toISOString(),
       data: { id: "DEMO-C-0002" },
     };
-    await quarantineEvent(pool, "crm", evt, "schema validation failed");
-    const result = await replayAllQuarantined(pool, ingestEvent);
+    await quarantineEvent(pool, "crm", evt, "schema validation failed", undefined, DEFAULT_TENANT_ID);
+    const result = await replayAllQuarantined(pool, ingestEvent, DEFAULT_TENANT_ID);
     expect(result.replayed).toBeGreaterThanOrEqual(1);
     expect(result.stillInvalid).toBeGreaterThanOrEqual(1); // the billing junk row from above
     const raw = await pool.query("select 1 from raw.raw_events where event_id = 'evt-q-a7-batch'");
     expect(raw.rowCount).toBe(1);
     // Idempotent second sweep: nothing pending that can move.
-    const again = await replayAllQuarantined(pool, ingestEvent);
+    const again = await replayAllQuarantined(pool, ingestEvent, DEFAULT_TENANT_ID);
     expect(again.replayed).toBe(0);
   });
 
@@ -356,7 +357,7 @@ describe("A7: quarantine operator surface", () => {
     let deep: unknown = 0;
     for (let i = 0; i < 7000; i++) deep = [deep];
     await expect(
-      quarantineEvent(pool, "crm", deep, "test unpreservable", undefined),
+      quarantineEvent(pool, "crm", deep, "test unpreservable", undefined, DEFAULT_TENANT_ID),
     ).resolves.toBeUndefined();
 
     const q = await pool.query(

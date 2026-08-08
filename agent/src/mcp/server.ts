@@ -63,6 +63,18 @@ const HEALTH_COLUMNS = [
   "null_currency_deal_count",
   "csat_score_count",
   "has_data_warnings",
+  // A6: the sheets source — presence, sums (own columns, never folded into deal/invoice
+  // figures), and the honesty counters behind them.
+  "has_sheets",
+  "sheet_row_count",
+  "sheet_amount_cents",
+  "sheet_currency",
+  "null_amount_sheet_count",
+  "null_currency_sheet_count",
+  // Wave 5 (Task G): the Unlikely Value counters — the precise "why" behind the
+  // has_data_warnings term they feed (flagged for attention, never refused).
+  "unlikely_amount_payment_count",
+  "unlikely_amount_invoice_count",
 ].join(", ");
 
 export function createMcpServer(pool: pg.Pool): McpServer {

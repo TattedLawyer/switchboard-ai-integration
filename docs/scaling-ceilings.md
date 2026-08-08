@@ -51,12 +51,12 @@ rides the OLTP instance comfortably until job volume says otherwise.
   reliability proof OOMs before the ledger-file ceiling in §3 bites. Fix shape:
   stream the ledger and compare in sorted batches — Phase 2b/4, alongside the
   connector rework that replaces the ledger oracle anyway.
-- **`ingest.outbox` grows forever and has no consumer:** one row per event,
-  written inside the hot ingest transaction, `processed_at` never set. It exists
-  as the demo's equality counter and is *named* for a transactional-outbox
-  pattern the system doesn't implement (pg-boss provides the durability). Either
-  implement the pattern or rename and cap it — decided with the 2b raw-layer
-  work. Every staging model is also a full scan over `raw_events` with only the
+- **~~`ingest.outbox` grows forever and has no consumer~~ (paid, debt-burn
+  B10):** renamed to `ingest.ingest_journal` (migration 011) — an
+  in-transaction ingest audit row, not a transactional outbox (no relay or
+  consumer exists; pg-boss provides the durability) — with a 30-day TTL
+  enforced on insert, so the unbounded-growth ceiling is gone. Every staging
+  model is still a full scan over `raw_events` with only the
   `(source, event_id)` unique index behind it; at real volume the fix is
   incremental materializations plus a `(source, event_type)` index, not more
   views.

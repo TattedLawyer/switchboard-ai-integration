@@ -3,6 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verifyLedgerChain, DEFAULT_LEDGER_HMAC_KEY } from "../src/reconcile.js";
+// Test-code cross-import is the file's own convention (see the helper note): the drift
+// coverage below must run BOTH deliberately-duplicated copies over identical fixtures.
+import { verifyLedgerChain as writerVerifyLedgerChain } from "../../mocks/core/src/ledger.js";
 import { writeGoldenLedger, type EntryInput } from "./helpers/golden-ledger.js";
 
 // The ingest verifier (reconcile.ts) carries its OWN copy of canonicalHash, pinned to
@@ -60,6 +63,71 @@ describe("ingest verifyLedgerChain (the copy chaos.sh actually runs)", () => {
   it("rejects the whole chain under the wrong key", () => {
     writeGoldenLedger(ledgerPath, GOLDEN, "the-real-key");
     expect(verifyLedgerChain(ledgerPath, "a-different-key")).toEqual({ ok: false, brokenAt: 1 });
+  });
+});
+
+// Debt-burn A6 (L1-G7's verifier half). The HMAC chain proves the FILE was not rewritten
+// — it cannot catch a buggy WRITER, which produces a perfectly-chained log of whatever it
+// was told to append (RFC 9162 layers positional/index verification on top of Merkle
+// hashing for exactly this reason). The two predicates: `seq` strictly increasing (a
+// restarted mock forks the logical stream and re-counts from 1 — previously verified
+// clean) and `event_id` unique within the chain. Both copies of the verifier must agree,
+// so every fixture below runs through BOTH.
+describe("writer-bug predicates (debt-burn A6): a perfectly-chained log can still lie about position and identity", () => {
+  const key = DEFAULT_LEDGER_HMAC_KEY;
+  const COPIES = [
+    ["ingest verifier (src/reconcile.ts)", verifyLedgerChain],
+    ["writer-side verifier (mocks/core/src/ledger.ts)", writerVerifyLedgerChain],
+  ] as const;
+
+  const entry = (id: string, seq: number): EntryInput => ({
+    event_id: id,
+    event_type: "company.updated",
+    occurred_at: new Date(2026, 0, 1).toISOString(),
+    data: { id },
+    seq,
+  });
+
+  for (const [name, verify] of COPIES) {
+    describe(name, () => {
+      it("rejects the restarted-writer fork: seq re-counts from 1 mid-chain, hashes all valid, brokenAt names the fork line", () => {
+        writeGoldenLedger(ledgerPath, [entry("evt-a", 1), entry("evt-b", 2), entry("evt-c", 1), entry("evt-d", 2)], key);
+        expect(verify(ledgerPath, key)).toEqual({ ok: false, brokenAt: 3 });
+      });
+
+      it("rejects an equal (non-strictly-increasing) seq at its line", () => {
+        writeGoldenLedger(ledgerPath, [entry("evt-a", 1), entry("evt-b", 2), entry("evt-c", 2)], key);
+        expect(verify(ledgerPath, key)).toEqual({ ok: false, brokenAt: 3 });
+      });
+
+      it("rejects a duplicate event_id even when seq keeps increasing — the chain happily hashed it", () => {
+        writeGoldenLedger(ledgerPath, [entry("evt-a", 1), entry("evt-b", 2), entry("evt-a", 3)], key);
+        expect(verify(ledgerPath, key)).toEqual({ ok: false, brokenAt: 3 });
+      });
+
+      it("accepts strictly-increasing but NON-CONTIGUOUS seq — monotonicity is the invariant, not density", () => {
+        writeGoldenLedger(ledgerPath, [entry("evt-a", 1), entry("evt-b", 5), entry("evt-c", 9)], key);
+        expect(verify(ledgerPath, key)).toEqual({ ok: true });
+      });
+
+      it("a non-numeric seq is a broken chain at that line, never a NaN comparison that silently passes", () => {
+        writeGoldenLedger(ledgerPath, [entry("evt-a", 1), entry("evt-b", "two" as never), entry("evt-c", 3)], key);
+        expect(verify(ledgerPath, key)).toEqual({ ok: false, brokenAt: 2 });
+      });
+    });
+  }
+
+  it("cross-copy drift coverage: both copies return IDENTICAL verdicts over every predicate fixture", () => {
+    const fixtures: EntryInput[][] = [
+      [entry("evt-a", 1), entry("evt-b", 2), entry("evt-c", 1)],
+      [entry("evt-a", 1), entry("evt-b", 2), entry("evt-b", 3)],
+      [entry("evt-a", 1), entry("evt-b", 7)],
+      [entry("evt-a", 3), entry("evt-b", 2)],
+    ];
+    for (const inputs of fixtures) {
+      writeGoldenLedger(ledgerPath, inputs, key);
+      expect(writerVerifyLedgerChain(ledgerPath, key)).toEqual(verifyLedgerChain(ledgerPath, key));
+    }
   });
 });
 

@@ -63,6 +63,37 @@ export function signBody(
   return `t=${timestampSeconds},sha256=${hex}`;
 }
 
+/**
+ * OPS-I3: WHY a signature was rejected, as a class an operator can act on. "clock skew"
+ * and "wrong secret" are different incidents with different remedies, and `verifySignature`
+ * already distinguishes them internally — it just returned a bare boolean, so the door had
+ * nothing to say. Never carries the signature or the body.
+ */
+export type RejectionReason =
+  | "missing signature header"
+  | "malformed signature header"
+  | "timestamp outside the ±300s tolerance (clock skew, or a replayed capture)"
+  | "signature mismatch (wrong or rotated secret)";
+
+export function classifyRejection(
+  rawBody: string,
+  header: string | undefined,
+  secret: string,
+  opts: { toleranceSeconds?: number; nowSeconds?: number } = {},
+): RejectionReason {
+  if (!header) return "missing signature header";
+  const tolerance = opts.toleranceSeconds ?? SIGNATURE_TOLERANCE_SECONDS;
+  const now = opts.nowSeconds ?? Math.floor(Date.now() / 1000);
+  const tPart = /^t=(\d{1,12})(?:,|$)/.exec(header);
+  if (!tPart) return "malformed signature header";
+  const t = Number(tPart[1]);
+  if (!Number.isSafeInteger(t)) return "malformed signature header";
+  if (Math.abs(now - t) > tolerance) {
+    return "timestamp outside the ±300s tolerance (clock skew, or a replayed capture)";
+  }
+  return "signature mismatch (wrong or rotated secret)";
+}
+
 export function verifySignature(
   rawBody: string,
   header: string | undefined,

@@ -3,6 +3,8 @@ import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { createIngestApp } from "../src/server.js";
 import { secretForSource, signBody } from "../src/hmac.js";
+import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
+import { listenLoopback } from "@switchboard/mock-core";
 
 let pool: pg.Pool;
 let cleanup: () => Promise<void>;
@@ -18,8 +20,8 @@ afterAll(async () => {
 
 describe("ingest error handling — no internals leaked", () => {
   it("malformed JSON with a valid signature returns 400 JSON, no stack/path leakage", async () => {
-    const app = createIngestApp(pool);
-    const srv = app.listen(0);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     // ORDERING FACT (A4, corrected 2026-07-25): express.json() runs BEFORE the route's
@@ -47,8 +49,8 @@ describe("ingest error handling — no internals leaked", () => {
   });
 
   it("A5: an oversized body (>100KB) returns 413, not 500 — 5xx tells a vendor 'server fault, retry'; RFC 9110 attributes an oversized body to the client", async () => {
-    const app = createIngestApp(pool);
-    const srv = app.listen(0);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     const rawBody = JSON.stringify({ event_id: "evt-big", pad: "x".repeat(110 * 1024) });
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
@@ -62,8 +64,8 @@ describe("ingest error handling — no internals leaked", () => {
   });
 
   it("A5: a non-JSON content-type returns 415, not 500 (previously: undefined body → not-null violation)", async () => {
-    const app = createIngestApp(pool);
-    const srv = app.listen(0);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     const rawBody = '{"event_id":"evt-1"}';
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
@@ -80,8 +82,8 @@ describe("ingest error handling — no internals leaked", () => {
     // This is the disclosure test for the ordering above: an unauthenticated request
     // reaches the JSON parser. If verification ever moves ahead of the parser (the
     // stricter design), this test flips to 401 — update it AND the KNOWN-ISSUES entry.
-    const app = createIngestApp(pool);
-    const srv = app.listen(0);
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
     const res = await fetch(`http://127.0.0.1:${port}/webhooks/crm`, {
       method: "POST",
@@ -90,6 +92,39 @@ describe("ingest error handling — no internals leaked", () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "invalid json" });
+    srv.close();
+  });
+
+  // B8 (debt-burn): routing decides before body syntax does. A request to a source
+  // that does not exist is a 404 no matter what its body looks like — the resource is
+  // absent, so body syntax is moot (research §B8: source validation runs BEFORE the
+  // route-scoped express.json()). Previously the app-level parser answered 400 first,
+  // telling the caller an unknown endpoint existed but disliked its JSON.
+  it("B8: malformed JSON to an UNKNOWN source is 404, not 400 — the endpoint's absence wins", async () => {
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+    const srv = await listenLoopback(app);
+    const port = (srv.address() as { port: number }).port;
+    const res = await fetch(`http://127.0.0.1:${port}/webhooks/nope`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"broken": ',
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "unknown source" });
+    srv.close();
+  });
+
+  it("B8: an oversized body to an UNKNOWN source is 404, not 413 — routing wins over every parse concern", async () => {
+    const app = createIngestApp(pool, DEFAULT_TENANT_ID);
+    const srv = await listenLoopback(app);
+    const port = (srv.address() as { port: number }).port;
+    const res = await fetch(`http://127.0.0.1:${port}/webhooks/nope`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pad: "x".repeat(110 * 1024) }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "unknown source" });
     srv.close();
   });
 
@@ -103,7 +138,7 @@ describe("ingest error handling — no internals leaked", () => {
     } as unknown as pg.Pool;
 
     const app = createIngestApp(poisonedPool);
-    const srv = app.listen(0);
+    const srv = await listenLoopback(app);
     const port = (srv.address() as { port: number }).port;
 
     const event = {

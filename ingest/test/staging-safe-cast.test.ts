@@ -2,6 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
 import { loadModel } from "./helpers/load-model.js";
+import { insertHubObjectState } from "./helpers/hub-staging.js";
+import { createIso4217Fixture, createNumericBoundsFixture, ISO_4217_REF } from "./helpers/numeric-bounds.js";
+
+// The billing staging models join ref('numeric_bounds') since Wave 5 (Task G) — the
+// fixture materializes the COMMITTED seed; extra refMap entries are inert for models
+// without the ref.
+const BOUNDS_REF = { numeric_bounds: "numeric_bounds", ...ISO_4217_REF };
 
 // L2 (blast-radius containment): these tests insert malformed numerics DIRECTLY into
 // raw.raw_events, bypassing the ingest door's numeric contract (L1) ON PURPOSE — the
@@ -18,6 +25,8 @@ let cleanup: () => Promise<void>;
 
 beforeEach(async () => {
   ({ pool, cleanup } = await freshTestDb());
+  await createNumericBoundsFixture(pool);
+  await createIso4217Fixture(pool);
 });
 
 afterEach(async () => {
@@ -41,48 +50,34 @@ interface ModelSpec {
 }
 
 const SPECS: ModelSpec[] = [
+  // F-1c: the billing arms are stripefeed-sourced (envelope data.object shapes) and the
+  // deals arm is hubcrm-snapshot-sourced — each spec seeds through its OWN source shape.
   {
     title: "stg_billing__invoices",
     modelPath: "models/staging/stg_billing__invoices.sql",
-    source: "billing",
-    eventType: "invoice.created",
+    source: "stripefeed",
+    eventType: "invoice.finalized",
     valueColumn: "amount_cents",
     idColumn: "invoice_id",
     goodValue: "1000",
     goodExpected: "1000",
-    makeData: (id, value) => ({ id, customer_id: "cust-1", amount_cents: value }),
+    makeData: (id, value) => ({ id, object: "invoice", customer_id: "cust-1", amount_cents: value }),
   },
   {
     title: "stg_billing__payments",
     modelPath: "models/staging/stg_billing__payments.sql",
-    source: "billing",
-    eventType: "payment.succeeded",
+    source: "stripefeed",
+    eventType: "charge.succeeded",
     valueColumn: "amount_cents",
     idColumn: "payment_id",
     goodValue: "2500",
     goodExpected: "2500",
     makeData: (id, value) => ({
       id,
+      object: "charge",
       invoice_id: "inv-1",
       customer_id: "cust-1",
       amount_cents: value,
-    }),
-  },
-  {
-    title: "stg_crm__deals",
-    modelPath: "models/staging/stg_crm__deals.sql",
-    source: "crm",
-    eventType: "deal.updated",
-    valueColumn: "amount_cents",
-    idColumn: "deal_id",
-    goodValue: "75000",
-    goodExpected: "75000",
-    makeData: (id, value) => ({
-      id,
-      company_id: "co-1",
-      name: `Deal ${id}`,
-      amount_cents: value,
-      status: "open",
     }),
   },
   {
@@ -130,7 +125,7 @@ for (const spec of SPECS) {
       // With the bare `::bigint` / `::int` cast this THROWS `invalid input syntax`
       // and the entire model (in production: the entire dbt build) dies.
       const res = await pool.query(
-        `select * from (${loadModel(spec.modelPath)}) m order by ${spec.idColumn}`,
+        `select * from (${loadModel(spec.modelPath, BOUNDS_REF)}) m order by ${spec.idColumn}`,
       );
 
       expect(res.rowCount).toBe(3);
@@ -150,27 +145,64 @@ for (const spec of SPECS) {
 // read tool, and the report's LLM prompt. Staging constrains it to a three-letter uppercase
 // code at the source; anything else becomes NULL (the L5.1 "unknown" leniency path) rather
 // than riding a free-text channel downstream.
+describe("stg_crm__deals — L2 safe cast (hubcrm snapshot arm)", () => {
+  it("a malformed or out-of-range amount in a snapshot yields NULL; the well-formed neighbor keeps its value", async () => {
+    const mk = (objectId: number, eventId: string, dealId: string, amount: string) =>
+      insertHubObjectState(pool, {
+        objectType: "deal", objectId, eventId,
+        occurredAt: "2026-01-05T00:00:00.000Z",
+        properties: { name: `DEMO Deal ${dealId}`, amount_cents: amount, currency: "USD", status: "open", company_manifest_id: "co-1", hs_manifest_id: dealId },
+      });
+    await mk(601, "7601", "e-good", "75000");
+    await mk(602, "7602", "e-bad", "abc");
+    await mk(603, "7603", "e-huge", OUT_OF_RANGE);
+
+    const res = await pool.query(
+      `select * from (${loadModel("models/staging/stg_crm__deals.sql", ISO_4217_REF)}) m order by deal_id`,
+    );
+    expect(res.rowCount).toBe(3);
+    const byId = Object.fromEntries(res.rows.map((r) => [r.deal_id, r]));
+    expect(byId["e-bad"].amount_cents).toBeNull();
+    expect(byId["e-huge"].amount_cents).toBeNull();
+    expect(byId["e-good"].amount_cents).toBe("75000");
+  });
+
+  it("currency constraint (security M2): 'USD' passes; lowercase and injection-shaped values are NULLed", async () => {
+    const mk = (objectId: number, eventId: string, dealId: string, currency: string | null) =>
+      insertHubObjectState(pool, {
+        objectType: "deal", objectId, eventId,
+        occurredAt: "2026-01-05T00:00:00.000Z",
+        properties: { name: `DEMO Deal ${dealId}`, amount_cents: "1000", currency, status: "open", company_manifest_id: "co-1", hs_manifest_id: dealId },
+      });
+    await mk(611, "7611", "e-upper", "USD");
+    await mk(612, "7612", "e-lower", "usd");
+    await mk(613, "7613", "e-inject", "EUR;drop table x");
+    await mk(614, "7614", "e-cleared", null); // the script's currency CLEAR — null property
+
+    const res = await pool.query(
+      `select * from (${loadModel("models/staging/stg_crm__deals.sql", ISO_4217_REF)}) m order by deal_id`,
+    );
+    expect(res.rowCount).toBe(4);
+    const byId = Object.fromEntries(res.rows.map((r) => [r.deal_id, r]));
+    expect(byId["e-upper"].currency).toBe("USD");
+    expect(byId["e-lower"].currency).toBeNull();
+    expect(byId["e-inject"].currency).toBeNull();
+    expect(byId["e-cleared"].currency).toBeNull();
+  });
+});
+
 describe("staging currency constraint (security M2)", () => {
   const CURRENCY_SPECS = [
+    // F-1c: stripefeed-sourced; the deals (hubcrm snapshot) constraint is pinned in its
+    // own describe above.
     {
       title: "stg_billing__invoices",
       modelPath: "models/staging/stg_billing__invoices.sql",
-      source: "billing",
-      eventType: "invoice.created",
+      source: "stripefeed",
+      eventType: "invoice.finalized",
       idColumn: "invoice_id",
       makeData: (id: string, currency: unknown) => ({
-        id, customer_id: "cust-1", amount_cents: 1000,
-        ...(currency === undefined ? {} : { currency }),
-      }),
-    },
-    {
-      title: "stg_crm__deals",
-      modelPath: "models/staging/stg_crm__deals.sql",
-      source: "crm",
-      eventType: "deal.updated",
-      idColumn: "deal_id",
-      makeData: (id: string, currency: unknown) => ({
-        id, company_id: "co-1", name: `Deal ${id}`, amount_cents: 1000, status: "open",
+        id, object: "invoice", customer_id: "cust-1", amount_cents: 1000,
         ...(currency === undefined ? {} : { currency }),
       }),
     },
@@ -178,7 +210,8 @@ describe("staging currency constraint (security M2)", () => {
 
   for (const spec of CURRENCY_SPECS) {
     it(`${spec.title}: 'USD' passes; lowercase 'usd' and injection-shaped 'EUR;drop table x' are NULLed`, async () => {
-      // Numeric suffixes: the models order by (substring(event_id from 5))::bigint.
+      // Distinct entities per row — the latest-state tiebreak (occurred_at desc,
+      // received_at desc, event_id desc; Task C successor) never fires here.
       const rows: Array<[string, string, unknown]> = [
         ["evt-9001", "e-upper", "USD"],
         ["evt-9002", "e-lower", "usd"],
@@ -202,7 +235,7 @@ describe("staging currency constraint (security M2)", () => {
       }
 
       const res = await pool.query(
-        `select * from (${loadModel(spec.modelPath)}) m order by ${spec.idColumn}`,
+        `select * from (${loadModel(spec.modelPath, BOUNDS_REF)}) m order by ${spec.idColumn}`,
       );
       expect(res.rowCount).toBe(4);
       const byId = Object.fromEntries(res.rows.map((r) => [r[spec.idColumn], r]));

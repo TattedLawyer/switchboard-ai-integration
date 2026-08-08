@@ -1,6 +1,15 @@
 export { prng } from "./prng.js";
 export {
+  NORMALIZATION_VECTORS,
+  EMAIL_NORMALIZATION_VECTORS,
+  normalizeCompanyName,
+  normalizeDomain,
+  normalizeEmail,
+  type NormalizationVector,
+} from "./normalize.js";
+export {
   generateManifest,
+  PROFILES,
   type Profile,
   type Manifest,
   type Company,
@@ -29,3 +38,4 @@ export {
   type SourceEventSpec,
   type EventScript,
 } from "./source-app.js";
+export { listenLoopback, listenLoopbackPort } from "./listen-loopback.js";

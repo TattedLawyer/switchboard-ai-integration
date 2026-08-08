@@ -1,31 +1,225 @@
 import { getPool } from "../db.js";
+import { resolveDeploymentTenant } from "../config.js";
 import { baseUrlFor, enabledSources } from "../sources.js";
-import { connectorFor } from "../connectors/index.js";
+import {
+  catchUpReporter,
+  connectorFor,
+  formatUnclosableGap,
+  type UnclosableGap,
+} from "../connectors/index.js";
+import type { SheetCatchUpReport } from "../connectors/sheet-snapshot.js";
+import type { StripeFeedCatchUpReport } from "../connectors/stripe-feed.js";
+import type { BusReplayCatchUpReport } from "../connectors/bus-replay.js";
+import type { HubHydrationReport } from "../connectors/hub-hydrate.js";
+
+/**
+ * Whether this cycle genuinely never reached the object store (OPS-I5's zero line).
+ *
+ * `hydrationDlq` is in the guard because of gate-H I3: in a total object-store outage
+ * every pending event is retried and dead-lettered in the SAME run, leaving the other
+ * three counters at 0 — so the "NOT contacted" line printed directly above the
+ * "HYDRATION DLQ: N dead-lettered this run" line, one of them false, at the exact
+ * moment the store was contacted and failed every time.
+ */
+export function storeNotContacted(h: {
+  hydrated: number;
+  tombstoned: number;
+  hydrationPending: number;
+  hydrationDlq: number;
+}): boolean {
+  return h.hydrated === 0 && h.tombstoned === 0 && h.hydrationPending === 0 && h.hydrationDlq === 0;
+}
 
 async function main(): Promise<void> {
   const pool = getPool();
   let failed = false;
+  // CLOSE-3 fix round: the SAME tenant the doors write under, resolved the same way and
+  // from the same variable. The pull path is the recovery path for what the push path
+  // lost, so a different lane here is not "a second tenant" — it is a shadow copy of the
+  // first, invisible to the uniqueness key that was supposed to absorb it.
+  const tenantId = resolveDeploymentTenant();
 
   for (const source of enabledSources()) {
     // Reported for operator context only; the connector resolves its own source of truth.
     const baseUrl = baseUrlFor(source);
+    const connector = connectorFor(source, tenantId);
     try {
-      const ingested = await connectorFor(source).catchUp(pool);
-      console.log(`backfill[${source}]: ingested ${ingested} event(s) from ${baseUrl}`);
+      // Gate-H cold review C1: when the connector can report more than a number, ASK IT
+      // — the report is where retention-boundary losses live, and a CLI that called the
+      // number-only path printed "ingested 6 event(s)" over a permanent 8-event loss.
+      const reporter = catchUpReporter(connector);
+      if (reporter) {
+        // ── Exhaustive-consumption contract (docs/operator-surface-checklist.md line 1,
+        // compile-time) ─────────────────────────────────────────────────────────────────
+        // PER-KIND, over the WIDENED catch-up shapes — not just the seam's base
+        // CatchUpReport. The house widening-method pattern means new fields are born on
+        // the per-connector interfaces (that is exactly where `gaps` first appeared), and
+        // a base-only destructure is blind to them (Task E cold review I1: a phantom on
+        // StripeFeedCatchUpReport typechecked clean). Each case rest-destructures its
+        // connector's OWN report shape and types the remainder EMPTY, so a field added to
+        // any of the five shapes without a decided operator surface is a compile error in
+        // this CLI before any test or reviewer. The printing below reads ONLY these
+        // bindings; a deliberately-unprinted field must be discarded here with a comment
+        // naming why. The `as` casts are the producer guarantee, as in reconcile.ts:
+        // each connector's catchUpWithReport returns its own shape for its own kind.
+        const report = await reporter.catchUpWithReport(pool);
+        let counts: { ingested: number; duplicates: number; quarantined: number };
+        let gaps: readonly UnclosableGap[] | undefined;
+        let degradations: readonly string[] | undefined;
+        let hydration:
+          | { hydrated: number; tombstoned: number; hydrationDlq: number; hydrationPending: number }
+          | undefined;
+        switch (connector.kind) {
+          case "ledger-feed": {
+            // No widened shape today (ledger-feed connectors are number-only; this arm is
+            // reachable only if one ever grows a reporter) — the base seam shape IS its
+            // contract, destructured in full.
+            const {
+              ingested, duplicates, quarantined, gaps: g, degradations: d,
+              hydrated, tombstoned, hydrationDlq, hydrationPending, ...rest
+            } = report;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            gaps = g;
+            degradations = d;
+            hydration =
+              hydrated !== undefined
+                ? { hydrated, tombstoned: tombstoned ?? 0, hydrationDlq: hydrationDlq ?? 0, hydrationPending: hydrationPending ?? 0 }
+                : undefined;
+            break;
+          }
+          case "sheet-snapshot": {
+            const { ingested, duplicates, quarantined, degradations: d, ...rest } =
+              report as SheetCatchUpReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            degradations = d;
+            break;
+          }
+          case "stripe-feed": {
+            const { ingested, duplicates, quarantined, gaps: g, ...rest } =
+              report as StripeFeedCatchUpReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            gaps = g;
+            break;
+          }
+          case "bus-replay": {
+            const { ingested, duplicates, quarantined, gaps: g, ...rest } =
+              report as BusReplayCatchUpReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            gaps = g;
+            break;
+          }
+          case "hub-hydrate": {
+            const { ingested, duplicates, quarantined, hydrated, tombstoned, hydrationDlq, hydrationPending, ...rest } =
+              report as HubHydrationReport;
+            rest satisfies Record<string, never>;
+            counts = { ingested, duplicates, quarantined };
+            hydration = { hydrated, tombstoned, hydrationDlq, hydrationPending };
+            break;
+          }
+        }
+        const { ingested, duplicates, quarantined } = counts;
+        const quarantineNote = quarantined > 0 ? `, quarantined ${quarantined}` : "";
+        if (hydration !== undefined) {
+          const { hydrated, tombstoned, hydrationDlq, hydrationPending } = hydration;
+          // Hydration paradigm (Task C standing checklist): this connector's catchUp is
+          // a hydration PUMP — thin events arrive by webhook push, so an "ingested 0"
+          // line here would be a number-only truth hiding the actual work and the
+          // actual failures. Print what the run really did.
+          console.log(
+            `backfill[${source}]: hydrated ${hydrated} snapshot(s), ` +
+              `${tombstoned} tombstone(s) (thin events arrive by webhook push; ` +
+              `catchUp is the hydration pump)${quarantineNote} from ${baseUrl}`,
+          );
+          // OPS-I5: a zero line on a scheduled surface READS as "I checked". It does not.
+          // The pump only contacts the object store when raw holds events awaiting
+          // hydration, so an outage, a revoked token, a wrong HUBCRM_BASE_URL and a vendor
+          // that silently stopped pushing all present as a clean affirmative zero —
+          // indistinguishable from a healthy quiet hour. Truth is not the standard here;
+          // non-misleading is. (A real per-cycle liveness probe is the better answer and is
+          // deferred: adding a network call to every scheduled cycle changes the failure
+          // semantics of the whole scheduled path.)
+          if (storeNotContacted({ hydrated, tombstoned, hydrationPending, hydrationDlq })) {
+            console.log(
+              `backfill[${source}]: no events were awaiting hydration — the object store at ` +
+                `${baseUrl} was NOT contacted this cycle, so its reachability is unproven ` +
+                "(run reconcile to actually test it)",
+            );
+          }
+          if (hydrationDlq > 0) {
+            console.error(
+              `[${source}] HYDRATION DLQ: ${hydrationDlq} event(s) dead-lettered this run — ` +
+                "terminal, preserved, listed by reconcile; replay is an operator act (RUNBOOK)",
+            );
+          }
+          if (hydrationPending > 0) {
+            console.log(
+              `backfill[${source}]: ${hydrationPending} event(s) still pending hydration ` +
+                "(rate budget reached) — the next run continues",
+            );
+          }
+        } else {
+          // Task D standing checklist: `duplicates` is printed whenever there are any.
+          // For the subscribe/replay paradigm at-least-once delivery makes redeliveries
+          // ROUTINE, not exceptional — and a source that redelivers everything looks
+          // exactly like a source that ingests nothing unless the absorbed count is on
+          // the log. Suppressed at zero so the other paradigms' lines are unchanged.
+          const duplicateNote =
+            duplicates > 0 ? `, ${duplicates} duplicate(s) absorbed by idempotent ingest` : "";
+          console.log(
+            `backfill[${source}]: ingested ${ingested} event(s)${duplicateNote}${quarantineNote} from ${baseUrl}`,
+          );
+        }
+        // Loud, on stderr, one shared phrasing (grep/alert target). Deliberate
+        // semantics: the exit code stays 0 — the drain itself SUCCEEDED and forward
+        // progress is real; reconcile is the gate that turns a gap into a red. A
+        // nonzero here would teach cron to retry a loss no retry can close.
+        for (const gap of gaps ?? []) console.error(formatUnclosableGap(source, gap));
+        for (const note of degradations ?? []) console.error(`backfill[${source}] degradation: ${note}`);
+      } else {
+        const ingested = await connector.catchUp(pool);
+        console.log(`backfill[${source}]: ingested ${ingested} event(s) from ${baseUrl}`);
+      }
     } catch (err) {
       failed = true;
       console.error(`backfill[${source}] failed:`, err);
 
-      // Read final cursor position to show resumable state
+      // Read final cursor position to show resumable state — the REAL cursor for this
+      // paradigm (cold review I3): opaque-cursor sources resume from last_event_id;
+      // last_seq is pinned at 0 for them and quoting it told the operator a wrong,
+      // ledger-paradigm position in the middle of an incident.
       try {
+        // Gate-H I7: tenant-scoped, like every other statement in this file. `cursors` is
+        // PK'd (tenant_id, source) since migration 006, so on a database that holds both
+        // pre-tenancy nil-tenant rows and configured-tenant rows this used to return an
+        // arbitrary one of the two — telling the operator to "resume from" another lane's
+        // position, mid-incident, in the block whose two comments below record this exact
+        // class of fabricated-position bug being fixed twice already.
         const endRes = await pool.query(
-          "select last_seq from ingest.cursors where source = $1",
-          [source],
+          "select last_seq, last_event_id from ingest.cursors where tenant_id = $1 and source = $2",
+          [tenantId, source],
         );
-        const endCursor = endRes.rowCount === 0 ? 0 : Number(endRes.rows[0].last_seq);
-        console.log(`state is consistent; re-run to resume from cursor ${endCursor}`);
+        const row = endRes.rows[0] as { last_seq?: unknown; last_event_id?: string | null } | undefined;
+        // OPS-M1: the same class the comment above records as already fixed once, surviving
+        // for the paradigm that has NO cursor. The sheet-snapshot connector re-reads the
+        // whole grid every cycle, so "resume from cursor 0" is a fabricated position printed
+        // during an incident — this repo's own stated anti-pattern. Suppress the clause
+        // rather than invent a number: a re-run is still the right advice, it just does not
+        // resume from anywhere.
+        const cursor =
+          row?.last_event_id ?? (row?.last_seq === undefined || row?.last_seq === null ? null : String(Number(row.last_seq)));
+        // B4: prefixed in this file's own house style — the line prints mid-incident,
+        // in a loop over sources, where an anonymous cursor is actively misleading.
+        console.log(
+          cursor === null
+            ? `backfill[${source}]: state is consistent; re-run to retry (this paradigm keeps no cursor — a full re-read, not a resume)`
+            : `backfill[${source}]: state is consistent; re-run to resume from cursor ${cursor}`,
+        );
       } catch (cursorErr) {
-        console.error("could not read cursor:", cursorErr);
+        console.error(`backfill[${source}] could not read cursor:`, cursorErr);
       }
     }
   }

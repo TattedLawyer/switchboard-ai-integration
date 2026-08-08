@@ -2,11 +2,26 @@
   "name": "switchboard",
   "private": true,
   "license": "Apache-2.0",
-  "workspaces": ["mocks/core", "mocks/crm", "mocks/billing", "mocks/support", "ingest", "agent"],
-  "engines": { "node": ">=22" },
+  "workspaces": [
+    "mocks/core",
+    "mocks/billing",
+    "mocks/support",
+    "mocks/sheets",
+    "mocks/stripefeed",
+    "mocks/hubcrm",
+    "mocks/casebus",
+    "ingest",
+    "agent"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "free-email-domains": "1.9.82"
   }
 }

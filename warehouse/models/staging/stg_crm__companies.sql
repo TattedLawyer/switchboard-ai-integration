@@ -1,36 +1,67 @@
-with company_events as (
-    select event_id, payload, received_at
-    from raw.raw_events
-    -- company.updated only: company.merged carries {from_id, to_id} (no id/name), which
-    -- would otherwise collapse into a NULL company_id row. Merge handling is Task 9's job.
-    where source = 'crm' and event_type = 'company.updated'
+-- Re-sourced (F-1c): the CRM arm stages from the hubcrm thin-webhook + hydration
+-- paradigm. Thin events in raw are METADATA-ONLY (D7), so state comes from
+-- ingest.hydrated_snapshots — the fetch-time full records the hydration pump wrote —
+-- while SEQUENCING still follows the successor discipline over the TRIGGERING event's
+-- clocks: occurred_at (timestamptz, the L2-G2 cast — the hubcrm door normalizes the
+-- vendor's ms-epoch occurredAt into ISO occurred_at and quarantines anything that
+-- cannot carry one, so the cast is safe here exactly as it is on every other source),
+-- then received_at, then event_id. Never fetch time alone, never delivery order.
+--
+-- IDENTITY DECISION (F-1c, deliberate): company_id is hs_manifest_id — the record's
+-- cross-system business key — not the vendor's numeric objectId. HubSpot object ids are
+-- surrogate and NOT merge-stable (a merge mints a NEW surviving record id; researched,
+-- f2-wire-research.md Q1), and no other system ever references them: billing/support/
+-- sheets evidence, deal linkage (company_manifest_id), and verify-identity's manifest
+-- expectations all live in the business-key space. Staging on the business key is the
+-- standard external-id pattern; the objectId-space merge lineage is resolved by
+-- merge_edges (which translates merge events into this key space — see its header).
+--
+-- Two-level latest-state:
+--   1. per OBJECT: the newest snapshot row decides whether the object is live (a
+--      tombstone as the newest state = the store answered 404 — deleted or consumed by
+--      a merge; either way the OBJECT no longer exists and contributes no state);
+--   2. per company_id: among live objects claiming the same business key (a merge
+--      survivor carries its winner's key; the script may also recycle a manifest
+--      company as a fresh object), the newest state wins.
+with object_states as (
+    select
+        s.object_id,
+        s.tombstone,
+        s.snapshot -> 'properties' as properties,
+        r.payload ->> 'occurred_at' as occurred_at,
+        r.received_at,
+        r.event_id
+    from ingest.hydrated_snapshots s
+    join raw.raw_events r
+      on r.tenant_id = s.tenant_id and r.event_id = s.event_id and r.source = 'hubcrm'
+    where s.object_type = 'company'
+),
+live_objects as (
+    select distinct on (object_id)
+        object_id, tombstone, properties, occurred_at, received_at, event_id
+    from object_states
+    order by object_id,
+             ((occurred_at)::timestamptz) desc,
+             received_at desc,
+             event_id desc
 ),
 latest as (
-    -- Latest state per company is decided by EVENT time (occurred_at), not arrival time
-    -- (received_at): out-of-order delivery must never let a stale update win. The evt-N
-    -- ordinal is the deterministic tiebreak for identical occurred_at values.
-    -- occurred_at is compared as timestamptz, NOT text (L2-G2): text ordering mis-picks across
-    -- timezone offsets and mixed precision (e.g. "…T10:00:00+05:00" is EARLIER in real time
-    -- than "…T09:00:00Z" but sorts later as a string). The cast throws on garbage — acceptable
-    -- ONLY because every door into raw rejects non-ISO-8601 occurred_at first: the webhook
-    -- schema (eventSchema in ingest/src/server.ts), the backfill poll path (same schema, applied
-    -- in ingest/src/backfill.ts), and the replay gate in ingest/src/quarantine.ts.
-    -- Same cast applies in all staging views and merge_edges.sql.
-    select distinct on (payload -> 'data' ->> 'id')
-        payload -> 'data' as company,
-        received_at
-    from company_events
-    order by payload -> 'data' ->> 'id',
-             ((payload ->> 'occurred_at')::timestamptz) desc,
-             (substring(event_id from 5))::bigint desc
+    select distinct on (properties ->> 'hs_manifest_id')
+        properties, received_at
+    from live_objects
+    where not tombstone
+    order by properties ->> 'hs_manifest_id',
+             ((occurred_at)::timestamptz) desc,
+             received_at desc,
+             event_id desc
 )
 select
-    company ->> 'id'     as company_id,
-    company ->> 'name'   as name,
-    company ->> 'domain' as domain,
-    -- Latest-state owner email (L2-G7): identity_resolution's crm_emails reads owner_email
-    -- from HERE, so a replaced owner email ages out with the state that carried it — never
-    -- from raw full history, where it would remain tier-1 evidence forever.
-    company ->> 'owner_email' as owner_email,
-    received_at          as last_event_at
+    properties ->> 'hs_manifest_id' as company_id,
+    properties ->> 'name'           as name,
+    properties ->> 'domain'         as domain,
+    -- Latest-state owner email (L2-G7 unchanged by the re-source): identity_resolution's
+    -- crm_emails reads owner_email from HERE, so a replaced owner email ages out with
+    -- the state that carried it.
+    properties ->> 'owner_email'    as owner_email,
+    received_at                     as last_event_at
 from latest

@@ -1,12 +1,22 @@
-process.env.DBT_SCHEMA = "mcp_test_analytics";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import pg from "pg";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../src/mcp/server.js";
 
-const SCHEMA = process.env.DBT_SCHEMA ?? "public_analytics";
+const SCHEMA = "mcp_test_analytics";
+
+// PRE-3 (#41): scoped to this suite instead of assigned at module top level. A bare
+// `process.env.DBT_SCHEMA = ...` above the imports is a side effect of IMPORT, so it
+// outlives this file the moment these suites share a process — which is exactly the
+// parallelisation trigger the register entry names. `vi.stubEnv` undoes itself.
+beforeAll(() => {
+  vi.stubEnv("DBT_SCHEMA", SCHEMA);
+});
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 let pool: pg.Pool;
 let client: Client;
 
@@ -36,7 +46,14 @@ beforeAll(async () => {
            0::bigint as null_score_count,
            0::bigint as null_currency_invoice_count, 0::bigint as null_currency_deal_count,
            2::bigint as csat_score_count,
-           false as has_data_warnings
+           false as has_data_warnings,
+           -- A6 parity: the sheets source's mart columns reach the tool too.
+           true as has_sheets, 2::bigint as sheet_row_count,
+           30000::bigint as sheet_amount_cents, 'USD'::text as sheet_currency,
+           0::bigint as null_amount_sheet_count, 0::bigint as null_currency_sheet_count,
+           -- Wave 5 (Task G): the Unlikely Value counters behind the has_data_warnings
+           -- OR term reach the tool too.
+           0::bigint as unlikely_amount_payment_count, 0::bigint as unlikely_amount_invoice_count
   `);
   await pool.query(`
     create or replace view ${SCHEMA}.stg_crm__companies as
@@ -79,6 +96,17 @@ describe("MCP server", () => {
       null_currency_deal_count: "0",
       csat_score_count: "2",
       has_data_warnings: false, // Kimball #164 coarse flag reaches the tool
+      // A6 parity: sheet presence/sums/counters reach the tool (own columns — never
+      // folded into deal/invoice figures).
+      has_sheets: true,
+      sheet_row_count: "2",
+      sheet_amount_cents: "30000",
+      sheet_currency: "USD",
+      null_amount_sheet_count: "0",
+      null_currency_sheet_count: "0",
+      // Wave 5 parity: the Unlikely Value counters reach the tool.
+      unlikely_amount_payment_count: "0",
+      unlikely_amount_invoice_count: "0",
     });
   });
 

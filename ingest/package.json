@@ -11,7 +11,8 @@
     "backfill": "tsx src/cli/backfill.ts",
     "replay": "tsx src/cli/replay.ts",
     "quarantine": "tsx src/cli/quarantine.ts",
-    "reconcile": "tsx src/cli/reconcile.ts"
+    "reconcile": "tsx src/cli/reconcile.ts",
+    "hydrate-rearm": "tsx src/cli/hydrate-rearm.ts"
   },
   "dependencies": {
     "express": "^5.2.0",

@@ -30,6 +30,12 @@ fi
 # Roles are cluster-level and are NOT in a logical dump. Restoring into a fresh cluster would
 # fail on every GRANT to switchboard_agent / switchboard_app. Creating them first makes the
 # restore work against an empty cluster as well as an existing one.
+#
+# SEC-I3, load-bearing: `if not exists` is a GUARANTEE here, not an optimisation. These are
+# the local-dev literals; a deployment that rotated either role's password out of band must
+# not have it silently reset by the documented recovery procedure — resetting a rotated
+# credential during a restore is the worst version of this bug, because it happens exactly
+# when nobody is looking at role passwords. Never change these to CREATE OR ALTER.
 docker compose exec -T postgres psql -U switchboard -d switchboard -v ON_ERROR_STOP=1 -q <<'SQL'
 do $$
 begin

@@ -1,0 +1,83 @@
+version: 2
+
+seeds:
+  - name: numeric_bounds
+    description: >
+      The numeric contract's quantitative bounds (Wave 5, Task G), EMITTED from
+      ingest/src/numeric-contract.ts by scripts/generate-numeric-bounds-seed.ts — the one
+      bridge from the L1 TypeScript contract to the warehouse. One row per (event_type,
+      field) declaring a plausibleMax (warn-tier ceiling — above it is flagged, never
+      rejected) or a hard min/max scale; an absent row means "no declared bound". NEVER
+      hand-edit: regenerate and commit the diff (the consistency pins in
+      ingest/test/numeric-bounds-seed.test.ts red the suite when this file and the
+      contract disagree in either direction, byte-for-byte and row-for-row). Committed
+      generated file over build-time emission by the free_email_domains precedent:
+      warehouse inputs stay reviewable tree state. Consumers: the staging
+      is_unlikely_amount flag (stg_billing__payments / stg_billing__invoices),
+      assert_amounts_plausible (warn surface), assert_csat_in_scale (hard invariant,
+      loud-when-bound-missing shape). Two rows (payment.succeeded / payment.failed)
+      currently have NO consuming staging surface — their 2a lane retired at Task F;
+      they render the contract verbatim and go live again only if a payments lane
+      returns (retirement of the declarations themselves is register-owned).
+    config:
+      column_types:
+        plausible_max: bigint
+        scale_min: integer
+        scale_max: integer
+    columns:
+      - name: event_type
+        data_tests: [not_null]
+      - name: field
+        data_tests: [not_null]
+  - name: free_email_domains
+    description: >
+      Free-email-provider domains whose presence as tier-2 DOMAIN evidence demotes a
+      match to manual review (Task F; the register's before-tier-2-on-real-data gate).
+      Rationale, research-verified from primary sources (2026-08-01): free-provider
+      domains carry no company-identity signal — HubSpot's own company matching refuses
+      freemail domains as company evidence and falls back to Website URL
+      (knowledge.hubspot.com/object-settings/automatically-create-and-associate-companies-with-contacts),
+      and its forms product maintains a blocked-domain list for the same providers
+      (knowledge.hubspot.com/forms/what-domains-are-blocked-when-using-the-forms-email-domains-to-block-feature).
+      This seed is VENDORED from the free-email-domains npm package (HubSpot-derived;
+      MIT, exact-pinned in package.json, attribution in NOTICE) via
+      scripts/generate-free-email-seed.ts — regenerate and commit the diff on a
+      deliberate version bump, never at build time (warehouse inputs stay reviewable
+      tree state). The upstream list includes free providers AND disposable/webmail
+      hosts; both are correct here — the seed answers "does this domain identify a
+      company?", and for either category it does not. A match on a listed domain
+      demotes to manual review (conservative: a human decides; nothing is dropped).
+      Content is pinned by sentinel + well-formedness + real-list demotion tests in
+      ingest/test/free-email-blocklist.test.ts; the generator refuses malformed or
+      example-universe entries. Domains are stored lowercase and compared against the
+      model's normalized domain.
+    columns:
+      - name: domain
+        data_tests: [not_null, unique]
+  - name: iso_4217_currencies
+    description: >
+      The ISO-4217 currency codes the pipeline accepts (#37), GENERATED from SIX's
+      published list-one.xml by scripts/generate-iso4217.ts — the same script and the same
+      source that render the ingest door's allowlist (ingest/src/iso4217-codes.ts). SIX is
+      the ISO-4217 maintenance agency; the source file is NOT vendored in this repo, and
+      its URL, published date (Pblshd="2026-01-01"), SHA-256, exclusions and refresh
+      procedure live in vendor/iso-4217/README.md. NEVER hand-edit: regenerate and commit
+      the diff. ingest/test/iso4217.test.ts pins this file by GOLDEN BYTES, by an exact
+      count (176) and by named codes, so an edit here reds until the pin is deliberately
+      updated with it.
+      Why it exists: the currency rule used to be the shape regex '^[A-Z]{3}$',
+      hand-written in the contract and independently in all three consuming staging
+      models — four copies, nothing mechanically diffing them, and all four admitting the
+      17,576 three-letter strings of which ~176 are currencies. The models now JOIN this
+      list rather than describe it, so the door and the warehouse cannot disagree about
+      what a currency is.
+      Deliberately EXCLUDED from the published list: XXX ("no currency" — admitting it
+      would let the absence of a currency through as a currency) and XTS ("reserved for
+      testing"). Everything else list-one publishes is admitted as published, including
+      funds, the precious metals and the regional units.
+      Consumers: stg_billing__invoices, stg_crm__deals, stg_sheets__rows — a non-member
+      code stages as NULL ("unknown": counted by the mart and refused from its totals,
+      never summed), which is exactly what a malformed code already did.
+    columns:
+      - name: currency_code
+        data_tests: [not_null, unique]

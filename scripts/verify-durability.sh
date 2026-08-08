@@ -24,7 +24,7 @@ step() { echo; echo "== $* =="; }
 counts() {
   "${PSQL[@]}" "select
       (select count(*) from raw.raw_events)
-      || '/' || (select count(*) from ingest.outbox)
+      || '/' || (select count(*) from ingest.ingest_journal)
       || '/' || (select count(*) from ingest.quarantine)" 2>/dev/null | tr -d ' \r'
 }
 
@@ -45,7 +45,7 @@ if [[ "$(counts)" == "0/0/0" || -z "$(counts)" ]]; then
 fi
 BEFORE="$(counts || true)"
 [[ -n "$BEFORE" && "$BEFORE" != "0/0/0" ]] || fail "no data to test durability against (got '$BEFORE')"
-echo "    raw/outbox/quarantine = $BEFORE"
+echo "    raw/journal/quarantine = $BEFORE"
 
 step "2/6 destroy and recreate the container"
 docker compose down >/dev/null 2>&1
@@ -57,7 +57,7 @@ step "3/6 assert the data survived"
 # command substitution would kill this script SILENTLY — reporting nothing about the very
 # failure it exists to detect.
 AFTER="$(counts || true)"
-echo "    raw/outbox/quarantine = ${AFTER:-<database gone>}"
+echo "    raw/journal/quarantine = ${AFTER:-<database gone>}"
 if [[ "$AFTER" != "$BEFORE" ]]; then
   fail "data did NOT survive 'docker compose down'. before=$BEFORE after=${AFTER:-<gone>}
   This is the defect G3 exists to close: without a named volume mounted at
@@ -83,7 +83,7 @@ WIPED="$(counts || echo "")"
 
 step "6/6 assert the restore reproduced the original state exactly"
 RESTORED="$(counts || true)"
-echo "    raw/outbox/quarantine = ${RESTORED:-<nothing>}"
+echo "    raw/journal/quarantine = ${RESTORED:-<nothing>}"
 [[ "$RESTORED" == "$BEFORE" ]] || fail "restore did not reproduce the original state. before=$BEFORE restored=${RESTORED:-<nothing>}"
 
 echo

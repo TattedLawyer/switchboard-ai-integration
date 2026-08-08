@@ -12,8 +12,9 @@ interface LedgerEntry {
   hash: string;
 }
 
-// Minimal, local reader for the ledger file format written by mocks/crm's ledger.ts.
-// Kept independent of the mocks/crm workspace since ingest's src should not depend on a
+// Minimal, local reader for the ledger file format written by mocks/core's ledger.ts
+// (the 2a mocks' ledgers and hubcrm's F-1c emission ledger both chain through it).
+// Kept independent of the mock workspaces since ingest's src should not depend on a
 // test-only mock service package.
 function readLedger(path: string): LedgerEntry[] {
   if (!existsSync(path)) return [];
@@ -26,9 +27,8 @@ function readLedger(path: string): LedgerEntry[] {
 export const GENESIS_HASH = "0".repeat(64);
 
 // NOTE: DEFAULT_LEDGER_HMAC_KEY is intentionally duplicated in mocks/core/src/ledger.ts
-// — the real implementation; mocks/crm/src/ledger.ts is only a re-export shim, so a
-// sync pointer aimed there would point at nothing. Separate workspace, must not
-// cross-import. Keep both copies in sync if the key or chaining scheme changes.
+// — the real implementation (the retired 2a crm mock's ledger.ts was only a re-export
+// shim). Separate workspace, must not cross-import. Keep both copies in sync if the key or chaining scheme changes.
 // Shared secret keying the ledger's hash chain. Demo-only default, printed in the open —
 // real deployments must set LEDGER_HMAC_KEY to a proper secret held only by the ledger
 // writer and the auditor, kept separate from the log file itself. Without a key, anyone
@@ -85,6 +85,8 @@ export function verifyLedgerChain(
   if (!existsSync(path)) return { ok: true };
   const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
   let expectedPrev = GENESIS_HASH;
+  let lastSeq: number | null = null;
+  const seenEventIds = new Set<string>();
   for (let i = 0; i < lines.length; i++) {
     const lineNo = i + 1;
     let entry: LedgerEntry;
@@ -103,6 +105,21 @@ export function verifyLedgerChain(
     if (recomputed !== entry.hash) {
       return { ok: false, brokenAt: lineNo };
     }
+    // Writer-bug predicates (debt-burn A6, mirroring RFC 9162's index check layered on
+    // top of Merkle hashing): the chain proves the FILE was not rewritten, but a buggy
+    // writer produces a perfectly-chained log of whatever it appended — a restarted mock
+    // re-counts seq from 1 and forks the logical stream, and a duplicate event_id hashes
+    // as happily as a fresh one. seq must be a number and STRICTLY increasing
+    // (monotonicity, not density — the type guard also keeps a non-numeric seq from
+    // passing every NaN comparison); event_id must be unique within the chain.
+    if (typeof entry.seq !== "number" || !Number.isFinite(entry.seq) || (lastSeq !== null && entry.seq <= lastSeq)) {
+      return { ok: false, brokenAt: lineNo };
+    }
+    lastSeq = entry.seq;
+    if (typeof entry.event_id !== "string" || seenEventIds.has(entry.event_id)) {
+      return { ok: false, brokenAt: lineNo };
+    }
+    seenEventIds.add(entry.event_id);
     expectedPrev = entry.hash;
   }
   return { ok: true };
@@ -114,22 +131,70 @@ export interface ReconcileReport {
   missing: string[];
   extra: string[];
   rawDuplicates: number;
+  /** Ledger-paradigm only (debt-burn A6): entries minus distinct event_ids — the writer
+   *  bug the Set-based membership diff used to collapse out of the count comparison
+   *  entirely. Defense in depth: the CLI path never sees it nonzero because the chain
+   *  verifier now rejects duplicate ids first, but `reconcile()` is public API and must
+   *  count honestly on its own. Optional because the other paradigms' reports extend
+   *  this shape and have no ledger file. */
+  ledgerDuplicates?: number;
+  /** Ledger-paradigm only (gate-H I8): event_ids present in this source's raw lane under
+   *  MORE THAN ONE tenant. Legitimate since migration 006 — uniqueness is per tenant, and
+   *  a database that ingested under the nil tenant before `SWITCHBOARD_TENANT_ID` was set
+   *  holds exactly this. Not a failure, and deliberately not gating: the ledger-vs-raw
+   *  comparison is whole-lane by design, and the id sets still match. It is REPORTED
+   *  because the alternative is an operator seeing a number they cannot explain. Optional
+   *  because the other four paradigms are tenant-scoped end to end and cannot produce it. */
+  crossTenantEventIds?: string[];
 }
 
 export async function reconcile(pool: pg.Pool, source: string, ledgerPath: string): Promise<ReconcileReport> {
   const ledgerEntries = readLedger(ledgerPath);
   const ledgerIds = new Set(ledgerEntries.map((e) => e.event_id));
+  // The Set is the right shape for the membership diffs below; its SIZE alone would hide
+  // a duplicated event_id from the count comparison (debt-burn A6) — count the collapse.
+  const ledgerDuplicates = ledgerEntries.length - ledgerIds.size;
 
-  const rawRes = await pool.query<{ event_id: string }>(
-    "select event_id from raw.raw_events where source = $1",
+  // Deliberately NOT tenant-scoped, and that is the disclosed design: a ledger file
+  // carries no tenant — the ledger IS the whole feed — so comparing it against one
+  // tenant's slice would report every row from every other lane as `missing`. On the
+  // documented pre-tenancy→configured migration path that would red the whole zero-loss
+  // surface for every event ingested before SWITCHBOARD_TENANT_ID was set. The query
+  // does now READ the tenant, which is the part that was missing (gate-H I8).
+  const rawRes = await pool.query<{ event_id: string; tenant_id: string }>(
+    "select event_id, tenant_id from raw.raw_events where source = $1",
     [source],
   );
   const rawIds = rawRes.rows.map((r) => r.event_id);
   const rawIdSet = new Set(rawIds);
-  // Structurally always 0: uq_raw_events_source_event_id (migration 003) makes duplicate
-  // (source, event_id) inserts impossible, so this proves identity parity (no duplicate
-  // rows can exist), not payload parity (it says nothing about whether stored payloads match).
-  const rawDuplicates = rawIds.length - rawIdSet.size;
+  // Structurally always 0: uniqueness is `(tenant_id, source, event_id)` — migration 006
+  // replaced 003's `uq_raw_events_source_event_id` with it. So this proves identity parity
+  // WITHIN a lane (no duplicate rows can exist), not payload parity (it says nothing about
+  // whether stored payloads match).
+  //
+  // What 006 also did, and what this function believed impossible until gate-H I8: the
+  // same event_id can legitimately exist ONCE PER TENANT. On a database that ingested
+  // under the nil tenant and later set SWITCHBOARD_TENANT_ID, the naive
+  // `rawIds.length - rawIdSet.size` counted those legitimate pairs as duplicates and the
+  // CLI turned them into a permanent `FAIL: reconciliation found discrepancies` with no
+  // line anywhere saying why — the operator's worst case, because the code was certain
+  // the condition could not arise. Count duplicates per (tenant, event_id), and report
+  // the cross-tenant collisions as the distinct, explainable thing they are.
+  const seenPerTenant = new Set<string>();
+  const idTenants = new Map<string, Set<string>>();
+  let rawDuplicates = 0;
+  for (const row of rawRes.rows) {
+    const key = `${row.tenant_id} ${row.event_id}`;
+    if (seenPerTenant.has(key)) rawDuplicates++;
+    seenPerTenant.add(key);
+    const tenants = idTenants.get(row.event_id) ?? new Set<string>();
+    tenants.add(row.tenant_id);
+    idTenants.set(row.event_id, tenants);
+  }
+  const crossTenantEventIds = [...idTenants.entries()]
+    .filter(([, tenants]) => tenants.size > 1)
+    .map(([id]) => id)
+    .sort();
 
   const missing: string[] = [];
   for (const id of ledgerIds) {
@@ -150,5 +215,7 @@ export async function reconcile(pool: pg.Pool, source: string, ledgerPath: strin
     missing,
     extra,
     rawDuplicates,
+    ledgerDuplicates,
+    crossTenantEventIds,
   };
 }

@@ -2,10 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DATABASE_URL="${DATABASE_URL:-postgres://switchboard:switchboard@localhost:5433/switchboard}"
-# All three sources under fault injection simultaneously — the source-agnostic-spine proof.
-# Reconcile (ingest CLI) iterates INGEST_SOURCES and exits nonzero if ANY source has
-# missing/extra/duplicate events, so PASS requires all three to reconcile clean.
-export INGEST_SOURCES=crm,billing,support
+# All three sources under fault injection simultaneously — the source-agnostic-spine proof,
+# now spanning TWO paradigms (F-1c): hubcrm (thin webhooks + hydration; the store is the
+# reconcile truth) beside the 2a billing/support ledger-feeds. Reconcile (ingest CLI)
+# iterates INGEST_SOURCES and exits nonzero if ANY source has discrepancies, so PASS
+# requires all three to reconcile clean under their own paradigm's oracle.
+export INGEST_SOURCES=hubcrm,billing,support
 
 # Identity for THIS run's ingest process. /status echoes it back, and instance_wait refuses
 # to proceed unless the process answering :4002 returns exactly this value -- proving we are
@@ -17,13 +19,18 @@ export INGEST_INSTANCE_ID="${INGEST_INSTANCE_ID:-run-$$-$(head -c 8 /dev/urandom
 export ALLOW_DEV_SECRETS=1
 # Absolute paths (mock workspace processes have different cwds). Per-source env consumed by
 # the reconcile CLI; each mock still takes its own LEDGER_PATH at its start line below.
-export LEDGER_PATH_CRM="$(pwd)/out/ledger-crm.jsonl"
+# hubcrm's ledger is the EMISSION-side hash-chained record (F-1c): every event the store
+# emits — including ones the fault plan drops — so losses are nameable against it.
+export LEDGER_PATH_HUBCRM="$(pwd)/out/ledger-hubcrm.jsonl"
 export LEDGER_PATH_BILLING="$(pwd)/out/ledger-billing.jsonl"
 export LEDGER_PATH_SUPPORT="$(pwd)/out/ledger-support.jsonl"
 
-# CHAOS_SKIP_BACKFILL=1 is a RED-proof escape hatch: skip the backfill recovery step so that
-# reconcile fails and lists the events lost to injected drops, proving the detector detects
-# per source. CHAOS_SEED varies the fault plan (Task 11's workflow feeds it).
+# CHAOS_SKIP_BACKFILL=1 is a RED-proof escape hatch: skip the backfill/hydration recovery
+# step so that reconcile fails per paradigm — the ledger-feeds red on the events lost to
+# injected drops, and hubcrm reds on un-hydrated thin events (hydration pending violates
+# the trichotomy) PLUS the dropped webhooks its red-mode fault plan injects (missing/
+# drifted objects). Proves the detector detects per source. CHAOS_SEED varies the fault
+# plan (Task 11's workflow feeds it).
 SKIP_BACKFILL="${CHAOS_SKIP_BACKFILL:-0}"
 CHAOS_SEED="${CHAOS_SEED:-7}"
 
@@ -40,8 +47,15 @@ ready_wait() {
   exit 1
 }
 
+# B2: job control ON — each backgrounded `npm run …` pipeline becomes its own process
+# group, and the trap kills the GROUP (`kill -- -PGID`), not just npm's PID: npm has not
+# forwarded SIGTERM to its child since 9.8.x/Node 20.5 (npm/cli#6684), so a PID-only
+# kill strands the node grandchild on the port. Full mechanism rationale (and why
+# setsid/pkill -P were refuted) in demo.sh's identical block; lsof guidance in the
+# guards below remains the stale-state recovery path.
+set -m
 pids=()
-cleanup() { for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null || true; done; }
+cleanup() { for p in "${pids[@]:-}"; do kill -- -"$p" 2>/dev/null || true; done; }
 trap cleanup EXIT
 
 echo "1/8 postgres up"
@@ -56,9 +70,11 @@ $ready || { echo "FAIL: postgres not ready after 60s"; exit 1; }
 echo "2/8 migrate"
 npm run migrate -w ingest
 
-echo "3/8 clean state (raw, ingest.outbox, ingest.quarantine, ledgers, report artifacts)"
+echo "3/8 clean state (raw, ingest.ingest_journal, ingest.quarantine, ledgers, report artifacts)"
 docker compose exec -T postgres psql -U switchboard -c \
-  "truncate table raw.raw_events, ingest.outbox, ingest.quarantine restart identity;" > /dev/null
+  "truncate table raw.raw_events, ingest.ingest_journal, ingest.quarantine, ingest.hydrated_snapshots restart identity;" > /dev/null
+docker compose exec -T postgres psql -U switchboard -c \
+  "delete from ingest.gap_ledger;" > /dev/null
 # Reset the backfill cursors too, otherwise a stale cursor from a prior chaos run would make
 # the mocks' fresh /simulate events (which restart seq at 1) look already-consumed.
 docker compose exec -T postgres psql -U switchboard -c \
@@ -67,16 +83,16 @@ docker compose exec -T postgres psql -U switchboard -c \
 # can never poison the settle-wait. Guarded: pgboss schema does not exist on a fresh DB.
 docker compose exec -T postgres psql -U switchboard -c \
   "delete from pgboss.job;" > /dev/null 2>&1 || true
-rm -f "$LEDGER_PATH_CRM" "$LEDGER_PATH_BILLING" "$LEDGER_PATH_SUPPORT" out/ledger.jsonl out/monday-report.md out/chaos-report.txt
+rm -f "$LEDGER_PATH_HUBCRM" "$LEDGER_PATH_BILLING" "$LEDGER_PATH_SUPPORT" out/ledger.jsonl out/ledger-crm.jsonl out/monday-report.md out/chaos-report.txt
 
-echo "4/8 start ingest (receiver+worker) + mock crm/billing/support (shared default manifest seed 42 —
+echo "4/8 start ingest (receiver+worker) + mock hubcrm/billing/support (shared default manifest seed 42 —
 do NOT pass divergent seeds or cross-system correlation breaks)"
 # BACKFILL_INTERVAL_MS pinned high so the in-process scheduled poller cannot fire mid-run —
 # the RED-mode detector proof (CHAOS_SKIP_BACKFILL=1) depends on dropped events staying
 # unrecovered until the explicit backfill step below.
 mkdir -p out  # log redirects + ledgers land here; gitignored, absent on fresh clones
 INGEST_INSTANCE_ID="$INGEST_INSTANCE_ID" PORT=4002 BACKFILL_INTERVAL_MS=600000 npm run start -w ingest > out/log-ingest.txt 2>&1 & pids+=($!)
-PORT=4001 WEBHOOK_URL=http://localhost:4002/webhooks/crm     LEDGER_PATH="$LEDGER_PATH_CRM"     npm run start -w mocks/crm     > out/log-crm.txt 2>&1 & pids+=($!)
+PORT=4007 WEBHOOK_URL=http://localhost:4002/webhooks/hubcrm  LEDGER_PATH="$LEDGER_PATH_HUBCRM"  npm run start -w mocks/hubcrm  > out/log-hubcrm.txt 2>&1 & pids+=($!)
 PORT=4003 WEBHOOK_URL=http://localhost:4002/webhooks/billing LEDGER_PATH="$LEDGER_PATH_BILLING" npm run start -w mocks/billing > out/log-billing.txt 2>&1 & pids+=($!)
 PORT=4004 WEBHOOK_URL=http://localhost:4002/webhooks/support LEDGER_PATH="$LEDGER_PATH_SUPPORT" npm run start -w mocks/support > out/log-support.txt 2>&1 & pids+=($!)
 # Liveness is not readiness — see the same guard in demo.sh. This script's own assumption
@@ -112,15 +128,30 @@ instance_wait() {
 }
 
 instance_wait 4002 ingest
-fresh_wait 4001 crm; fresh_wait 4003 billing; fresh_wait 4004 support
+fresh_wait 4007 hubcrm; fresh_wait 4003 billing; fresh_wait 4004 support
 
-echo "5/8 simulate 200 events per source with injected faults (seed $CHAOS_SEED, drop 0.2, dup 0.15, apiError 0.2)"
+# hubcrm runs 240 ops = the mock's exported OPS_UNTIL_MERGES_COMPLETE (both manifest
+# merges fire — the chaos run exercises merge metabolism: consumed objects classify as
+# mergedAwayRaw, never as loss). Its fault plan speaks the paradigm's own weather:
+# duplicates (re-delivered requests), holdovers (cross-batch disorder), within-batch
+# shuffle, and a bounded redelivery budget riding transient door errors. NO dropRate in
+# the green path — a permanently dropped webhook is this paradigm's ADMITTED loss class
+# (10-retries-then-gone) with no feed to backfill from; recovery machinery for it is a
+# registered follow-up, and the RED mode below proves the detector sees the loss.
+# billing/support keep the full 2a plan (drops recovered by feed backfill).
+echo "5/8 simulate with injected faults (seed $CHAOS_SEED): hubcrm 240 ops (dup 0.15, holdover 0.15, shuffle), billing/support 200 events (drop 0.2, dup 0.15, apiError 0.2)"
 fault_body() { printf '{"count": 200, "fault_plan": {"seed": %s, "dropRate": 0.2, "dupRate": 0.15, "apiErrorRate": 0.2}}' "$CHAOS_SEED"; }
-curl -sf -X POST http://localhost:4001/simulate -H 'content-type: application/json' -d "$(fault_body)" > /dev/null
+if [[ "$SKIP_BACKFILL" == "1" ]]; then
+  # RED mode: inject permanent webhook drops so reconcile must name missing objects.
+  hub_fault_body() { printf '{"count": 240, "redeliver_attempts": 3, "fault_plan": {"seed": %s, "dropRate": 0.2, "dupRate": 0.15, "holdoverRate": 0.15, "shuffleWithinBatch": true}}' "$CHAOS_SEED"; }
+else
+  hub_fault_body() { printf '{"count": 240, "redeliver_attempts": 3, "fault_plan": {"seed": %s, "dupRate": 0.15, "holdoverRate": 0.15, "shuffleWithinBatch": true}}' "$CHAOS_SEED"; }
+fi
+curl -sf -X POST http://localhost:4007/simulate -H 'content-type: application/json' -d "$(hub_fault_body)" > /dev/null
 curl -sf -X POST http://localhost:4003/simulate -H 'content-type: application/json' -d "$(fault_body)" > /dev/null
 curl -sf -X POST http://localhost:4004/simulate -H 'content-type: application/json' -d "$(fault_body)" > /dev/null
 
-echo "5b/8 bounded settle-wait for push-path (raw count stable + queue quiescent, NOT ==600 since ~20% are dropped)"
+echo "5b/8 bounded settle-wait for push-path (raw count stable + queue quiescent — no fixed total: billing/support drop ~20% and hubcrm absorbs duplicates)"
 # Backoff-aware quiescence: queue_pending counts created/active AND retry jobs for the
 # ingest queues, so a job parked in pg-boss retry backoff still holds the wait open. The
 # bound must therefore cover worst-case cumulative retry backoff, not just steady-state
@@ -148,12 +179,12 @@ while (( $(date +%s) - settle_start < SETTLE_TIMEOUT_S )); do
   sleep 1
 done
 $settled || { echo "FAIL: push-path did not settle within ${SETTLE_TIMEOUT_S}s (raw=$(raw_count) pending=$(queue_pending): $(queue_breakdown))"; exit 1; }
-echo "    settled: raw=$(raw_count) queue_pending=$(queue_pending) (ledgers: crm=$(ledger_line_count "$LEDGER_PATH_CRM") billing=$(ledger_line_count "$LEDGER_PATH_BILLING") support=$(ledger_line_count "$LEDGER_PATH_SUPPORT") events emitted by simulate)"
+echo "    settled: raw=$(raw_count) queue_pending=$(queue_pending) (ledgers: hubcrm=$(ledger_line_count "$LEDGER_PATH_HUBCRM") billing=$(ledger_line_count "$LEDGER_PATH_BILLING") support=$(ledger_line_count "$LEDGER_PATH_SUPPORT") events emitted by simulate)"
 
 if [[ "$SKIP_BACKFILL" == "1" ]]; then
-  echo "6/8 SKIPPED (CHAOS_SKIP_BACKFILL=1) — leaving dropped events unrecovered on purpose"
+  echo "6/8 SKIPPED (CHAOS_SKIP_BACKFILL=1) — leaving dropped events unrecovered and hubcrm un-hydrated on purpose"
 else
-  echo "6/8 backfill all sources (retry up to 3x on exit 1 — 429 streaks can abort a run; cursors are resumable)"
+  echo "6/8 backfill all sources (feed recovery for the ledger-feeds; the hydration pump for hubcrm; retry up to 3x on exit 1 — 429 streaks can abort a run; cursors are resumable)"
   backfill_ok=false
   for attempt in 1 2 3; do
     code=0
@@ -171,7 +202,7 @@ else
   $backfill_ok || { echo "FAIL: backfill did not succeed after 3 attempts (last exit code: 1)"; exit 1; }
 fi
 
-echo "7/8 reconcile each source's ledger vs its raw rows (PASS requires ALL of: ${INGEST_SOURCES})"
+echo "7/8 reconcile each source under its own paradigm's oracle — hubcrm: store vs raw thin events vs hydrated snapshots; billing/support: ledger vs raw (PASS requires ALL of: ${INGEST_SOURCES})"
 set +e
 npm run reconcile -w ingest
 reconcile_status=$?
