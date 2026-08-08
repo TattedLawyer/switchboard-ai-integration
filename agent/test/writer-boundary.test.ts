@@ -40,42 +40,25 @@ import {
   writerBoundaryViolations,
   WRITER_BOUNDARY_DEFAULTS,
 } from "./helpers/module-facts.js";
+import {
+  ALLOWED_EXTERNAL_MODULES,
+  POOL_ENTRYPOINTS,
+  SWEPT_EXTENSIONS,
+  UNSWEPT_ALLOWED_EXTENSIONS,
+  collectSources,
+} from "./helpers/writer-boundary-config.js";
 
 const SRC_DIR = fileURLToPath(new URL("../src", import.meta.url));
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
-function walk(dir: string): string[] {
-  return readdirSync(dir).flatMap((entry) => {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) return walk(full);
-    return full.endsWith(".ts") ? [full] : [];
-  });
-}
-
-const SOURCES = walk(SRC_DIR).map((path) => ({
-  rel: path.slice(SRC_DIR.length + 1),
-  text: readFileSync(path, "utf8"),
-}));
-
-// The two entrypoints that legitimately build the agent's ONE pool. Both build it from
-// agentConnectionString(), which can only ever return the read-only credential.
-const POOL_ENTRYPOINTS = ["host/run-report.ts", "host/run-propose.ts"];
+// Input selection lives in writer-boundary-config.ts, with the extension policy, because
+// it is part of the control rather than plumbing in front of it: a walker that silently
+// drops what it does not recognise (`endsWith(".ts")`) is a policy nobody reviewed, and it
+// is how a `.mjs` writer sat in this tree invisibly.
+const COLLECTION = collectSources(SRC_DIR, (path) => readFileSync(path, "utf8"));
+const SOURCES = COLLECTION.sources;
 
 const FACTS = SOURCES.map((s) => analyzeModule(s.rel, s.text));
-
-// Every non-relative module `agent/src/**` is allowed to speak to. A WHITELIST, because a
-// denylist of database drivers only lists the ones its author remembered — `pg-pool`,
-// `postgres`, `knex`, `drizzle-orm`, a vendored copy. Adding any dependency to the agent
-// is now a deliberate edit to this line with a reviewer looking at it.
-const ALLOWED_EXTERNAL_MODULES = [
-  "@anthropic-ai/sdk",
-  "@modelcontextprotocol/sdk/client/index.js",
-  "@modelcontextprotocol/sdk/inMemory.js",
-  "@modelcontextprotocol/sdk/server/mcp.js",
-  "node:fs",
-  "pg",
-  "zod",
-];
 
 describe("A1 part 3: AST sweep over agent/src/** — bindings and specifiers, not text", () => {
   it("finds the source files it claims to be sweeping (a vacuous sweep is not a pin)", () => {
@@ -98,6 +81,26 @@ describe("A1 part 3: AST sweep over agent/src/** — bindings and specifiers, no
     // …and the analyzer must actually be seeing structure, not returning empty facts for
     // everything. If this ever reads zero, every assertion below passes for free.
     expect(FACTS.flatMap((f) => f.specifiers).length).toBeGreaterThanOrEqual(6);
+  });
+
+  it("INPUT SELECTION: every file under agent/src/ is either swept or a declared non-code type", () => {
+    // BYPASS-B: `agent/src/host/writer.mjs` holding the naive `import { Pool } from "pg"`
+    // was invisible, because the walker collected only `.ts`. tsc never compiles a `.mjs`
+    // and Node runs it natively, so nothing anywhere noticed. This assertion makes adding a
+    // runnable extension to this tree a test failure unless the sweep is taught to read it.
+    expect(COLLECTION.uncovered, "files the containment does not cover").toEqual([]);
+  });
+
+  it("the swept extension set covers every runnable form, and the policy is explicit", () => {
+    // A guard on the guard: if someone "simplifies" SWEPT_EXTENSIONS back to [".ts"], this
+    // reds before any bypass has to be written.
+    for (const ext of [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"]) {
+      expect(SWEPT_EXTENSIONS, `${ext} is runnable and must be swept`).toContain(ext);
+    }
+    // And the escape hatch stays narrow: nothing executable may be parked in it.
+    for (const ext of UNSWEPT_ALLOWED_EXTENSIONS) {
+      expect([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]).not.toContain(ext);
+    }
   });
 
   it("nothing under agent/src/ defeats static analysis — an unresolvable construct IS the finding", () => {
@@ -176,11 +179,11 @@ describe("A1 part 3: AST sweep over agent/src/** — bindings and specifiers, no
     // function `module-facts.test.ts` runs its eight-case bypass corpus against — so
     // weakening it to make this line pass reds that corpus in the same run. The granular
     // assertions above stay because a named failure is a better diagnostic than a list.
-    const violations = writerBoundaryViolations(FACTS, {
-      ...WRITER_BOUNDARY_DEFAULTS,
-      poolEntrypoints: POOL_ENTRYPOINTS,
-      allowedExternalModules: ALLOWED_EXTERNAL_MODULES,
-    });
+    const violations = writerBoundaryViolations(
+      FACTS,
+      { ...WRITER_BOUNDARY_DEFAULTS, poolEntrypoints: POOL_ENTRYPOINTS, allowedExternalModules: ALLOWED_EXTERNAL_MODULES },
+      COLLECTION.uncovered,
+    );
     expect(violations, "writer-boundary violations under agent/src/").toEqual([]);
   });
 

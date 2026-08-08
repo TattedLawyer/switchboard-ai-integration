@@ -72,8 +72,18 @@ const isProcessEnv = (node: ts.Node): boolean =>
   ts.isIdentifier(node.expression) &&
   node.expression.text === "process";
 
+/** JS and TS parse through the same parser; the kind only has to be right enough that JSX
+ *  and TS syntax are each accepted where they are legal. `.mjs`/`.cjs`/`.js` are runnable
+ *  by Node with no build step, which is exactly why they must be analysed (BYPASS-B). */
+function scriptKindFor(rel: string): ts.ScriptKind {
+  if (rel.endsWith(".tsx")) return ts.ScriptKind.TSX;
+  if (rel.endsWith(".jsx")) return ts.ScriptKind.JSX;
+  if (/\.(js|mjs|cjs)$/.test(rel)) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
 export function analyzeModule(rel: string, source: string): ModuleFacts {
-  const sf = ts.createSourceFile(rel, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
+  const sf = ts.createSourceFile(rel, source, ts.ScriptTarget.ES2022, true, scriptKindFor(rel));
   const facts: ModuleFacts = {
     rel,
     specifiers: [],
@@ -85,10 +95,21 @@ export function analyzeModule(rel: string, source: string): ModuleFacts {
   const text = (n: ts.Node): string => n.getText(sf).replace(/\s+/g, " ").slice(0, 120);
 
   /** Records a module specifier and, when it is `pg`, the local names it binds. */
+  // BYPASS-A: `../../../node_modules/pg/lib/index.js` is a driver import wearing a path.
+  // `/^pg(\/|$)/` never matched it, so no binding was recorded and every downstream rule
+  // was evaluating an empty fact set. Any specifier that reaches a package directory —
+  // however it is spelled — names that package.
+  const DRIVER_PACKAGE = /(?:^|\/)(?:node_modules\/)?(pg|pg-pool|pg-native|postgres|knex|sequelize|drizzle-orm)(?:\/|$)/;
   const record = (spec: string, binds: string[]): void => {
     if (!facts.specifiers.includes(spec)) facts.specifiers.push(spec);
-    if (/^pg(\/|$)/.test(spec)) {
+    if (DRIVER_PACKAGE.test(spec)) {
       for (const b of binds) if (!facts.pgBindings.includes(b)) facts.pgBindings.push(b);
+    }
+    // Reaching into node_modules by path at all defeats the module whitelist, whatever the
+    // package is. It is never legitimate here, so it is reported on its own terms rather
+    // than depending on the package list above being complete.
+    if (/(^|\/)node_modules(\/|$)/.test(spec)) {
+      facts.opaque.push(`specifier reaches into node_modules by path: ${spec}`);
     }
   };
 
@@ -260,6 +281,8 @@ export function analyzeModule(rel: string, source: string): ModuleFacts {
 // by rules nobody ships; this way the corpus proves the SHIPPED predicate catches it, and
 // weakening the predicate to make the real sweep pass immediately reds the corpus.
 
+import { candidateTargets, resolveRelative } from "./writer-boundary-config.js";
+
 export interface WriterBoundaryConfig {
   /** Files permitted to bind the database driver and construct a pool. */
   poolEntrypoints: readonly string[];
@@ -270,27 +293,55 @@ export interface WriterBoundaryConfig {
   allowedCredentialKey: string;
   /** Required substring of a pool's constructor argument. */
   requiredConnectionExpression: string;
+  /**
+   * Connection fields an entrypoint's pool argument may NOT set. The entrypoints are
+   * exempt from "no pool here", so without this the exemption is a hole: a pool built as
+   * `{ connectionString: agentConnectionString(), user: "switchboard", password: … }`
+   * satisfies the required-substring rule while connecting as a different role, since
+   * node-postgres lets discrete fields override the URL.
+   */
+  forbiddenConnectionFields: readonly string[];
 }
 
 export const WRITER_BOUNDARY_DEFAULTS = {
   credentialShaped: /DATABASE_URL|DB_PASSWORD|DB_URL|^PG|POSTGRES_/,
   allowedCredentialKey: "AGENT_DATABASE_URL",
   requiredConnectionExpression: "connectionString: agentConnectionString()",
+  forbiddenConnectionFields: ["user:", "password:", "host:", "port:", "database:"],
 } as const;
 
 /** Every way the modules given violate the writer boundary. Empty means contained. */
 export function writerBoundaryViolations(
   modules: readonly ModuleFacts[],
   config: WriterBoundaryConfig,
+  /** Files the collector refused to read. NON-EMPTY IS A VIOLATION — see BYPASS-B. */
+  uncovered: readonly string[] = [],
 ): string[] {
   const out: string[] = [];
+  const swept = new Set(modules.map((m) => m.rel));
+  for (const u of uncovered) {
+    out.push(`UNCOVERED: ${u} — the sweep cannot read it, so it is not contained`);
+  }
   for (const f of modules) {
     // 1. Unresolvable constructs are the finding, not an absence of one.
     for (const o of f.opaque) out.push(`${f.rel}: ${o}`);
 
-    // 2. The module whitelist — the backstop that survives an aliased helper name.
+    // 2. Specifiers. A relative one used to be waved through as "internal" — the exemption
+    //    BYPASS-A walked through, because `../../../node_modules/pg/lib/index.js` is
+    //    relative and is not internal at all. Every relative specifier must now resolve to
+    //    a file the sweep actually read; everything else must be on the whitelist.
     for (const spec of f.specifiers) {
-      if (spec.startsWith(".")) continue;
+      if (spec.startsWith(".")) {
+        const resolved = resolveRelative(f.rel, spec);
+        if (resolved === null) {
+          out.push(`${f.rel}: relative specifier "${spec}" escapes the swept tree`);
+        } else if (!candidateTargets(resolved).some((c) => swept.has(c))) {
+          out.push(
+            `${f.rel}: relative specifier "${spec}" resolves to "${resolved}", which the sweep does not cover`,
+          );
+        }
+        continue;
+      }
       if (!config.allowedExternalModules.includes(spec)) {
         out.push(`${f.rel}: references non-whitelisted module "${spec}"`);
       }
@@ -313,6 +364,15 @@ export function writerBoundaryViolations(
         out.push(`${f.rel}: constructs a database pool (${c.form})`);
       } else if (!c.argText.includes(config.requiredConnectionExpression)) {
         out.push(`${f.rel}: ${c.form} is not built from ${config.requiredConnectionExpression}`);
+      } else {
+        for (const field of config.forbiddenConnectionFields) {
+          if (c.argText.includes(field)) {
+            out.push(
+              `${f.rel}: ${c.form} overrides connection field "${field}" — discrete fields ` +
+                `beat the URL in node-postgres, so this can connect as another role`,
+            );
+          }
+        }
       }
     }
 
