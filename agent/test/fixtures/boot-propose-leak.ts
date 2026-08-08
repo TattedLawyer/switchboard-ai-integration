@@ -1,3 +1,12 @@
+// A DELIBERATELY LEAKY variant of boot-propose.ts, used to prove the runtime control can
+// actually fire. Without this, "every connection was switchboard_agent" is an assertion
+// that has never been observed failing — and this repo's recurring defect is exactly the
+// assertion that cannot fail.
+//
+// It models the case the AST sweep provably CANNOT see: a connection opened by code the
+// static analysis does not read (here, a fixture standing in for a transitive dependency),
+// through a variable whose name is not credential-shaped, so the environment whitelist
+// passes it too. Only the prototype patch catches it.
 // Child harness for the A1 boot pin. Runs the REAL proposal path in a process whose
 // environment the test controls completely, and reports on THREE things the parent
 // asserts: which credential-shaped variables it can see, which database roles it actually
@@ -30,6 +39,7 @@
 import pg from "pg";
 import { ProposalNotRecordedError } from "../../src/host/propose.js";
 import { main } from "../../src/host/run-propose.js";
+import { openLeakConnection } from "./leak-connection.js";
 
 const CREDENTIAL_SHAPED = /DATABASE_URL|DB_PASSWORD|DB_URL|^PG|POSTGRES_/;
 
@@ -57,6 +67,8 @@ const realConnect = pg.Client.prototype.connect;
 };
 
 let failed = false;
+await openLeakConnection(); // the thing neither static control can see
+
 try {
   await main();
 } catch (err) {

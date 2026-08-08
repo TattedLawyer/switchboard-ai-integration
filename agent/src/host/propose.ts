@@ -62,11 +62,28 @@ export function proposalToken(): string {
   );
 }
 
-/** Raised when the door did not record the proposal. Carries the status so a caller can
- *  tell "the door refused this proposal" (4xx) from "the door was unreachable" (5xx/network). */
+/**
+ * Raised when the door did not record the proposal.
+ *
+ * `kind` is the load-bearing field and it exists because of a vacuous pin: the boot test
+ * used to assert that the child's stderr contained "401", and it kept passing with this
+ * module's entire non-2xx branch deleted — the string was coming from Node's
+ * unhandled-rejection dump, not from any classification this code performed. A test can
+ * only pin a decision the code actually makes, so the code makes one, by name. Callers
+ * (and the pin) discriminate on `kind`; `status` is detail for a human.
+ */
+export type ProposalFailureKind =
+  /** The door could not be reached at all — network, wrong address, service down. */
+  | "unreachable"
+  /** The door answered, and refused: auth, validation, or the flood cap. */
+  | "refused"
+  /** The door answered 2xx but named no proposal — we do not know if it recorded one. */
+  | "no-id";
+
 export class ProposalNotRecordedError extends Error {
   constructor(
     message: string,
+    readonly kind: ProposalFailureKind,
     readonly status: number | null,
     readonly detail: unknown,
   ) {
@@ -113,6 +130,7 @@ export async function recordProposal(
   } catch (err) {
     throw new ProposalNotRecordedError(
       `proposal was NOT recorded: the approval service at ${baseUrl} is unreachable`,
+      "unreachable",
       null,
       err instanceof Error ? err.message : String(err),
     );
@@ -129,6 +147,7 @@ export async function recordProposal(
   if (res.status !== 200 && res.status !== 201) {
     throw new ProposalNotRecordedError(
       `proposal was NOT recorded: the approval door answered ${res.status}`,
+      "refused",
       res.status,
       body,
     );
@@ -140,6 +159,7 @@ export async function recordProposal(
     // "we do not know whether this was recorded" and a caller believing it was.
     throw new ProposalNotRecordedError(
       "proposal was NOT recorded: the approval door answered 2xx without an id",
+      "no-id",
       res.status,
       body,
     );

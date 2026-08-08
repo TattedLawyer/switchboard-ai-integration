@@ -35,6 +35,11 @@ import pg from "pg";
 import { freshTestDb } from "../../ingest/test/helpers/testdb.js";
 import { createApprovalApp } from "../../approval/src/server.js";
 import { assertAgentRole, REQUIRED_AGENT_ROLE } from "../src/host/agent-db.js";
+import {
+  analyzeModule,
+  writerBoundaryViolations,
+  WRITER_BOUNDARY_DEFAULTS,
+} from "./helpers/module-facts.js";
 
 const SRC_DIR = fileURLToPath(new URL("../src", import.meta.url));
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -56,8 +61,24 @@ const SOURCES = walk(SRC_DIR).map((path) => ({
 // agentConnectionString(), which can only ever return the read-only credential.
 const POOL_ENTRYPOINTS = ["host/run-report.ts", "host/run-propose.ts"];
 
-describe("A1 part 3: source sweep over agent/src/** (a legibility control, stated as one)", () => {
-  it("finds the source files it claims to be sweeping (a vacuous grep is not a pin)", () => {
+const FACTS = SOURCES.map((s) => analyzeModule(s.rel, s.text));
+
+// Every non-relative module `agent/src/**` is allowed to speak to. A WHITELIST, because a
+// denylist of database drivers only lists the ones its author remembered — `pg-pool`,
+// `postgres`, `knex`, `drizzle-orm`, a vendored copy. Adding any dependency to the agent
+// is now a deliberate edit to this line with a reviewer looking at it.
+const ALLOWED_EXTERNAL_MODULES = [
+  "@anthropic-ai/sdk",
+  "@modelcontextprotocol/sdk/client/index.js",
+  "@modelcontextprotocol/sdk/inMemory.js",
+  "@modelcontextprotocol/sdk/server/mcp.js",
+  "node:fs",
+  "pg",
+  "zod",
+];
+
+describe("A1 part 3: AST sweep over agent/src/** — bindings and specifiers, not text", () => {
+  it("finds the source files it claims to be sweeping (a vacuous sweep is not a pin)", () => {
     expect(SOURCES.length).toBeGreaterThanOrEqual(6);
     for (const known of [
       "host/agent-db.ts",
@@ -71,63 +92,106 @@ describe("A1 part 3: source sweep over agent/src/** (a legibility control, state
       ).toContain(known);
     }
     // The sweep must cover more than the MCP directory — scoping it there is exactly how
-    // the earlier draft left the writer client's own directory unswept.
+    // an earlier draft left the writer client's own directory unswept.
     expect(SOURCES.some((s) => s.rel.startsWith("host/"))).toBe(true);
     expect(SOURCES.some((s) => s.rel.startsWith("mcp/"))).toBe(true);
+    // …and the analyzer must actually be seeing structure, not returning empty facts for
+    // everything. If this ever reads zero, every assertion below passes for free.
+    expect(FACTS.flatMap((f) => f.specifiers).length).toBeGreaterThanOrEqual(6);
   });
 
-  it("no module under agent/src/ reads a full-privilege credential", () => {
-    // Every credential-shaped env read in the whole tree, with its file. The only name
-    // permitted is AGENT_DATABASE_URL: the read-only role's own connection string.
-    const offenders: string[] = [];
-    for (const { rel, text } of SOURCES) {
-      for (const m of text.matchAll(/process\.env\.([A-Z0-9_]+)/g)) {
-        const name = m[1];
-        if (!/DATABASE_URL|DB_PASSWORD|DB_URL|PGPASSWORD|PGUSER|POSTGRES_PASSWORD/.test(name)) {
-          continue;
-        }
-        if (name !== "AGENT_DATABASE_URL") offenders.push(`${rel}: process.env.${name}`);
-      }
-    }
-    expect(offenders, `credential-shaped env reads outside AGENT_DATABASE_URL`).toEqual([]);
+  it("nothing under agent/src/ defeats static analysis — an unresolvable construct IS the finding", () => {
+    // The inversion that makes this a control rather than a formality: a computed module
+    // specifier, a computed process.env key, an aliased or spread process.env, a
+    // createRequire — none of them analyse to "no finding". They red here. Cleverness
+    // cannot buy silence.
+    const opaque = FACTS.flatMap((f) => f.opaque.map((o) => `${f.rel}: ${o}`));
+    expect(opaque, "these constructs make the sweep below unable to see what they do").toEqual([]);
   });
 
-  it("AGENT_DATABASE_URL is read in exactly one module, so there is one place to audit", () => {
-    const readers = SOURCES.filter((s) => s.text.includes("process.env.AGENT_DATABASE_URL"));
-    expect(readers.map((s) => s.rel)).toEqual(["host/agent-db.ts"]);
+  it("agent/src/ speaks to no module outside the whitelist, by ANY import mechanism", () => {
+    // Collected from static imports, namespace imports, named imports, `export … from`,
+    // `import x = require()`, `import()` and `require()`. The module specifier is the one
+    // thing a second pool cannot avoid naming, whatever its credential comes from —
+    // environment, file, or a hardcoded string.
+    const external = [
+      ...new Set(FACTS.flatMap((f) => f.specifiers).filter((s) => !s.startsWith("."))),
+    ].sort();
+    expect(external).toEqual([...ALLOWED_EXTERNAL_MODULES].sort());
   });
 
-  it("a database pool is constructed only in the two read-only entrypoints", () => {
-    const builders = SOURCES.filter((s) => /new pg\.Pool/.test(s.text)).map((s) => s.rel);
+  it("`pg` is reachable ONLY from the two read-only entrypoints — in any import form", () => {
+    // Default, named (`import { Pool }`), namespace (`import * as pg`), re-export
+    // (a barrel file leaks the binding to every importer), dynamic `import("pg")` and
+    // `require("pg")` all bind here. A type-only import binds nothing at runtime and is
+    // deliberately not counted — that is why report.ts may hold `import type pg from "pg"`.
+    const pgUsers = FACTS.filter((f) => f.pgBindings.length > 0).map((f) => f.rel);
+    expect(pgUsers.sort()).toEqual([...POOL_ENTRYPOINTS].sort());
+  });
+
+  it("no module RE-EXPORTS a database module, so a barrel file cannot launder the binding", () => {
+    const reExporters = FACTS.filter((f) => f.pgBindings.includes("<re-export>")).map((f) => f.rel);
+    expect(reExporters, "a re-export makes every importer of that file a pool site").toEqual([]);
+  });
+
+  it("a pool is constructed only in the two entrypoints, and only from agentConnectionString()", () => {
+    const builders = FACTS.filter((f) => f.poolConstructions.length > 0).map((f) => f.rel);
     expect(builders.sort()).toEqual([...POOL_ENTRYPOINTS].sort());
-  });
-
-  it("every pool in agent/src/ is built from agentConnectionString() — no literal, no other variable", () => {
-    for (const { rel, text } of SOURCES) {
-      for (const m of text.matchAll(/new pg\.Pool\(\{([^}]*)\}/g)) {
+    for (const f of FACTS) {
+      for (const c of f.poolConstructions) {
         expect(
-          m[1],
-          `${rel} builds a pool from something other than agentConnectionString()`,
+          c.argText,
+          `${f.rel} builds ${c.form} from something other than agentConnectionString()`,
         ).toContain("connectionString: agentConnectionString()");
       }
     }
   });
 
-  it("the proposal client contains no SQL and no pg import — the writer is not here", () => {
-    const propose = SOURCES.find((s) => s.rel === "host/propose.ts");
-    expect(propose).toBeDefined();
-    expect(propose!.text).not.toMatch(/\bfrom "pg"/);
-    expect(propose!.text).not.toMatch(/\binsert\s+into\b/i);
-    expect(propose!.text).not.toMatch(/\bpool\.query\b/);
+  it("no module reads a credential-shaped environment variable other than AGENT_DATABASE_URL", () => {
+    // Keys come from dot access, bracket access with a literal, and destructuring alike —
+    // the shape of the WRITE, not the shape of the source text. `^PG` covers libpq's
+    // non-URL channels (PGPASSFILE, PGSERVICE, PGSERVICEFILE, PGHOST, PGSSLKEY), through
+    // which a credential can arrive without any URL-shaped variable existing.
+    const CREDENTIAL_SHAPED = /DATABASE_URL|DB_PASSWORD|DB_URL|^PG|POSTGRES_/;
+    const offenders: string[] = [];
+    for (const f of FACTS) {
+      for (const a of f.envAccesses) {
+        if (a.key === null) continue; // already reported by the opaque test above
+        if (!CREDENTIAL_SHAPED.test(a.key)) continue;
+        if (a.key !== "AGENT_DATABASE_URL") offenders.push(`${f.rel}: ${a.form}`);
+      }
+    }
+    expect(offenders, "credential-shaped env reads outside AGENT_DATABASE_URL").toEqual([]);
   });
 
-  it("`pg` is imported as a VALUE only where a pool is legitimately built", () => {
-    // `import type pg` in mcp/server.ts is a type-only import and erases at build; a value
-    // import anywhere else is the first move of adding a second pool.
-    const valueImporters = SOURCES.filter((s) => /^import pg from "pg";/m.test(s.text)).map(
-      (s) => s.rel,
-    );
-    expect(valueImporters.sort()).toEqual([...POOL_ENTRYPOINTS].sort());
+  it("AGENT_DATABASE_URL is read in exactly one module, so there is one place to audit", () => {
+    const readers = FACTS.filter((f) =>
+      f.envAccesses.some((a) => a.key === "AGENT_DATABASE_URL"),
+    ).map((f) => f.rel);
+    expect(readers).toEqual(["host/agent-db.ts"]);
+  });
+
+  it("THE PREDICATE: agent/src/** contains no writer-boundary violation of any kind", () => {
+    // The aggregate, and the one that matters. `writerBoundaryViolations` is the same
+    // function `module-facts.test.ts` runs its eight-case bypass corpus against — so
+    // weakening it to make this line pass reds that corpus in the same run. The granular
+    // assertions above stay because a named failure is a better diagnostic than a list.
+    const violations = writerBoundaryViolations(FACTS, {
+      ...WRITER_BOUNDARY_DEFAULTS,
+      poolEntrypoints: POOL_ENTRYPOINTS,
+      allowedExternalModules: ALLOWED_EXTERNAL_MODULES,
+    });
+    expect(violations, "writer-boundary violations under agent/src/").toEqual([]);
+  });
+
+  it("the proposal client holds no database binding and no SQL — the writer is not here", () => {
+    const propose = FACTS.find((f) => f.rel === "host/propose.ts");
+    expect(propose).toBeDefined();
+    expect(propose!.pgBindings).toEqual([]);
+    expect(propose!.poolConstructions).toEqual([]);
+    const src = SOURCES.find((s) => s.rel === "host/propose.ts")!.text;
+    expect(src).not.toMatch(/\binsert\s+into\b/i);
+    expect(src).not.toMatch(/\bpool\.query\b/);
   });
 });
 
@@ -183,8 +247,9 @@ afterAll(async () => {
  *  server it is testing" looks like a product hang. */
 async function bootChild(
   extra: Record<string, string> = {},
+  harnessFile = "boot-propose.ts",
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  const harness = fileURLToPath(new URL("./fixtures/boot-propose.ts", import.meta.url));
+  const harness = fileURLToPath(new URL(`./fixtures/${harnessFile}`, import.meta.url));
   const child = spawn(process.execPath, ["--import", "tsx", harness], {
     cwd: REPO_ROOT,
     env: {
@@ -208,12 +273,14 @@ async function bootChild(
 
 describe("A1 parts 2+4: the proposal path runs with no write-capable credential in reach", () => {
   it("boots, sees only AGENT_DATABASE_URL, and records a real proposal", async () => {
-    const key = `pin-${Date.now()}`;
-    const out = await bootChild({ PROPOSAL_KEY: key });
+    const out = await bootChild();
     expect(out.stderr + out.stdout).toContain("ENV_WHITELIST_OK");
     expect(out.status, out.stderr).toBe(0);
     expect(out.stdout).toContain("PROPOSAL_PATH_OK");
     expect(out.stdout).toMatch(/recorded proposal [0-9a-f-]{36} \(state=pending/);
+    // The RUNTIME half: every connection this process actually opened, observed at
+    // pg.Client.prototype.connect, whatever module opened it and however it imported pg.
+    expect(out.stdout).toContain('DB_ROLES_OK ["switchboard_agent"]');
   });
 
   it("the proposal really landed in the database — written by the approval service, not by the agent", async () => {
@@ -261,18 +328,51 @@ describe("A1 parts 2+4: the proposal path runs with no write-capable credential 
     expect(out.stderr).toContain("CREDENTIAL_LEAK");
   });
 
+  it("RUNTIME: a connection opened as any other role fails the process, even when both static controls pass", async () => {
+    // The case the AST sweep provably cannot see and the environment whitelist provably
+    // cannot see: the connection is opened by code outside agent/src/** (standing in for a
+    // transitive dependency) using a variable named LEAK_CONN, which no credential-shaped
+    // pattern matches. The prototype patch on pg.Client.prototype.connect observes it
+    // anyway, because every Pool builds Clients and every Client shares that prototype.
+    //
+    // This test exists so "every connection was switchboard_agent" is an assertion that has
+    // been SEEN failing. An assertion nobody has ever watched go red is not a pin.
+    const out = await bootChild(
+      { LEAK_CONN: dbUrl },
+      "boot-propose-leak.ts",
+    );
+    expect(out.stdout, "the env whitelist must have PASSED — that is the point").toContain(
+      "ENV_WHITELIST_OK",
+    );
+    expect(out.status).toBe(3);
+    expect(out.stderr).toContain("CREDENTIAL_LEAK_RUNTIME");
+    expect(out.stderr).toContain("switchboard");
+  });
+
+  it("…and the same leaky harness is clean when the leak is not configured (the control is not always-red)", async () => {
+    const out = await bootChild({}, "boot-propose-leak.ts");
+    expect(out.status, out.stderr).toBe(0);
+    expect(out.stdout).toContain('DB_ROLES_OK ["switchboard_agent"]');
+  });
+
   it("an unrecorded proposal is a LOUD failure, never a plausible-looking success", async () => {
     const out = await bootChild({ APPROVAL_BASE_URL: "http://127.0.0.1:1" });
     expect(out.status).toBe(1);
-    expect(out.stderr).toContain("NOT recorded");
+    expect(out.stderr).toContain("DOOR_REFUSED kind=unreachable");
     expect(out.stdout).not.toContain("PROPOSAL_PATH_OK");
   });
 
-  it("a wrong bearer token is a loud failure, not a silent skip", async () => {
+  it("a wrong bearer token is classified BY THE CODE as a refusal, not merely printed by the runtime", async () => {
+    // This assertion used to read `expect(out.stderr).toContain("401")` and it was hollow:
+    // deleting propose.ts's entire non-2xx branch left it green, because the child did a
+    // bare top-level `await main()` and Node's unhandled-rejection dump prints the whole
+    // error object — status included — for the failure two branches later. `kind` is a
+    // value this code assigns, so the assertion is now about a decision rather than about
+    // text the runtime may also emit.
     const out = await bootChild({ AGENT_PROPOSAL_TOKEN: "wrong-token" });
     expect(out.status).toBe(1);
-    expect(out.stderr).toContain("NOT recorded");
-    expect(out.stderr).toContain("401");
+    expect(out.stderr).toContain("DOOR_REFUSED kind=refused status=401");
+    expect(out.stderr).not.toContain("kind=no-id");
   });
 });
 
