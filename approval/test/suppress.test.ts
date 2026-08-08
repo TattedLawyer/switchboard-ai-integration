@@ -192,6 +192,44 @@ describe("A2/T10: NO PROPOSAL IS EVER DISCARDED WITHOUT A HUMAN SEEING IT ONCE",
     expect(await cards(), "the queue still shows a decided card").toHaveLength(0);
   });
 
+  it("approving a card is ATOMIC — a failure part-way leaves NOTHING decided", async () => {
+    // mutation: give `approveCard` back its per-statement transactions (call `decide(pool,
+    //           …)` then `transition(pool, …)` instead of `decideOn(client, …)` /
+    //           `transition(client, …)` inside one `begin`)
+    //           -> the primary ends up `approved` with a decision row while a repeat is
+    //           still `pending`, and this reds. RUN ✅ 2026-08-08
+    //
+    // WHY IT MATTERS, since it fails toward the SAFE direction and is therefore easy to
+    // wave away: a repeat left `pending` re-renders as a card the human ALREADY ANSWERED.
+    // Approving that card produces a second, byte-identical outward action. Asking her
+    // twice is the right way to fail — but a window that costs nothing to close should be
+    // closed, not defended.
+    const p = { to: "jane@client.example.com", body: "identical" };
+    for (let i = 0; i < 3; i++) await post(p);
+    const c = await cards();
+    expect(c).toHaveLength(1);
+    expect(c[0].duplicates).toHaveLength(2);
+
+    // Somebody else moves one of the repeats out from under the card between render and
+    // decision — the sweeper aging it out is the realistic version. The card's transition
+    // for that row now finds no `pending` row and refuses.
+    const victim = c[0].duplicates[1].id;
+    await admin.query(`update approval.proposals set state = 'expired' where id = $1`, [victim]);
+
+    await expect(approveCard(app, c[0], approver)).rejects.toThrow();
+
+    // NOTHING was decided: no decision row survived, the primary is untouched, and the
+    // first repeat was not superseded either.
+    const d = await app.query(`select count(*)::int as n from approval.decisions`);
+    expect(d.rows[0].n, "a decision row survived a failed card approval").toBe(0);
+    const states = await app.query<{ id: string; state: string }>(
+      `select id, state from approval.proposals order by created_at, id`,
+    );
+    expect(states.rows.find((r) => r.id === c[0].primary.id)?.state).toBe("pending");
+    expect(states.rows.find((r) => r.id === c[0].duplicates[0].id)?.state).toBe("pending");
+    expect(states.rows.find((r) => r.id === victim)?.state).toBe("expired");
+  });
+
   it("the card approves the EARLIEST row, deterministically", async () => {
     const p = { to: "jane@client.example.com", body: "identical" };
     const first = await post(p);

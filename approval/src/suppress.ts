@@ -53,7 +53,7 @@
 // EVER DISCARDED WITHOUT A HUMAN SEEING IT ONCE. Every row is written; the collapse happens
 // when the queue is drawn, and the rows it did not surface are disposed of explicitly.
 import type pg from "pg";
-import { decide } from "./decide.js";
+import { decideOn } from "./decide.js";
 import { transition } from "./transition.js";
 import type { QueueRow } from "./queue.js";
 
@@ -80,7 +80,11 @@ export interface CollapsedCard {
 /**
  * Group a queue into cards. Input must already be ordered `created_at, id` — that ordering
  * is what makes "the earliest row" deterministic when two proposals share a transaction
- * start, and the `supersedes` graph an auditor reads depends on it.
+ * start, so which row a card ACTS ON is stable rather than plan-dependent. (An earlier
+ * version of this sentence said the `supersedes` GRAPH depends on it. It does not:
+ * collapse writes no `supersedes` link and cannot, because the column is frozen. What
+ * depends on the ordering is which row gets approved and which get superseded — and that
+ * is what an auditor reconstructs, from the shared suppression key.)
  */
 export function collapseDuplicates(rows: readonly QueueRow[]): CollapsedCard[] {
   const cards = new Map<string, CollapsedCard>();
@@ -110,9 +114,37 @@ export async function approveCard(
   card: CollapsedCard,
   approverUserId: string,
 ): Promise<void> {
-  await decide(pool, { proposalId: card.primary.id, kind: "approved", approverUserId });
-  for (const dup of card.duplicates) {
-    await transition(pool, { id: dup.id, from: "pending", to: "superseded" });
+  // ONE TRANSACTION, over the primary AND every repeat. Not tidiness: done as separate
+  // transactions, a crash in the window leaves the repeats `pending`, so they re-render as
+  // a card the human already answered — and approving THAT produces a second, byte-
+  // identical outward action. It fails toward asking the human again, which is the safe
+  // direction, but "the safe direction" is not a reason to leave a window open that costs
+  // nothing to close.
+  await inTransaction(pool, async (client) => {
+    await decideOn(client, { proposalId: card.primary.id, kind: "approved", approverUserId });
+    for (const dup of card.duplicates) {
+      await transition(client, { id: dup.id, from: "pending", to: "superseded" });
+    }
+  });
+}
+
+/** Run `fn` inside one transaction on one client. The trigger's same-transaction predicate
+ *  makes the boundary load-bearing, so it is explicit here rather than implied by a pool. */
+async function inTransaction<T>(
+  pool: pg.Pool,
+  fn: (client: pg.PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const out = await fn(client);
+    await client.query("commit");
+    return out;
+  } catch (err) {
+    await client.query("rollback").catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
   }
 }
 
@@ -127,7 +159,12 @@ export async function rejectCard(
   approverUserId: string,
   reason: string,
 ): Promise<void> {
-  for (const row of [card.primary, ...card.duplicates]) {
-    await decide(pool, { proposalId: row.id, kind: "rejected", approverUserId, reason });
-  }
+  // Same reasoning, same transaction: a partial rejection leaves repeats pending behind a
+  // card that was answered. Every row still gets its OWN attributable decision row — one
+  // transaction is not one decision.
+  await inTransaction(pool, async (client) => {
+    for (const row of [card.primary, ...card.duplicates]) {
+      await decideOn(client, { proposalId: row.id, kind: "rejected", approverUserId, reason });
+    }
+  });
 }

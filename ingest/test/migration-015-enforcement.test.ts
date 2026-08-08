@@ -223,7 +223,10 @@ describe("A2/T3: payload immutability has TWO independent guards, and each reds 
       admin.query(`update approval.proposals set payload = '{"to":"evil@example.com"}'::jsonb
                     where id = $1`, [p]),
     ).rejects.toMatchObject({ code: "P0001" });
-    // Every frozen column, not just payload.
+    // ALL EIGHT frozen columns, not just payload. The list is exhaustive on purpose: a
+    // column that is frozen in 015 and unattempted here is a column that can be quietly
+    // unfrozen with no pin going red, which is the precise shape this project has been
+    // bitten by five times.
     for (const [col, val] of [
       ["payload_hash", `repeat('c', 64)`],
       ["rationale", `'rewritten'`],
@@ -239,6 +242,52 @@ describe("A2/T3: payload immutability has TWO independent guards, and each reds 
     }
   });
 
+  it("(i-b) `supersedes` is frozen too — the eighth column, and the one nothing else covered", async () => {
+    // mutation: remove `supersedes` from the frozen-column list at 015's trigger
+    //           -> this reds (the UPDATE succeeds). RUN ✅ 2026-08-08
+    //
+    // 🚨 WHY THIS PIN EXISTS, because the reason is the whole point. Migration 015's own
+    // comment used to say that render-time duplicate collapse DISPOSES of losing rows by
+    // writing `supersedes` — which is impossible, since the column is frozen and the
+    // trigger raises. A future engineer (or A3, reading 015 for the audit story) who meets
+    // that documented-but-raising mechanism has an obvious and WRONG conclusion available:
+    // that the freeze list is over-broad, and that `supersedes` should come out of it.
+    // Doing so would delete one of the eight columns the immutability guarantee is made
+    // of — and until this test existed, NO PIN WOULD HAVE RED, because the enforcement
+    // tests attempted `payload` and never this column. The stale comment is corrected in
+    // 015; this is the other half, because a comment is not a control.
+    //
+    // The value is a REAL proposal id, so that under the mutation the statement genuinely
+    // SUCCEEDS rather than failing on the foreign key — a pin that reds for the wrong
+    // reason is not a pin.
+    const p = await seedProposal();
+    const other = await seedProposal();
+    await expect(
+      admin.query(`update approval.proposals set supersedes = $2 where id = $1`, [p, other]),
+      "supersedes is not frozen — the immutability guarantee is one column short",
+    ).rejects.toMatchObject({ code: "P0001" });
+    // ...and combined with the state change collapse actually makes, which is the exact
+    // statement the stale comment invited someone to write.
+    await expect(
+      admin.query(
+        `update approval.proposals set state = 'superseded', supersedes = $2 where id = $1`,
+        [p, other],
+      ),
+    ).rejects.toMatchObject({ code: "P0001" });
+    // The link is establishable at INSERT and only at INSERT — the witness, so the pin
+    // above is not passing for a column nothing can ever set.
+    const ins = await admin.query(
+      `insert into approval.proposals
+         (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash,
+          expires_at, supersedes)
+       values ($1, $2, 'send_email', '{}'::jsonb, 'an amendment', repeat('e', 64),
+               now() + interval '72 hours', $3)
+       returning supersedes`,
+      [TENANT, `t3-amend-${Math.random().toString(36).slice(2)}`, p],
+    );
+    expect(ins.rows[0].supersedes).toBe(p);
+  });
+
   it("(ii) as the APP ROLE — column grants — PRIVILEGE refuses with 42501", async () => {
     // mutation: `grant update on approval.proposals to switchboard_approval` (table-level)
     //           -> the SQLSTATE becomes P0001, because the TRIGGER absorbs the statement.
@@ -250,6 +299,11 @@ describe("A2/T3: payload immutability has TWO independent guards, and each reds 
     ).rejects.toMatchObject({ code: "42501" });
     await expect(
       approval.query(`update approval.proposals set rationale = 'x' where id = $1`, [p]),
+    ).rejects.toMatchObject({ code: "42501" });
+    // `supersedes` too: no column grant exists for it, so the app role never even reaches
+    // the trigger. Both guards cover it, and each is asserted against its own SQLSTATE.
+    await expect(
+      approval.query(`update approval.proposals set supersedes = $1 where id = $1`, [p]),
     ).rejects.toMatchObject({ code: "42501" });
   });
 

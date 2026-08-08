@@ -28,7 +28,7 @@
 // pattern anchors on the SUBJECT of the enforcement claim, and the three sentences are
 // pasted in below as a known-good baseline that must keep passing.
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
@@ -183,6 +183,86 @@ describe("A2/T11: the two documents A2 FALSIFIED are corrected at head", () => {
     // All three halves the amendment has to state.
     expect(bounded, "the retired half is not stated").toMatch(/expir/i);
     expect(bounded, "the surviving half is not stated").toMatch(/A0b/);
+  });
+});
+
+describe("A2/T11: MECHANISM-EXISTENCE — the RUNBOOK names only paths that exist", () => {
+  // 🚨 A DIFFERENT CLASS FROM EVERYTHING ABOVE, AND THE HONESTY PIN DID NOT COVER IT.
+  //
+  // The grep pin above polices ENFORCEMENT claims about human approval. It says nothing
+  // about whether a MECHANISM a document names actually exists — and that is how
+  // "**Amendment** supersedes" shipped in the RUNBOOK as one of three live drain paths
+  // while no code anywhere can create an amendment. Same species as the
+  // `state = 'rejected'` remedy the same edit was written to retire: an operator reads it
+  // with a wedged queue, counts three remedies, and burns time hunting for a path that
+  // does not exist.
+  //
+  // 🚨 THE GENERAL CASE IS NOT CHEAPLY CLOSEABLE, AND WE ARE NOT PRETENDING OTHERWISE.
+  // "Every mechanism named in prose exists in code" needs a prose-to-symbol mapping for
+  // arbitrary English, which is a research problem wearing a test's clothes, and building
+  // an elaborate approximation of it would be worse than the gap: it would produce a green
+  // check that means almost nothing. The residual is logged in KNOWN-ISSUES rather than
+  // papered over.
+  //
+  // WHAT *IS* CHEAP is the specific site that just burned us: the drain paths in the cap
+  // row are a closed, enumerable set of three, so each one is pinned to a symbol. This is
+  // two-directional on purpose — it reds if the RUNBOOK re-adds amendment as a live path,
+  // AND it reds if somebody BUILDS amendment without updating the documents.
+  const capRow = (): string =>
+    read("RUNBOOK.md")
+      .split("\n")
+      .filter((l) => l.includes("PENDING_PROPOSAL_CAP"))
+      .join("\n");
+
+  const approvalSrc = (): string => {
+    const dir = join(REPO, "approval/src");
+    return readdirSync(dir)
+      .filter((f) => f.endsWith(".ts"))
+      .map((f) => readFileSync(join(dir, f), "utf8"))
+      .join("\n");
+  };
+
+  it("the DECISION path it names is a real exported symbol", () => {
+    expect(capRow()).toMatch(/a decision/i);
+    expect(approvalSrc()).toMatch(/export async function decide\(/);
+  });
+
+  it("the EXPIRY path it names is a real exported symbol", () => {
+    expect(capRow()).toMatch(/sweeper/i);
+    expect(approvalSrc()).toMatch(/export async function sweepExpired\(/);
+  });
+
+  it("AMENDMENT is described as schema-only, and no amend path exists to contradict it", () => {
+    // mutation: restore "**Amendment** supersedes." to the RUNBOOK cap row as a live third
+    //           path -> this reds. RUN ✅ 2026-08-08
+    //
+    // Direction 1 — the document must not present amendment as available today.
+    expect(
+      capRow(),
+      "the RUNBOOK offers amendment as a live drain path again",
+    ).not.toMatch(/\*\*Amendment\*\* supersedes\./);
+    expect(capRow()).toMatch(/schema only/i);
+
+    // Direction 2 — and the code must actually not have one. If this reds because somebody
+    // BUILT amendment, that is the pin working: build it, then update the RUNBOOK row and
+    // the KNOWN-ISSUES entry, and change this test deliberately rather than by accident.
+    expect(
+      approvalSrc(),
+      "an amendment path now EXISTS — update RUNBOOK.md and KNOWN-ISSUES.md, then change this pin",
+    ).not.toMatch(/export (async )?function (amend|createAmendment|amendProposal)\b/);
+
+    // ...while the SCHEMA half really is present, so the entry describes a gap between
+    // schema and code rather than an absence of both.
+    const migration = read("ingest/migrations/015_approval_lifecycle.sql");
+    expect(migration).toMatch(/add column supersedes uuid references approval\.proposals\(id\)/);
+    expect(migration).toMatch(/add column authored_by_user_id uuid/);
+  });
+
+  it("KNOWN-ISSUES carries the gap as a known deferral with an owner", () => {
+    const ki = read("KNOWN-ISSUES.md");
+    expect(ki).toMatch(/Amendment .* shipped as SCHEMA ONLY/);
+    const entry = ki.slice(ki.indexOf("shipped as SCHEMA ONLY"));
+    expect(entry.slice(0, entry.indexOf("\n\n- **", 10))).toMatch(/\*Owner:/);
   });
 });
 

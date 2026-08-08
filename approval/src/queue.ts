@@ -6,9 +6,13 @@
 // the outage that matters.
 //
 // ORDER IS `created_at, id`, AND THE TIEBREAK IS NOT DECORATION. `created_at` defaults to
-// `now()`, which in PostgreSQL is TRANSACTION START — so two proposals inserted in the
-// same tick tie exactly, and without the id tiebreak the `supersedes` graph that
-// duplicate-collapse builds would be nondeterministic. A3's audit story reads that graph.
+// `now()`, which in PostgreSQL is TRANSACTION START — so two proposals inserted in the same
+// transaction tie EXACTLY. Without the id tiebreak, which of a set of byte-identical
+// proposals gets APPROVED and which get SUPERSEDED would be plan-dependent — a different
+// row could carry the human's decision on two runs over the same data. A3's audit story
+// reads that disposition. (It reads it from the rows' states and their shared suppression
+// key, NOT from a `supersedes` link: collapse writes no such link and cannot, because the
+// column is frozen after insert. An earlier version of this comment said otherwise.)
 import type pg from "pg";
 
 export interface QueueRow {

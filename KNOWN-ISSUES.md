@@ -35,7 +35,7 @@ without changing this table does not go green.
 
 | | Count | Derivation |
 |---|---|---|
-| **Open defects** | **37** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Open defects** | **38** | Part II top-level bullets that name an `Owner:` and are not struck |
 | **Design disclosures** | **44** | Part I top-level bullets |
 | **Paid** (struck entries) | **47** | Part III struck bullets, plus the cosmetic/low list |
 
@@ -1367,6 +1367,30 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   nobody writes that contract these rows accumulate silently.
 
   *Owner: A5 — it is the task that will know the vendor's delivery semantics, which is the only knowledge that can turn "this might have died" into "this failed". Trigger: the first real sending stack (C5). Fix shape: a reaper contract stating, per vendor, the age past which a `started` row with no terminal sibling may be adjudicated, and what it may be adjudicated AS.*
+
+- **Amendment (Phase 3 / A2 §3.10) shipped as SCHEMA ONLY — no code can create one.**
+  `approval.proposals` carries `supersedes`, `authored_by` and
+  `authored_by_user_id`, with the foreign key and the both-ways CHECK that make a
+  human-authored amendment attributable. **Nothing in the shipped code writes
+  them.** There is no amend endpoint, no amend function and no amend CLI; the
+  door's INSERT never sets `supersedes` or `authored_by_user_id`, and the only
+  writer of the `superseded` state is duplicate collapse, which is a different
+  thing entirely. A2's scope section assigns amendment to A2, and A2's own task
+  breakdown (T1–T11) never tasked it — so this is a gap between two halves of the
+  plan rather than a decision anyone made, which is exactly why it is written down
+  here instead of being left to be rediscovered.
+
+  It was briefly worse than a gap: the RUNBOOK published amendment as one of three
+  live ways to drain a wedged queue, which would have cost an operator time at the
+  moment when being wrong is most expensive. That sentence is corrected, and the
+  honesty test now pins the absence in **both** directions — if someone builds
+  amendment without updating these documents, it reds.
+
+  Note the schema half is not wasted and must not be "cleaned up": `supersedes` is
+  in the trigger's frozen-column list, and removing it would delete one of the
+  eight columns the immutability guarantee is made of.
+
+  *Owner: A2's follow-on (or A0b, whichever first needs the client to change an ask rather than reject it) — the schema is complete, so the work is an endpoint plus a card action. Trigger: the first request to edit a proposal instead of rejecting and re-proposing it. Fix shape is fixed by the schema: INSERT a NEW proposal carrying `supersedes = original.id` (the link is writable at insert and ONLY at insert), then move the original `pending → superseded`. Two rows, two acts; no path straight to `approved`.*
 
 ## Open halves of entries that live in Part I
 

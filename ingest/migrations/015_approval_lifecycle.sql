@@ -63,8 +63,26 @@ alter table approval.proposals alter column expires_at set not null;
 -- AMENDMENT (§3.10) is not a decision on a proposal: it inserts a NEW proposal and moves
 -- the original to `superseded`. Two rows, two acts, and no path from an amendment straight
 -- to `approved` — PSD2's rule, that a changed payload invalidates the authentication.
--- `supersedes` is also how render-time duplicate collapse disposes of the rows it did not
--- surface (§3.9), reusing this machinery rather than inventing a disposition.
+--
+-- 🚨 THIS COLUMN IS WRITABLE AT INSERT AND ONLY AT INSERT. It is in the trigger's frozen
+-- list below, so `update ... set supersedes = ...` raises `P0001 frozen column is
+-- immutable` FOR EVERY CALLER INCLUDING THE OWNER — measured, not assumed.
+--
+-- An earlier version of this comment said `supersedes` was "also how render-time duplicate
+-- collapse disposes of the rows it did not surface". THAT WAS FALSE and it was the
+-- dangerous kind of false: an engineer who tries it, watches the trigger raise, and
+-- concludes the freeze list is over-broad would remove this column from that list —
+-- deleting one of the eight columns the immutability guarantee is made of. What collapse
+-- actually does is write the STATE (`pending -> superseded`) and nothing else; the
+-- relationship needs no column, because the collapsed rows are byte-identical by
+-- construction and share the very key they were grouped by, `(action_type, payload_hash,
+-- rationale)`. `ingest/test/migration-015-enforcement.test.ts` now attempts
+-- `set supersedes` and asserts the raise, so that loosening path reds.
+--
+-- 🚨 AMENDMENT IS SCHEMA-ONLY IN A2. This column, `authored_by` and `authored_by_user_id`
+-- exist and are constrained, and NO APPLICATION CODE CREATES AN AMENDMENT — there is no
+-- endpoint, function or CLI for it. Recorded in KNOWN-ISSUES as a known deferral rather
+-- than left as a silent hole in the schema.
 alter table approval.proposals add column supersedes uuid references approval.proposals(id);
 
 -- WHO WROTE THE ASK. An amendment may be authored by the human, and "the agent proposed X"

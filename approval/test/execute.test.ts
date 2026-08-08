@@ -97,14 +97,32 @@ describe("A2/T9: at-most-once is decided by the database, not by application cod
     // false — and the honest inverse is not to claim a sensitivity that was measured
     // absent.
     //
-    // WHY it stays green, which is the useful part: both callers insert their `started`
-    // row (no index, so both succeed), then both attempt the CONDITIONAL UPDATE
-    // `where state = 'approved'` inside the same transaction. One wins; the loser's update
-    // returns rowcount 0, it rolls back, AND ITS `started` ROW GOES WITH IT. So exactly one
-    // row survives — for the right reason, but not the reason the plan named. The
-    // decisive mechanism in the CONCURRENT case is the conditional UPDATE plus the trigger;
-    // the index is defence in depth, and its demonstrated sensitivity is the SEQUENTIAL
-    // case below.
+    // WHY it stays green, which is the useful part: with the index gone, both callers
+    // insert their `started` row (nothing stops them), then both attempt the CONDITIONAL
+    // UPDATE `where state = 'approved'` inside the same transaction. One wins; the loser's
+    // update returns rowcount 0, it rolls back, AND ITS `started` ROW GOES WITH IT. So
+    // exactly one row survives even without the index.
+    //
+    // 🚨 THE INDEX IS REDUNDANT HERE, NOT INERT — AND THE DIFFERENCE MATTERS ENOUGH THAT AN
+    // EARLIER DRAFT OF THIS COMMENT GOT IT WRONG. Measured on the UNMUTATED system, with
+    // two racers doing exactly what `beginExecution` does:
+    //
+    //     A: LOST -> 23505 duplicate key value violates unique constraint
+    //                "executions_one_start"
+    //     B: WON  (update rowcount 1)
+    //
+    // The index fires FIRST, at INSERT, before either UPDATE runs. So as shipped it IS the
+    // decisive mechanism in the concurrent race. The pin is insensitive to removing it
+    // only because a SECOND mechanism covers the same property once it is gone — which is
+    // defence in depth working, not a misattributed guarantee.
+    //
+    // Two consequences worth stating so nobody draws the wrong lesson:
+    //   · the plan's "at-most-once lives in Postgres" attribution is CORRECT. Both
+    //     mechanisms are in Postgres; nothing moved into application code. Only the
+    //     SENSITIVITY PREDICTION is false.
+    //   · 🚨 this is NOT licence to drop the index. It is the ONLY mechanism covering the
+    //     sequential case below — a retry after a completed or crashed send — which is
+    //     the case that actually reds.
     //
     // The assertion is therefore deliberately permissive about WHICH loud failure the loser
     // gets — 23505 or a refused transition — and strict about the thing that must never

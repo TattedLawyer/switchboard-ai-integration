@@ -2,8 +2,16 @@
 //
 // THE DISCIPLINE, and it is not negotiable anywhere in this service:
 //
-//     update approval.proposals set state = <next>, decided_at = now()
+//     update approval.proposals set state = <next>
 //      where id = $1 and state = <expected>
+//
+// 🚨 NOTE WHAT IS ABSENT: `decided_at = now()`. The HUMAN-driven path in `decide.ts` does
+// stamp it; this function deliberately does NOT, because its callers are the SWEEPER and
+// DUPLICATE COLLAPSE, and nobody decided. Stamping a decision time on a machine-driven
+// transition would put a lie in the audit trail — the same reason expiry writes no decision
+// row. (An earlier version of this header printed the statement WITH `decided_at`, which
+// invited exactly the "tidy it up for consistency" edit that would have fabricated a
+// timestamp on every expired and superseded row.)
 //
 // The EXPECTED STATE IS IN THE PREDICATE and the ROWCOUNT IS CHECKED. Zero rows means
 // somebody else moved it — refuse LOUDLY, never retry blindly, never re-read and try
