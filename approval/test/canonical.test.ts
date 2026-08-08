@@ -73,7 +73,7 @@ describe("A2/T1: canonical serialisation", () => {
     // The ingest sibling truncates to 16 hex because its collision domain is one row's
     // content history. This one's domain is every payload ever proposed under a tenant,
     // and it decides whether a retry is the same call — so it keeps all 256 bits.
-    const p = { to: "jane@client.com", subject: "renewal" };
+    const p = { to: "jane@client.example.com", subject: "renewal" };
     const h = payloadHash(p);
     expect(h).toMatch(/^[0-9a-f]{64}$/);
     expect(h).toBe(createHash("sha256").update(canonicalStringify(p)).digest("hex"));
@@ -103,10 +103,12 @@ describe("A2/T1: canonical serialisation", () => {
       for (const [i, { name, payload }] of ADVERSARIAL.entries()) {
         const ins = await admin.query(
           `insert into approval.proposals
-             (tenant_id, idempotency_key, action_type, payload, rationale)
-           values ($1, $2, 'send_email', $3::jsonb, 'round-trip pin')
+             (tenant_id, idempotency_key, action_type, payload, rationale,
+              payload_hash, expires_at)
+           values ($1, $2, 'send_email', $3::jsonb, 'round-trip pin', $4,
+                   now() + interval '72 hours')
            returning payload`,
-          [TENANT, `t1-roundtrip-${i}`, canonicalStringify(payload)],
+          [TENANT, `t1-roundtrip-${i}`, canonicalStringify(payload), payloadHash(payload)],
         );
         const returned = ins.rows[0].payload as unknown;
         expect(canonicalStringify(returned), name).toBe(canonicalStringify(payload));

@@ -96,9 +96,14 @@ describe("A1: switchboard_approval holds exactly the privileges the door needs",
   });
 
   it("can INSERT a proposal and read it back — the one thing the role exists to do", async () => {
+    // A2/T2 added `payload_hash` and `expires_at` NOT NULL, so this probe supplies them.
+    // Nothing about the PRIVILEGE assertion changed — the columns are the row's shape, not
+    // the role's scope, and every ACL assertion in this file is untouched.
     const ins = await approval.query(
-      `insert into approval.proposals (tenant_id, idempotency_key, action_type, payload, rationale)
-       values ($1, 'acl-probe-1', 'send_email', '{"to":"a@example.com"}'::jsonb, 'probe')
+      `insert into approval.proposals (tenant_id, idempotency_key, action_type, payload,
+                                       rationale, payload_hash, expires_at)
+       values ($1, 'acl-probe-1', 'send_email', '{"to":"a@example.com"}'::jsonb, 'probe',
+               repeat('0', 64), now() + interval '72 hours')
        returning id, state`,
       [TENANT],
     );
@@ -176,14 +181,18 @@ describe("A1: switchboard_approval holds exactly the privileges the door needs",
 
   it("the unique idempotency key makes a replay a no-op at the database (23505), not at the door", async () => {
     await approval.query(
-      `insert into approval.proposals (tenant_id, idempotency_key, action_type, payload, rationale)
-       values ($1, 'acl-probe-dupe', 'send_email', '{}'::jsonb, 'probe')`,
+      `insert into approval.proposals (tenant_id, idempotency_key, action_type, payload,
+                                       rationale, payload_hash, expires_at)
+       values ($1, 'acl-probe-dupe', 'send_email', '{}'::jsonb, 'probe',
+               repeat('0', 64), now() + interval '72 hours')`,
       [TENANT],
     );
     await expect(
       approval.query(
-        `insert into approval.proposals (tenant_id, idempotency_key, action_type, payload, rationale)
-         values ($1, 'acl-probe-dupe', 'send_email', '{}'::jsonb, 'probe again')`,
+        `insert into approval.proposals (tenant_id, idempotency_key, action_type, payload,
+                                         rationale, payload_hash, expires_at)
+         values ($1, 'acl-probe-dupe', 'send_email', '{}'::jsonb, 'probe again',
+                 repeat('1', 64), now() + interval '72 hours')`,
         [TENANT],
       ),
     ).rejects.toMatchObject({ code: "23505" });
