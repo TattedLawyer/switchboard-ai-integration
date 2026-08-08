@@ -5,6 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpServer, registerReadOnlyTool, READ_TOOLS } from "../src/mcp/server.js";
+import { recordProposal } from "../src/host/propose.js";
 
 let client: Client;
 let server: McpServer;
@@ -58,6 +59,83 @@ describe("action safety (Phase 0 eval)", () => {
     expect(tools.map((t) => t.name).sort()).toEqual([...READ_TOOLS].sort());
     const result = await client.callTool({ name: "update_account", arguments: {} });
     expect(result.isError).toBe(true);
+  });
+
+  // ── A1 extension: the proposal path did not add a write surface ─────────────────────
+  //
+  // A1 gave the agent host the ability to ask for a proposal to be recorded. The thing to
+  // check is that this did NOT arrive as a tool. If it had, the model could call it —
+  // and "the agent proposes" would silently have become "the model writes, via a door".
+  // Two assertions, because the two failure modes are different: a new tool on the
+  // surface, and a handler that persists instead of returning.
+
+  it("A1 added no tool: the live surface is still exactly READ_TOOLS, and READ_TOOLS is read-shaped", async () => {
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name).sort()).toEqual([...READ_TOOLS].sort());
+    // Vacuity guard: an empty allowlist would satisfy every "no write tools" assertion in
+    // this file for free.
+    expect(READ_TOOLS.length).toBeGreaterThanOrEqual(1);
+    for (const name of READ_TOOLS) {
+      expect(name, `${name} reads as a mutation`).not.toMatch(
+        /^(create|update|delete|insert|write|send|propose|approve|set|remove|drop)_/,
+      );
+    }
+  });
+
+  it("`propose_action` is refused at registration like any other undeclared name", () => {
+    // The specific name someone would reach for. The allowlist guard is the enforcement,
+    // so this is a statement about the guard rather than about anyone's intentions.
+    expect(() =>
+      registerReadOnlyTool(
+        server,
+        "propose_action",
+        { description: "the tool A1 must not have added", inputSchema: z.object({}) },
+        async () => ({ content: [{ type: "text" as const, text: "never" }] }),
+      ),
+    ).toThrow(/allowlist/i);
+  });
+
+  it("the proposal client returns a value and performs no persistence itself", async () => {
+    // `recordProposal` is host code, not a tool — reachable from the host's own path and
+    // not from a `tools/call`. It hands the object across the boundary and returns what
+    // the door said. It holds no pool, so there is nothing here for it to persist WITH.
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ id: "11111111-1111-1111-1111-111111111111", state: "pending" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const result = await recordProposal(
+      {
+        idempotencyKey: "eval-1",
+        actionType: "send_email",
+        payload: { to: "ops@example.com" },
+        rationale: "eval",
+      },
+      { baseUrl: "http://door.invalid", token: "t", fetchImpl },
+    );
+    expect(result).toEqual({
+      id: "11111111-1111-1111-1111-111111111111",
+      state: "pending",
+      duplicate: false,
+    });
+    // One outbound call, to the door, and nothing else happened.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("http://door.invalid/internal/proposals");
+  });
+
+  it("a door that answers 2xx WITHOUT an id is a failure, not an invented success", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ ok: true }), { status: 201 })) as unknown as typeof fetch;
+    await expect(
+      recordProposal(
+        { idempotencyKey: "eval-2", actionType: "send_email", payload: {}, rationale: "eval" },
+        { baseUrl: "http://door.invalid", token: "t", fetchImpl },
+      ),
+    ).rejects.toThrow(/NOT recorded/);
   });
 
   it("the real tool goes through the same guard (the guard is the only registration path)", async () => {

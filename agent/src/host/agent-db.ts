@@ -23,3 +23,35 @@ export function agentConnectionString(): string {
       "postgres://switchboard_agent:switchboard_agent@<host>:<port>/<db>).",
   );
 }
+
+/**
+ * The role the agent's pool MUST authenticate as.
+ *
+ * `agentConnectionString()` guarantees a variable was set; it cannot guarantee what that
+ * variable points at. An operator who sets AGENT_DATABASE_URL to the migration owner gets
+ * a working agent holding a full-privilege credential and no signal at all — the exact
+ * deployment mistake the CI-side source sweep cannot see, because the code is fine and the
+ * configuration is not. So the check is at runtime, on a live connection, before any tool
+ * is served: this is the only pin in A1 that catches a deployment mistake rather than a
+ * code mistake.
+ */
+export const REQUIRED_AGENT_ROLE = "switchboard_agent";
+
+/** Minimal shape so this can be asserted against a pool or a checked-out client without
+ *  importing `pg` here — this module deliberately has no database dependency. */
+interface Queryable {
+  query(text: string): Promise<{ rows: { who: string }[] }>;
+}
+
+export async function assertAgentRole(db: Queryable): Promise<void> {
+  const res = await db.query("select current_user as who");
+  const who = res.rows[0].who;
+  if (who !== REQUIRED_AGENT_ROLE) {
+    throw new Error(
+      `agent host refuses to serve tools: AGENT_DATABASE_URL authenticates as "${who}", ` +
+        `not "${REQUIRED_AGENT_ROLE}". The published claim is that every tool call runs on ` +
+        `a connection Postgres limits to SELECT on the analytics schema; a connection as ` +
+        `"${who}" would make that sentence false while every read still worked.`,
+    );
+  }
+}

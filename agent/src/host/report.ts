@@ -1,4 +1,7 @@
-import pg from "pg";
+// TYPE-ONLY: this module reads through a pool it is handed and never constructs one.
+// A value import of pg here would erase the distinction the A1 sweep depends on
+// (agent/test/writer-boundary.test.ts), and is the first move of adding a second pool.
+import type pg from "pg";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../mcp/server.js";

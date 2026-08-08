@@ -36,7 +36,7 @@ without changing this table does not go green.
 | | Count | Derivation |
 |---|---|---|
 | **Open defects** | **32** | Part II top-level bullets that name an `Owner:` and are not struck |
-| **Design disclosures** | **40** | Part I top-level bullets |
+| **Design disclosures** | **41** | Part I top-level bullets |
 | **Paid** (struck entries) | **47** | Part III struck bullets, plus the cosmetic/low list |
 
 Why the owner predicate rather than a subtraction: Part II's own entry rule is that
@@ -641,6 +641,36 @@ and none is started. Effort classes are estimates by the maintainer.
 5. **End-user surface (4–8 weeks).** Scheduler, delivery channel, auth,
    approval UI. Today's user surface is a Markdown file on the operator's
    disk.
+
+## Agent writer boundary — credential locality, not OS sandboxing (Phase 3 / A1)
+
+
+Phase 3 needs the agent to *propose* actions, and proposals have to be persisted.
+The writer is therefore placed in the client-facing approval service, and the
+agent process keeps exactly one database credential: the read-only
+`switchboard_agent` role. That is what keeps the published sentence true. It is
+not a security sandbox, and the difference is worth stating precisely rather than
+letting a reader assume the stronger one.
+
+- **On a single-box self-hosted deployment, the agent host and the approval
+  service very likely run as the same OS user.** An attacker with arbitrary code
+  execution inside the agent host can therefore read the approval service's
+  environment or configuration file and recover its database credential directly.
+  Our split is a **credential-locality property, not OS-level sandboxing** —
+  Chromium's sandbox design doc is explicit that its own guarantee comes from the
+  OS ("Sandbox operates at process-level granularity"), and we take the process
+  split without the token/job-object restrictions that make such a split
+  enforceable. What the split does buy is real and bounded: the authority a
+  compromised agent host holds is *append one schema-validated, human-gated
+  proposal* through an authenticated door, not *arbitrary SQL as the migration
+  owner*. It cannot rewrite the mart, forge an approval, forge an audit row, or
+  run `grant insert … to switchboard_agent` and retire the differentiator itself.
+  The surviving bypass is proposal forgery and flooding, bounded by a unique
+  idempotency key and a pending-proposal cap (migration 014, and the door's 429),
+  and terminating in a human being shown a bad proposal and rejecting it. This is
+  a disclosure rather than a defect because closing it means OS-level isolation
+  we do not ship and would not honestly claim in a self-hosted install; it is
+  listed here so the published claim is read with it rather than around it.
 
 ---
 

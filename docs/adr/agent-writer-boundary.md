@@ -1,6 +1,8 @@
 # ADR: the writer boundary — the host writes, the agent only proposes
 
-**Status:** accepted (Phase 3, plan item A0a) — decision recorded, not yet implemented
+**Status:** accepted, **AMENDED 2026-08-07 by A1** — see "Amendment" below. The decision (the host
+writes; the agent's only output is a validated object) is unchanged; **which process is "the host"**
+changed, and the two-pool consequence this ADR originally derived is **withdrawn**.
 **Applies to:** A1 (action/intent objects), A2 (approval queue), A3 (agent-decision audit log),
 and every later task that needs a row written as a consequence of something the agent decided
 **Plan:** `docs/superpowers/plans/2026-08-07-phase3-agent-layer.md` (Track A, A0a; global constraint #2)
@@ -45,10 +47,12 @@ Concretely:
    done, to whom, with what payload, derived from which records, with an idempotency key (A1).
    It returns that value through the MCP tool boundary. It does not persist it and has no
    privilege that would let it.
-2. The host process — trusted application code, not model output — validates the object against
-   the schema, then performs the INSERT using a **full-privilege application connection**, the
-   same class of connection the ingest application already uses (`DATABASE_URL`, role
-   `switchboard`).
+2. The writing process — trusted application code, not model output — validates the object against
+   the schema, then performs the INSERT. **AMENDED:** that process is the client-facing approval
+   service, and its connection is **not** the full-privilege application one. It authenticates as
+   `switchboard_approval` (migration 014), which holds `select, insert` on the proposals table and
+   nothing else. The original wording named `DATABASE_URL`/role `switchboard`; see the Amendment
+   for why the migration owner is the wrong role for this job.
 3. Approval decisions and audit rows are written by the same host code path, never by anything
    reachable from a model.
 
@@ -59,23 +63,83 @@ unmodified.
 
 The plan describes the host as "already the full-privilege app role." **That is not true of the
 agent host as it exists today.** `agent/src/host/run-report.ts:8` builds its only pool from
-`agentConnectionString()` (`agent/src/host/agent-db.ts:6-15`), which resolves to
-`AGENT_DATABASE_URL` or rewrites `DATABASE_URL`'s credentials to `switchboard_agent`. The agent
-host currently holds *no* writable connection at all. The full-privilege role lives on the ingest
-side.
+`agentConnectionString()` (`agent/src/host/agent-db.ts`), which resolves to the read-only
+`switchboard_agent`. The agent host currently holds *no* writable connection at all. The
+full-privilege role lives on the ingest side.
 
-This does not change the decision, but it does add work the plan did not price: implementing A1
-means introducing a **second, separate pool** in the host — a writer pool, distinct from the
-read-only agent pool — and keeping the two from being confused at a call site. Two consequences
-follow, and both belong in the A1 brief:
+## 🔄 Amendment (A1, 2026-08-07): the writer is the approval service, not the agent host
 
-- The read pool used to serve tool calls must stay `switchboard_agent`. If a future refactor
-  "simplifies" the host down to one pool, the database-enforced read-only property is lost
-  silently, because every read would still work.
-- The writer pool should be reachable only from the proposal/approval/audit modules, not from the
-  MCP tool surface. *(Judgment, not a sourced requirement: this is the same containment move as
-  `registerReadOnlyTool` (`agent/src/mcp/server.ts:16-26`), which makes the allowlist enforcement
-  rather than convention by routing all registration through one guard that throws.)*
+**What this ADR originally derived from the correction above — "implementing A1 means introducing a
+second, separate pool in the host" — is WITHDRAWN. Do not add a writable pool to `agent/src/`.**
+
+Two research passes and an adversarial review established the reason, and it is not a preference:
+
+1. **The property is one env var away and adding a pool destroys it permanently.** "The agent
+   process holds no write-capable credential" was, at the time of the original decision, neither
+   held nor enforced — `agent-db.ts` derived the agent credential from `DATABASE_URL`, `ci.yml`
+   set `DATABASE_URL` job-wide, and nothing in the repo ever set `AGENT_DATABASE_URL`. So the
+   property was *available* rather than *held*. An in-process writer pool would not merely fail to
+   hold it; it would put it permanently out of reach of any future configuration. A1 instead
+   bought it: `agentConnectionString()` now fails closed, and `agent/src/` contains zero references
+   to `DATABASE_URL`.
+2. **The marginal cost of a process boundary is zero processes.** The original reasoning priced a
+   separate writer as "a second deployable per client." It is not: plan item A0b already commits
+   Phase 3 to a client-facing authenticated approval surface — login, session, approval page, audit
+   row — and every one of those is a write. The writer lives in a process the plan already
+   committed to building.
+3. **Authority shape, not authority location.** The question "what is the real difference between a
+   writable pool and a credential to a door that writes on your behalf" has a precise answer: **the
+   door's grammar.** A pool speaks SQL — rewrite `analytics.customer_360`, forge an approval, forge
+   an audit row, or `grant insert … to switchboard_agent` and retire the differentiator itself. The
+   door speaks one row shape. That difference is the entire claim.
+
+**So: the writer lives in the client-facing approval service** (`approval/`, new in A1). The agent
+host keeps exactly one pool, read-only, forever, and hands proposals across an authenticated door
+(`agent/src/host/propose.ts` — no `pg` import, no SQL, swept by
+`agent/test/writer-boundary.test.ts`).
+
+### The approval service's own role
+
+The service does **not** connect as `DATABASE_URL`'s role. That role is the migration owner, and
+per PostgreSQL's own semantics ("Ordinarily, only the object's owner (or a superuser) can grant or
+revoke privileges on an object") the owner is exactly who can run
+`grant insert … to switchboard_agent`. A compromise there would not need to defeat the containment;
+it could delete the differentiator. Migration 014 therefore creates **`switchboard_approval`**: a
+non-owner login role with `usage` on one schema and `select, insert` on one table, no grant option,
+no `UPDATE`, no `DELETE`, and no reach into `raw`, `ingest`, or the analytics schema. Pinned by
+`ingest/test/approval-role-scope.test.ts` — including an assertion that its attempt to grant insert
+to `switchboard_agent` leaves the ACL byte-identical. (Postgres answers that attempt with a WARNING
+rather than an error, so the pin is on the catalog, not on an exception.)
+
+The proposal table also lives **outside** the analytics schema on purpose: `grantAgentReadOnly()`
+attaches `alter default privileges … grant select on tables to switchboard_agent` inside
+`DBT_SCHEMA`, so a proposals table created there would have silently become agent-readable. Not a
+breach of the write claim, but an unexamined widening of the read surface.
+
+### What the claim may say — three tiers, and the boundaries between them are the point
+
+- **Database-enforced, at runtime, in every deployment:** the agent's connection authenticates as
+  `switchboard_agent`, a Postgres role holding `usage` and `select` and nothing else; INSERT,
+  UPDATE, DELETE and CREATE are refused with SQLSTATE `42501`, proven by executing those statements
+  against a live database (`agent/test/db-privileges.test.ts`).
+- **Enforced at process start, in every deployment:** the agent host refuses to boot without
+  `AGENT_DATABASE_URL`, and refuses to serve tools on any connection whose `current_user` is not
+  `switchboard_agent` (`assertAgentRole`).
+- **Enforced in CI, about the code and not about your deployment:** no module under `agent/src/`
+  constructs a second pool or reads a full-privilege credential, and a boot test runs the proposal
+  path with no such credential present. This proves the agent *never needs* write authority; it
+  does not, by itself, prove that a given operator withheld it — which is what the two tiers above
+  are for.
+
+### Residual risk, stated plainly
+
+A compromised agent host holds the credential for the proposal door, so it can forge and flood
+well-formed proposals — bounded by a unique idempotency key and a pending-proposal cap. It cannot
+execute SQL, forge an approval, or forge an audit row, and every proposal is inert until an
+identified human approves it. **And, conceded: on a single-box self-hosted deployment both
+processes likely run as the same OS user, so the writer credential is readable from the other
+process's configuration. This is credential locality, not OS sandboxing.** Recorded in
+`KNOWN-ISSUES.md` (Part I) as an accepted disclosure, not only here.
 
 ## Rejected alternative: a third `switchboard_proposer` role with INSERT-only
 
@@ -124,8 +188,10 @@ assertion. If a task appears to require the agent to write, the task is wrong.
 
 ## Consequences
 
-- A1's brief inherits the two-pool requirement and the containment rule above.
-- The proposal object needs a schema and a validator on the host side; a malformed or
+- ~~A1's brief inherits the two-pool requirement and the containment rule above.~~ **Withdrawn by
+  the amendment.** A1's brief inherits the opposite: `agent/src/` acquires no writable credential,
+  and the sweep in `agent/test/writer-boundary.test.ts` reds if it ever does.
+- The proposal object needs a schema and a validator in the writing process (the approval service); a malformed or
   out-of-allowlist proposal is a refusal with an audit row, never a coerced INSERT.
 - The audit log (A3) is written entirely by host code, which is what makes "the agent decided X"
   an assertion the system can make about itself rather than one the agent makes about itself.
