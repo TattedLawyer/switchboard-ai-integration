@@ -391,3 +391,22 @@ grant select on approval.users to switchboard_approval;
 revoke all on approval.users      from switchboard_agent;
 revoke all on approval.decisions  from switchboard_agent;
 revoke all on approval.executions from switchboard_agent;
+
+-- ---------------------------------------------------------------------------------------
+-- PART 3 — at-most-once execution.
+-- ---------------------------------------------------------------------------------------
+
+-- AT-MOST-ONCE LIVES IN POSTGRES, NOT IN APPLICATION CODE. A second executor gets `23505`
+-- from the DATABASE rather than losing a race in a read-then-write. The index is PARTIAL,
+-- so `succeeded` and `failed` rows are unconstrained and the log stays append-only.
+--
+-- 🚨 THE GUARD ITSELF IS A TYPESCRIPT FUNCTION, NOT A SQL ONE. `begin_execution` and
+-- `finish_execution` live in `approval/src/execute.ts`. 015 AND EVERY LATER MIGRATION
+-- CREATE NO CALLABLE SQL FUNCTION BEYOND THE TRIGGER FUNCTION ABOVE — because a
+-- `approval.begin_execution()` would be created with `proacl` NULL, i.e. PUBLIC-executable
+-- by default, and the pin that watches for that would red with nothing to fix but the
+-- function's own existence. Anyone who does add a SQL function to this schema is obliged
+-- to `revoke execute ... from public` in the SAME migration; nothing automatic protects it.
+create unique index executions_one_start
+  on approval.executions (proposal_id)
+  where kind = 'started';
