@@ -100,6 +100,7 @@ export function assertApprovalConfig(): void {
     );
   }
   pendingCap(); // range-check now, at boot, not on the first proposal
+  actionRateLimit(); // same: a bad rate limit is a boot refusal, never a silent NaN
 }
 
 /**
@@ -143,3 +144,35 @@ export const TERMINAL_PROPOSAL_STATES: ReadonlySet<string> = new Set([
   "executed",
   "execution_failed",
 ]);
+
+/**
+ * PER-ACTION RATE LIMIT — a runaway backstop, ranked THIRD.
+ *
+ * The ranking matters more than the numbers, and it is the one part of this that has
+ * evidence behind it: repeat-suppression / the 1:1 discipline is STRONGEST (Ancker
+ * measured it and it is the authors' own recommended lever; SRE's 1:1 alert/incident
+ * ratio; OWASP's bind-approval-to-the-exact-action), then the rate limit, then expiry,
+ * then the static count — WEAKEST, because no source uses one, recommends one, or gives a
+ * value for one.
+ *
+ * 🚨 THE NUMBERS HERE ARE JUDGMENT AND HAVE NO SOURCE. SRE's "maximum 2 per 12-hour
+ * on-call shift" is a rate DERIVED FROM HANDLING TIME; the METHOD transfers and the NUMBER
+ * does not, because nobody has measured how long a broker spends on one of these. 20 per
+ * action type per hour is a bound on how fast a compromised agent host can fill her queue,
+ * not a claim about her attention.
+ */
+export const DEFAULT_ACTION_RATE_LIMIT = 20;
+export const ACTION_RATE_WINDOW_MINUTES = 60;
+
+export function actionRateLimit(): number {
+  const raw = process.env.PROPOSAL_ACTION_RATE_LIMIT;
+  if (raw === undefined || raw === "") return DEFAULT_ACTION_RATE_LIMIT;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < 1) {
+    throw new Error(
+      `invalid PROPOSAL_ACTION_RATE_LIMIT "${raw}": must be an integer >= 1 ` +
+        `(unset it for the default of ${DEFAULT_ACTION_RATE_LIMIT}).`,
+    );
+  }
+  return n;
+}

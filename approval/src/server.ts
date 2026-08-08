@@ -15,9 +15,17 @@ import { timingSafeEqual } from "node:crypto";
 import type pg from "pg";
 import { parseProposal } from "./proposal.js";
 import { payloadHash } from "./canonical.js";
-import { PROPOSAL_TTL_HOURS, TERMINAL_PROPOSAL_STATES } from "./config.js";
+import {
+  ACTION_RATE_WINDOW_MINUTES,
+  DEFAULT_ACTION_RATE_LIMIT,
+  PROPOSAL_TTL_HOURS,
+  TERMINAL_PROPOSAL_STATES,
+} from "./config.js";
 
 export interface ApprovalAppOptions {
+  /** A2/T10 — the per-action-type rate limit. See config.ts: a runaway backstop ranked
+   *  THIRD behind repeat-suppression and expiry, with a JUDGMENT number and no source. */
+  actionRateLimit?: number;
   /** SEC-C1: the ONE tenant this deployment writes under, resolved at boot and passed
    *  explicitly — so a tenant-less door is a compile error, not a nil-tenant write. */
   tenantId: string;
@@ -134,6 +142,34 @@ export function createApprovalApp(pool: pg.Pool, opts: ApprovalAppOptions): expr
         // it is not what makes the payload immutable — that is the column grant and the
         // trigger in migration 015.
         const canonicalHash = payloadHash(proposal.payload);
+
+        // A2/T10 — PER-ACTION RATE LIMIT. Ranked below repeat-suppression and expiry, and
+        // it is a bound on how fast a compromised agent host can fill the queue with ONE
+        // KIND of action, not a claim about anyone's attention. Counted over a rolling
+        // window and over EVERY state, deliberately: a burst that has already been
+        // triaged still happened, and the thing being limited is the agent's production
+        // rate, not the queue's depth (that is the cap's job, and the cap is the weakest
+        // of the three).
+        const rateLimit = opts.actionRateLimit ?? DEFAULT_ACTION_RATE_LIMIT;
+        const recent = await pool.query(
+          `select count(*)::int as n from approval.proposals
+            where tenant_id = $1 and action_type = $2
+              and created_at > now() - make_interval(mins => $3::int)`,
+          [opts.tenantId, proposal.action_type, ACTION_RATE_WINDOW_MINUTES],
+        );
+        if ((recent.rows[0].n as number) >= rateLimit) {
+          res.status(429).json({
+            error: "per-action proposal rate limit reached",
+            action_type: proposal.action_type,
+            limit: rateLimit,
+            window_minutes: ACTION_RATE_WINDOW_MINUTES,
+            remedy:
+              "the agent is producing this action faster than the limit allows. Raise " +
+              "PROPOSAL_ACTION_RATE_LIMIT only if the higher rate is one a human can " +
+              "actually decide on; the usual right answer is to narrow the action.",
+          });
+          return;
+        }
 
         // FLOOD CONTROL, half one. `on conflict do nothing` + a follow-up read makes a
         // replay a no-op at the DATABASE (the unique index) rather than at the door, so a

@@ -9,6 +9,7 @@
 // privilege the published claim rests on.
 import pg from "pg";
 import {
+  actionRateLimit,
   approvalConnectionString,
   assertApprovalConfig,
   bindHost,
@@ -51,6 +52,7 @@ export async function main(): Promise<void> {
     tenantId,
     proposalToken: proposalToken(),
     pendingCap: pendingCap(),
+    actionRateLimit: actionRateLimit(),
   });
   // A2/T5 — one of expiry's THREE enforcement points, and the least important of them.
   // The door's cap count and the queue read query both filter on `expires_at`
