@@ -157,3 +157,174 @@ If a task appears to require any of these, that is a **STOP-and-report**, per co
 - The KNOWN-ISSUES / honesty pass for this phase must state plainly what the mechanism is and what
   it is not, per the research note: A0b's honesty line is *necessary*, not a placeholder awaiting
   an industry standard that does not exist.
+
+---
+
+# Addendum (Phase 3 / A2) — what the approval queue does and does not buy
+
+A2 built the queue this ADR anticipated: `approval.users`, `approval.decisions`, the
+eight-state lifecycle, and a `BEFORE UPDATE` trigger. This addendum records what the
+mechanism guarantees, what it deliberately does not, and the designs that were rejected on
+the way — because every one of those rejections was reached twice, and a record is cheaper
+than reaching it a third time.
+
+## The claim A2 makes, in the only words that survive review
+
+> **No proposal can transition to `approved` or `rejected` without an atomically-written
+> `approval.decisions` row of the matching kind naming an approver — so a human disposition
+> with no attributable human is not representable.**
+
+Three things make it true rather than aspirational, and all three are pinned:
+
+- the row and the transition are in **one transaction**, discriminated by an `xid8` column
+  defaulting to `pg_current_xact_id()`, so a decision committed at any point in the past
+  does not authorise a transition made now;
+- the kind must **match** — `approval.decisions` is multi-row per proposal by design,
+  because every "Not now" adds a `dismissed` row, and without the match one of those would
+  approve a proposal;
+- the predicate covers **`rejected` as well as `approved`**. Scoped to `approved`, a bare
+  `update approval.proposals set state='rejected' where state='pending'` was *measured* to
+  succeed: `UPDATE 6`, zero decision rows, no error. A rejection is a human decision, and
+  if the database does not require the human then the word is not evidence of one.
+
+**Machine-driven terminal transitions are deliberately exempt, and that exemption is the
+whole content of the rule.** `pending → expired` (the sweeper) and `pending → superseded`
+(amendment, and render-time duplicate collapse) carry no decision row **because nobody
+decided**. It is also why the emergency manual drain now targets `expired` rather than
+`rejected`: an operator draining a wedged queue is not deciding anything, and recording
+their bulk action as a rejection would put a decision in the audit trail that never
+happened.
+
+**The limit of the claim, which travels with it everywhere:** it says nothing about *who
+pressed the button*. The database authenticates nobody and the agent host can reach the
+approval service's credential. The credential-locality disclosure in `KNOWN-ISSUES.md`
+governs that and is not superseded by anything here.
+
+## 🚨 The reliability paradox — why the broker's attention is not what makes this safe
+
+*(An earlier draft of this heading named the approval step and the word "safeguard" in one
+line. It was changed because `ingest/test/approval-honesty.test.ts` red against it: the pattern anchors on a
+subject plus an enforcement predicate and does not read negations, deliberately, since a
+negation-aware pattern is one paraphrase away from being tuned to green. The rule this
+document set for itself was "if a legitimate sentence trips the pin, fix the sentence" —
+so the sentence was fixed. Recorded because the alternative was to relax the pin, which is
+the failure mode this whole file exists to prevent.)*
+
+This is the most counter-intuitive conclusion in the phase, it is the one most likely to be
+quietly reversed by a future document, and `ingest/test/approval-honesty.test.ts` exists to
+red when it is.
+
+From Mosier & Manzey 2019 (postprint pp. 1–13): omission errors rose **32.4% → 48.3% as
+decision-aid reliability rose .87 → .98** (Bailey & Scerbo 2007) · **back-end aids that
+recommend one specific action are worse** than front-end aids · **experts are as
+susceptible as novices** · **externally imposed accountability did not replicate in
+professionals**, and debiasing that way *"does not show much promise."*
+
+Our queue is the worst-configured aid in that literature: back-end, one recommendation, and
+intended to become highly reliable.
+
+> **As the agent improves, human approval provides LESS protection, not more. Safety rests
+> on the read-only credential (A1) and the immutability trigger (A2's migration 015) —
+> mechanisms that hold regardless of whether anyone read the card — and not on the broker's
+> attention.**
+
+**Three answers that are ruled out by the same evidence**, listed because each is the
+obvious thing to reach for and all three were measured not to work:
+
+- better **card design** — Firefox's "Add Exception" showed 85.4% confirmation barely
+  varying by error type; users ignore the categories;
+- more **warning text** or added friction — 84% proceeded through the extra dialog, and
+  detail links drew 1.6% / 0% / 3%;
+- **accountability** framing on the card — externally imposed accountability did not
+  replicate in professionals.
+
+Be suspicious of any future proposal that answers this paragraph with UI.
+
+## What A2 does NOT attest
+
+- **A2 does not attest what her browser painted.** It attests that the payload she approved
+  cannot change, and that we recorded — *as audit metadata only* — which renderer version
+  showed it to her.
+- **It does not attest anything about the rendering at execution time.** A2 executes against
+  any rendering whatsoever.
+- **It does not bind the payload to the SMTP envelope.** Everything between the canonical
+  payload and what the recipient receives is built by C5 and is outside anything A2
+  guarantees. That is a C5 acceptance criterion: *the executor derives the entire outbound
+  message from the bound payload, and any field it synthesises is either constant per
+  deployment or displayed on the card.*
+- **`renderer_version` is never a predicate.** It is recorded and it is not read in the
+  request path.
+
+## Rejected designs, recorded so they cannot quietly return
+
+**The hold-then-send undo window (owner decision, 2026-08-08) — REJECTED, not deferred.**
+It was research-derived rather than requested; it is fundamentally *a mechanism for not
+asking the human*, which is backwards for a product whose differentiator is that the agent
+cannot act alone; the automatic decision about which actions skip approval is the most
+safety-critical logic in the system and two independent reviews defeated it; and there is
+no volume problem to solve, because the broker has zero actions today. It would also have
+falsified `README.md`'s published sentence that any action beyond reading requires human
+approval. Revisit only if real usage produces evidence of approval fatigue, **and** there is
+a real rendering and sending stack to test against.
+
+**No gate and no classifier were built, and that is a decision rather than an omission.** A
+classifier with one branch is not a classifier, it is a constant — and a constant returning
+`'approval'` is the absence of a gate expressed as code, i.e. a ready-made re-entry point
+for the design above, reachable by a refactor with no review attached.
+
+**`presentation_hash` / the display binding — DELETED.** Two sentences are banned, not one,
+because a one-item list did not catch the second last time:
+
+1. *"what you approved is the screen you were shown, byte for byte"* — or any claim about
+   what her browser rendered. The mechanism hashed bytes the **server** produced and
+   compared them against a server-side re-render of the same immutable row at the same
+   instant: both sides our own pure function of one input, so a proxied client, a browser
+   extension, a CSS rule or a stale bundle posts back a correct hash of bytes it never
+   displayed.
+2. *"we will not execute against a rendering we no longer produce"* — the `renderer_version`
+   runtime check. It had **no nameable threat** (the payload is immutable and the approval
+   is attributable regardless of what rendered it) and a **concrete cost**: after any
+   renderer deploy, every approved-but-unexecuted proposal would refuse execution
+   permanently, destroying a real human approval with no recovery path in this workstream.
+   The mechanism was deleted and *this sentence survived in the publishable set*, which is
+   exactly how a deleted control becomes a published guarantee.
+
+What survives is a **CI determinism property** — the payload region renders byte-identically
+across processes, time zones, locales and clocks — which is where a determinism check
+belongs.
+
+**Standing approvals per category — dropped.** Execute-then-inform. There is no rendered
+payload to bind to, and it is a low-risk bypass tier under a kinder name.
+
+**`SECURITY DEFINER` transition functions — superseded.** They buy enforcement only for
+callers who consent to use them, while importing PUBLIC-EXECUTE-by-default and the
+`search_path` misuse surface.
+
+## Three honesty sentences this phase owes, verbatim
+
+**On the trigger (D3).** *"We enforce payload immutability and legal state transitions with
+a database trigger rather than in application code, because a trigger has no bypass path.
+We deliberately do not put the transition workflow in the database. The line between
+'invariant belongs in the schema' and 'workflow belongs in the service' is our judgment; we
+found no source that draws it."*
+
+**On the user table (D4).** `approval.users` is a strict subset — `id`, `email`,
+`created_at`, `disabled_at`, nothing else — so A0b's work is purely additive. The unique
+index on `lower(email)` is **storage hygiene only and must never become a comparison
+predicate**: `lower()` is not identity-preserving for mailboxes (U+212A lower-cases to `k`,
+U+0130 collides with `i`) and RFC 5321 §2.3.11 makes the local part case-sensitive and the
+mailbox owner's business. A2 performs no email comparison anywhere; A0b inherits this
+warning. The first row is created by an operator through `ingest/src/cli/approval-user-add.ts`,
+connecting as the migration owner — which gives someone a user id, **not a way to log in**.
+
+**On the hash chain (D5, A3's scope).** *"A hash chain written and stored entirely on a host
+the client controls is tamper-**evident**, not tamper-**proof**, and nothing we can build
+changes that. Keying the chain with a secret stored on that same host adds no property that
+an unkeyed SHA-256 chain does not already have. The control that matters is publishing the
+chain head somewhere outside the host; from the last published head backwards, alteration is
+detectable by anyone holding it. We will claim tamper-evidence with an external anchor once
+A3 ships the chain and its anchor destination is settled — no hash chain exists in any
+shipped path today. We do not claim tamper-proofing, and we do not claim tamper-evidence
+against the host operator for any period after the last published head."* A2's whole
+obligation towards it is that decision rows are append-only and therefore chainable, which
+`42501` on UPDATE and DELETE delivers.

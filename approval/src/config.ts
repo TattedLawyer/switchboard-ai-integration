@@ -53,13 +53,30 @@ export function approvalConnectionString(): string {
 }
 
 /**
- * FLOOD CONTROL. A compromised agent host holds the door's bearer secret and can forge
- * well-formed proposals at volume. The terminal state of that is an approval queue no
- * human can triage, which DISABLES the "nothing acts without an identified approver"
- * constraint rather than merely annoying it. So the door counts pending rows and refuses
- * loudly at the cap. Range-checked in the idiom ingest applies to BACKFILL_INTERVAL_MS:
- * a non-integer or out-of-range value is a boot refusal naming the variable, never a
- * silent NaN that disables the cap.
+ * FLOOD CONTROL — 🚨 A RUNAWAY BACKSTOP, NOT AN ATTENTION BUDGET, and the WEAKEST of the
+ * three volume controls on this door.
+ *
+ * It bounds what a compromised agent host can leave sitting in the queue: such a host
+ * holds the bearer secret and can forge well-formed proposals at volume, and the terminal
+ * state of that is a queue no human can triage — which DISABLES the "nothing acts without
+ * an identified approver" constraint rather than merely annoying it.
+ *
+ * 🚨 NO PUBLISHED SOURCE GIVES A NUMBER FOR THIS. Neither 100 nor any other value here is
+ * derived from evidence about human attention; nobody has measured the quantity this
+ * number would have to be about. What actually protects approval QUALITY is, in ranked
+ * order: repeat-suppression and the one-proposal-one-outcome discipline (STRONGEST —
+ * Ancker measured it, and repeat-suppression is the authors' own recommended lever), then
+ * the per-action rate limit, then expiry. This count is fourth.
+ *
+ * 🚨 AND THE NUMERAL IS UNCHANGED WHILE THE QUANTITY IS NOT. Since A2 the door counts
+ * UNEXPIRED pending rows, not all pending rows — a different quantity under the same
+ * number. That filter is what makes one dead burst stop holding budget forever, and it is
+ * duplicated in the door rather than centralised in the sweeper on purpose: it must heal
+ * the queue with no process running at all.
+ *
+ * Range-checked in the idiom ingest applies to BACKFILL_INTERVAL_MS: a non-integer or
+ * out-of-range value is a boot refusal naming the variable, never a silent NaN that
+ * disables the cap.
  */
 export const DEFAULT_PENDING_PROPOSAL_CAP = 100;
 
