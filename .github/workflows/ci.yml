@@ -44,6 +44,13 @@ jobs:
           --health-interval 2s --health-timeout 2s --health-retries 15
     env:
       DATABASE_URL: postgres://switchboard:switchboard@localhost:5433/switchboard
+      # A1 (Phase 3, writer boundary): the agent's credential is REQUIRED and never
+      # derived. Before this, nothing anywhere in the repo set AGENT_DATABASE_URL, so
+      # every actual run of the agent took agent-db.ts's derivation path — meaning the
+      # full-privilege DATABASE_URL was load-bearing inside the agent process in 100% of
+      # existing configurations, while the docs claimed the opposite. Named explicitly
+      # here so CI runs the posture the README publishes.
+      AGENT_DATABASE_URL: postgres://switchboard_agent:switchboard_agent@localhost:5433/switchboard
       # CI runs the synthetic demo fixture on the published dev secrets BY DESIGN —
       # the same explicit opt-in demo.sh/chaos.sh declare. Without this, the A2
       # fail-closed gate (correctly) refuses to boot the pipeline. Proven live: the

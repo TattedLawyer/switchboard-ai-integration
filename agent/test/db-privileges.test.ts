@@ -17,8 +17,21 @@ const SCHEMA = "agent_priv_test";
 // `process.env.DBT_SCHEMA = ...` above the imports is a side effect of IMPORT, so it
 // outlives this file the moment these suites share a process — which is exactly the
 // parallelisation trigger the register entry names. `vi.stubEnv` undoes itself.
+// AGENT_DATABASE_URL is stubbed here too, because A1 made `agentConnectionString()`
+// fail closed: the derivation from DATABASE_URL is gone, so a test that wants the
+// agent role's own connection must build it the way a deployment does. Derived from
+// the suite's admin URL so this stays a live-database test rather than a fixture.
+function agentUrlFrom(adminUrl: string): string {
+  const url = new URL(adminUrl);
+  url.username = "switchboard_agent";
+  url.password = "switchboard_agent";
+  return url.toString();
+}
 beforeAll(() => {
   vi.stubEnv("DBT_SCHEMA", SCHEMA);
+  const adminUrl = process.env.DATABASE_URL;
+  if (!adminUrl) throw new Error("DATABASE_URL is required to build the agent test URL");
+  vi.stubEnv("AGENT_DATABASE_URL", agentUrlFrom(adminUrl));
 });
 afterAll(() => {
   vi.unstubAllEnvs();

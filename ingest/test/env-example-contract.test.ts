@@ -43,6 +43,21 @@ describe("SEC-I4 — .env.example is neither insecurely defaulted nor wrong", ()
     expect(assigns(ENV_EXAMPLE, "WEBHOOK_SECRET_CRM")).toBe(false);
   });
 
+  it("assigns AGENT_DATABASE_URL live, because A1 made it fail closed", () => {
+    // Before A1 this was a commented-out optional override and the agent derived its
+    // credential from DATABASE_URL. Deriving is gone: a template that leaves this
+    // commented cannot run the agent at all, so the template must set it.
+    expect(assigns(ENV_EXAMPLE, "AGENT_DATABASE_URL")).toBe(true);
+    // …and it must name the read-only role, not the full-privilege one. A template that
+    // pointed this at `switchboard` would satisfy the assignment check while handing the
+    // agent exactly the credential the boundary exists to keep out of that process.
+    const m = ENV_EXAMPLE.match(/^AGENT_DATABASE_URL=(.*)$/m);
+    expect(m).not.toBeNull();
+    expect(m![1]).toMatch(/:\/\/switchboard_agent:/);
+    // AGENT_DB_PASSWORD only ever existed to feed the derivation. It is gone with it.
+    expect(ENV_EXAMPLE).not.toContain("AGENT_DB_PASSWORD");
+  });
+
   it("pins INGEST_SOURCES to sources that exist, never the retired crm lane", () => {
     const m = ENV_EXAMPLE.match(/^INGEST_SOURCES=(.*)$/m);
     expect(m).not.toBeNull();

@@ -2,6 +2,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DATABASE_URL="${DATABASE_URL:-postgres://switchboard:switchboard@localhost:5433/switchboard}"
+# A1 (Phase 3): the agent credential is REQUIRED, never derived from DATABASE_URL —
+# agentConnectionString() fails closed. Pinned explicitly here so the agent never sees
+# the full-privilege credential as its own fallback.
+export AGENT_DATABASE_URL="${AGENT_DATABASE_URL:-postgres://switchboard_agent:switchboard_agent@localhost:5433/switchboard}"
 
 f="out/monday-report.md"
 [[ -s "$f" ]] || { echo "FAIL: $f missing or empty"; exit 1; }

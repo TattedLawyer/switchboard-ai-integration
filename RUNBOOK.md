@@ -12,11 +12,11 @@ is also the form `gap-ack` prints when reconcile tells you to run it.
 
 | Variable | Default | Used by |
 |---|---|---|
-| `DATABASE_URL` | no code default — export it (scripts set it for you) | ingest, agent, CLIs |
+| `DATABASE_URL` | no code default — export it (scripts set it for you) | ingest, CLIs (**not the agent** — see `AGENT_DATABASE_URL`; A1 removed the derivation that made this credential load-bearing inside the agent process) |
 | `WEBHOOK_SECRET_CRM` / `_BILLING` / `_SUPPORT` / `_SHEETS` / `_STRIPEFEED` / `_HUBCRM` / `_CASEBUS` | **required — fails closed.** No env var means the process throws at boot/first use; there is no silent fallback (the demo values are published in this repo). One secret **per source**, so a leaked secret compromises one source, not all. `_SHEETS` guards only the nudge door (see Sheets source operations); `_STRIPEFEED` and `_CASEBUS` each guard a door their pull-only paradigms never use (see those sources' operations sections); `_HUBCRM` is genuinely load-bearing — that source really does push signed batches; each is asserted at boot only when its source is in `INGEST_SOURCES` **and only on a role that mounts a door** (`INGEST_ROLE=receiver` or `all`; PRE-3 — a worker-only process has no `/webhooks/*` and never resolves a source secret, so it no longer refuses to boot without them, while both door-mounting roles still fail closed) | mock signing, ingest verification |
 | `LEDGER_HMAC_KEY` | **required — fails closed** (same rule as webhook secrets) | ledger writers (mocks), reconcile chain verification |
 | `ALLOW_DEV_SECRETS` | unset. `1` opts in to the published demo secrets (`demo-secret-<source>`, `demo-ledger-key`) — local demo/test use ONLY; demo.sh/chaos.sh and the vitest configs set it. Never set it in a real deployment | everything above |
-| `AGENT_DATABASE_URL` | derived: `DATABASE_URL` with user/password swapped to `switchboard_agent` (dev password `switchboard_agent`; override with `AGENT_DB_PASSWORD`). The agent/report pool runs as this **database-enforced read-only role** — set explicitly in production | agent report/MCP pool |
+| `AGENT_DATABASE_URL` | **required — fails closed.** No derivation: the agent refuses to build a pool without it, naming the variable and the remedy. It must point at `switchboard_agent`, the **database-enforced read-only role** (dev password `switchboard_agent`, minted by migration 005). Until A1 this was derived from `DATABASE_URL` when unset, so the full-privilege credential had to be present in the agent's environment for the agent to run at all — the opposite of the posture this table described. Every script, `ci.yml` and `.env.example` now set it explicitly | agent report/MCP pool |
 | `INGEST_INSTANCE_ID` | unset → `/status` reports `instance_id: null` and nothing checks it. demo.sh/chaos.sh mint one per run and refuse to proceed unless `:4002/status` echoes it back, proving they are driving the ingest they just started and not one stranded by an earlier run | ingest `/status`, demo.sh, chaos.sh |
 | `LEDGER_PATH` | no code default — export it (scripts set it for you) | each mock process (its own ledger file) |
 | `LEDGER_PATH_BILLING` / `_SUPPORT` | unset → reconcile FAILS naming the missing var (fail-closed); the literal `skip` opts the source out explicitly. Both are LEDGER-FEED sources, and `ledgerPathFor()` has exactly one consumer — `connectors/ledger-feed.ts` — so the fail-closed rule is theirs alone | reconcile CLI (per-source ledger lookup) |
@@ -37,6 +37,10 @@ is also the form `gap-ack` prints when reconcile tells you to run it.
 
 ```bash
 export DATABASE_URL=postgres://switchboard:switchboard@localhost:5433/switchboard
+# The agent's own credential — REQUIRED since A1, never derived from the line above.
+# Note the role: switchboard_agent, which Postgres limits to SELECT on the analytics
+# schema. The agent process is given this and nothing else.
+export AGENT_DATABASE_URL=postgres://switchboard_agent:switchboard_agent@localhost:5433/switchboard
 # LOCAL DEMO ONLY. Secrets fail closed, so without either this or a real
 # WEBHOOK_SECRET_HUBCRM/_STRIPEFEED/_CASEBUS/_SUPPORT the next command's service
 # refuses to boot naming every missing one. Exported here, deliberately and visibly,
