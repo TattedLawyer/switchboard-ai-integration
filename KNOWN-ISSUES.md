@@ -35,7 +35,7 @@ without changing this table does not go green.
 
 | | Count | Derivation |
 |---|---|---|
-| **Open defects** | **32** | Part II top-level bullets that name an `Owner:` and are not struck |
+| **Open defects** | **35** | Part II top-level bullets that name an `Owner:` and are not struck |
 | **Design disclosures** | **41** | Part I top-level bullets |
 | **Paid** (struck entries) | **47** | Part III struck bullets, plus the cosmetic/low list |
 
@@ -802,7 +802,8 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   `switchboard_app:switchboard_app` has read/write on raw events, raw bodies,
   quarantined payloads, cursors, the gap ledger and hydrated snapshots.
   **Narrowed at CLOSE-3:** `APP_DB_PASSWORD` now overrides it (`migrate.ts`,
-  same shape `AGENT_DB_PASSWORD` gives the agent role — migration 006 is applied
+  the shape `AGENT_DB_PASSWORD` used to give the agent role, before A1 deleted both
+  that variable and the credential derivation it fed — migration 006 is applied
   and immutable, so the override lives in the migrator), the rotation note
   migration 005 carries is written down beside it, and `scripts/restore.sh`
   documents its `if not exists` as a guarantee so recovery cannot reset a
@@ -1184,6 +1185,56 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   cost of being wrong is a total nobody can tell is wrong.
 
   *Owner: unscheduled — the precise fix is known and written down. Trigger: a real multi-currency SOURCE (not a fixture — a fixture is writable today) whose behaviour can validate the loosened rule. Over-refusal only until then; no wrong number can be emitted.*
+
+## Approval queue (Phase 3 / A1) — two open halves shipped with the door
+
+- **A1 ships an approval queue nothing can drain.** `switchboard_approval` holds
+  `select, insert` on `approval.proposals` and deliberately no `UPDATE` — the
+  `pending → approved/rejected` transition has no caller until A0b, and privilege
+  granted ahead of a caller is privilege nobody is watching. The consequence,
+  which was not written down when the door shipped: rows enter `pending` and
+  **cannot leave**. Once `PENDING_PROPOSAL_CAP` (default 100) pending proposals
+  accumulate, the door answers `429` **permanently**, including to legitimate
+  proposals, and the only remedy in the repo is manual SQL as the migration owner
+  (`update approval.proposals set state = 'rejected' where …`). This is an
+  acceptable interim state only because A0b follows immediately; it is a defect
+  the day A0b slips. Note it is a *liveness* failure and not a safety one — the
+  cap failing closed is the correct direction, and no proposal is ever acted on
+  without a human either way.
+
+  *Owner: A0b (the client-facing approval page) — it brings the approver identity, the lifecycle UPDATE, and the migration granting it. Trigger: already scheduled; this entry closes when A0b's approve/reject path lands and a proposal can reach a terminal state without manual SQL.*
+
+- **No per-window rate limit on the proposal door.** A1 shipped the two flood
+  controls that were free while the table was being created — a unique
+  `(tenant_id, idempotency_key)` making replay a database-level no-op, and a
+  pending-row cap — and the queue is genuinely bounded by them: a compromised
+  agent host holding the bearer token cannot drown the approver. The third
+  control from the A1 review was not built, and the residual is real rather than
+  theoretical: **every POST costs a `count(*)` round trip regardless of outcome**,
+  so a caller sitting at the cap can pin the approval service's database
+  connection indefinitely. That is a denial of service on the *door*, not on the
+  queue. Mitigated today by loopback binding (`APPROVAL_BIND_HOST` defaults to
+  `127.0.0.1`) and by there being exactly one legitimate caller, which is why it
+  is low severity rather than absent. Recorded rather than argued away: it was an
+  explicit item in the review's correction list and it did not ship.
+
+  *Owner: A0b/A5 — whichever first puts a second caller or a non-loopback bind in front of this door, since both remove the mitigations. Trigger: `APPROVAL_BIND_HOST` set to anything but loopback in a real deployment, or a second authenticated caller. Fix shape is known: a token-bucket per bearer identity in front of the pending count, so a refused request costs no query.*
+
+- **`scripts/demo.sh` does not start the approval service, so the one-command
+  demo never exercises the proposal door.** The README's verification promise is
+  "one command runs the entire system"; after A1 that is true of everything except
+  the newest and most claim-relevant component. The boundary is covered by tests —
+  including a live round trip where the agent's own role gets `42501` attempting
+  the insert the door just performed — but the demo is the artifact a skeptic
+  actually runs, and a reviewer who reads only `demo.sh` sees no approval service
+  at all. Not fixed in A1 for a stated reason rather than an omission: the change
+  is a service start plus a readiness wait plus a proposal step, and the
+  implementer could not execute `demo.sh` to verify it (the environment forbids
+  running it — port conflicts with a live stack). A blind edit to the headline
+  verification script that adds an unverified `wait_for` fails by *hanging* rather
+  than by erroring, which is worse than the gap it closes.
+
+  *Owner: A0b — it adds the approval page the demo would need anyway, and it is the first task after this one that can run `demo.sh` end to end. Trigger: any change to `demo.sh` for another reason; do not land this one without executing the script. Fix shape: start `npm run start -w approval` on 4009 after ingest, `wait_for 4009`, then `npm run propose -w agent` and print the resulting pending row.*
 
 ## Open halves of entries that live in Part I
 

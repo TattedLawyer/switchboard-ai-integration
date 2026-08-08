@@ -122,9 +122,13 @@ breach of the write claim, but an unexamined widening of the read surface.
   `switchboard_agent`, a Postgres role holding `usage` and `select` and nothing else; INSERT,
   UPDATE, DELETE and CREATE are refused with SQLSTATE `42501`, proven by executing those statements
   against a live database (`agent/test/db-privileges.test.ts`).
-- **Enforced at process start, in every deployment:** the agent host refuses to boot without
-  `AGENT_DATABASE_URL`, and refuses to serve tools on any connection whose `current_user` is not
-  `switchboard_agent` (`assertAgentRole`).
+- **Enforced at process start, in every deployment:** the agent host refuses to **start** without
+  `AGENT_DATABASE_URL`, and refuses to start on any connection whose `current_user` is not
+  `switchboard_agent` (`assertAgentRole`). "Start", deliberately, not "serve every call": the check
+  runs once per entrypoint, before any work, against the single pool that entrypoint opens.
+  `createMcpServer` receives a pool it did not open, so an assertion there would be a late check of
+  someone else's decision; what makes the boot check sufficient is that no other pool may exist,
+  which is the third tier's job.
 - **Enforced in CI, about the code and not about your deployment:** no module under `agent/src/`
   constructs a second pool or reads a full-privilege credential, and a boot test runs the proposal
   path with no such credential present. This proves the agent *never needs* write authority; it

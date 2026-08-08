@@ -36,8 +36,10 @@ directing an agent fleet under an evidence-gated process — is described in
    else, and INSERT/UPDATE/DELETE/CREATE are refused with SQLSTATE `42501`, proven
    by running those statements against a live database;
    *(b) enforced at process start, in every deployment* — the agent refuses to
-   boot without its own credential and refuses to serve tools on any connection
-   whose `current_user` is not that role;
+   **start** without its own credential, and refuses to start on any connection
+   whose `current_user` is not that role. Precisely "start", not "serve every
+   call": the check runs once per entrypoint, before any work, on the one pool
+   that entrypoint opens — and no other pool may exist, which is what (c) is for;
    *(c) enforced in CI, about the code and not about your deployment* — no module
    under `agent/src/` constructs a second pool or reads a full-privilege
    credential. That last one proves the agent never *needs* write authority; it
@@ -172,7 +174,7 @@ reporting a clean run.
   idempotency-keyed, because an approval queue no human can triage disables the
   human-approval constraint rather than merely annoying it. Its client-facing
   login and approval page are the next task; the door is real today.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 1111 tests, the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 1129 tests, the
   dbt build — 101 dbt build steps (15 models, 3 seeds, 83 data tests) — the agent
   action-safety eval, and the identity oracle, against a real Postgres service
   container
@@ -187,7 +189,7 @@ reporting a clean run.
   on a slow machine, and a leftover mock server inherited across steps sharing a
   process table. Each is narrated with its run ID in the
   [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
-- 1111 automated tests, green in CI and locally — including a seeded
+- 1129 automated tests, green in CI and locally — including a seeded
   property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety under
   arbitrary torn writes. That count is not maintained by hand: CI runs
@@ -216,7 +218,7 @@ reporting a clean run.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 1111 tests green across ten workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
+| Suite | `npm test` + dbt | 1129 tests green across ten workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
 
 ## What's coming (built in phases, in public)
 

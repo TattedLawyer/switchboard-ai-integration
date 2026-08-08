@@ -138,8 +138,11 @@ async function runMigrationsOn(client: pg.PoolClient): Promise<void> {
  * a credential that does not vary per installation, which is CWE-1392's exact shape, and
  * the role holds select/insert/update/delete on every table in `raw` and `ingest`. The
  * literal is the LOCAL DEV value (same class as the committed compose password); this is
- * the override, in the same place and of the same shape as `AGENT_DB_PASSWORD` gives the
- * agent role — 006 itself is applied and immutable, so the override lives here.
+ * the override, in the same place — 006 itself is applied and immutable, so the override
+ * lives here. (This used to cite `AGENT_DB_PASSWORD` as the comparable shape. That variable
+ * was deleted in Phase 3 / A1 along with the credential derivation it fed: the agent's
+ * connection string is now supplied whole via `AGENT_DATABASE_URL` or the agent refuses to
+ * start, so there is no password fragment left for it to override.)
  *
  * Deliberately NOT fail-closed. CWE-1392 rates "prohibit a value that does not vary per
  * installation" higher than "let the administrator change it", and a migration that
