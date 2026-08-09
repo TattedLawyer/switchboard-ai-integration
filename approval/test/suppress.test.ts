@@ -13,7 +13,16 @@ import { fileURLToPath } from "node:url";
 import { freshTestDb } from "../../ingest/test/helpers/testdb.js";
 import { createApprovalApp } from "../src/server.js";
 import { readPendingQueue } from "../src/queue.js";
-import { approveCard, collapseDuplicates, rejectCard } from "../src/suppress.js";
+import {
+  approveCard,
+  collapseDuplicates,
+  rejectCard,
+  suppressionKey,
+} from "../src/suppress.js";
+import {
+  IDEMPOTENCY_FINGERPRINT_FIELDS,
+  idempotencyFingerprint,
+} from "../src/canonical.js";
 import { ACTION_RATE_WINDOW_MINUTES } from "../src/config.js";
 
 const execFileAsync = promisify(execFile);
@@ -107,6 +116,63 @@ afterAll(async () => {
   if (close) await close().catch(() => {});
   if (app) await app.end().catch(() => {});
   if (cleanup) await cleanup();
+});
+
+describe("A2/M-1: the door and the suppressor agree on what makes two asks the same", () => {
+  // 🚨 THE DIVERGENCE THIS PREVENTS IS ONE WE ALREADY SHIPPED ONCE. The door compared only
+  // `payload_hash` while the suppressor keyed on `(action_type, payload_hash, rationale)`,
+  // so a changed rationale was a NEW CARD to the suppressor and a SILENT DUPLICATE to the
+  // door — and the door won, because it refused to write the row at all. The two were
+  // brought into agreement by hand, in two modules, through two different serialisers, and
+  // until now nothing stopped them drifting apart again.
+  //
+  // Pinned on BEHAVIOUR rather than on the strings: the two functions must partition the
+  // same set of asks the same way. That survives either side changing its serialisation,
+  // which a literal string comparison would not.
+  const ASKS = [
+    { action_type: "send_email", payload_hash: "h1", rationale: "routine follow-up" },
+    { action_type: "send_email", payload_hash: "h1", rationale: "routine follow-up" },
+    { action_type: "send_email", payload_hash: "h1", rationale: "she is threatening to leave" },
+    { action_type: "send_email", payload_hash: "h2", rationale: "routine follow-up" },
+    { action_type: "send_sms", payload_hash: "h1", rationale: "routine follow-up" },
+  ];
+
+  /** Which indices share a group, as a canonical set of groups. */
+  const partition = (fn: (a: (typeof ASKS)[number]) => string): string[] => {
+    const groups = new Map<string, number[]>();
+    ASKS.forEach((a, i) => {
+      const k = fn(a);
+      groups.set(k, [...(groups.get(k) ?? []), i]);
+    });
+    return [...groups.values()].map((g) => g.join(",")).sort();
+  };
+
+  it("partition the same asks identically", () => {
+    // mutation: drop `rationale` from `suppressionKey` (or from `idempotencyFingerprint`)
+    //           -> the partitions diverge and this reds. RUN ✅ 2026-08-09
+    const bySuppressor = partition(suppressionKey);
+    const byDoor = partition(idempotencyFingerprint);
+    expect(byDoor, "the door and the suppressor disagree about identity").toEqual(bySuppressor);
+    // The witness: the partition is non-degenerate — it neither lumps everything together
+    // nor splits everything apart, so "they agree" is a real agreement.
+    expect(bySuppressor).toEqual(["0,1", "2", "3", "4"]);
+  });
+
+  it("and they agree field for field", () => {
+    // The cheaper, more direct half — kept alongside the behavioural pin because it names
+    // the fields in the failure message, which is what a future reader needs.
+    for (const field of IDEMPOTENCY_FINGERPRINT_FIELDS) {
+      const changed = { ...ASKS[0], [field]: "CHANGED" };
+      expect(
+        suppressionKey(changed) !== suppressionKey(ASKS[0]),
+        `the suppressor ignores '${field}', which the door treats as identity-bearing`,
+      ).toBe(true);
+      expect(
+        idempotencyFingerprint(changed) !== idempotencyFingerprint(ASKS[0]),
+        `the door ignores '${field}', which the suppressor treats as identity-bearing`,
+      ).toBe(true);
+    }
+  });
 });
 
 describe("A2/T10: the dedup collapses identical asks — and ONLY identical asks", () => {

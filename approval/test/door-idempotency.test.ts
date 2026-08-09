@@ -279,15 +279,60 @@ describe("A2/I-4: a replay is answered, not rate-limited", () => {
     expect(fresh.status, "a NEW ask was admitted past the rate limit").toBe(429);
   });
 
-  it("...and a MISMATCHED fingerprint at the limit still 422s and is still counted", async () => {
-    // If a mismatch were exempted from the counters, an attacker would get unlimited free
-    // 422-generating requests. It falls through to the normal path.
+  it("...and a MISMATCHED fingerprint AT THE LIMIT still 422s — it is NOT counted, deliberately", async () => {
+    // mutation: move `respondToMismatch(...)` in `server.ts` to AFTER the cap and rate
+    //           counts (i.e. let a mismatch "fall through" and be counted)
+    //           -> the mismatch below returns 429 instead of 422 and this reds.
+    //           RUN ✅ 2026-08-09
+    //
+    // 🚨 THIS PIN USED TO BE VACUOUS WITH RESPECT TO ITS OWN TITLE — the seventh such on
+    // this project and the first introduced by a fix wave. It said "at the limit" and
+    // posted twice, never reaching the limit, so it asserted nothing about the property it
+    // named. Its sibling above carried the "the limit must actually be reached" guard; this
+    // one did not. The budget is now genuinely filled and the fill is asserted before the
+    // mismatch is sent.
+    //
+    // 🚨 AND THE BEHAVIOUR IT PINS IS THE OPPOSITE OF WHAT THE OLD TITLE CLAIMED. Three
+    // published sentences said a mismatch "is still counted"; measured, it never was
+    // ([422,422,422,422,422] after the limiter had started refusing). The DECISION was to
+    // keep the exemption and correct the sentences, because an application-level counter
+    // cannot bound request volume — only row creation — so counting mismatches would turn
+    // unbounded 422s into unbounded 429s while TRIPLING the query cost of each refusal and
+    // letting a client-side payload bug consume the budget that protects the human's
+    // queue. JUDGMENT; the residual is disclosed in KNOWN-ISSUES.
     const key = `mm-${Math.random().toString(36).slice(2)}`;
-    await post(body({ idempotency_key: key, payload: { to: "a@example.com" } }));
-    const mismatch = await post(
-      body({ idempotency_key: key, payload: { to: "b@example.com" } }),
+    expect(
+      (await post(body({ idempotency_key: key, payload: { to: "original@example.com" } }))).status,
+    ).toBe(201);
+
+    // Fill the rest of the budget with DISTINCT asks, then prove the limiter is actually
+    // refusing — without this guard the assertions below prove nothing.
+    for (let i = 0; i < RATE - 1; i++) {
+      expect((await post(body({ payload: { to: `fill${i}@example.com` } }))).status).toBe(201);
+    }
+    expect(
+      (await post(body({ payload: { to: "fresh@example.com" } }))).status,
+      "the limit must actually be reached, or this test proves nothing",
+    ).toBe(429);
+
+    // Now the property: a mismatch on an existing key is answered 422, not 429, and stays
+    // 422 however many times it is sent.
+    const seen: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      seen.push(
+        (await post(body({ idempotency_key: key, payload: { to: `mismatch${i}@example.com` } })))
+          .status,
+      );
+    }
+    expect(seen, "a mismatch was metered by the rate limiter").toEqual([422, 422, 422, 422]);
+
+    // ...and none of it wrote anything. That is the reason the exemption is defensible:
+    // the counters exist to bound ROW CREATION, and this path creates no rows.
+    const rows = await admin.query<{ n: number }>(
+      `select count(*)::int as n from approval.proposals where idempotency_key = $1`,
+      [key],
     );
-    expect(mismatch.status).toBe(422);
+    expect(rows.rows[0].n).toBe(1);
   });
 });
 

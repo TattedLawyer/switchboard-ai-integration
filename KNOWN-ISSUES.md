@@ -1384,9 +1384,32 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   Stripe's client-side remedy for a 4xx — "always generate a new idempotency key" — is
   **actively harmful here**, because a new key produces a second row and a second card
   for the same ask, the exact duplicate the suppression design exists to prevent. The
-  exemption is bounded: it requires an exact fingerprint match on an existing row, a new
-  key at the limit still `429`s, and a mismatched fingerprint still `422`s and is still
-  counted.
+  exemption is bounded where bounding is possible: it requires an already-existing row
+  under that key, and **a new key at the limit still `429`s** — which is the boundary
+  that matters, because a new key is the only thing that can create a row.
+
+  🚨 **A mismatched fingerprint is ALSO exempt from both counters, and an earlier version
+  of this entry said the opposite.** The code always behaved this way; the sentence was
+  wrong. Measured at a limit of 6, with the budget filled and a fresh ask correctly
+  `429`ing, five mismatched POSTs on an existing key returned `[422,422,422,422,422]` —
+  unbounded. Corrected here rather than in the code, because on the merits the exemption
+  is right: **an application-level counter cannot bound request volume, only row
+  creation**, so counting mismatches would convert unbounded `422`s into unbounded
+  `429`s and remove nothing (the cheapest unbounded path is a wrong bearer token, which
+  costs zero queries). It would also make the residual **worse** — a refused request
+  costs one indexed lookup today and would cost three — and it would let a client-side
+  payload bug consume the budget that protects the human's queue, when the IETF model
+  treats a mismatch as an error the client must CORRECT rather than a production event to
+  meter. **JUDGMENT**, and explicitly not settled by research: Stripe documents
+  limiter-before-idempotency only in general, and the IETF draft mentions rate limits
+  nowhere at all.
+
+  **The residual this leaves, stated plainly:** an attacker holding the bearer token can
+  send unbounded `422`s against one known key, each costing a single indexed lookup and
+  writing nothing. That is the same defect this entry already names — *a refused request
+  costs a query* — reachable by one more path, and the fix shape below (a token bucket in
+  FRONT of every count) is the only thing that closes it, because it is the only control
+  that bounds requests rather than rows.
 
   *Owner: A0b/A5 — whichever first puts a second caller or a non-loopback bind in front of this door, since both remove the mitigations. Trigger: `APPROVAL_BIND_HOST` set to anything but loopback in a real deployment, or a second authenticated caller. Fix shape is known: a token-bucket per bearer identity in front of BOTH counts, so a refused request costs no query.*
 

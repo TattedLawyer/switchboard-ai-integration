@@ -193,10 +193,44 @@ export function createApprovalApp(pool: pg.Pool, opts: ApprovalAppOptions): expr
         // produces nothing (`on conflict do nothing` guarantees it). Counting it does not
         // serve the stated purpose.
         //
-        // 🚨 BOUNDED SO IT CANNOT BECOME A BYPASS: the short-circuit requires an EXACT
-        // fingerprint match against an ALREADY-EXISTING row. Never a new key, never a
-        // mismatched fingerprint — a mismatch still falls through, still 422s, and is still
-        // counted, or an attacker would get unlimited free 422-generating requests.
+        // 🚨 BOUNDED WHERE BOUNDING IS POSSIBLE: the short-circuit requires an
+        // ALREADY-EXISTING row under this key. A NEW key never short-circuits and always
+        // meets the full limiter — that is the boundary that matters, because a new key is
+        // the only thing that can create a row.
+        //
+        // A MISMATCHED FINGERPRINT IS ALSO EXEMPT FROM BOTH COUNTERS, DELIBERATELY, and an
+        // earlier version of this comment said the opposite ("still counted, or an attacker
+        // would get unlimited free 422-generating requests"). The code always did this; the
+        // comment was wrong, and so was its reasoning. Corrected rather than "fixed", after
+        // deciding the question on its merits:
+        //
+        //   · AN APPLICATION-LEVEL COUNTER CANNOT BOUND REQUEST VOLUME — ONLY ROW CREATION.
+        //     Counting mismatches converts an unbounded stream of 422s into an unbounded
+        //     stream of 429s. It removes nothing. The cheapest unbounded path is a wrong
+        //     bearer token, which costs ZERO queries and is answered 401 before this code
+        //     is reached. "Unlimited free 4xx" is a property of every HTTP surface, not a
+        //     property this branch introduces.
+        //   · IT WOULD MAKE THE REAL RESIDUAL WORSE. A refused request currently costs ONE
+        //     indexed lookup. Routing mismatches through the counters makes it THREE
+        //     (this lookup, the cap count, the rate count). The genuine defect here is
+        //     "a refused request costs a query", it is already disclosed in KNOWN-ISSUES,
+        //     and its fix shape is a token bucket in FRONT of all of this — the only thing
+        //     that actually bounds request volume.
+        //   · IT WOULD PUNISH THE WRONG PARTY. The rate limit's stated purpose, two blocks
+        //     down, is to bound the agent's PRODUCTION RATE. A mismatch writes nothing —
+        //     exactly like a replay. Counting a client-side error against the budget that
+        //     protects a human's queue means a client bug can 429 the operator's genuine
+        //     new asks. The IETF draft's model is that a mismatch is a client error to be
+        //     CORRECTED ("Clients MUST correct the requests… before performing a retry"),
+        //     not a production event to be metered.
+        //   · EXEMPTING REPLAYS BUT NOT MISMATCHES WOULD BE INCOHERENT. Both write nothing.
+        //     The argument for one is the argument for the other.
+        //
+        // 🚨 LABEL: JUDGMENT. The research settles the REPLAY question and explicitly does
+        // not reach this one — Stripe documents limiter-before-idempotency generally, and
+        // the IETF draft contains no mention of rate limits, throttling or quota anywhere.
+        // Neither addresses a fingerprint mismatch. This is our call, and KNOWN-ISSUES says
+        // so along with the residual it leaves standing.
         const replay = await pool.query(
           `select id, state, payload_hash, action_type, rationale
              from approval.proposals

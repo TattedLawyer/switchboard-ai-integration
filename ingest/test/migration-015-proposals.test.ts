@@ -183,13 +183,24 @@ describe("A2/T2: migration 015 widens the proposal lifecycle", () => {
           and conrelid = 'approval.proposals'::regclass`,
     );
     expect(def.rowCount, "015 did not install the widened state CHECK").toBe(1);
-    for (const state of EIGHT_STATES) {
-      expect(def.rows[0].def, `'${state}' is not in the declared set`).toContain(`'${state}'`);
-    }
+
+    // 🚨 THE DECLARED SET IS EXTRACTED AND COMPARED EXACTLY, not probed with `toContain`.
+    // The difference matters because of a disclosure this test has to carry: since the
+    // creation guard landed, the CHECK's REJECTION of an unknown state is no longer
+    // reachable by execution — the trigger raises P0001 first, on every path. So this
+    // catalog read is the ONLY thing watching the declared set, and a `toContain` probe
+    // would have been satisfied by a CHECK that had been WIDENED to admit a ninth state.
+    // Pulling the literals out and comparing the whole set closes that: adding a state
+    // reds here even though nothing can execute the constraint any more.
+    const declared = [...def.rows[0].def.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort();
+    expect(declared, "the declared state set drifted from the eight the design names").toEqual(
+      [...EIGHT_STATES].sort(),
+    );
     // `dismissed` is deliberately NOT a state: it is a DECISION without a transition, and
-    // it lives in `approval.decisions.kind`.
-    expect(def.rows[0].def).not.toContain("'dismissed'");
-    expect(def.rows[0].def).not.toContain("'held'");
+    // it lives in `approval.decisions.kind`. Covered by the exact comparison above; named
+    // here because it is the value most likely to be added by someone who has not read why.
+    expect(declared).not.toContain("dismissed");
+    expect(declared).not.toContain("held");
 
     for (const state of EIGHT_STATES) {
       const id = await walkToState(state);
@@ -201,9 +212,14 @@ describe("A2/T2: migration 015 widens the proposal lifecycle", () => {
   it("refuses a ninth state, at the guard first and the CHECK behind it", async () => {
     // Two layers, and the order matters for what the error says. The creation guard runs
     // BEFORE the constraint, so an insert naming an unknown state raises P0001 ("born
-    // undecided") rather than 23514 — the CHECK is the second line, not the first. Asserting
-    // that it throws AND that the declared set excludes the value covers both without
-    // pretending a single SQLSTATE is the whole story.
+    // undecided") rather than 23514 — the CHECK is the second line, not the first.
+    //
+    // 🚨 DISCLOSURE, kept deliberately: this means the CHECK's rejection of a ninth state
+    // is NO LONGER EXERCISED ANYWHERE. Every path that could reach it is refused earlier by
+    // the trigger, so the constraint is now covered only by the catalog assertion above —
+    // which is why that assertion compares the EXTRACTED SET EXACTLY rather than probing
+    // for substrings. We are not pretending a shadowed constraint is tested by execution;
+    // we are saying which artifact watches it, and making that artifact strict.
     await expect(insertPending({ state: "dismissed" })).rejects.toMatchObject({ code: "P0001" });
     await expect(insertPending({ state: "held" })).rejects.toMatchObject({ code: "P0001" });
   });
