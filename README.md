@@ -22,6 +22,11 @@ directing an agent fleet under an evidence-gated process — is described in
    even when the same company appears under different names and IDs in each system.
 3. **Put an AI assistant on top** that writes the weekly revenue-risk report
    automatically — designed so any action beyond reading requires human approval.
+   That is enforced at the database: a proposal cannot be *created* in an approved
+   state and cannot *transition* to one without a decision row naming a human, written
+   in the same transaction — both halves, because for a while only the second was, and
+   an INSERT could forge the first (found at the merge gate, closed, and disclosed in
+   KNOWN-ISSUES with the owner-level residuals no in-database control can cover).
    Today that means two independent layers: the assistant's server registers
    exactly one read-only tool (anything else is rejected by the protocol layer,
    and a test pins that), and the assistant's database connection runs as a
@@ -180,7 +185,7 @@ reporting a clean run.
   idempotency-keyed, because an approval queue no human can triage disables the
   human-approval constraint rather than merely annoying it. Its client-facing
   login and approval page are the next task; the door is real today.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 1330 tests, the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 1356 tests, the
   dbt build — 101 dbt build steps (15 models, 3 seeds, 83 data tests) — the agent
   action-safety eval, and the identity oracle, against a real Postgres service
   container
@@ -195,7 +200,7 @@ reporting a clean run.
   on a slow machine, and a leftover mock server inherited across steps sharing a
   process table. Each is narrated with its run ID in the
   [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
-- 1330 automated tests, green in CI and locally — including a seeded
+- 1356 automated tests, green in CI and locally — including a seeded
   property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety under
   arbitrary torn writes. That count is not maintained by hand: CI runs
@@ -224,7 +229,7 @@ reporting a clean run.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 1330 tests green across ten workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
+| Suite | `npm test` + dbt | 1356 tests green across ten workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
 
 ## What's coming (built in phases, in public)
 

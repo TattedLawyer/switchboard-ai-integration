@@ -23,10 +23,15 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { freshTestDb } from "../../ingest/test/helpers/testdb.js";
 import { createApprovalApp } from "../src/server.js";
-import { payloadHash } from "../src/canonical.js";
+import {
+  IDEMPOTENCY_FINGERPRINT_FIELDS,
+  idempotencyFingerprint,
+  payloadHash,
+} from "../src/canonical.js";
 
 const TENANT = "00000000-0000-0000-0000-000000000000";
 const SECRET = "test-proposal-token-do-not-reuse";
+const RATE = 6;
 
 let admin: pg.Pool;
 let approvalPool: pg.Pool;
@@ -68,6 +73,7 @@ beforeAll(async () => {
     tenantId: TENANT,
     proposalToken: SECRET,
     pendingCap: 50,
+    actionRateLimit: RATE,
   });
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", () => resolve()));
@@ -155,6 +161,133 @@ describe("A2/T4: same key, DIFFERENT payload is 422 — never a silent first-wri
     expect(retry.status).toBe(200);
     expect(retry.json).toMatchObject({ id: first.json.id, duplicate: true, state: "pending" });
     expect(retry.json.terminal).toBeUndefined();
+  });
+});
+
+describe("A2/I-3: the fingerprint is PUBLISHED, and a changed rationale is not swallowed", () => {
+  it("same key, same payload, DIFFERENT rationale -> 422, not a silent 200", async () => {
+    // mutation: drop `rationale` from `idempotencyFingerprint` in `canonical.ts`
+    //           -> the door answers 200 {duplicate:true}, nothing is written, and the
+    //           stored rationale stays the first one. This reds. RUN ✅ 2026-08-08
+    //
+    // 🚨 THIS WAS THE SILENT FIRST-WRITE-WINS THE 422 BRANCH CLAIMED TO HAVE ELIMINATED,
+    // surviving on the one field a human actually reads to decide. `suppress.ts` puts
+    // `rationale` in the suppression key and argues at length that without it "the one that
+    // would have changed her deliberation is superseded unseen" — here it was worse than
+    // superseded: no row existed at all, so there was nothing for her to see and nothing
+    // for an auditor to reconstruct.
+    const key = `rat-${Math.random().toString(36).slice(2)}`;
+    const payload = { to: "jane@client.example.com", body: "same bytes" };
+    const first = await post(body({ idempotency_key: key, payload, rationale: "routine follow-up" }));
+    expect(first.status).toBe(201);
+
+    const second = await post(
+      body({
+        idempotency_key: key,
+        payload,
+        rationale: "client called; she is threatening to list elsewhere",
+      }),
+    );
+    expect(second.status, JSON.stringify(second.json)).toBe(422);
+    expect(second.json.id).toBeUndefined();
+    // The response NAMES the fields, because an undeclared subset was the actual defect.
+    expect(second.json.fingerprint_fields).toEqual(["action_type", "payload_hash", "rationale"]);
+
+    const rows = await admin.query(
+      `select rationale from approval.proposals where idempotency_key = $1`,
+      [key],
+    );
+    expect(rows.rowCount).toBe(1);
+    expect(rows.rows[0].rationale).toBe("routine follow-up");
+  });
+
+  it("the fingerprint field list is PINNED — adding a proposal field forces a decision", async () => {
+    // mutation: add a field to the fingerprint (or remove one) -> this reds.
+    //           RUN ✅ 2026-08-08
+    //
+    // The point of pinning the list rather than the behaviour: a new field on the proposal
+    // grammar must not default to "silently ignored for idempotency purposes", which is
+    // how `rationale` came to be omitted. AWS's shape — publish the exemptions — is what
+    // makes a partial fingerprint defensible; an implicit one is not.
+    expect(IDEMPOTENCY_FINGERPRINT_FIELDS).toEqual(["action_type", "payload_hash", "rationale"]);
+    // ...and every one of them really does change the fingerprint.
+    const base = { action_type: "send_email", payload_hash: "h", rationale: "r" };
+    expect(idempotencyFingerprint({ ...base, action_type: "other" })).not.toBe(
+      idempotencyFingerprint(base),
+    );
+    expect(idempotencyFingerprint({ ...base, payload_hash: "h2" })).not.toBe(
+      idempotencyFingerprint(base),
+    );
+    expect(idempotencyFingerprint({ ...base, rationale: "r2" })).not.toBe(
+      idempotencyFingerprint(base),
+    );
+  });
+
+  it("an identical retry — same key, same payload, same rationale — is still 200", async () => {
+    // The witness. Without it, a fingerprint that never matched would green the pin above.
+    const b = body();
+    const first = await post(b);
+    const retry = await post(b);
+    expect(retry.status).toBe(200);
+    expect(retry.json).toMatchObject({ id: first.json.id, duplicate: true });
+  });
+});
+
+describe("A2/I-4: a replay is answered, not rate-limited", () => {
+  it("a byte-identical retry of an already-recorded ask is answered even AT the limit", async () => {
+    // mutation: delete the replay short-circuit block from `server.ts` (the
+    //           `if (replay.rowCount === 1)` branch before the cap/rate counters)
+    //           -> the retry gets 429 and this reds. RUN ✅ 2026-08-08
+    //
+    // 🚨 THIS IS A DELIBERATE DEPARTURE FROM THE ONLY PUBLISHED PRECEDENT, and the source
+    // comment says so: Stripe documents "rate limiters run before the API's idempotency
+    // layer" in terms, and the IETF draft is silent. We depart because our 429 was returned
+    // for an ask that was ALREADY RECORDED AND QUEUED — which is not what RFC 6585 §4
+    // describes — and because Stripe's client-side remedy for a 4xx ("always generate a new
+    // idempotency key") would produce a second card for the same ask, the exact duplicate
+    // `suppress.ts` exists to prevent.
+    //
+    // The failure it closes: the agent posts its Nth send of the hour, the response is lost
+    // to a socket timeout, it retries as the idempotency contract exists to make safe, and
+    // gets a 429 — so it cannot learn whether the ask was recorded, which is the one
+    // question the key was introduced to answer.
+    const b = body({ payload: { to: "first@example.com" } });
+    const first = await post(b);
+    expect(first.status).toBe(201);
+    // Fill the per-action budget with DISTINCT asks.
+    for (let i = 0; i < RATE - 1; i++) {
+      expect((await post(body({ payload: { to: `f${i}@example.com` } }))).status).toBe(201);
+    }
+    expect(
+      (await post(body({ payload: { to: "over@example.com" } }))).status,
+      "the limit must actually be reached, or this test proves nothing",
+    ).toBe(429);
+
+    const retry = await post(b);
+    expect(retry.status, JSON.stringify(retry.json)).toBe(200);
+    expect(retry.json).toMatchObject({ id: first.json.id, duplicate: true });
+  });
+
+  it("...but a NEW key at the limit STILL 429s — the exemption is not a bypass", async () => {
+    // mutation: widen the short-circuit to answer without comparing the fingerprint, or to
+    //           run before the key lookup -> a new ask slips through and this reds.
+    //           RUN ✅ 2026-08-08
+    for (let i = 0; i < RATE; i++) {
+      expect((await post(body({ payload: { to: `n${i}@example.com` } }))).status).toBe(201);
+    }
+    const fresh = await post(body({ payload: { to: "brand-new@example.com" } }));
+    expect(fresh.status, "a NEW ask was admitted past the rate limit").toBe(429);
+  });
+
+  it("...and a MISMATCHED fingerprint at the limit still 422s and is still counted", async () => {
+    // If a mismatch were exempted from the counters, an attacker would get unlimited free
+    // 422-generating requests. It falls through to the normal path.
+    const key = `mm-${Math.random().toString(36).slice(2)}`;
+    await post(body({ idempotency_key: key, payload: { to: "a@example.com" } }));
+    const mismatch = await post(
+      body({ idempotency_key: key, payload: { to: "b@example.com" } }),
+    );
+    expect(mismatch.status).toBe(422);
   });
 });
 

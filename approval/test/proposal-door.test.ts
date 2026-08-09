@@ -106,7 +106,7 @@ afterEach(async () => {
 afterAll(async () => {
   if (close) await close().catch(() => {});
   if (approvalPool) await approvalPool.end().catch(() => {});
-  await cleanup();
+  if (cleanup) await cleanup();
 });
 
 describe("A1: the proposal door records what the agent proposes", () => {

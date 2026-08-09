@@ -7,6 +7,7 @@ import pg from "pg";
 import { freshTestDb } from "../../ingest/test/helpers/testdb.js";
 import { readPendingQueue } from "../src/queue.js";
 import { payloadHash } from "../src/canonical.js";
+import { seedInState } from "./helpers/seed.js";
 
 const TENANT = "00000000-0000-0000-0000-000000000000";
 const OTHER = "11111111-1111-1111-1111-111111111111";
@@ -37,6 +38,8 @@ afterAll(async () => {
   if (cleanup) await cleanup();
 });
 
+/** A row in any state, reached LEGALLY — see `helpers/seed.ts` for why this is not an
+ *  INSERT any more. */
 async function seed(opts: {
   state?: string;
   hours?: number;
@@ -44,26 +47,13 @@ async function seed(opts: {
   createdAgoMin?: number;
   payload?: Record<string, unknown>;
 }): Promise<string> {
-  const payload = opts.payload ?? { to: "a@example.com", n: Math.random() };
-  const r = await admin.query(
-    `insert into approval.proposals
-       (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash,
-        expires_at, state, created_at)
-     values ($1, $2, 'send_email', $3::jsonb, 'seeded', $4,
-             now() + make_interval(hours => $5::int), $6,
-             now() - make_interval(mins => $7::int))
-     returning id`,
-    [
-      opts.tenant ?? TENANT,
-      `q-${Math.random().toString(36).slice(2)}`,
-      JSON.stringify(payload),
-      payloadHash(payload),
-      opts.hours ?? 24,
-      opts.state ?? "pending",
-      opts.createdAgoMin ?? 0,
-    ],
-  );
-  return r.rows[0].id as string;
+  return seedInState(admin, {
+    state: opts.state,
+    expiresInHours: opts.hours ?? 24,
+    tenant: opts.tenant,
+    createdAgoMinutes: opts.createdAgoMin,
+    payload: opts.payload,
+  });
 }
 
 describe("A2/T6: the queue read model", () => {

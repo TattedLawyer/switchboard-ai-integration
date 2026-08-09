@@ -72,19 +72,52 @@ export async function beginExecution(
       [proposalId, p.rows[0].idempotency_key],
     );
 
-    // Only now the state moves — conditionally, with `approved` in the predicate. An
-    // expired approval fails HERE, which is the point of giving an approval its own
-    // validity window.
+    // Only now the state moves — conditionally, with `approved` AND the validity window
+    // in the predicate.
+    //
+    // 🚨 `and expires_at > now()` IS THE POINT-OF-USE CHECK, AND ITS ABSENCE WAS A REAL
+    // DEFECT. This comment used to claim "an expired approval fails HERE" while the
+    // predicate contained no expiry term at all — measured, `beginExecution` on an approval
+    // that expired an hour earlier SUCCEEDED. The only thing standing between a stale
+    // authorisation and a send was the sweeper having run first; the sweeper lives in the
+    // approval service on a 60s timer while the executor is A5 in a different process, and
+    // `expiry.ts` argues in terms that a sweeper alone fails open during exactly the outage
+    // that matters.
+    //
+    // The normative sources all put the obligation on the VERIFIER AT THE MOMENT OF USE:
+    // RFC 7519 §4.1.4 and RFC 9068 §4 make it a MUST on the party accepting the token;
+    // RFC 6749 §10.5 makes the single-use consent artifact refuse at REDEMPTION; RFC 5280
+    // §6.1 makes the current time an INPUT to path validation rather than a stored flag;
+    // and NIST SP 800-63B says an expiry marker "SHALL NOT be depended upon to enforce
+    // session timeouts" — which is precisely what a sweeper-only design does.
+    //
+    // WHY IT LIVES IN THE UPDATE PREDICATE RATHER THAN IN A PRECEDING `select`: this makes
+    // it a COMPARE-AND-SET. The check and the use cannot be separated by any interleaving,
+    // which is Chubby's sequencer discipline ("the recipient server is expected to test
+    // whether the sequencer is still valid… if not, it should reject the request") and
+    // RFC 6749's single-use property, in one clause. A read-then-act would reintroduce the
+    // window it exists to close.
+    //
+    // The sweeper is NOT redundant — it keeps the pending cap and the queue read honest —
+    // but it is bookkeeping, and this is enforcement.
     const upd = await client.query(
       `update approval.proposals set state = 'executing'
-        where id = $1 and state = 'approved'`,
+        where id = $1 and state = 'approved' and expires_at > now()`,
       [proposalId],
     );
     if (upd.rowCount !== 1) {
       await client.query("rollback");
+      // The message names BOTH possible causes: reporting only the state would produce a
+      // baffling "it is 'approved'" refusal for a row that is approved and expired.
+      const why = await client.query<{ state: string; expired: boolean }>(
+        `select state, expires_at <= now() as expired from approval.proposals where id = $1`,
+        [proposalId],
+      );
+      const row = why.rows[0];
       throw new ExecutionRefused(
-        `proposal ${proposalId} was not 'approved' (it is '${p.rows[0].state}') — nothing ` +
-          "was started and nothing was retried.",
+        `proposal ${proposalId} cannot be executed: state is '${row?.state ?? "gone"}'` +
+          `${row?.expired ? " and its approval EXPIRED — the human's authorisation is no longer valid" : ""}` +
+          ". Nothing was started and nothing was retried.",
       );
     }
 
@@ -113,7 +146,13 @@ export async function finishExecution(
   const client = await pool.connect();
   try {
     await client.query("begin");
-    await client.query(
+    // 🚨 THE ROWCOUNT IS CHECKED, because this is an insert-SELECT and a missing `started`
+    // row makes it a silent no-op. Without the check the transaction still committed the
+    // state move, producing a proposal marked `executed` with an EMPTY execution log — the
+    // audit trail saying an action happened with no record of it happening. Reachable
+    // whenever something reached `executing` outside `beginExecution`, which the INSERT
+    // forgery (C-1) made possible.
+    const logged = await client.query(
       `insert into approval.executions
          (proposal_id, kind, idempotency_key, vendor_reference, error)
        select $1, $2, e.idempotency_key, $3, $4
@@ -126,6 +165,14 @@ export async function finishExecution(
         outcome.error ?? null,
       ],
     );
+    if (logged.rowCount !== 1) {
+      await client.query("rollback");
+      throw new ExecutionRefused(
+        `proposal ${proposalId} has no 'started' execution row, so there is no execution to ` +
+          "finish. The outcome was NOT recorded and the state was NOT moved — a terminal " +
+          "state with an empty execution log would be an action claimed with no evidence.",
+      );
+    }
     const upd = await client.query(
       `update approval.proposals set state = $2
         where id = $1 and state = 'executing'`,

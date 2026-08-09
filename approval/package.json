@@ -6,7 +6,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "start": "tsx src/main.ts"
+    "start": "tsx src/main.ts",
+    "stuck-executions": "tsx src/cli/stuck-executions.ts"
   },
   "dependencies": {
     "express": "^5.2.0",

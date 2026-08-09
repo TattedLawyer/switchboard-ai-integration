@@ -23,6 +23,15 @@ import { payloadHash } from "../src/canonical.js";
 const execFileAsync = promisify(execFile);
 const CLI = fileURLToPath(new URL("../../ingest/src/cli/approval-user-add.ts", import.meta.url));
 const INGEST_DIR = fileURLToPath(new URL("../../ingest", import.meta.url));
+const APPROVAL_DIR = fileURLToPath(new URL("..", import.meta.url));
+const STUCK_CLI = fileURLToPath(new URL("../src/cli/stuck-executions.ts", import.meta.url));
+
+function roleUrl(adminUrl: string, role: string): string {
+  const u = new URL(adminUrl);
+  u.username = role;
+  u.password = role;
+  return u.toString();
+}
 const TENANT = "00000000-0000-0000-0000-000000000000";
 
 let admin: pg.Pool;
@@ -31,7 +40,9 @@ let url: string;
 let cleanup: () => Promise<void>;
 let approver: string;
 
-async function seedApproved(opts: { expiresInHours?: number } = {}): Promise<string> {
+async function seedApproved(
+  opts: { expiresInHours?: number; expireAfterApproval?: boolean } = {},
+): Promise<string> {
   const payload = { to: "jane@client.example.com", n: Math.random() };
   const r = await admin.query(
     `insert into approval.proposals
@@ -49,6 +60,17 @@ async function seedApproved(opts: { expiresInHours?: number } = {}): Promise<str
   );
   const id = r.rows[0].id as string;
   await decide(app, { proposalId: id, kind: "approved", approverUserId: approver });
+  if (opts.expireAfterApproval) {
+    // Approve while LIVE, then let the window close — which is what actually happens: the
+    // human decides inside the window and the executor arrives after it. It cannot be
+    // seeded the other way round any more, because `decide()` now refuses an expired ask
+    // (I-2), and that ordering constraint is itself evidence the two fixes compose.
+    // `expires_at` is deliberately not a frozen column: time has to be able to pass.
+    await admin.query(
+      `update approval.proposals set expires_at = now() - interval '1 hour' where id = $1`,
+      [id],
+    );
+  }
   return id;
 }
 
@@ -180,16 +202,48 @@ describe("A2/T9: at-most-once is decided by the database, not by application cod
 });
 
 describe("A2/T9: an approval has to still be valid when it executes", () => {
-  it("an expired approval cannot be started", async () => {
-    const id = await seedApproved({ expiresInHours: -1 });
-    await sweepExpired(app, TENANT);
-    expect(await stateOf(id)).toBe("expired");
+  it("an APPROVED-but-expired row cannot be started — NO sweeper involved", async () => {
+    // mutation: remove `and expires_at > now()` from `beginExecution`'s conditional UPDATE
+    //           -> this reds (the send starts on a stale authorisation). RUN ✅ 2026-08-08
+    //
+    // 🚨 THIS PIN USED TO BE VACUOUS AND IT IS THE SIXTH SUCH ON THIS PROJECT. It called
+    // `sweepExpired` first and asserted the row was `expired` BEFORE calling
+    // `beginExecution` — so it only re-tested the sibling assertion below, and deleting the
+    // expiry concept from `beginExecution` entirely (which is what the code actually did)
+    // left it green. The sweeper call is gone: the row here is `approved` with an
+    // `expires_at` in the past, which is the exact state the property is about.
+    //
+    // The failure it now covers: broker approves a send Friday 17:00; the executor is down
+    // for the weekend; Monday the sweeper is also down, or misconfigured, or restarting;
+    // A5 comes up first and sends an email on a 72-hour-stale authorisation.
+    const id = await seedApproved({ expireAfterApproval: true });
+    expect(await stateOf(id), "the fixture must be APPROVED, not swept").toBe("approved");
     await expect(beginExecution(app, id)).rejects.toBeInstanceOf(ExecutionRefused);
+    await expect(beginExecution(app, id)).rejects.toThrow(/EXPIRED/);
     const n = await app.query(
       `select count(*)::int as n from approval.executions where proposal_id = $1`,
       [id],
     );
     expect(n.rows[0].n, "a started row was written for an expired approval").toBe(0);
+    expect(await stateOf(id), "the row moved despite the refusal").toBe("approved");
+  });
+
+  it("a row already swept to `expired` cannot be started either — a DIFFERENT property", async () => {
+    // Kept as its own test now that the one above no longer sweeps. These are two distinct
+    // properties: "the state machine forbids expired -> executing" and "an approval that is
+    // still `approved` but past its window is refused at the point of use". Only the second
+    // survives a dead sweeper, and only the second was missing.
+    const id = await seedApproved({ expireAfterApproval: true });
+    await sweepExpired(app, TENANT);
+    expect(await stateOf(id)).toBe("expired");
+    await expect(beginExecution(app, id)).rejects.toBeInstanceOf(ExecutionRefused);
+  });
+
+  it("...while a LIVE approval still starts — the witness", async () => {
+    const id = await seedApproved({ expiresInHours: 24 });
+    const started = await beginExecution(app, id);
+    expect(started.executionId).toBeTruthy();
+    expect(await stateOf(id)).toBe("executing");
   });
 
   it("a pending proposal cannot be started — approval is not optional", async () => {
@@ -263,6 +317,88 @@ describe("A2/T9: the crash-mid-send state is DETECTABLE, and deliberately not ad
     );
     expect(pending.rows[0].n).toBe(0);
   });
+});
+
+describe("A2/M-3: a terminal state always has an execution row behind it", () => {
+  it("finishExecution refuses when no `started` row exists", async () => {
+    // mutation: drop the `logged.rowCount !== 1` check from `finishExecution`
+    //           -> the proposal is marked `executed` with an EMPTY execution log and this
+    //           reds. RUN ✅ 2026-08-08
+    //
+    // The terminal execution row is written by an insert-SELECT, which inserts ZERO rows
+    // when there is no start — a silent no-op — while the state UPDATE only required
+    // `state = 'executing'`. The transaction then committed an action claimed with no
+    // evidence of it happening.
+    const id = await seedApproved();
+    // Reach `executing` WITHOUT going through beginExecution, which is the only way this
+    // is reachable — and was reachable in practice while a forged INSERT could mint an
+    // `approved` row.
+    await admin.query(`update approval.proposals set state = 'executing' where id = $1`, [id]);
+    await expect(finishExecution(app, id, { ok: true })).rejects.toBeInstanceOf(ExecutionRefused);
+    expect(await stateOf(id), "a terminal state was committed with no execution row").toBe(
+      "executing",
+    );
+    const n = await app.query(
+      `select count(*)::int as n from approval.executions where proposal_id = $1`,
+      [id],
+    );
+    expect(n.rows[0].n).toBe(0);
+  });
+
+  it("...and the normal path still finishes — the witness", async () => {
+    const id = await seedApproved();
+    await beginExecution(app, id);
+    await finishExecution(app, id, { ok: true, vendorReference: "vendor-ok" });
+    expect(await stateOf(id)).toBe("executed");
+  });
+});
+
+describe("A2/M-2: the stuck-execution mitigation is an OPERATOR SURFACE, not just an export", () => {
+  it("ships as a CLI that lists in-flight sends and refuses to adjudicate them", async () => {
+    // KNOWN-ISSUES names `findStuckExecutions` as the mitigation for the permanently
+    // non-terminal `executing` class. It was reachable only from a test — so the published
+    // mitigation was not something an operator could run. This pins that it is.
+    const id = await seedApproved();
+    await beginExecution(app, id);
+    await admin.query(
+      `update approval.executions set at = now() - interval '2 hours' where proposal_id = $1`,
+      [id],
+    );
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ["--import", "tsx", STUCK_CLI, "--minutes", "30"],
+      {
+        env: {
+          ...process.env,
+          APPROVAL_DATABASE_URL: roleUrl(url, "switchboard_approval"),
+        },
+        cwd: APPROVAL_DIR,
+      },
+    );
+    expect(stdout).toContain(id);
+    // It must say what it is NOT: a verdict. Re-sending on a guess is the failure that
+    // costs the human a second unauthorised send.
+    expect(stdout).toMatch(/DIAGNOSIS, NOT A VERDICT/);
+    expect(stdout).toMatch(/idempotency key/);
+  }, 60_000);
+
+  it("reports nothing when every send is young or finished", async () => {
+    const done = await seedApproved();
+    await beginExecution(app, done);
+    await finishExecution(app, done, { ok: true });
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ["--import", "tsx", STUCK_CLI, "--minutes", "30"],
+      {
+        env: {
+          ...process.env,
+          APPROVAL_DATABASE_URL: roleUrl(url, "switchboard_approval"),
+        },
+        cwd: APPROVAL_DIR,
+      },
+    );
+    expect(stdout).toMatch(/no execution has been in flight/);
+  }, 60_000);
 });
 
 describe("A2/T9: the guard is TypeScript — this schema has exactly one SQL function", () => {

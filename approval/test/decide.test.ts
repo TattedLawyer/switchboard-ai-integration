@@ -79,6 +79,26 @@ async function seedProposal(state = "pending"): Promise<string> {
   return r.rows[0].id as string;
 }
 
+/** A pending proposal whose window has already closed. Seeded with the past expiry AT
+ *  INSERT, because `expires_at` is not frozen but `created_at` is, and because this is the
+ *  state a real row reaches simply by being ignored for 72 hours. */
+async function seedExpiredPending(): Promise<string> {
+  const payload = { to: "jane@client.example.com", n: Math.random() };
+  const r = await admin.query(
+    `insert into approval.proposals
+       (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash, expires_at)
+     values ($1, $2, 'send_email', $3::jsonb, 'stale tab probe', $4, now() - interval '1 hour')
+     returning id`,
+    [
+      TENANT,
+      `t7-exp-${Math.random().toString(36).slice(2)}`,
+      JSON.stringify(payload),
+      payloadHash(payload),
+    ],
+  );
+  return r.rows[0].id as string;
+}
+
 const stateOf = async (id: string): Promise<string> =>
   (await approvalPool.query(`select state from approval.proposals where id = $1`, [id])).rows[0]
     .state as string;
@@ -177,6 +197,56 @@ describe("A2/T7: the approve path completes with ONLY the shipped grants", () =>
   });
 });
 
+describe("A2/I-2: a decision on an already-expired ask is REFUSED", () => {
+  it("approving an expired-but-pending row is refused, and nothing is recorded", async () => {
+    // mutation: remove `and expires_at > now()` from `decideOn`'s conditional UPDATE
+    //           -> the approval succeeds on a dead ask and this reds. RUN ✅ 2026-08-08
+    //
+    // The scenario: she leaves the queue open overnight, the ask expires at 03:00, she
+    // clicks Approve at 09:00 on the card still on her screen. `readPendingQueue` would not
+    // have re-rendered it, but `decide()` is the exported API and takes an id from the
+    // client. Before this, the decision was recorded and the row moved to `approved` with
+    // an `expires_at` already past — then either swept back to `expired` (a destroyed human
+    // decision, delivered to her as a SUCCESS response) or executed on a stale
+    // authorisation.
+    const id = await seedExpiredPending();
+    await expect(
+      decide(approvalPool, { proposalId: id, kind: "approved", approverUserId: approver }),
+    ).rejects.toBeInstanceOf(DecisionRefused);
+    await expect(
+      decide(approvalPool, { proposalId: id, kind: "approved", approverUserId: approver }),
+    ).rejects.toThrow(/EXPIRED/);
+    expect(await stateOf(id)).toBe("pending");
+    const d = await approvalPool.query(
+      `select count(*)::int as n from approval.decisions where proposal_id = $1`,
+      [id],
+    );
+    expect(d.rows[0].n, "a decision row survived a refused decision").toBe(0);
+  });
+
+  it("rejecting an expired ask is refused too — the same window, both verbs", async () => {
+    const id = await seedExpiredPending();
+    await expect(
+      decide(approvalPool, {
+        proposalId: id,
+        kind: "rejected",
+        approverUserId: approver,
+        reason: "too late, but I still want to say no",
+      }),
+    ).rejects.toBeInstanceOf(DecisionRefused);
+  });
+
+  it("...while a LIVE ask still decides — the witness", async () => {
+    const id = await seedProposal();
+    const r = await decide(approvalPool, {
+      proposalId: id,
+      kind: "approved",
+      approverUserId: approver,
+    });
+    expect(r.state).toBe("approved");
+  });
+});
+
 describe("A2/T7: a rejection without a reason is refused, in BOTH places", () => {
   it("refused by the workflow", async () => {
     const id = await seedProposal();
@@ -222,6 +292,36 @@ describe('A2/T7: "Not now" is a decision, not a transition', () => {
     });
     expect(res.state).toBe("pending");
     expect(await stateOf(id)).toBe("pending");
+  });
+
+  it("refuses on a dead ask instead of reporting a state it did not read", async () => {
+    // mutation: delete the live-row lookup from the `dismissed` branch of `decideOn` and
+    //           return the hardcoded `state: "pending"` -> this reds. RUN ✅ 2026-08-08
+    //
+    // The branch used to check NOTHING and return a hardcoded literal, so "Not now" on a
+    // stale card whose proposal was expired, rejected or executed was accepted, recorded
+    // against that dead row, and reported to the caller as pending. Every other path in
+    // that file refuses loudly when the row moved underneath it; this one lied quietly.
+    const expired = await seedExpiredPending();
+    await expect(
+      decide(approvalPool, { proposalId: expired, kind: "dismissed", approverUserId: approver }),
+    ).rejects.toBeInstanceOf(DecisionRefused);
+
+    const decided = await seedProposal();
+    await decide(approvalPool, {
+      proposalId: decided,
+      kind: "approved",
+      approverUserId: approver,
+    });
+    await expect(
+      decide(approvalPool, { proposalId: decided, kind: "dismissed", approverUserId: approver }),
+    ).rejects.toBeInstanceOf(DecisionRefused);
+
+    // Nothing was recorded on either dead row.
+    const n = await approvalPool.query(
+      `select count(*)::int as n from approval.decisions where kind = 'dismissed'`,
+    );
+    expect(n.rows[0].n).toBe(0);
   });
 
   it("accumulates — the table is multi-row per proposal BY DESIGN", async () => {

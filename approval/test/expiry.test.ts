@@ -30,7 +30,7 @@ import pg from "pg";
 import { freshTestDb } from "../../ingest/test/helpers/testdb.js";
 import { createApprovalApp } from "../src/server.js";
 import { sweepExpired } from "../src/expiry.js";
-import { payloadHash } from "../src/canonical.js";
+import { seedInState } from "./helpers/seed.js";
 
 const TENANT = "00000000-0000-0000-0000-000000000000";
 const OTHER_TENANT = "11111111-1111-1111-1111-111111111111";
@@ -64,30 +64,13 @@ async function post(): Promise<{ status: number; json: Record<string, unknown> }
   return { status: res.status, json: (await res.json()) as Record<string, unknown> };
 }
 
-/** Seed a row directly, in any state, with an expiry we choose. */
-async function seed(
-  state: string,
-  expiresInHours: number,
-  tenant = TENANT,
-): Promise<string> {
-  const payload = { to: "a@example.com", n: Math.random() };
-  const r = await admin.query(
-    `insert into approval.proposals
-       (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash,
-        expires_at, state)
-     values ($1, $2, 'send_email', $3::jsonb, 'seeded', $4,
-             now() + make_interval(hours => $5::int), $6)
-     returning id`,
-    [
-      tenant,
-      `t5-${Math.random().toString(36).slice(2)}`,
-      JSON.stringify(payload),
-      payloadHash(payload),
-      expiresInHours,
-      state,
-    ],
-  );
-  return r.rows[0].id as string;
+/** A row in any state, reached LEGALLY, with an expiry we choose.
+ *
+ *  🚨 This used to INSERT the state directly. The creation guard now refuses that — which is
+ *  the guard working: a fixture that could conjure an `approved` row was testing a state the
+ *  running system cannot produce. See `helpers/seed.ts`. */
+async function seed(state: string, expiresInHours: number, tenant = TENANT): Promise<string> {
+  return seedInState(admin, { state, expiresInHours, tenant });
 }
 
 async function stateOf(id: string): Promise<string> {
@@ -184,9 +167,17 @@ describe("A2/T5: the sweeper", () => {
     // stop meaning "a human decided against it".
     await seed("pending", -1);
     await seed("approved", -1);
+    // Counted BEFORE and AFTER, not from zero: seeding an `approved` row now legitimately
+    // writes the decision row a real approval writes (the fixture walks the real machine),
+    // so the property is "the SWEEP adds none", which is the property that was always meant.
+    const before = (
+      await admin.query<{ n: number }>(`select count(*)::int as n from approval.decisions`)
+    ).rows[0].n;
     await sweepExpired(approvalPool, TENANT);
-    const d = await admin.query(`select count(*)::int as n from approval.decisions`);
-    expect(d.rows[0].n).toBe(0);
+    const after = (
+      await admin.query<{ n: number }>(`select count(*)::int as n from approval.decisions`)
+    ).rows[0].n;
+    expect(after, "the sweeper fabricated a decision").toBe(before);
   });
 
   it("runs using ONLY the grants switchboard_approval holds", async () => {

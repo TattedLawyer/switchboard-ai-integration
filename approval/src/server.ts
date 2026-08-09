@@ -14,7 +14,11 @@ import express from "express";
 import { timingSafeEqual } from "node:crypto";
 import type pg from "pg";
 import { parseProposal } from "./proposal.js";
-import { payloadHash } from "./canonical.js";
+import {
+  IDEMPOTENCY_FINGERPRINT_FIELDS,
+  idempotencyFingerprint,
+  payloadHash,
+} from "./canonical.js";
 import {
   ACTION_RATE_WINDOW_MINUTES,
   DEFAULT_ACTION_RATE_LIMIT,
@@ -40,6 +44,51 @@ function tokenMatches(presented: string, expected: string): boolean {
   const b = Buffer.from(expected, "utf8");
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
+}
+
+/** SAME KEY, DIFFERENT ASK — 422, and NO ROW IS WRITTEN.
+ *
+ *  The IETF idempotency-key draft §2.7: "If there is an attempt to reuse an idempotency key
+ *  with a different request payload, the resource SHOULD reply with a HTTP 422 status code",
+ *  and "Clients MUST correct the requests… before performing a retry operation". Stripe
+ *  errors "to prevent accidental misuse"; AWS returns `IdempotentParameterMismatch`. No
+ *  source opened sanctions answering 200 to a body the server knows differs.
+ *
+ *  The body NAMES the fingerprint fields, because an undeclared subset is the actual defect
+ *  this replaced — a caller must be able to see which fields make two asks the same. */
+function respondToMismatch(res: express.Response, key: string): void {
+  res.status(422).json({
+    error: "idempotency key reused with a DIFFERENT ask",
+    detail:
+      "this key already names a proposal whose fingerprint differs from the one just sent. " +
+      "Nothing was recorded. A key identifies ONE logical attempt to ask; a different ask " +
+      "is a different key. Correct the request and retry, or use a new key.",
+    idempotency_key: key,
+    fingerprint_fields: IDEMPOTENCY_FINGERPRINT_FIELDS,
+  });
+}
+
+/** SAME KEY, SAME ASK. A live row is an idempotent 200; a TERMINAL row is a distinguishable
+ *  409, because the unique index is permanent and state-blind and a caller must be able to
+ *  tell a queued ask from a disposed one. */
+function respondToDuplicate(
+  res: express.Response,
+  row: { id: string; state: string },
+): void {
+  if (TERMINAL_PROPOSAL_STATES.has(row.state)) {
+    res.status(409).json({
+      error: "idempotency key already reached a TERMINAL state",
+      detail:
+        "this ask was already disposed of and nothing is queued. A deliberate re-ask after " +
+        "a terminal outcome is a NEW key.",
+      id: row.id,
+      state: row.state,
+      duplicate: true,
+      terminal: true,
+    });
+    return;
+  }
+  res.status(200).json({ id: row.id, state: row.state, duplicate: true });
 }
 
 export function createApprovalApp(pool: pg.Pool, opts: ApprovalAppOptions): express.Express {
@@ -103,6 +152,73 @@ export function createApprovalApp(pool: pg.Pool, opts: ApprovalAppOptions): expr
         // racy under concurrency by construction; the race can overshoot the cap by the
         // number of concurrent posters, which for a single agent host is bounded and
         // acceptable. Saying so beats implying an exactness this does not have.
+        // A2/T4. The hash is computed here, over the CANONICAL serialisation, and it has
+        // EXACTLY ONE JOB: telling a retry of the same call apart from a different
+        // proposal reusing a key. It is not a TOCTOU control, not a display binding, and
+        // it is not what makes the payload immutable — that is the column grant and the
+        // trigger in migration 015.
+        const canonicalHash = payloadHash(proposal.payload);
+
+        // A2/I-3 — THE PUBLISHED FINGERPRINT. `(action_type, payload_hash, rationale)`,
+        // the same triple `suppress.ts` uses as its suppression key. The door and the
+        // suppressor disagreeing about what makes two asks "the same" is what let a changed
+        // rationale be swallowed silently.
+        const fingerprint = idempotencyFingerprint({
+          action_type: proposal.action_type,
+          payload_hash: canonicalHash,
+          rationale: proposal.rationale,
+        });
+
+        // A2/I-4 — THE REPLAY SHORT-CIRCUIT, and it is deliberately NARROW.
+        //
+        // 🚨 THIS DEPARTS FROM THE ONLY PUBLISHED PRECEDENT AND THE COMMENT SAYS SO. Stripe
+        // documents the OPPOSITE in terms: "a request that's rate limited with a 429 can
+        // produce a different result with the same idempotency key because RATE LIMITERS
+        // RUN BEFORE THE API'S IDEMPOTENCY LAYER." The IETF draft is silent on the
+        // question. So resolving a replay ahead of the limiter is NOT established practice
+        // and must never be described as such.
+        //
+        // Two differences make Stripe's ordering wrong HERE, and they are the whole
+        // justification:
+        //   · Stripe's 429 means "you are going too fast, back off" — the ask is not lost
+        //     and the remedy is time. Ours was returned even when the ask was ALREADY
+        //     RECORDED AND QUEUED, which is not what RFC 6585 §4 describes.
+        //   · Stripe's client advice for 4xx — "always generate a new idempotency key" — is
+        //     ACTIVELY HARMFUL here: a new key produces a second row and a second card for
+        //     the same ask, the exact duplicate `suppress.ts` exists to prevent. We cannot
+        //     follow Stripe's client remedy, so we must not copy its server ordering.
+        //
+        // The justification we DO have is this code's own stated intent, two blocks down:
+        // the limit bounds the agent's PRODUCTION RATE, and a byte-identical replay
+        // produces nothing (`on conflict do nothing` guarantees it). Counting it does not
+        // serve the stated purpose.
+        //
+        // 🚨 BOUNDED SO IT CANNOT BECOME A BYPASS: the short-circuit requires an EXACT
+        // fingerprint match against an ALREADY-EXISTING row. Never a new key, never a
+        // mismatched fingerprint — a mismatch still falls through, still 422s, and is still
+        // counted, or an attacker would get unlimited free 422-generating requests.
+        const replay = await pool.query(
+          `select id, state, payload_hash, action_type, rationale
+             from approval.proposals
+            where tenant_id = $1 and idempotency_key = $2`,
+          [opts.tenantId, proposal.idempotency_key],
+        );
+        if (replay.rowCount === 1) {
+          const existing = replay.rows[0] as {
+            id: string;
+            state: string;
+            payload_hash: string;
+            action_type: string;
+            rationale: string;
+          };
+          if (idempotencyFingerprint(existing) === fingerprint) {
+            respondToDuplicate(res, existing);
+            return;
+          }
+          respondToMismatch(res, proposal.idempotency_key);
+          return;
+        }
+
         // A2/T5 — THE COUNT IS VALIDITY-FILTERED, and that is what makes the wedge heal.
         // Before A2 this counted every pending row forever, so one burst 429'd the door
         // PERMANENTLY, legitimate proposals included: nothing could move a pending row to
@@ -135,13 +251,6 @@ export function createApprovalApp(pool: pg.Pool, opts: ApprovalAppOptions): expr
           });
           return;
         }
-
-        // A2/T4. The hash is computed here, over the CANONICAL serialisation, and it has
-        // EXACTLY ONE JOB: telling a retry of the same call apart from a different
-        // proposal reusing a key. It is not a TOCTOU control, not a display binding, and
-        // it is not what makes the payload immutable — that is the column grant and the
-        // trigger in migration 015.
-        const canonicalHash = payloadHash(proposal.payload);
 
         // A2/T10 — PER-ACTION RATE LIMIT. Ranked below repeat-suppression and expiry, and
         // it is a bound on how fast a compromised agent host can fill the queue with ONE
@@ -212,57 +321,28 @@ export function createApprovalApp(pool: pg.Pool, opts: ApprovalAppOptions): expr
           return;
         }
 
+        // We only reach here when the pre-check found nothing and the INSERT still hit the
+        // unique index — i.e. a genuine concurrent poster won the race. Re-read and answer
+        // through the same two helpers, so the racing path and the replay path cannot
+        // drift apart.
         const existing = await pool.query(
-          `select id, state, payload_hash from approval.proposals
+          `select id, state, payload_hash, action_type, rationale from approval.proposals
             where tenant_id = $1 and idempotency_key = $2`,
           [opts.tenantId, proposal.idempotency_key],
         );
-        const row = existing.rows[0] as { id: string; state: string; payload_hash: string };
+        const row = existing.rows[0] as {
+          id: string;
+          state: string;
+          payload_hash: string;
+          action_type: string;
+          rationale: string;
+        };
 
-        // SAME KEY, DIFFERENT PAYLOAD — 422, and NO ROW IS WRITTEN. Before A2 this was a
-        // silent first-write-wins: the door answered 200 with the ORIGINAL proposal's id
-        // and the second payload was discarded while the caller was told it succeeded.
-        // The IETF idempotency draft and Stripe both do this — "errors if they're not the
-        // same to prevent accidental misuse". The response deliberately carries NO id, so
-        // a caller cannot mistake it for a recorded proposal.
-        if (row.payload_hash !== canonicalHash) {
-          res.status(422).json({
-            error: "idempotency key reused with a DIFFERENT payload",
-            detail:
-              "this key already names a proposal whose payload differs from the one just " +
-              "sent. Nothing was recorded. A key identifies ONE logical attempt to ask; a " +
-              "different ask is a different key.",
-            idempotency_key: proposal.idempotency_key,
-          });
+        if (idempotencyFingerprint(row) !== fingerprint) {
+          respondToMismatch(res, proposal.idempotency_key);
           return;
         }
-
-        // SAME KEY, SAME PAYLOAD, BUT THE EXISTING ROW IS DEAD. The unique index
-        // `proposals_idempotency_unique` is permanent and STATE-BLIND, and A2 adds expiry
-        // — so without this branch the sequence "broker away, row expires at the TTL,
-        // agent re-proposes the identical ask" answers `200 {duplicate:true}` pointing at
-        // a terminal row. Nothing would be queued, no card rendered, and every future
-        // attempt under that key would hit the same corpse. The caller must be able to
-        // tell a queued ask from a dead one, so a terminal row gets its own status.
-        if (TERMINAL_PROPOSAL_STATES.has(row.state)) {
-          res.status(409).json({
-            error: "idempotency key already reached a TERMINAL state",
-            detail:
-              "this ask was already disposed of and nothing is queued. A deliberate " +
-              "re-ask after a terminal outcome is a NEW key.",
-            id: row.id,
-            state: row.state,
-            duplicate: true,
-            terminal: true,
-          });
-          return;
-        }
-
-        res.status(200).json({
-          id: row.id,
-          state: row.state,
-          duplicate: true,
-        });
+        respondToDuplicate(res, row);
       } catch (err) {
         // NEVER SWALLOWED. The governing precedent is the plan's own AnthropicLlm.complete
         // finding: an error absorbed into a plausible-looking result is silently dangerous

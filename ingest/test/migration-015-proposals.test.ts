@@ -57,22 +57,79 @@ afterAll(async () => {
   if (cleanup) await cleanup();
 });
 
-async function insertProposal(
-  state: string,
-  extra: { payload_hash?: string } = {},
-): Promise<void> {
-  await pool.query(
+/** A PENDING proposal. The only kind that can be created — see the creation guard. */
+async function insertPending(
+  extra: { payload_hash?: string; state?: string } = {},
+): Promise<string> {
+  const r = await pool.query(
     `insert into approval.proposals
        (tenant_id, idempotency_key, action_type, payload, rationale, state,
         payload_hash, expires_at)
-     values ($1, $2, 'send_email', '{}'::jsonb, 'probe', $3, $4, now() + interval '72 hours')`,
+     values ($1, $2, 'send_email', '{}'::jsonb, 'probe', $3, $4, now() + interval '72 hours')
+     returning id`,
     [
       TENANT,
-      `t2-${state}-${Math.random().toString(36).slice(2)}`,
-      state,
+      `t2-${Math.random().toString(36).slice(2)}`,
+      extra.state ?? "pending",
       extra.payload_hash ?? "0".repeat(64),
     ],
   );
+  return r.rows[0].id as string;
+}
+
+/** Reach `state` the way the system reaches it: a decision row for the human-driven
+ *  transitions, a plain conditional UPDATE for the machine-driven ones. */
+async function walkToState(state: string): Promise<string> {
+  const ins = await pool.query(
+    `insert into approval.proposals
+       (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash, expires_at)
+     values ($1, $2, 'send_email', '{}'::jsonb, 'walk', repeat('a', 64),
+             now() + interval '72 hours')
+     returning id`,
+    [TENANT, `t2-walk-${Math.random().toString(36).slice(2)}`],
+  );
+  const id = ins.rows[0].id as string;
+  if (state === "pending") return id;
+
+  const decide = async (kind: "approved" | "rejected"): Promise<void> => {
+    const approver = (
+      await pool.query(`insert into approval.users (email) values ($1) returning id`, [
+        `walk-${Math.random().toString(36).slice(2)}@example.com`,
+      ])
+    ).rows[0].id as string;
+    const c = await pool.connect();
+    try {
+      await c.query("begin");
+      await c.query(
+        `insert into approval.decisions (proposal_id, kind, approver_user_id, reason,
+                                         renderer_version)
+         values ($1, $2, $3, $4, 'walk')`,
+        [id, kind, approver, kind === "rejected" ? "walked rejection" : null],
+      );
+      await c.query(`update approval.proposals set state = $2 where id = $1`, [id, kind]);
+      await c.query("commit");
+    } finally {
+      c.release();
+    }
+  };
+  const move = async (from: string, to: string): Promise<void> => {
+    const r = await pool.query(
+      `update approval.proposals set state = $3 where id = $1 and state = $2`,
+      [id, from, to],
+    );
+    if (r.rowCount !== 1) throw new Error(`walk: ${from} -> ${to} failed`);
+  };
+
+  if (state === "approved") await decide("approved");
+  else if (state === "rejected") await decide("rejected");
+  else if (state === "expired") await move("pending", "expired");
+  else if (state === "superseded") await move("pending", "superseded");
+  else {
+    await decide("approved");
+    await move("approved", "executing");
+    if (state !== "executing") await move("executing", state);
+  }
+  return id;
 }
 
 describe("A2/T2: migration 015 widens the proposal lifecycle", () => {
@@ -104,38 +161,89 @@ describe("A2/T2: migration 015 widens the proposal lifecycle", () => {
     expect(byName.get("decided_at")).toMatchObject({ is_nullable: "YES" });
   });
 
-  it("accepts all EIGHT states and rejects a ninth", async () => {
-    // mutation: delete the widened CHECK from 015 -> the eight-state loop reds.
+  it("declares exactly EIGHT states, and every one of them is legally REACHABLE", async () => {
+    // mutation: delete the widened CHECK from 015 -> the definition assertion reds.
     //           RUN ✅ 2026-08-08
-    // mutation: delete `drop constraint proposals_state_check` from 015 -> because 015
-    //           reuses the NAME, this is a loud duplicate-constraint error and the whole
-    //           suite fails. RUN ✅ 2026-08-08.
-    //           And the plan's own M1 mechanism, run separately to confirm it is real:
-    //           delete the drop AND rename the new constraint -> the two CHECKs are
-    //           CONJOINED, five of the eight states become unusable, and the loop reds on
-    //           `expired` with 23514 naming `proposals_state_check`. RUN ✅ 2026-08-08.
-    //           Reusing the name is therefore strictly the safer of the two spellings.
+    // mutation: delete `drop constraint proposals_state_check` -> duplicate-name error and
+    //           the whole suite fails; and with the new constraint renamed instead, the two
+    //           CHECKs conjoin and the reachability walk reds on `expired`. RUN ✅ 2026-08-08
+    //
+    // 🚨 THIS TEST WAS REWRITTEN WHEN THE CREATION GUARD LANDED, AND THE REWRITE IS THE
+    // POINT. It used to INSERT each state directly — `insert ... values (..., 'approved')`
+    // — which is exactly the forgery the trigger now refuses. A test that could conjure an
+    // `approved` row was asserting something about a state the running system cannot
+    // produce, and that habit is part of why an INSERT-side hole survived seven reviews.
+    // So the eight states are now checked TWO ways, neither of which forges anything:
+    //   · the CHECK's DEFINITION, read from the catalog — the declared set;
+    //   · a legal WALK to each state through real transitions — the reachable set.
+    // A state that is declared but unreachable, or reachable but undeclared, reds.
+    const def = await pool.query<{ def: string }>(
+      `select pg_get_constraintdef(oid) as def from pg_constraint
+        where conname = 'proposals_state_check'
+          and conrelid = 'approval.proposals'::regclass`,
+    );
+    expect(def.rowCount, "015 did not install the widened state CHECK").toBe(1);
     for (const state of EIGHT_STATES) {
-      await expect(insertProposal(state), `state '${state}' was refused`).resolves.not.toThrow();
+      expect(def.rows[0].def, `'${state}' is not in the declared set`).toContain(`'${state}'`);
     }
-    await expect(insertProposal("dismissed")).rejects.toMatchObject({ code: "23514" });
-    await expect(insertProposal("held")).rejects.toMatchObject({ code: "23514" });
+    // `dismissed` is deliberately NOT a state: it is a DECISION without a transition, and
+    // it lives in `approval.decisions.kind`.
+    expect(def.rows[0].def).not.toContain("'dismissed'");
+    expect(def.rows[0].def).not.toContain("'held'");
+
+    for (const state of EIGHT_STATES) {
+      const id = await walkToState(state);
+      const got = await pool.query(`select state from approval.proposals where id = $1`, [id]);
+      expect(got.rows[0].state, `'${state}' is declared but not reachable`).toBe(state);
+    }
+  });
+
+  it("refuses a ninth state, at the guard first and the CHECK behind it", async () => {
+    // Two layers, and the order matters for what the error says. The creation guard runs
+    // BEFORE the constraint, so an insert naming an unknown state raises P0001 ("born
+    // undecided") rather than 23514 — the CHECK is the second line, not the first. Asserting
+    // that it throws AND that the declared set excludes the value covers both without
+    // pretending a single SQLSTATE is the whole story.
+    await expect(insertPending({ state: "dismissed" })).rejects.toMatchObject({ code: "P0001" });
+    await expect(insertPending({ state: "held" })).rejects.toMatchObject({ code: "P0001" });
   });
 
   it("forbids approving a legacy row — we cannot attest a payload we never hashed", async () => {
     // mutation: delete the `proposals_legacy_never_approved` constraint from 015 -> red.
     //           RUN ✅ 2026-08-08
-    await expect(
-      insertProposal("approved", { payload_hash: "legacy:unhashable" }),
-    ).rejects.toMatchObject({ code: "23514" });
-    // ...and it may still sit pending, be rejected, or age out. The constraint forbids one
-    // outcome, not the row's existence — a legacy row must remain disposable.
-    await expect(
-      insertProposal("pending", { payload_hash: "legacy:unhashable" }),
-    ).resolves.not.toThrow();
-    await expect(
-      insertProposal("expired", { payload_hash: "legacy:unhashable" }),
-    ).resolves.not.toThrow();
+    //
+    // Approached the legal way — a real approver and a real same-transaction decision row —
+    // so the trigger's predicate is SATISFIED and the ONLY thing refusing this is the legacy
+    // CHECK. (Previously this INSERTed `state='approved'` directly, which the creation guard
+    // now refuses first, and the pin would have passed for the wrong reason.)
+    const id = await insertPending({ payload_hash: "legacy:unhashable" });
+    const approver = (
+      await pool.query(`insert into approval.users (email) values ($1) returning id`, [
+        `legacy-${Math.random().toString(36).slice(2)}@example.com`,
+      ])
+    ).rows[0].id as string;
+    const c = await pool.connect();
+    try {
+      await c.query("begin");
+      await c.query(
+        `insert into approval.decisions (proposal_id, kind, approver_user_id, renderer_version)
+         values ($1, 'approved', $2, 'v0')`,
+        [id, approver],
+      );
+      await expect(
+        c.query(`update approval.proposals set state = 'approved' where id = $1`, [id]),
+      ).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await c.query("rollback").catch(() => {});
+      c.release();
+    }
+    // ...and it may still be rejected or age out. The constraint forbids one OUTCOME, not
+    // the row's existence — a legacy row must stay disposable.
+    const r = await pool.query(
+      `update approval.proposals set state = 'expired' where id = $1 and state = 'pending'`,
+      [id],
+    );
+    expect(r.rowCount).toBe(1);
   });
 
   it("replaces 014's one-column index with the expiry-aware one, BY DEFINITION not by existence", async () => {

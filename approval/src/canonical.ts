@@ -55,3 +55,44 @@ export function payloadHash(payload: Record<string, unknown>): string {
  *  constraint forbids approving a row carrying it: we cannot attest a payload we never
  *  hashed. Deliberately not a valid hex digest, so it can never collide with a real one. */
 export const LEGACY_UNHASHABLE = "legacy:unhashable";
+
+/**
+ * THE PUBLISHED IDEMPOTENCY FINGERPRINT — `(action_type, payload_hash, rationale)`.
+ *
+ * 🚨 WHAT THIS FIXES. The door used to compare ONLY `payload_hash` when resolving a reused
+ * key. Measured: same key, same payload, `rationale` changed from "routine follow-up" to
+ * "client called; she is threatening to list elsewhere" -> `200 {duplicate:true}`, nothing
+ * written, stored rationale unchanged. That is exactly the silent first-write-wins the 422
+ * branch was introduced to eliminate, on the one field a human reads to decide.
+ *
+ * WHY A NAMED SUBSET RATHER THAN "COMPARE EVERYTHING". Comparing a subset is explicitly
+ * sanctioned — the IETF idempotency-key draft §2.4 lists "Checksum of selected element(s)
+ * in the request payload" as a fingerprint algorithm. The defect was never that the subset
+ * was partial; it was that the subset was UNDOCUMENTED and SILENTLY LOSSY. AWS shows the
+ * defensible shape: it NAMES its two exempted fields in public documentation and errors on
+ * everything else (`IdempotentParameterMismatch`). So this fingerprint is declared here,
+ * returned in the 422 body, documented in the RUNBOOK, and pinned by a test — so adding a
+ * field to the proposal grammar forces a decision instead of defaulting to
+ * silently-ignored.
+ *
+ * It is deliberately the SAME triple as `suppress.ts`'s suppression key. The door and the
+ * suppressor disagreeing about what makes two asks "the same" is what produced this defect.
+ *
+ * NOT the raw request bytes: `payload_hash` is computed over a canonical serialisation, and
+ * hashing the literal body would turn trivial reserialisation differences into 422s.
+ */
+export const IDEMPOTENCY_FINGERPRINT_FIELDS = [
+  "action_type",
+  "payload_hash",
+  "rationale",
+] as const;
+
+export interface Fingerprintable {
+  action_type: string;
+  payload_hash: string;
+  rationale: string;
+}
+
+export function idempotencyFingerprint(row: Fingerprintable): string {
+  return canonicalStringify([row.action_type, row.payload_hash, row.rationale]);
+}

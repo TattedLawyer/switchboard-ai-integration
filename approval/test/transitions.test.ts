@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { freshTestDb } from "../../ingest/test/helpers/testdb.js";
 import { decide, DecisionRefused } from "../src/decide.js";
 import { LEGAL_TRANSITIONS, transition, TransitionRefused } from "../src/transition.js";
-import { payloadHash } from "../src/canonical.js";
+import { seedInState } from "./helpers/seed.js";
 
 const execFileAsync = promisify(execFile);
 const CLI = fileURLToPath(new URL("../../ingest/src/cli/approval-user-add.ts", import.meta.url));
@@ -50,24 +50,11 @@ let url: string;
 let cleanup: () => Promise<void>;
 let approver: string;
 
+/** A row in `state`, reached LEGALLY from pending — see `helpers/seed.ts`. The approver is
+ *  the CLI-created one, because in THIS suite the provenance of the approver is part of the
+ *  property under test. */
 async function seed(state = "pending"): Promise<string> {
-  const payload = { to: "jane@client.example.com", n: Math.random() };
-  const r = await admin.query(
-    `insert into approval.proposals
-       (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash,
-        expires_at, state)
-     values ($1, $2, 'send_email', $3::jsonb, 'transition probe', $4,
-             now() + interval '72 hours', $5)
-     returning id`,
-    [
-      TENANT,
-      `t8-${Math.random().toString(36).slice(2)}`,
-      JSON.stringify(payload),
-      payloadHash(payload),
-      state,
-    ],
-  );
-  return r.rows[0].id as string;
+  return seedInState(admin, { state, approverId: approver });
 }
 
 const stateOf = async (id: string): Promise<string> =>

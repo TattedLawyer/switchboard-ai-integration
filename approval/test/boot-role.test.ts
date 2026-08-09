@@ -22,7 +22,7 @@ beforeAll(async () => {
   cleanup = r.cleanup;
 });
 afterAll(async () => {
-  await cleanup();
+  if (cleanup) await cleanup();
 });
 
 function asRole(adminUrl: string, role: string): string {

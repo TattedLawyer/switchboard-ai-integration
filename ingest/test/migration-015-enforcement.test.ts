@@ -37,6 +37,9 @@ import pg from "pg";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { freshTestDb } from "./helpers/testdb.js";
 
 const execFileAsync = promisify(execFile);
@@ -316,6 +319,250 @@ describe("A2/T3: payload immutability has TWO independent guards, and each reds 
       [p],
     );
     expect(r.rowCount).toBe(1);
+  });
+});
+
+describe("A2/C-1: a proposal is BORN UNDECIDED — the creation edge", () => {
+  // 🚨 THE GAP SEVEN REVIEWS MISSED, AND WHY. Every prior review inherited the frame "the
+  // trigger protects state transitions" and checked UPDATE paths exhaustively. Nobody asked
+  // about INSERT. The guard was `BEFORE UPDATE` only and 014 grants TABLE-LEVEL insert, so
+  // `state` was caller-writable at creation and a forged `approved` row walked the whole
+  // machine to `executed` with zero rows in `approval.decisions`. The lesson generalises
+  // past this instance: an invariant enforced on transitions is not enforced on CREATION,
+  // and the two need separate pins.
+  //
+  // These tests therefore attack the CREATION edge across every statement type that can
+  // write a row, because "INSERT is guarded" is a claim about a family of statements and
+  // not about one keyword.
+
+  const NON_PENDING = [
+    "approved",
+    "rejected",
+    "expired",
+    "superseded",
+    "executing",
+    "executed",
+    "execution_failed",
+  ] as const;
+
+  async function rawInsert(
+    db: pg.Pool,
+    cols: string,
+    vals: string,
+    key = `c1-${Math.random().toString(36).slice(2)}`,
+  ): Promise<pg.QueryResult> {
+    return db.query(
+      `insert into approval.proposals
+         (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash,
+          expires_at${cols})
+       values ($1, $2, 'send_email', '{}'::jsonb, 'creation probe', repeat('a', 64),
+               now() + interval '72 hours'${vals})`,
+      [TENANT, key],
+    );
+  }
+
+  it("refuses an INSERT naming ANY non-pending state, as the app role", async () => {
+    // mutation: neutralise the state assertion inside the INSERT branch
+    //           (`if new.state <> 'pending'` -> `if false`)
+    //           -> 5 red, including this one and the COPY and MERGE paths. RUN ✅ 2026-08-08
+    //
+    // Recorded because the OBVIOUS mutation is the misleading one: deleting the whole
+    // `TG_OP = 'INSERT'` branch also reds the suite, but for a MIXED reason — with the
+    // branch gone every INSERT falls into the frozen-column comparison against a NULL
+    // `old`, so this pin stays green for the wrong reason while the WITNESS below reds.
+    // The isolated mutation above is the one that shows this assertion is doing the work.
+    for (const state of NON_PENDING) {
+      await expect(
+        rawInsert(approval, ", state", `, '${state}'`),
+        `a proposal was CREATED already in state '${state}'`,
+      ).rejects.toMatchObject({ code: "P0001" });
+    }
+  });
+
+  it("refuses an INSERT that pre-sets decided_at — a decision nobody made", async () => {
+    // mutation: `if new.decided_at is not null` -> `if false` in 015 -> 1 red, only this.
+    //           RUN ✅ 2026-08-08
+    await expect(rawInsert(approval, ", decided_at", ", now()")).rejects.toMatchObject({
+      code: "P0001",
+    });
+  });
+
+  it("...and the OWNER cannot do it either — this is not a privilege check", async () => {
+    // The distinction that makes this a trigger rather than a grant: it covers every
+    // caller, including the migration owner and every role that does not exist yet.
+    await expect(rawInsert(admin, ", state", ", 'approved'")).rejects.toMatchObject({
+      code: "P0001",
+    });
+  });
+
+  it("STILL ACCEPTS a legitimate INSERT — the witness, so the guard is not just a wall", async () => {
+    const r = await approval.query(
+      `insert into approval.proposals
+         (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash, expires_at)
+       values ($1, $2, 'send_email', '{}'::jsonb, 'legitimate', repeat('a', 64),
+               now() + interval '72 hours')
+       returning state`,
+      [TENANT, `c1-ok-${Math.random().toString(36).slice(2)}`],
+    );
+    expect(r.rows[0].state).toBe("pending");
+  });
+
+  it("covers INSERT ... RETURNING, ON CONFLICT DO UPDATE, and MERGE — both legs", async () => {
+    // A row trigger fires per row regardless of the statement that produced it, but
+    // "regardless" is a claim, so each statement family is executed rather than assumed.
+    const key = `c1-multi-${Math.random().toString(36).slice(2)}`;
+    await expect(
+      approval.query(
+        `insert into approval.proposals
+           (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash,
+            expires_at, state)
+         values ($1, $2, 'send_email', '{}'::jsonb, 'r', repeat('a', 64),
+                 now() + interval '72 hours', 'approved')
+         returning id`,
+        [TENANT, key],
+      ),
+      "INSERT ... RETURNING",
+    ).rejects.toMatchObject({ code: "P0001" });
+
+    // A real pending row, then the upsert's UPDATE leg — caught by the transition half.
+    await rawInsert(approval, "", "", key);
+    await expect(
+      approval.query(
+        `insert into approval.proposals
+           (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash, expires_at)
+         values ($1, $2, 'send_email', '{}'::jsonb, 'r', repeat('a', 64),
+                 now() + interval '72 hours')
+         on conflict (tenant_id, idempotency_key) do update set state = 'approved'`,
+        [TENANT, key],
+      ),
+      "INSERT ... ON CONFLICT DO UPDATE",
+    ).rejects.toMatchObject({ code: "P0001" });
+
+    await expect(
+      approval.query(
+        `merge into approval.proposals t
+         using (select $1::uuid tid, $2::text k) s on t.idempotency_key = s.k
+         when not matched then insert
+           (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash,
+            expires_at, state)
+         values (s.tid, s.k, 'send_email', '{}'::jsonb, 'r', repeat('a', 64),
+                 now() + interval '72 hours', 'approved')`,
+        [TENANT, `c1-merge-${Math.random().toString(36).slice(2)}`],
+      ),
+      "MERGE ... WHEN NOT MATCHED THEN INSERT",
+    ).rejects.toMatchObject({ code: "P0001" });
+
+    await expect(
+      approval.query(
+        `merge into approval.proposals t using (select $1::text k) s
+           on t.idempotency_key = s.k
+         when matched then update set state = 'approved'`,
+        [key],
+      ),
+      "MERGE ... WHEN MATCHED THEN UPDATE",
+    ).rejects.toMatchObject({ code: "P0001" });
+  });
+
+  it("covers COPY FROM STDIN — which bypasses RULES but not triggers", async () => {
+    // PostgreSQL's COPY page: "COPY FROM will invoke any triggers and check constraints on
+    // the destination table. However, it will not invoke rules." And: "It is sufficient to
+    // have column privileges on the column(s) listed" — no superuser is needed for
+    // `FROM STDIN`, so this is a path the app role really can take. Driven through psql
+    // because node-postgres does not speak the COPY protocol.
+    const file = join(tmpdir(), `c1-copy-${Math.random().toString(36).slice(2)}.tsv`);
+    writeFileSync(
+      file,
+      `${TENANT}\tc1-copy-${Math.random().toString(36).slice(2)}\tsend_email\t{}\tr\t${"a".repeat(64)}\t2027-01-01\tapproved\n`,
+    );
+    try {
+      const u = new URL(roleUrl(url, "switchboard_approval"));
+      const res = await execFileAsync(
+        "psql",
+        [
+          u.toString(),
+          "-X",
+          "-q",
+          "-v",
+          "ON_ERROR_STOP=1",
+          "-c",
+          `\\copy approval.proposals (tenant_id,idempotency_key,action_type,payload,rationale,payload_hash,expires_at,state) from '${file}'`,
+        ],
+        { encoding: "utf8" },
+      ).catch((e: { stderr?: string; stdout?: string }) => ({
+        stdout: e.stdout ?? "",
+        stderr: e.stderr ?? String(e),
+      }));
+      expect(
+        `${res.stdout}${res.stderr}`,
+        "COPY FROM STDIN created a forged approved row",
+      ).toMatch(/born undecided/);
+    } finally {
+      rmSync(file, { force: true });
+    }
+  });
+});
+
+describe("A2/C-1: ENABLE ALWAYS — the guards survive session_replication_role=replica", () => {
+  // 🚨 THIS REPAIRS A LIVE HOLE IN THE UPDATE GUARD WE ALREADY SHIPPED, not just the new
+  // INSERT one. A trigger created the ordinary way carries `tgenabled = 'O'` and is
+  // COMPLETELY INERT under `session_replication_role = replica` — and since PG 15 the
+  // privilege to set that parameter is ORDINARY AND GRANTABLE
+  // (`GRANT SET ON PARAMETER session_replication_role`), i.e. exactly the sort of
+  // plausible-looking grant someone wires up for a replication or bulk-load tool.
+  //
+  // Measured, as the owner, with the triggers reverted to plain ENABLE: the forged INSERT
+  // AND a bare `pending -> approved` BOTH SUCCEEDED. With ENABLE ALWAYS, all three guards
+  // (creation, transition, frozen columns) still raised.
+
+  it("the app role cannot set the parameter at all — the first line, but not the control", async () => {
+    await expect(approval.query(`set session_replication_role = 'replica'`)).rejects.toThrow(
+      /permission denied to set parameter/i,
+    );
+  });
+
+  it("...and a caller who CAN set it is STILL guarded — which is the actual control", async () => {
+    // mutation: `alter table approval.proposals enable trigger proposals_guard` +
+    //           `... enable trigger proposals_guard_ins` (i.e. drop ENABLE ALWAYS)
+    //           -> both assertions below red: the forged insert lands and the bare
+    //           pending->approved succeeds. RUN ✅ 2026-08-08
+    const c = await admin.connect();
+    try {
+      await c.query(`set session_replication_role = 'replica'`);
+      expect((await c.query(`select current_setting('session_replication_role') as m`)).rows[0].m)
+        .toBe("replica");
+      await expect(
+        c.query(
+          `insert into approval.proposals
+             (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash,
+              expires_at, state)
+           values ($1, $2, 'send_email', '{}'::jsonb, 'r', repeat('a', 64),
+                   now() + interval '72 hours', 'approved')`,
+          [TENANT, `replica-${Math.random().toString(36).slice(2)}`],
+        ),
+        "a forged approved row was INSERTED under replica mode",
+      ).rejects.toMatchObject({ code: "P0001" });
+
+      const live = await seedProposal();
+      await expect(
+        c.query(`update approval.proposals set state = 'approved' where id = $1`, [live]),
+        "a bare pending->approved SUCCEEDED under replica mode",
+      ).rejects.toMatchObject({ code: "P0001" });
+    } finally {
+      await c.query(`set session_replication_role = 'origin'`).catch(() => {});
+      c.release();
+    }
+  });
+
+  it("pins tgenabled = 'A' on BOTH triggers — one line that reds on a careless re-create", async () => {
+    const t = await admin.query<{ tgname: string; tgenabled: string }>(
+      `select tgname, tgenabled from pg_trigger
+        where tgrelid = 'approval.proposals'::regclass and not tgisinternal
+        order by tgname`,
+    );
+    expect(t.rows).toEqual([
+      { tgname: "proposals_guard", tgenabled: "A" },
+      { tgname: "proposals_guard_ins", tgenabled: "A" },
+    ]);
   });
 });
 

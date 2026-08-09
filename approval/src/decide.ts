@@ -122,7 +122,25 @@ export async function decideOn(
       // No transition. The row accumulates — `approval.decisions` is multi-row per
       // proposal BY DESIGN, which is exactly why the trigger's predicate has to match on
       // KIND: without that, a prior `dismissed` row would satisfy the check for `approved`.
-      return { decisionId: ins.rows[0].id, state: "pending" };
+      //
+      // 🚨 BUT IT STILL HAS TO BE A LIVE ASK. This branch used to check nothing and return
+      // a HARDCODED `state: "pending"` — so a "Not now" clicked on a stale card whose
+      // proposal was `expired`, `rejected` or `executed` was accepted, recorded against
+      // that dead row, and reported to the caller as pending. Every other path in this file
+      // refuses loudly when the row moved underneath it; this one lied quietly. The state
+      // is now READ rather than asserted, and the same validity window applies as for the
+      // decisions that do move the row.
+      const live = await client.query<{ state: string }>(
+        `select state from approval.proposals
+          where id = $1 and state = 'pending' and expires_at > now()`,
+        [req.proposalId],
+      );
+      if (live.rowCount !== 1) {
+        throw new DecisionRefused(
+          `proposal ${req.proposalId} is not a live pending ask — "Not now" was NOT recorded.`,
+        );
+      }
+      return { decisionId: ins.rows[0].id, state: live.rows[0].state };
     }
 
     // THE CONDITIONAL UPDATE, with its expected state IN THE PREDICATE and its rowcount
@@ -132,19 +150,48 @@ export async function decideOn(
     // rowcount checks pass. (The trigger independently rejects illegal transitions, so the
     // invariant survives a caller that forgets this predicate — which is the point of
     // putting it in the database rather than here.)
+    // 🚨 `and expires_at > now()` — THE POINT-OF-USE CHECK ON THE DECISION SIDE. Without
+    // it, measured, `decide()` happily approved a proposal that expired an hour earlier.
+    // `readPendingQueue` hides such rows so the ordinary UI never offers one, but this is
+    // the exported API and it takes an id from the client: a stale browser tab, a slow
+    // request, or a page that fetches a card at T-1s and posts at T+1s all reach it. The
+    // human then gets a SUCCESS response for a decision that either gets swept to `expired`
+    // (a destroyed decision reported to her as success) or executes on a stale
+    // authorisation.
+    //
+    // REJECTING IS WHAT EVERY VENDOR SOURCE OPENED DOES. Stripe releases the funds when a
+    // payment hold expires and mitigates by capturing BEFORE expiry, never with post-expiry
+    // grace; RFC 8628's `expired_token` says restart, do not extend; GitHub fails an
+    // unapproved deployment outright at 30 days. No source auto-extends.
+    //
+    // Same reason as `execute.ts`: the term is IN the conditional UPDATE, so check and use
+    // are one atomic compare-and-set rather than a read followed by an act.
+    //
+    // 🚨 AND IT MAKES A DISCLOSED COST WORSE, WHICH IS THE HONEST FRAMING. Before this, a
+    // just-expired approval quietly went through — unsafe, but the human's decision
+    // survived. Now it hard-refuses, so fixing this INCREASES the number of destroyed
+    // decisions until A5 ships re-proposal. The sourced mitigation is Stripe's — act BEFORE
+    // expiry (a pre-expiry warning on the card and in the queue read) — and that is A0b/A5
+    // work. A2 records it rather than building it.
     const upd = await client.query(
       `update approval.proposals
           set state = $2, decided_at = now()
-        where id = $1 and state = 'pending'`,
+        where id = $1 and state = 'pending' and expires_at > now()`,
       [req.proposalId, req.kind],
     );
     if (upd.rowCount !== 1) {
       // Throwing is what rolls this back: the caller owns the transaction, so unwinding it
       // is the caller's job and doing it here would tear down a transaction that may hold
       // more than this decision.
+      const why = await client.query<{ state: string; expired: boolean }>(
+        `select state, expires_at <= now() as expired from approval.proposals where id = $1`,
+        [req.proposalId],
+      );
+      const row = why.rows[0];
       throw new DecisionRefused(
-        `proposal ${req.proposalId} was not pending — somebody or something else moved it. ` +
-          "Nothing was recorded.",
+        `proposal ${req.proposalId} cannot be decided: state is '${row?.state ?? "gone"}'` +
+          `${row?.expired ? " and the ask EXPIRED before you decided — it was not recorded" : ""}` +
+          ". Nothing was recorded.",
       );
     }
 

@@ -290,6 +290,63 @@ create function approval.proposals_guard() returns trigger
 language plpgsql
 as $guard$
 begin
+  -- ---------------------------------------------------------------------------------
+  -- (0) CREATION. A PROPOSAL IS BORN UNDECIDED.
+  --
+  -- 🚨 THIS BRANCH IS THE FIX FOR A REAL, MEASURED FORGERY. Before it existed, this
+  -- function was BEFORE UPDATE only and 014 grants TABLE-LEVEL insert, so `state` was
+  -- caller-writable at creation. Measured as `switchboard_approval` on a scratch database:
+  --
+  --     insert into approval.proposals (..., state) values (..., 'approved')  -> id, approved
+  --     select count(*) from approval.decisions where proposal_id = <id>      -> 0
+  --     update ... set state='executing' where id=<id> and state='approved'   -> UPDATE 1
+  --     insert into approval.proposals (..., state) values (..., 'executed')  -> succeeds
+  --
+  -- The `approved -> executing -> executed` leg is LEGALLY exempt from the decision-row
+  -- predicate below (only `approved` and `rejected` require one), so a forged row walked
+  -- the whole machine to `executed` with zero rows in `approval.decisions`. No card ever
+  -- rendered; no human ever saw it. That falsified three published sentences, all now
+  -- corrected. The invariant was enforced on transitions and not on CREATION — seven
+  -- reviews checked UPDATE paths exhaustively and none asked about INSERT.
+  --
+  -- WHY THIS IS A TRIGGER BRANCH AND NOT A `CHECK`. A CHECK ranks FIRST on the deciding
+  -- criterion — nothing grantable affects one, and it survives
+  -- `session_replication_role = replica` (measured) — and it is nevertheless UNUSABLE
+  -- here. A bare `check (state = 'pending')` is re-evaluated on every UPDATE and would
+  -- freeze the row in `pending` forever. The obvious rescue,
+  -- `check (state = 'pending' or decided_at is not null)`, WOULD RED THE SWEEPER: expiry
+  -- is machine-driven and deliberately writes no `decided_at`, and so is
+  -- `pending -> superseded`. There is no CHECK formulation that expresses this invariant,
+  -- because a CHECK cannot see whether a row is new and the two machine-driven terminal
+  -- transitions are DELIBERATELY unattributed. Drafted, then killed on that evidence.
+  --
+  -- Rejected for the same job, each on a measurement: a column-level INSERT grant omitting
+  -- `state` (a ONE-WAY DOOR — a later table-level `GRANT INSERT` reopens it and
+  -- `REVOKE INSERT (state)` does NOT re-close it, which is the hazard this file already
+  -- documents for UPDATE); `GENERATED ALWAYS AS IDENTITY` (`COPY FROM` overrides it by
+  -- design); `GENERATED ALWAYS AS (...) STORED` (the row could then never leave
+  -- `pending`); a view plus `INSTEAD OF` (one GRANT on the base table undoes it); and RLS
+  -- (reopened by `BYPASSRLS`, and a second parallel enforcement surface in a design that
+  -- argues against belts it cannot prove).
+  --
+  -- 🚨 NO CITED PATTERN EXISTS FOR THIS. The literature treats TRANSITIONS; the CREATION
+  -- edge is consistently left to procedure — the most-cited SQL state-machine treatment
+  -- (Celko's transition constraints) pushes initial-state checking into a stored procedure
+  -- rather than DDL, and so has exactly this gap. Engineering judgment supported by
+  -- measurement, and this comment must not imply otherwise.
+  if TG_OP = 'INSERT' then
+    if new.state <> 'pending' then
+      raise exception 'a proposal is born undecided: state must be ''pending'' at insert, got ''%''', new.state
+        using detail = 'every other state is reached by a transition this trigger guards. '
+                       'Creating a row already approved would be an approval no human made.';
+    end if;
+    if new.decided_at is not null then
+      raise exception 'a proposal is born undecided: decided_at must be null at insert'
+        using detail = 'a decision time on a row nobody has decided on is a lie in the audit trail.';
+    end if;
+    return new;
+  end if;
+
   -- (a) FROZEN COLUMNS. What the human approved cannot change afterwards, on any path,
   -- including paths nobody has written yet. This is the guarantee A2 actually makes about
   -- her data — not anything about what her browser painted.
@@ -320,7 +377,12 @@ begin
       raise exception 'illegal proposal transition: % -> %', old.state, new.state;
     end if;
 
-    -- (c) A HUMAN DISPOSITION WITH NO ATTRIBUTABLE HUMAN IS NOT REPRESENTABLE.
+    -- (c) A HUMAN DISPOSITION WITH NO ATTRIBUTABLE HUMAN IS NOT REPRESENTABLE — a claim that
+    -- is true ONLY BECAUSE THE CREATION BRANCH ABOVE EXISTS, and was false without it. Read
+    -- the two together: this clause guards the TRANSITIONS, branch (0) guards CREATION, and
+    -- for a while only the first half was written. The residuals that remain are named at
+    -- the end of this file and in KNOWN-ISSUES: the table owner can `DISABLE TRIGGER`, and a
+    -- superuser can do anything at all. Neither is closable from inside a single cluster.
     --
     -- The predicate covers `approved` AND `rejected`, not `approved` alone. Scoped to
     -- `approved`, a bare `update ... set state = 'rejected' where state = 'pending'` was
@@ -375,6 +437,34 @@ revoke execute on function approval.proposals_guard() from public;
 create trigger proposals_guard
   before update on approval.proposals
   for each row execute function approval.proposals_guard();
+
+-- ONE FUNCTION, TWO REGISTRATIONS. The creation branch is folded into the SAME function
+-- (it branches on TG_OP) rather than given its own, so this file's "exactly one function in
+-- schema `approval`" invariant — and the `proacl` pin that rests on it — survive unchanged.
+create trigger proposals_guard_ins
+  before insert on approval.proposals
+  for each row execute function approval.proposals_guard();
+
+-- 🚨 `ENABLE ALWAYS`, AND IT CLOSES A LIVE HOLE IN THE UPDATE GUARD THAT SHIPPED WITHOUT IT.
+--
+-- A trigger created the ordinary way has `pg_trigger.tgenabled = 'O'` and is COMPLETELY
+-- INERT under `session_replication_role = replica` — for INSERT and UPDATE alike. Measured
+-- on PG 16.14: with the parameter set, the forged row went straight in and neither trigger
+-- fired. And the privilege to do that is ORDINARY AND GRANTABLE since PG 15:
+-- `GRANT SET ON PARAMETER session_replication_role TO <role>` needs no superuser, and it is
+-- exactly the sort of plausible-looking grant someone wires up for a replication or
+-- bulk-load tool. PostgreSQL's own manual: triggers "configured as ENABLE ALWAYS will fire
+-- regardless of the current replication role."
+--
+-- So this is not decoration for the new trigger — it repairs the one we already shipped.
+--
+-- THE COST, DISCLOSED RATHER THAN DISCOVERED: `ENABLE ALWAYS` means these guards also fire
+-- when this table is a LOGICAL-REPLICATION SUBSCRIBER. If `approval.proposals` is ever
+-- replicated into another cluster, apply of a legitimately-approved row will RAISE. That is
+-- the right trade — refusing to apply beats silently accepting an unguarded row — and it is
+-- recorded in KNOWN-ISSUES so an operator meets it in writing rather than in an incident.
+alter table approval.proposals enable always trigger proposals_guard;
+alter table approval.proposals enable always trigger proposals_guard_ins;
 
 -- ---------------------------------------------------------------------------------------
 -- GRANTS. Written down table by table, in 014's precedent, so every pin below is against a

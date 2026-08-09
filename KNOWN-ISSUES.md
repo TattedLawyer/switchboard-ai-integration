@@ -36,7 +36,7 @@ without changing this table does not go green.
 | | Count | Derivation |
 |---|---|---|
 | **Open defects** | **38** | Part II top-level bullets that name an `Owner:` and are not struck |
-| **Design disclosures** | **44** | Part I top-level bullets |
+| **Design disclosures** | **45** | Part I top-level bullets |
 | **Paid** (struck entries) | **47** | Part III struck bullets, plus the cosmetic/low list |
 
 Why the owner predicate rather than a subtraction: Part II's own entry rule is that
@@ -706,8 +706,21 @@ letting a reader assume the stronger one.
   enforceable. What the split does buy is real and bounded: the authority a
   compromised agent host holds is *append one schema-validated, human-gated
   proposal* through an authenticated door, not *arbitrary SQL as the migration
-  owner*. It cannot rewrite the mart, forge an approval, forge an audit row, or
-  run `grant insert … to switchboard_agent` and retire the differentiator itself.
+  owner*. It cannot rewrite the mart, forge an audit row, or run
+  `grant insert … to switchboard_agent` and retire the differentiator itself.
+
+  🚨 **This paragraph used to say "cannot … forge an approval", and for a while that
+  was FALSE.** Gate H measured it: the lifecycle trigger was `BEFORE UPDATE` only and
+  the role holds table-level INSERT, so an attacker holding this credential could
+  `insert … values (…, 'approved')` with zero rows in `approval.decisions` and walk
+  the forged row to `executed`. No card ever rendered and no human ever saw it. It is
+  closed now — a creation branch in the same trigger refuses any INSERT that is not
+  `pending`, and both triggers are `ENABLE ALWAYS` — and the sentence is restored with
+  the qualification it always needed: **the approval ROLE cannot forge an approval. The
+  table OWNER and a superuser always can**, and nothing in a single-cluster design
+  changes that (see the creation-guard disclosure in Part I for exactly which residuals
+  those are). The claim is about this credential, which is the credential this entry is
+  about.
   The surviving bypass is proposal forgery and flooding, bounded by a unique
   idempotency key and a pending-proposal cap (migration 014, and the door's 429),
   and terminating in a human being shown a bad proposal and rejecting it. This is
@@ -751,6 +764,46 @@ letting a reader assume the stronger one.
   proposal that answers this with UI. Pinned two-directionally by
   `ingest/test/approval-honesty.test.ts`: the demotion must be PRESENT, and no
   document may claim the opposite.
+
+## What the creation guard covers, and the residuals it cannot (Phase 3 / A2)
+
+- **A proposal cannot be CREATED in a decided state — by any caller, through any
+  statement type — and here is the exact boundary of that claim.** The lifecycle
+  trigger guards creation as well as transitions, and both triggers are
+  `ENABLE ALWAYS`. Measured against the shipped schema as `switchboard_approval`:
+  `INSERT`, `INSERT … RETURNING`, `INSERT … ON CONFLICT DO UPDATE`, `COPY FROM STDIN`,
+  `MERGE` (both the matched and not-matched legs) and `UPDATE … FROM` are **all
+  refused**; `DELETE`, `TRUNCATE` and `UPDATE pg_class` are refused by **privilege**;
+  and `SET session_replication_role = 'replica'` is refused for that role
+  (`permission denied to set parameter`).
+
+  **Three residuals remain, and they are disclosed rather than claimed closed:**
+  - **The table owner** can `ALTER TABLE … DISABLE TRIGGER` and then write anything.
+    Ownership is demolition rights; no in-database control survives its own owner.
+  - **A superuser** can do all of that plus write catalogs directly.
+  - **Any role granted `SET ON PARAMETER session_replication_role`** could, before
+    `ENABLE ALWAYS`, turn *every* default-configured trigger in the database off for
+    its session — measured, and it is an **ordinary grantable privilege** since
+    PostgreSQL 15, not a superuser one. `ENABLE ALWAYS` is what closes it: PostgreSQL's
+    manual says such triggers "will fire regardless of the current replication role",
+    and we measured both directions (with `ENABLE ALWAYS` the guards still raise under
+    `replica`; reverted to plain `ENABLE`, a forged INSERT and a bare
+    `pending → approved` both succeed). This is not a hypothetical hardening: it closed
+    a live hole in the UPDATE guard that had already shipped.
+
+  **`ENABLE ALWAYS` has a cost, and it is stated here so an operator meets it in
+  writing rather than in an incident:** these guards also fire when `approval.proposals`
+  is a **logical-replication subscriber**. If this table is ever replicated into another
+  cluster, apply of a legitimately-approved row will RAISE, because the applying session
+  has no decision row in its transaction. Refusing to apply beats silently accepting an
+  unguarded row, so the trade is deliberate — but a replication setup here needs a
+  design decision, not a retry loop.
+
+  **No cited pattern exists for this.** No standards body or vendor prescribes
+  declarative initial-state enforcement in SQL; the literature treats *transitions*, and
+  the most-cited SQL state-machine treatment pushes initial-state checking into a stored
+  procedure — i.e. it has exactly the gap we shipped. The mechanism here is engineering
+  judgment supported by measurement, and the repo should not imply otherwise.
 
 # Part II — Open defects
 
@@ -1320,6 +1373,21 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   unchanged in kind and marginally larger in degree. The known fix shape is
   unchanged and now covers both counts.
 
+  🚨 **A related change deviates from the only published precedent, and we say so
+  rather than implying we follow one.** The door now short-circuits an exact-fingerprint
+  replay of an already-recorded proposal *before* the cap and rate counters, so a caller
+  retrying after a lost response gets its answer instead of a `429`. **Stripe documents
+  the opposite in terms** — "rate limiters run before the API's idempotency layer" — and
+  the IETF idempotency draft is silent on the question, so this is our judgment and not
+  standard practice. Two differences justify it: our `429` was being returned for an ask
+  that was **already recorded and queued**, which is not what RFC 6585 §4 describes; and
+  Stripe's client-side remedy for a 4xx — "always generate a new idempotency key" — is
+  **actively harmful here**, because a new key produces a second row and a second card
+  for the same ask, the exact duplicate the suppression design exists to prevent. The
+  exemption is bounded: it requires an exact fingerprint match on an existing row, a new
+  key at the limit still `429`s, and a mismatched fingerprint still `422`s and is still
+  counted.
+
   *Owner: A0b/A5 — whichever first puts a second caller or a non-loopback bind in front of this door, since both remove the mitigations. Trigger: `APPROVAL_BIND_HOST` set to anything but loopback in a real deployment, or a second authenticated caller. Fix shape is known: a token-bucket per bearer identity in front of BOTH counts, so a refused request costs no query.*
 
 - **`scripts/demo.sh` does not start the approval service, so the one-command
@@ -1348,7 +1416,20 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   until A0b ships login. It becomes a live defect the day A0b lands without A5,
   and at that point a broker's decision can evaporate with no trace of a remedy.
   The 72 hours is itself a JUDGMENT with no source; it is named in
-  `approval/src/config.ts` rather than buried.
+  `approval/src/config.ts` rather than buried. For scale: RFC 6749 RECOMMENDs **10
+  minutes** for a consent artifact and RFC 7519/9068 permit clock leeway of "no more
+  than a few minutes", so 72 hours is three orders of magnitude longer than the closest
+  standardised analogue. A human approval queue is not an OAuth redirect, so that is not
+  necessarily wrong — but the sources justify *having* a window, never *this* window.
+
+  🚨 **This entry got WORSE, deliberately, and the trade is the right one.** Expiry is
+  now enforced at the point of use on both the decision path and the execution path, not
+  only by a sweeper. Before that, a just-expired approval quietly went through: unsafe,
+  but the human's decision survived. Now it hard-refuses — so **fixing the safety hole
+  increases the number of destroyed decisions** until a re-proposal path exists. The
+  sourced mitigation is Stripe's shape for the same problem: act **before** expiry (warn
+  on the card and in the queue read as the window closes), never with post-expiry grace.
+  That is A0b/A5 work; A2 records it rather than building it.
 
   *Owner: A5 — it owns TTL values, re-validation of underlying facts at execution, and re-proposal after expiry. Trigger: A0b shipping login, which is what makes approved rows exist at all. Fix shape: a re-proposal path that mints a NEW proposal (new key, new hash) rather than resurrecting a terminal row, since terminal must stay terminal.*
 
