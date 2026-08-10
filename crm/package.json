@@ -8,7 +8,8 @@
     "test": "vitest run",
     "contact-add": "tsx src/cli/crm-contact-add.ts",
     "number-add": "tsx src/cli/crm-number-add.ts",
-    "questions-edit": "tsx src/cli/crm-questions-edit.ts"
+    "questions-edit": "tsx src/cli/crm-questions-edit.ts",
+    "reconcile": "tsx src/cli/crm-reconcile.ts"
   },
   "dependencies": {
     "libphonenumber-js": "1.13.10",
