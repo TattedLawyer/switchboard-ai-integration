@@ -567,3 +567,52 @@ backup timestamp and now — not unbounded ledger replay from empty.
 | Identity oracle FAILs after chaos.sh | Expected: marts are frozen tables over live staging views, and chaos truncates raw — re-run `demo.sh` (which rebuilds) before trusting mart state |
 | Relation `stg_crm__companies` does not exist right after migrating | The viewless deploy window (see Start/stop) — run `dbt build` |
 | Report generates with template banner | `ANTHROPIC_API_KEY` unset or LLM call failed — check the structured `llm` log line (fallback is by design; the report always generates) |
+
+## Follow-up loop (core loop, Wave 1)
+
+Roles, and which is which matters — the grants in migration 016 are written against them:
+
+| Actor | Connects as |
+|---|---|
+| Intake / question-editor / settings CLIs, and `crm-reconcile` | the **migration owner** (`DATABASE_URL`) |
+| The proposer and the call executor | **`switchboard_crm`** (`CRM_DATABASE_URL`) |
+| Creating a proposal | nobody — the proposer **POSTs to the approval door** with its bearer token |
+
+Neither pool falls back to the other. A service that silently ran as the owner would void
+most of what 016's grant block buys, and the failure would be invisible.
+
+```
+npm run contact-add    -w @switchboard/crm -- --tenant <uuid> --channel call --source referral --name "Ana Reyes"
+npm run number-add     -w @switchboard/crm -- --contact <uuid> --number "0917-123-4567" --label office
+npm run questions-edit -w @switchboard/crm -- --tenant <uuid> --q budget:text:"What budget range are you working with?"
+npm run reconcile      -w @switchboard/crm
+```
+
+### Settings have no defaults, on purpose
+
+`crm.outreach_settings` carries the follow-up interval, the short retry interval, the
+outreach window, and **both** opening lines. The two intervals have **no default** and the
+insert refuses rather than inventing a number — a default would imply we learned something
+we did not. Both opening lines are refused when blank, and the named line is refused when it
+carries no `{name}` placeholder, because an empty nameless line means the agent opens a call
+with silence.
+
+### What `crm-reconcile` lists, and what it deliberately does not
+
+Four things: contacts claimed with no proposal · blocked follow-ups · touches stuck at
+`transcript_delivery = 'pending'` · `executing` proposals with no terminal execution row.
+
+It does **not** list numbers shared across contacts. That listing was removed deliberately:
+it invites merging, which this design never does, and a listing whose only available
+response is "do nothing" is a trap rather than information.
+
+### Things that do not self-heal
+
+- A touch stuck at `pending` means **a transcript was never delivered and cannot be
+  recovered.** The listing converts silent loss into visible loss; that is the entire
+  improvement available.
+- An `executing` proposal with no outcome means a call died mid-flight. There is no reaper
+  and there must not be one: a timer that flips a live in-flight call to `failed` is worse
+  than a stuck row.
+- A crash between the claim and the proposal costs **fifteen minutes** — the claim lease —
+  not a follow-up interval.

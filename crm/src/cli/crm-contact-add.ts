@@ -3,7 +3,7 @@
 //
 // Usage:
 //   node --import tsx src/cli/crm-contact-add.ts --tenant <uuid> --channel call|email|both|none \
-//        --source event|referral|manual [--name "Ana Reyes"] [--email a@b.com] \
+//        --source event|referral|manual [--name "Ana Reyes"] [--email ana@example.com] \
 //        [--detail "Rotary breakfast"] [--looking-for "2BR near Alabang"] [--interval-days 30]
 //
 // `--name` IS OPTIONAL ON PURPOSE. A number with no name is still called; the agent

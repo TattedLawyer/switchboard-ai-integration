@@ -185,7 +185,7 @@ reporting a clean run.
   idempotency-keyed, because an approval queue no human can triage disables the
   human-approval constraint rather than merely annoying it. Its client-facing
   login and approval page are the next task; the door is real today.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 1358 tests, the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 1491 tests, the
   dbt build — 101 dbt build steps (15 models, 3 seeds, 83 data tests) — the agent
   action-safety eval, and the identity oracle, against a real Postgres service
   container
@@ -200,7 +200,7 @@ reporting a clean run.
   on a slow machine, and a leftover mock server inherited across steps sharing a
   process table. Each is narrated with its run ID in the
   [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
-- 1358 automated tests, green in CI and locally — including a seeded
+- 1491 automated tests, green in CI and locally — including a seeded
   property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety under
   arbitrary torn writes. That count is not maintained by hand: CI runs
@@ -229,7 +229,7 @@ reporting a clean run.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 1358 tests green across ten workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
+| Suite | `npm test` + dbt | 1491 tests green across twelve workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
 
 ## What's coming (built in phases, in public)
 
@@ -430,3 +430,62 @@ Copyright 2026 Michael Christine.
 Apache 2.0 rather than MIT for the express patent grant: MIT is silent on
 patents, which is the ambiguity counsel tends to flag when a business evaluates
 taking a dependency on someone else's code.
+
+## The follow-up loop (core loop, Wave 1)
+
+A broker's leads come from networking events and referrals. She takes a phone number, and
+then the follow-up doesn't happen and the lead goes cold. The loop closes that:
+
+```
+capture (numbers + provenance + channel)
+   → memory (next_due_at; "who is due today")
+      → proposal, one per channel, on the approval spine that already exists
+         → contact: her question list, delivered by voice (or a single email)
+            → answers stored per question · summary stored · transcript emailed
+               → clock reset → back to memory
+```
+
+**The product is step 2.** Everything else feeds or consumes it.
+
+### What it stores, and what it does not
+
+Three artifacts, three homes, and none is derived from another at read time:
+
+| Artifact | Home |
+|---|---|
+| Structured **answers** to her questions | Stored, keyed to the question VERSION that was asked |
+| A short **call summary** | Stored, length-capped by a database CHECK, marked generated |
+| The full **transcript** | **Emailed to her; never stored** |
+
+**No audio is ever recorded, and no transcript is stored.** There is nothing at rest to
+retain or erase, so there is no retention machinery and no erasure machinery.
+
+🚨 **The system does store conversation content: the summary.** It is less sensitive than a
+transcript and it is still her client's words about their circumstances. It is generated,
+not verbatim, and there is no stored source to check it against — the pointer to the email
+that holds the real record is the only bridge.
+
+🚨 **If the transcript email fails, the transcript is gone.** No copy, no audio, no
+reconstruct path. A failure is surfaced as `transcript_delivery = 'failed'`; a crash between
+storing the summary and sending is surfaced as a touch stuck at `'pending'`. Neither
+recovers the transcript. Nothing can — this design is not lossless and no document here may
+say it is.
+
+### What it deliberately does NOT do
+
+No inbound calls. No SMS. No reply handling. No email sequences — a single message only. No
+open-ended conversation: her question list, in order. No stages, no lead scoring, no
+pipeline, no CRM sync. No merging of contacts on a shared number and no identity resolution.
+No inferred phone type or validity. No client dashboard — the operator surface under
+`harness/` is disposable and mechanically fenced. No high availability: one proposer process
+per client host. No retry of a failed call, and no walking the number list within one
+follow-up — an approved proposal names exactly one number in an immutable payload.
+
+### How it rides the approval spine
+
+Every call and every email is a **proposal** a human approves, on the spine already
+described above. The proposer does **not** insert into `approval.proposals`; it POSTs to the
+same door any agent uses. The CRM's link to a proposal is **by id and is not an enforced
+foreign key** — a cross-schema foreign key would require a reference privilege on the
+approval tables, and keeping that surface narrow is worth more than the referential check. A
+dangling link is detected by `npm run reconcile -w @switchboard/crm`, not by the database.

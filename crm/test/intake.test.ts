@@ -43,7 +43,7 @@ describe("T3: the same line in two formats is ONE number", () => {
       source: "referral",
     });
     const first = await addNumber(admin, c.id, "0917-123-4567");
-    const second = await addNumber(admin, c.id, "+63 917 123 4567");
+    const second = await addNumber(admin, c.id, "+63 9171234567");
     expect(isAddNumberError(first)).toBe(false);
     expect(isAddNumberError(second)).toBe(false);
     if (isAddNumberError(first) || isAddNumberError(second)) return;

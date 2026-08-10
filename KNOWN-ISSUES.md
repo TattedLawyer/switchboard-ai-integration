@@ -2305,3 +2305,37 @@ parallelisation trigger the entry itself named. All three now use `vi.stubEnv` i
 whole agent test directory rather than as three edits, so the fourth such file nobody
 has written yet is covered too · assorted items
 tracked in review ledgers.
+
+## Follow-up loop (core loop, Wave 1) — disclosed weaknesses
+
+- **If the transcript email fails, the transcript is gone.** No copy, no audio, no
+  reconstruct path. Surfaced as `transcript_delivery = 'failed'`.
+- **A crash between storing the summary and sending the transcript loses the verbatim
+  record.** Mitigated only into VISIBILITY, by writing `transcript_delivery = 'pending'` at
+  call start; the reconcile listing shows it. **Not recoverable.**
+- **The summary is generated, not verbatim, and there is no stored source to check it
+  against.** Its pointer to the email holding the real record is the only bridge, and that
+  pointer is un-retrofittable.
+- **The system stores conversation content** — the summary. Less sensitive than a
+  transcript, still her client's words about their circumstances.
+- **Two contacts sharing a number are never merged, and there is no per-number cooldown.**
+  Two contacts on one household line, both due the same day, can produce two calls. Accepted
+  because the agent identifies itself and asks for a named person, so a second call is
+  comprehensible. Re-add trigger: if she reports a household called twice in a day, the
+  cooldown returns as a per-number execution-time gate — no migration needed. It must come
+  back as a CLAIM, not a check, and its pin must be concurrent.
+- **Identity is established by asking, not by data.** If the person who answers says they
+  are the contact and is not, nothing here can know. No schema fixes that.
+- **Nameless calls produce answers attributable only to a NUMBER.** Labelled
+  (`identity_unverified`), never withheld, never silently mixed with verified answers.
+- **A crash between the claim and the proposal loses that follow-up cycle.** Recovered by
+  the reconcile listing and by the 15-minute claim lease, not automatically re-driven.
+- **AMD reliability on Philippine carriers is unknown.** `unknown_answer` exists because of
+  that, and it is deliberately not `answered`.
+- **`channel = 'both'` with no email address on file is under-specified by the plan.**
+  Shipped behaviour: the CALL proceeds and the email arm is skipped and returned in the
+  cycle result. It is NOT one of the four reconcile listings, so she is not shown it. Owner
+  decision needed.
+- **The CRM↔approval link is by id and is not an enforced foreign key.** Deliberate: a
+  cross-schema foreign key would require a reference privilege on the approval tables. A
+  dangling link is detected by reconcile.

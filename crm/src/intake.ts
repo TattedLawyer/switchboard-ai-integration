@@ -80,7 +80,7 @@ export type AddNumberOutcome = AddNumberResult | { error: string };
  * Add a number to a contact.
  *
  * 🚨 DEDUPLICATION IS ON `phone_e164`, NEVER ON `phone_raw`. "0917-123-4567" and
- * "+63 917 123 4567" are the same line; keyed on the raw text they become two rows, the
+ * "+63 9171234567" are the same line; keyed on the raw text they become two rows, the
  * rotation then dials the same line twice in two cycles, and she looks like she is
  * pestering a referral. E.164 is what the machine compares; `phone_raw` is what she reads.
  *

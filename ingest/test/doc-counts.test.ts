@@ -287,7 +287,7 @@ describe("the other two README numbers about things a machine changes", () => {
     ].join("\n");
     expect(countSuiteWorkspaces(log)).toBe(2);
     expect(countSuiteWorkspaces("")).toBe(0); // fails closed; the gate refuses to compare against 0
-    expect(readmeWorkspaceClaim(readme)).toBe(10); // the word "ten" — A1 added the approval workspace
+    expect(readmeWorkspaceClaim(readme)).toBe(12); // the word "twelve" — the core loop added the crm and harness workspaces
   });
 
   it("M3: an UNREADABLE claim word reads as null ('this gate has nothing to check'), never NaN", () => {
