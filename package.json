@@ -12,7 +12,8 @@
     "mocks/casebus",
     "ingest",
     "agent",
-    "approval"
+    "approval",
+    "crm"
   ],
   "engines": {
     "node": ">=22"
