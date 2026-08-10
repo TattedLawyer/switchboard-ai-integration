@@ -10,8 +10,24 @@ import {
   TEST_TENANT,
 } from "./helpers/crmdb.js";
 import { payloadHash } from "../../approval/src/canonical.js";
-import { finishExecution } from "../../approval/src/execute.js";
-import { executeCall, CallRefused, type CallResult } from "../src/executor.js";
+import { beginExecution, finishExecution } from "../../approval/src/execute.js";
+import { placeCallPayloadSchema } from "../../approval/src/proposal.js";
+import { executeCall, CallRefused, type ApprovalSpine, type CallResult } from "../src/executor.js";
+
+// The REAL A2 functions and the REAL grammar, wired in at the seam. Test code is the
+// established exception to the no-cross-workspace-import rule (see
+// ingest/test/helpers/golden-ledger.ts, which makes the same move for the same reason: a
+// local reimplementation would make the test self-certifying).
+const SPINE: ApprovalSpine = {
+  beginExecution,
+  finishExecution,
+  parsePayload: (input) => {
+    const r = placeCallPayloadSchema.safeParse(input);
+    return r.success
+      ? { ok: true, value: r.data }
+      : { ok: false, problem: r.error.issues.map((i) => i.path.join(".")).join("; ") };
+  },
+};
 
 let admin: pg.Pool;
 let crm: pg.Pool;
@@ -147,6 +163,8 @@ describe("T11: a vendor death mid-call keeps what the prospect already said", ()
         {
           approvalDb: approval,
           crmDb: crm,
+        spine: SPINE,
+          spine: SPINE,
           window: WINDOW,
           intervals: INTERVALS,
           placeCall: async (ctx) => {
@@ -226,6 +244,8 @@ describe("T11: an expired approval cannot start a call", () => {
         {
           approvalDb: approval,
           crmDb: crm,
+        spine: SPINE,
+          spine: SPINE,
           window: WINDOW,
           intervals: INTERVALS,
           placeCall: async () => {
@@ -257,6 +277,7 @@ describe("T11: the happy path, end to end on the fake vendor", () => {
       {
         approvalDb: approval,
         crmDb: crm,
+        spine: SPINE,
         window: WINDOW,
         intervals: INTERVALS,
         placeCall: async (ctx) => {
@@ -295,6 +316,7 @@ describe("T11: the happy path, end to end on the fake vendor", () => {
       {
         approvalDb: approval,
         crmDb: crm,
+        spine: SPINE,
         window: WINDOW,
         intervals: INTERVALS,
         placeCall: async (ctx) => {
@@ -334,6 +356,8 @@ describe("T11: the happy path, end to end on the fake vendor", () => {
         {
           approvalDb: approval,
           crmDb: crm,
+        spine: SPINE,
+          spine: SPINE,
           // A window that cannot contain "now" in any timezone this test could run in.
           window: { windowStart: "03:00:00", windowEnd: "03:01:00", timezone: "Asia/Manila" },
           intervals: INTERVALS,

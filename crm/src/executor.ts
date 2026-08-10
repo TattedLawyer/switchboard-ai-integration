@@ -21,17 +21,48 @@
 // failed afterwards. The proposal is left `executing` — which 015 documents as having no
 // timer-driven exit and no reaper, deliberately — and T13's reconcile lists it.
 import type pg from "pg";
-import { beginExecution, finishExecution, ExecutionRefused } from "../../approval/src/execute.js";
-import { placeCallPayloadSchema, type PlaceCallPayload } from "../../approval/src/proposal.js";
 import { gateExecution, type OutreachWindow } from "./gates.js";
 import { beginTouch, recordTouch, type IntervalSettings } from "./touch.js";
 import { recordAnswer } from "./answers.js";
 import { resolveDisposition, type ConversationOutcome, type TransportSignal } from "./disposition.js";
 import { resolveQuestionSetForExecution } from "./questions.js";
 
-export { ExecutionRefused };
-
 export class CallRefused extends Error {}
+
+// 🚨 THE A2 SPINE IS INJECTED, NOT IMPORTED. `crm/src` may not import `approval/src`: the
+// repo forbids cross-workspace imports between `src` trees (test code is the established
+// exception, and the composition root wires the real functions in). That constraint turns
+// out to be the right shape anyway — it makes the three things this executor borrows from
+// A2 explicit and countable, instead of an import list that could quietly grow into a
+// second spine's worth of coupling.
+//
+// The payload GRAMMAR is not duplicated here. `parsePayload` is `placeCallPayloadSchema`'s
+// safeParse, handed in: two grammars for one door is exactly the defect `.strict()` exists
+// to prevent, one level up.
+export interface PlaceCallPayload {
+  contact_id: string;
+  phone_number_id: string;
+  phone_e164: string;
+  display_name: string | null;
+  opening_line: string;
+  question_set_id: string;
+  context: { source_detail: string | null; looking_for: string | null };
+}
+
+export interface ApprovalSpine {
+  /** `approval/src/execute.ts` — the at-most-once claim and the expiry compare-and-set. */
+  beginExecution: (db: pg.Pool, proposalId: string) => Promise<unknown>;
+  /** `approval/src/execute.ts` — the terminal row and the state move, rowcount-checked. */
+  finishExecution: (
+    db: pg.Pool,
+    proposalId: string,
+    outcome: { ok: boolean; vendorReference?: string; error?: string },
+  ) => Promise<void>;
+  /** `approval/src/proposal.ts` — `placeCallPayloadSchema.safeParse`. */
+  parsePayload: (
+    input: unknown,
+  ) => { ok: true; value: PlaceCallPayload } | { ok: false; problem: string };
+}
 
 export interface CallContext {
   touchId: string;
@@ -59,6 +90,7 @@ export interface ExecutorDeps {
   /** `switchboard_crm` — the CRM side. */
   crmDb: pg.Pool;
   placeCall: PlaceCall;
+  spine: ApprovalSpine;
   window: OutreachWindow;
   intervals: IntervalSettings;
   now?: () => Date;
@@ -89,14 +121,13 @@ export async function executeCall(
   if (p.rows[0].action_type !== "place_call") {
     throw new CallRefused(`proposal ${proposalId} is a ${p.rows[0].action_type}, not a call`);
   }
-  const parsed = placeCallPayloadSchema.safeParse(p.rows[0].payload);
-  if (!parsed.success) {
+  const parsed = deps.spine.parsePayload(p.rows[0].payload);
+  if (!parsed.ok) {
     throw new CallRefused(
-      `proposal ${proposalId} carries a payload that would not produce a call: ` +
-        parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+      `proposal ${proposalId} carries a payload that would not produce a call: ${parsed.problem}`,
     );
   }
-  const payload = parsed.data;
+  const payload = parsed.value;
 
   // 1. THE GATE, before anything moves. Approval on Tuesday does not make a Thursday call
   //    permitted, and a refusal here must not consume the one start the proposal gets.
@@ -109,14 +140,14 @@ export async function executeCall(
   if (!gate.allowed) throw new CallRefused(gate.reason ?? "refused by the outreach window");
 
   // 2. The at-most-once claim AND the expiry check, in one compare-and-set.
-  await beginExecution(deps.approvalDb, proposalId);
+  await deps.spine.beginExecution(deps.approvalDb, proposalId);
 
   // 3. The touch exists from call start.
   const set = await resolveQuestionSetForExecution(deps.crmDb, payload.question_set_id);
   if (set === null) {
     // The bound version vanished — not something retirement can cause (retirement gates
     // SELECTION, never EXECUTION), so this is a real anomaly.
-    await finishExecution(deps.approvalDb, proposalId, {
+    await deps.spine.finishExecution(deps.approvalDb, proposalId, {
       ok: false,
       error: `question set ${payload.question_set_id} is gone`,
     });
@@ -169,7 +200,7 @@ export async function executeCall(
 
   // 5. The outcome.
   const outcome = resolveDisposition(result.transport, result.conversation);
-  await finishExecution(deps.approvalDb, proposalId, { ok: true });
+  await deps.spine.finishExecution(deps.approvalDb, proposalId, { ok: true });
   const recorded = await recordTouch(
     deps.crmDb,
     touchId,
