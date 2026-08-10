@@ -68,11 +68,21 @@ const DISPLAY_MAP: Record<ProposalActionType, { key: string; label: string }[]> 
     { key: "subject", label: "Subject" },
     { key: "body", label: "Message" },
   ],
+  // The card must show the WORDS THAT WILL BE SPOKEN first: `opening_line` is fully
+  // rendered at proposal time precisely so she approves the sentence itself. `context` and
+  // the two ids fall into the trailing "additional fields" block rather than being omitted
+  // — the map may order and label, it may not omit.
+  place_call: [
+    { key: "display_name", label: "Calling" },
+    { key: "phone_e164", label: "Number" },
+    { key: "opening_line", label: "Opening line" },
+  ],
 };
 
 /** The one-line description of what this action DOES, on the card's face. */
 const ACTION_HEADLINE: Record<ProposalActionType, string> = {
   send_email: "Send an email on your behalf",
+  place_call: "Place a follow-up call on your behalf",
 };
 
 /** HTML escaping — the real thing, for the real output context.

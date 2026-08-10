@@ -20,11 +20,12 @@ import { z } from "zod";
  * documentation — the same move `registerReadOnlyTool` makes for the MCP tool surface.
  * Growing it is a deliberate edit with its own review, never an accident of a payload.
  *
- * `send_email` is the only member today because C5 (send) is the first real outbound
- * action Phase 3 commits to, and an allowlist populated ahead of its executors would be
- * a list of things nobody is watching.
+ * `send_email` arrived first because C5 (send) is the first real outbound action Phase 3
+ * commits to, and an allowlist populated ahead of its executors would be a list of things
+ * nobody is watching. `place_call` joins it with the core follow-up loop (T8), which ships
+ * its executor in the same wave.
  */
-export const PROPOSAL_ACTION_TYPES = ["send_email"] as const;
+export const PROPOSAL_ACTION_TYPES = ["send_email", "place_call"] as const;
 export type ProposalActionType = (typeof PROPOSAL_ACTION_TYPES)[number];
 
 export const proposalSchema = z
@@ -61,3 +62,71 @@ export function parseProposal(input: unknown): ProposalParse {
     })),
   };
 }
+
+// ---------------------------------------------------------------------------------------
+// PAYLOAD GRAMMARS — core follow-up loop, T8.
+// ---------------------------------------------------------------------------------------
+//
+// The door itself stores `payload` as an opaque object, deliberately: it is the approval
+// spine, not the CRM. These schemas are what the PROPOSER validates against before it
+// posts, and what the EXECUTOR validates on the way back out — so a payload that would not
+// produce a call is refused before a human is asked to judge it.
+//
+// `.strict()` on both, for the reason the file header already gives: an unknown field is a
+// REFUSAL, not a silently dropped one, and a dropped field is a proposal the human approved
+// and the executor never saw.
+
+/**
+ * A single outbound call.
+ *
+ * 🚨 `display_name` IS EXPLICITLY NULLABLE, and this is the cheapest way this design could
+ * have died silently. The owner's decision (rev 4) is that a number with NO NAME still gets
+ * called — the agent introduces itself as an associate of the broker. An implementer
+ * writing `z.string()` next to a `.strict()` schema would make EVERY NAMELESS PROPOSAL FAIL
+ * VALIDATION: the decision dead on arrival, with nothing in the suite noticing. The contact
+ * column is nullable too, so every condition in this design is `display_name is null`,
+ * never `= ''`.
+ *
+ * 🚨 EXACTLY ONE `phone_e164`, never an array. That is §5.1's rule at the schema level: an
+ * approved proposal names ONE number in an immutable payload, so dialling a second
+ * mid-execution would place a call to a number the human never approved — falsifying the
+ * claim README.md publishes. The list rotates ACROSS cycles, not within one.
+ *
+ * 🚨 `opening_line` IS FULLY RENDERED, not a template. She approves the exact words that
+ * will be spoken, and 015:353-363 then makes them unchangeable. Nothing is substituted at
+ * call time, so a rendered line must carry no `{name}` placeholder.
+ *
+ * 🚨 `question_set_id` IS REQUIRED. A call not bound to a question VERSION is
+ * unreproducible: nothing afterwards can say what the prospect was actually asked.
+ */
+export const placeCallPayloadSchema = z
+  .object({
+    contact_id: z.string().uuid(),
+    phone_number_id: z.string().uuid(),
+    phone_e164: z.string().min(1),
+    display_name: z.string().nullable(),
+    opening_line: z.string().min(1),
+    question_set_id: z.string().uuid(),
+    context: z
+      .object({
+        source_detail: z.string().nullable(),
+        looking_for: z.string().nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export type PlaceCallPayload = z.infer<typeof placeCallPayloadSchema>;
+
+/** The follow-up email. Execution is blocked on C5; the PROPOSAL path ships now so the
+ *  schema is right when the sender lands. Single message only — no sequences (owner). */
+export const followUpEmailPayloadSchema = z
+  .object({
+    contact_id: z.string().uuid(),
+    to: z.string().min(1),
+    subject: z.string().min(1),
+    body: z.string().min(1),
+  })
+  .strict();
+
+export type FollowUpEmailPayload = z.infer<typeof followUpEmailPayloadSchema>;
