@@ -13,7 +13,8 @@
     "ingest",
     "agent",
     "approval",
-    "crm"
+    "crm",
+    "harness"
   ],
   "engines": {
     "node": ">=22"
