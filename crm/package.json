@@ -5,7 +5,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "contact-add": "tsx src/cli/crm-contact-add.ts",
+    "number-add": "tsx src/cli/crm-number-add.ts"
   },
   "dependencies": {
     "libphonenumber-js": "1.13.10",
