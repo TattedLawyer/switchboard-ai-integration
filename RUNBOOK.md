@@ -613,15 +613,30 @@ role crosses the schema boundary).
 Per terminal state:
 - **`rejected` → STOP AND SURFACE.** Close the row, set `next_due_at = NULL` so the card she
   declined is not auto-served again, and list the lead under **passed-on leads**. She
-  revisits it by re-setting the contact due.
+  revisits it with `npm run contact-reactivate -w @switchboard/crm -- --contact <uuid>`
+  (which sets `next_due_at = now()` on the EXISTING contact). Do **not** re-add the contact —
+  `crm-contact-add` inserts a new id and orphans the original's history.
 - **`expired` / `execution_failed` → RE-PROPOSE.** Close the row and advance `next_due_at` to
   the start of the next day in her timezone (re-proposes tomorrow, and stops the ~15-min
   lease churn a stuck contact would otherwise cause).
-- **`superseded`** is deliberately NOT swept — an amendment's successor is still live.
+- **`superseded` → CLOSE (defense-in-depth).** It is swept like the others. A CRM follow-up
+  action can never actually be superseded (one deterministic-keyed card per
+  `(contact, due_date, channel)`), so this only matters if some future path breaks that
+  invariant — in which case the action closes rather than stranding.
 
 Then FIVE listings: contacts claimed with no proposal · blocked follow-ups · touches stuck
 at `transcript_delivery = 'pending'` · `executing` proposals with no terminal execution row ·
 **passed-on leads** (rejected, closed, stopped — the "she said no" surface).
+
+**Blocked follow-ups** carry a data-completeness reason the proposer records when a contact
+comes due but has nothing buildable — `no_email_address`, `no_phone_number` (both per-contact,
+fixed with `crm-number-add` / editing the contact), or `no_question_set` (a **tenant-global**
+gap — she has authored no questions yet; the surface aggregates it as one "affects N contacts"
+line rather than N identical rows, and `crm-questions-edit` clears it for everyone). A blocked
+contact is **never silenced**: it is claimed every cycle, re-blocks idempotently, is excluded
+from the open-guard, and recovers the moment the data arrives. 🚨 This is the structural fix
+for the permanent-silence class — the follow-up row is opened only once at least one leg is
+buildable, so a no-number / no-question-set contact never leaves an open, action-less row.
 
 It does **not** list numbers shared across contacts. That listing was removed deliberately:
 it invites merging, which this design never does, and a listing whose only available

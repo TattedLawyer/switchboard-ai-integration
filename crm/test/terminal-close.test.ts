@@ -273,6 +273,38 @@ describe("Test F — an execution_failed card RE-PROPOSES the next day", () => {
   });
 });
 
+describe("Test SUPERSEDE (defense-in-depth) — a superseded action closes, not strands", () => {
+  // A CRM action can never actually be superseded today (one deterministic-keyed card per
+  // (contact,due_date,channel); the invariant is pinned in no-silence.test.ts). But if a
+  // future path ever broke that, a `superseded` proposal must CLOSE its follow-up, not leave
+  // it open to silence the contact — "fix the class, not the instance."
+  //
+  // mutation: drop `'superseded'` from the sweep's `in (...)` -> red. RUN ✅ 2026-08-11
+  //   Observed: `Tests  1 failed | 6 passed (7)`
+  //     AssertionError: expected [] to include '<contactId>' — the superseded action is not
+  //     swept, so its follow-up stays open and would silence the contact.
+  it("the close pass sweeps a superseded proposal", async () => {
+    const t0 = T0();
+    const { contactId, proposalId } = await contactAndCycle1("call", t0);
+    // Transition the (pending) proposal to superseded — a legal 015 transition, no decision
+    // row required — simulating approveCard collapsing a duplicate on the approval side.
+    await admin.query(
+      `update approval.proposals set state = 'superseded' where id = $1 and state = 'pending'`,
+      [proposalId],
+    );
+    const st = await admin.query<{ state: string }>(
+      `select state from approval.proposals where id = $1`,
+      [proposalId],
+    );
+    expect(st.rows[0].state).toBe("superseded");
+    expect(await isOpen(contactId)).toBe(true); // the hole, if superseded were excluded
+
+    const closed = await closeTerminatedFollowUps(admin, t0);
+    expect(closed.map((c) => c.contactId)).toContain(contactId);
+    expect(await isOpen(contactId)).toBe(false);
+  });
+});
+
 describe("the close pass leaves LIVE work alone", () => {
   it("does not close a pending or approved follow-up (still live)", async () => {
     const t0 = T0();

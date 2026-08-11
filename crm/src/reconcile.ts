@@ -83,9 +83,17 @@ export interface ClosedFollowUp {
  *     in her timezone — a safe floor that both re-proposes and stops the ~15-min lease churn,
  *     without inventing a follow-up interval nobody set.
  *
- * 🚨 `superseded` IS EXCLUDED. An amendment replaces a pending proposal with a live successor;
- * the follow-up is still live under it, so sweeping it would close a cycle that is not over.
- * Amendment is not reachable in range, so excluding it is conservative and correct.
+ * 🚨 `superseded` IS INCLUDED AS DEFENSE-IN-DEPTH — and the reason it is safe is NOT the one
+ * an earlier comment gave. The live source of `superseded` in this repo is not amendment but
+ * `approval/src/suppress.ts approveCard`, which supersedes byte-identical DUPLICATE cards on
+ * approval. It never touches a CRM follow-up action, because the proposer emits exactly ONE
+ * deterministic-keyed card per `(contact, due_date, channel)` (`proposer.ts` `idempotencyKey`)
+ * and `proposals_idempotency_unique` (`014:68`) makes a second collapsible CRM card
+ * unconstructible — so there is no duplicate for `approveCard` to collapse, and belt-and-
+ * suspenders `follow_up_actions_one_per_channel` (`016:394`) admits one action per channel.
+ * That invariant is pinned separately. Sweeping `superseded` anyway is the "fix the class,
+ * not the instance" move: if any future path ever did post a second card for a live
+ * follow-up, a `superseded` action must CLOSE, not strand — Critical-1 all over again.
  */
 export async function closeTerminatedFollowUps(
   admin: pg.Pool,
@@ -102,7 +110,7 @@ export async function closeTerminatedFollowUps(
        join approval.proposals p on p.id = fa.proposal_id
       where f.closed_at is null and f.blocked_reason is null
       group by f.id, f.contact_id
-     having bool_and(p.state in ('rejected', 'expired', 'execution_failed'))
+     having bool_and(p.state in ('rejected', 'expired', 'execution_failed', 'superseded'))
         and not bool_or(p.state = 'executed')`,
   );
 
@@ -238,7 +246,8 @@ export async function reconcile(
         and c.next_due_at is null
         and not exists (select 1 from crm.follow_ups f2
                          where f2.contact_id = c.id and f2.closed_at is null)
-      order by c.id, f.due_date desc`,
+      order by c.id, f.due_date desc
+      limit 500`,
   );
 
   return {
@@ -281,8 +290,18 @@ export function formatReconcile(r: ReconcileReport): string {
     );
   }
   lines.push(`blocked follow-ups: ${r.blockedFollowUps.length}`);
+  // 🚨 `no_question_set` is a TENANT-GLOBAL config gap (she has authored no questions yet),
+  // not a per-contact one — so the surface AGGREGATES it into a single count rather than
+  // emitting one identical row per affected contact. The rows are still per-contact in the
+  // data (correctness: each blocks its own contact and never silences it); only the operator
+  // display collapses. Every other reason is per-contact and listed individually.
+  const noSet = r.blockedFollowUps.filter((b) => b.reason === "no_question_set");
   for (const b of r.blockedFollowUps) {
+    if (b.reason === "no_question_set") continue;
     lines.push(`  ${b.followUpId}  contact ${b.contactId}  due ${b.dueDate}  ${b.reason}`);
+  }
+  if (noSet.length > 0) {
+    lines.push(`  no_question_set — no active question set, affects ${noSet.length} contact(s)`);
   }
   lines.push(`transcripts stuck pending: ${r.transcriptsStuckPending.length}`);
   for (const t of r.transcriptsStuckPending) {

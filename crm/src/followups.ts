@@ -13,7 +13,12 @@
 // closing logic and there is no version of this design without it.
 import type pg from "pg";
 
-export type BlockedReason = "no_email_address";
+// Every reason a follow-up can be BLOCKED — a data-completeness gap that must SURFACE, never
+// silence. `no_email_address` and `no_phone_number` are per-contact; `no_question_set` is a
+// tenant-global config gap (she has authored no questions yet) that the surface aggregates.
+// `crm.follow_ups.blocked_reason` is `text null` with no CHECK, so adding values needs no
+// migration — the type is the contract.
+export type BlockedReason = "no_email_address" | "no_phone_number" | "no_question_set";
 
 export interface FollowUpRow {
   id: string;

@@ -151,58 +151,82 @@ export async function proposeForClaimed(
         ? []
         : [contact.channel];
 
-  const wantsEmail = channels.includes("email");
-  const canEmail = contact.email_address !== null && contact.email_address !== "";
+  // 🚨 OPTION B (V3): COMPUTE THE BUILDABLE LEGS FIRST, open the row only if ≥1 leg builds.
+  //
+  // The follow-up row must never exist without work to do. Opening it unconditionally (the
+  // old shape) left an OPEN, UNBLOCKED, ACTION-LESS row whenever every leg resolved to
+  // nothing — a `call`/`both` contact with no number, or with no active question set — which
+  // the close pass (an INNER JOIN through `follow_up_actions`) can never see, and which the
+  // date-aware guard then silences the next Manila day. That was the third recurrence of the
+  // permanent-silence class. Odoo's `check_res_id_is_set` forbids the same empty-activity
+  // state: the work row exists BECAUSE there is executable work.
+  //
+  // So: build every wanted leg without posting; if ZERO build, `blockFollowUp` (surfaced,
+  // guard-excluded, recoverable via the shipped upsert) and return WITHOUT opening a row; if
+  // ≥1 builds, open the row and post only the buildable legs. A partial gap (`both` with one
+  // buildable leg — P4a) is NOT a silence: it opens normally and the missing arm is a
+  // data-completeness item, not a block.
+  const legs = channels.map((channel) => ({
+    channel,
+    build:
+      channel === "call"
+        ? buildCallProposal(db, tenantId, contact, settings, idempotencyKey(contact.id, dueDate, channel))
+        : Promise.resolve(buildEmailProposal(contact, idempotencyKey(contact.id, dueDate, channel))),
+  }));
+  const resolved = await Promise.all(
+    legs.map(async (l) => ({ channel: l.channel, result: await l.build })),
+  );
+  const buildable = resolved.filter((l) => l.result.ok);
 
-  // 🚨 EMAIL PREFERRED, NO ADDRESS ON FILE. It must NOT fall back to calling — overriding
-  // her stated preference at the moment we have least information is the worst available
-  // outcome — and it must not silently drop, which is the original failure. So: a BLOCKED
-  // follow-up, surfaced (T13), and the clock untouched.
-  if (wantsEmail && !canEmail && contact.channel === "email") {
-    await blockFollowUp(db, contact.id, dueDate, "no_email_address");
+  if (buildable.length === 0) {
+    // Every wanted leg failed. Pick the PRIMARY block reason — a call-arm data gap
+    // (`no_phone_number` / `no_question_set`) outranks the email-arm one, so a `both` with no
+    // address surfaces the more actionable gap. `channel = 'none'` yields no legs and is not a
+    // data gap she can fix, so it blocks nothing and simply returns.
+    const reasons = resolved.flatMap((l) => (!l.result.ok ? [l.result.blockReason] : []));
+    const primary =
+      reasons.find((r) => r === "no_phone_number") ??
+      reasons.find((r) => r === "no_question_set") ??
+      reasons.find((r) => r === "no_email_address") ??
+      null;
+    if (primary === null) {
+      return { contactId: contact.id, dueDate, actions: [], blockedReason: null, skipped: [] };
+    }
+    await blockFollowUp(db, contact.id, dueDate, primary);
     return {
       contactId: contact.id,
       dueDate,
       actions: [],
-      blockedReason: "no_email_address",
-      skipped: [{ channel: "email", reason: "no email address on file" }],
+      blockedReason: primary,
+      skipped: resolved
+        .filter((l) => !l.result.ok)
+        .map((l) => ({ channel: l.channel, reason: (l.result as LegFail).blockReason })),
     };
   }
 
+  // ≥1 buildable leg — NOW open the row (never before), and post the buildable legs.
   const followUp = await openFollowUp(db, contact.id, dueDate);
   const actions: ProposedAction[] = [];
   const skipped: ContactOutcome["skipped"] = [];
 
-  for (const channel of channels) {
-    if (channel === "email" && !canEmail) {
-      // A `both` contact with no address yet. The CALL still happens — her stated
-      // preference included it — and the email arm is skipped rather than substituted.
-      // DISCLOSED: this arm is visible in the cycle's return value and in the absence of an
-      // `email` row in `crm.follow_up_actions`, but it is NOT one of T13's four reconcile
-      // listings, so it is not surfaced to her. The plan does not settle `both` + no
-      // address, and inventing a fifth reconcile listing to cover it would contradict a
-      // pin that says exactly four.
-      skipped.push({ channel, reason: "no email address on file (call arm proceeds)" });
+  for (const leg of resolved) {
+    if (!leg.result.ok) {
+      // A partial gap on a contact that DID produce ≥1 action (P4a): a data-completeness
+      // item, not a silence. Surfaced in the return value; the row is open and healthy.
+      skipped.push({ channel: leg.channel, reason: leg.result.blockReason });
       continue;
     }
-    const key = idempotencyKey(contact.id, dueDate, channel);
-    const built =
-      channel === "call"
-        ? await buildCallProposal(db, tenantId, contact, settings, key)
-        : buildEmailProposal(contact, key);
-    if (built === null) {
-      skipped.push({ channel, reason: "nothing to propose" });
-      continue;
-    }
+    const built = leg.result;
+    const key = idempotencyKey(contact.id, dueDate, leg.channel);
     const { id } = await deps.postProposal(built.proposal);
     await db.query(
       `insert into crm.follow_up_actions (follow_up_id, channel, proposal_id)
        values ($1, $2, $3)
        on conflict (follow_up_id, channel) do nothing`,
-      [followUp.id, channel, id],
+      [followUp.id, leg.channel, id],
     );
     actions.push({
-      channel,
+      channel: leg.channel,
       proposalId: id,
       followUpId: followUp.id,
       idempotencyKey: key,
@@ -215,10 +239,16 @@ export async function proposeForClaimed(
 }
 
 interface BuiltProposal {
+  ok: true;
   proposal: DoorProposal;
   phoneE164?: string;
   identityUnverified?: boolean;
 }
+interface LegFail {
+  ok: false;
+  blockReason: BlockedReason;
+}
+type LegBuild = BuiltProposal | LegFail;
 
 async function buildCallProposal(
   db: pg.Pool,
@@ -226,11 +256,11 @@ async function buildCallProposal(
   contact: ContactRow,
   settings: SettingsRow,
   key: string,
-): Promise<BuiltProposal | null> {
+): Promise<LegBuild> {
   const numbers = await loadNumbers(db, contact.id);
-  if (numbers.length === 0) return null;
+  if (numbers.length === 0) return { ok: false, blockReason: "no_phone_number" };
   const set = await selectQuestionSetForProposal(db, tenantId);
-  if (set === null) return null;
+  if (set === null) return { ok: false, blockReason: "no_question_set" };
 
   // 🚨 MODULO THE LIVE COUNT, never the stored ordinal used as an array index. She deletes
   // a number and the stored rotation index is suddenly past the end — an index straight
@@ -247,6 +277,7 @@ async function buildCallProposal(
   const intervalDays = contact.follow_up_interval_days ?? settings.default_interval_days;
 
   return {
+    ok: true,
     phoneE164: pick.phone_e164,
     identityUnverified: opening.identityUnverified,
     proposal: {
@@ -279,15 +310,23 @@ async function buildCallProposal(
   };
 }
 
-function buildEmailProposal(contact: ContactRow, key: string): BuiltProposal {
+function buildEmailProposal(contact: ContactRow, key: string): LegBuild {
+  // 🚨 EMAIL PREFERRED, NO ADDRESS ON FILE is a BLOCK, not a fall-back to calling —
+  // overriding her stated preference at the moment we have least information is the worst
+  // available outcome. The email leg simply fails to build; whether that becomes a blocked
+  // row depends (Option B) on whether any OTHER leg built.
+  if (contact.email_address === null || contact.email_address === "") {
+    return { ok: false, blockReason: "no_email_address" };
+  }
   const who = contact.display_name ?? "there";
   return {
+    ok: true,
     proposal: {
       idempotency_key: key,
       action_type: "send_email",
       payload: {
         contact_id: contact.id,
-        to: contact.email_address as string,
+        to: contact.email_address,
         subject: "Following up",
         body:
           `Hi ${who} — just following up on our conversation` +

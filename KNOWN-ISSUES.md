@@ -2361,10 +2361,23 @@ tracked in review ledgers.
   stop-and-surface, not silence.
 - **AMD reliability on Philippine carriers is unknown.** `unknown_answer` exists because of
   that, and it is deliberately not `answered`.
-- **`channel = 'both'` with no email address on file is under-specified by the plan.**
-  Shipped behaviour: the CALL proceeds and the email arm is skipped and returned in the
-  cycle result. It is NOT one of the four reconcile listings, so she is not shown it. Owner
-  decision needed.
+- **The permanent-silence class is closed BY CONSTRUCTION (V3, Option B).** The proposer
+  opens the `crm.follow_ups` row only once ≥1 leg is buildable. A contact with nothing
+  buildable — `call`/`both` with no phone number, or no active question set — is recorded as
+  a BLOCKED follow-up (`no_phone_number` per-contact, `no_question_set` tenant-global and
+  aggregated on the surface) instead of an open, action-less row. Blocked rows are surfaced
+  on `blockedFollowUps`, excluded from the open-guard, and recover via the shipped upsert when
+  the data arrives, so such a contact is never silenced. The earlier bug — three recurrences
+  of the same class — was that the row opened before we knew there was work.
+- **Disclosed minor: a contact blocked across MULTIPLE Manila days accretes one blocked row
+  per day.** Same-day re-blocks are idempotent (one row), but after the lease crosses midnight
+  the claimed due-date advances and a new date's blocked row is written while the prior day's
+  stays blocked. All are surfaced (never silencing) and recovery clears the current day's row;
+  a future close/dedup can tidy the stale ones. Not a silence.
+- **`channel = 'both'` with no email address BUT a phone number proceeds on the call arm**
+  (P4a): ≥1 action (the call), the email arm skipped as a data-completeness item, not a
+  block. `both` with neither address nor number (nor set) is BLOCKED (`no_phone_number`
+  primary), surfaced, never silenced.
 - **The CRM↔approval link is by id and is not an enforced foreign key.** Deliberate: a
   cross-schema foreign key would require a reference privilege on the approval tables. A
   dangling link is detected by reconcile.
