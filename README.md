@@ -185,7 +185,7 @@ reporting a clean run.
   idempotency-keyed, because an approval queue no human can triage disables the
   human-approval constraint rather than merely annoying it. Its client-facing
   login and approval page are the next task; the door is real today.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 1497 tests, the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 1504 tests, the
   dbt build — 101 dbt build steps (15 models, 3 seeds, 83 data tests) — the agent
   action-safety eval, and the identity oracle, against a real Postgres service
   container
@@ -200,7 +200,7 @@ reporting a clean run.
   on a slow machine, and a leftover mock server inherited across steps sharing a
   process table. Each is narrated with its run ID in the
   [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
-- 1497 automated tests, green in CI and locally — including a seeded
+- 1504 automated tests, green in CI and locally — including a seeded
   property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety under
   arbitrary torn writes. That count is not maintained by hand: CI runs
@@ -229,7 +229,7 @@ reporting a clean run.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 1497 tests green across twelve workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
+| Suite | `npm test` + dbt | 1504 tests green across twelve workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
 
 ## What's coming (built in phases, in public)
 
@@ -449,13 +449,21 @@ capture (numbers + provenance + channel)
 
 🚨 **WHAT SHIPS TODAY (Wave 1) vs WHAT DOES NOT.** Wave 1 is capture → memory → proposal →
 call → **answers stored** → clock reset. The **voice vendor is faked in tests** (real
-LiveKit + Twilio SIP + Gemini Live is Wave 2, T16), and **there is no summarisation, no
-transcript, and no email path built at all** — T17 (summary) and T18 (transcript email) are
-Wave 2 and unbuilt. The `crm.touches` columns and CHECK for a summary and a
-`transcript_delivery` status exist in migration 016, but **no code writes them yet**: a call
-today leaves `transcript_delivery = 'pending'` because that is the value written at call
-start and nothing moves it. Do not read the artifacts table below as operating today — it is
-the **designed** end state, and the two rows marked *(Wave 2)* are not built.
+LiveKit + Twilio SIP + Gemini Live is Wave 2, T16), and **there is no summarisation and no
+transcript email built** — T17 (summary) and T18 (transcript email) are Wave 2 and unbuilt.
+The `crm.touches` columns and CHECK for a summary and a `transcript_delivery` status exist in
+migration 016, but **no code writes them yet**: a call today leaves
+`transcript_delivery = 'pending'` because that is the value written at call start and nothing
+moves it. Do not read the artifacts table below as operating today — it is the **designed**
+end state, and the two rows marked *(Wave 2)* are not built.
+
+🚨 **EMAIL IS HALF-WIRED, and this is stated plainly because the harmful direction is to
+imply it is inert.** For a contact whose channel is `email` or `both`, the proposer **does
+build and POST a real `send_email` card** that she can approve — but **there is no email
+executor**: `executeCall` handles `place_call` only, and nothing consumes a `send_email`
+proposal (the sender is Wave 2 / C5). An approved email card ages to `expired` and is closed
+by the owner-run close pass (below), so it no longer silences the contact — **but the email
+is never actually sent** until Wave 2. Do not enroll email contacts expecting delivery.
 
 ### What it will store, and what it does not (design)
 

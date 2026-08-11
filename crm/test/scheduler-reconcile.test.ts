@@ -255,10 +255,14 @@ describe("T13: reconcile lists exactly the four things", () => {
     await seedNumber(admin, a, "+639171234567");
     await seedNumber(admin, b, "+639171234567");
     const r = await reconcile(admin);
+    // FIVE listings now (the close pass added `passedOnLeads`). Shared numbers remain absent
+    // — §5.2's trap has an available response of only "do nothing"; the passed-on listing's
+    // available response is an ACTION (revisit), which is why it is information, not a trap.
     expect(Object.keys(r).sort()).toEqual([
       "blockedFollowUps",
       "claimedWithNoProposal",
       "executingWithNoOutcome",
+      "passedOnLeads",
       "transcriptsStuckPending",
     ]);
     expect(JSON.stringify(r)).not.toContain("+639171234567");

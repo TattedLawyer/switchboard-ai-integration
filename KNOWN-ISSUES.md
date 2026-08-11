@@ -2342,15 +2342,23 @@ tracked in review ledgers.
   hole: until the fix, a crash *after* the insert left an actionless open row that silenced
   the contact permanently and was invisible to reconcile item 1, and the plan's
   "self-heals in 15 minutes" was false for that window.)
-- **Rejection cadence is an OWNER DECISION, unset.** When all legs of a follow-up are
-  rejected, the row closes but `recordTouch` never runs (a rejection produces no touch), so
-  `next_due_at` sits at the claim lease-end: the scheduler re-claims the contact every 15
-  minutes until Manila midnight (same due date → same idempotency key → the door replays the
-  rejected proposal → no new card), then emits a fresh card the next day. Net mechanical
-  behaviour today: *"she said no → ask again tomorrow"*, plus a day of no-op claim/POST
-  churn. Whether next-day re-ask is what rejection should mean — and what real `next_due_at`
-  a rejection should write instead — is hers to decide (adjacent to the K-consecutive
-  question), not ours to invent. The mechanical behaviour is left in place pending her call.
+- **Rejection = STOP AND SURFACE (owner decision made, and it corrects a false earlier
+  note).** When she rejects a card, the owner-run close pass (beside reconcile) closes the
+  follow-up row and sets `next_due_at = NULL`, so the loop does **not** auto-serve the card
+  she declined, and the lead appears on the reconcile **"passed-on leads"** listing (the
+  fifth) with her stated rejection reason. A rejection is a decision to respect, not a
+  failure to retry (SOURCED: Odoo `unlink`s a cancelled activity — no successor, no snooze).
+  She revisits a passed-on lead by re-setting it due. **`expired` and `execution_failed` are
+  NOT rejections** — nobody chose — so the same close pass re-proposes them at the start of
+  the next day in her timezone.
+  · *Correction of the prior note (both clauses were false and are retracted):* it claimed
+  "the row closes and re-asks tomorrow." Before this fix **nothing closed the row on
+  rejection**, and the next Manila day the date-aware guard **silenced** the contact
+  permanently and invisibly — not re-asked. That was the "half a fix" C1 defect the gate
+  review caught.
+  · Whether "no" should ever mean a *back-off re-ask* rather than a full stop remains a
+  future owner knob (the required rejection `reason` is the hook), but the shipped default is
+  stop-and-surface, not silence.
 - **AMD reliability on Philippine carriers is unknown.** `unknown_answer` exists because of
   that, and it is deliberately not `answered`.
 - **`channel = 'both'` with no email address on file is under-specified by the plan.**

@@ -182,11 +182,11 @@ afterAll(async () => {
 describe("C1: the loop follows up MORE THAN ONCE", () => {
   // 🚨 THE PIN THAT WOULD HAVE CAUGHT C1.
   // mutation: delete the close from `recordTouch` — remove the
-  //           `update crm.follow_ups set closed_at = $2 …` block -> red. RUN ✅ 2026-08-10
-  //   Observed: `Tests  2 failed | 1 passed (3)`
-  //     AssertionError: expected null not to be null   (cycle 1's row stays OPEN)
-  //     AssertionError: expected [] to have a length of 1 but got +0   (the no_answer
-  //                     variant's cycle 2 is SKIPPED — the contact silenced for ever)
+  //           `if (proposalId !== null) await closeFollowUpForProposal(client, …)` block
+  //           -> red. RUN ✅ 2026-08-10 (re-run after wiring the shared helper)
+  //   Observed: `Tests  1 failed | 2 skipped (3)` (targeted), `expected null not to be null`
+  //     — cycle 1's row stays OPEN; the full-file run also reds the no_answer cycle 2 with
+  //     `expected [] to have a length of 1 but got +0` (the contact silenced for ever).
   //   That is C1 verbatim: one follow-up per contact, per lifetime.
   //
   // Every write here is production. The only fixture inputs are her settings, the contact,

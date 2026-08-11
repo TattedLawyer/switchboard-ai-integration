@@ -597,14 +597,36 @@ we did not. Both opening lines are refused when blank, and the named line is ref
 carries no `{name}` placeholder, because an empty nameless line means the agent opens a call
 with silence.
 
-### What `crm-reconcile` lists, and what it deliberately does not
+### `crm-reconcile` — the terminal-state close pass, then five listings
 
-Four things: contacts claimed with no proposal · blocked follow-ups · touches stuck at
-`transcript_delivery = 'pending'` · `executing` proposals with no terminal execution row.
+🚨 **`crm-reconcile` now WRITES before it reads.** It runs an owner-only **close pass** that
+closes the follow-up row for any card that reached a terminal state WITHOUT a placed call —
+`rejected` (human), `expired` (machine), `execution_failed`, and an `email` card with no
+executor (which ages to `expired`). Without it, those rows stayed open and the date-aware
+open-guard silenced the contact permanently the next Manila day (the "half a fix" C1). The
+close pass is a **lifecycle completion**, not a repair, so it does not violate the
+"listed, not swept" rule that still governs live `executing` wedges. It is safe to run on a
+schedule (idempotent) and must be run by the migration owner — it reads `approval.proposals`
+and writes `crm.follow_ups` / `crm.contacts`, which only the owner can do (neither service
+role crosses the schema boundary).
+
+Per terminal state:
+- **`rejected` → STOP AND SURFACE.** Close the row, set `next_due_at = NULL` so the card she
+  declined is not auto-served again, and list the lead under **passed-on leads**. She
+  revisits it by re-setting the contact due.
+- **`expired` / `execution_failed` → RE-PROPOSE.** Close the row and advance `next_due_at` to
+  the start of the next day in her timezone (re-proposes tomorrow, and stops the ~15-min
+  lease churn a stuck contact would otherwise cause).
+- **`superseded`** is deliberately NOT swept — an amendment's successor is still live.
+
+Then FIVE listings: contacts claimed with no proposal · blocked follow-ups · touches stuck
+at `transcript_delivery = 'pending'` · `executing` proposals with no terminal execution row ·
+**passed-on leads** (rejected, closed, stopped — the "she said no" surface).
 
 It does **not** list numbers shared across contacts. That listing was removed deliberately:
 it invites merging, which this design never does, and a listing whose only available
-response is "do nothing" is a trap rather than information.
+response is "do nothing" is a trap. The passed-on listing is different in kind — its
+available response is an action (revisit) — which is why it is information, not a trap.
 
 🚨 **Wave-1 caveat on the `pending` listing.** In Wave 1 **every** completed call leaves
 `transcript_delivery = 'pending'`, because that value is written at call start and the code

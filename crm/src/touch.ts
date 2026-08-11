@@ -18,6 +18,7 @@
 // and taking a message is not an answered questionnaire.
 import type pg from "pg";
 import { resolveIntervalDays, addDays } from "./due.js";
+import { closeFollowUpForProposal } from "./followups.js";
 
 export const DISPOSITIONS = [
   "answered",
@@ -166,15 +167,11 @@ export async function recordTouch(
     // 🚨 THE CLOSE — every executed disposition closes the cycle's row. A retry is not a
     // row left open; it is next cycle's NEW row at the short-retry date. Idempotent, so the
     // second `both` sibling's close is a rowcount-0 no-op (the first leg already closed it).
-    // A touch with no proposal (a direct/unit touch) closes nothing.
+    // A touch with no proposal (a direct/unit touch) closes nothing. Runs on THIS client, so
+    // it is inside the same transaction as the clock; calls the shared helper rather than a
+    // second inline copy of the close-by-proposal SQL.
     if (proposalId !== null) {
-      await client.query(
-        `update crm.follow_ups set closed_at = $2
-          where closed_at is null
-            and id in (select fa.follow_up_id from crm.follow_up_actions fa
-                        where fa.proposal_id = $1)`,
-        [proposalId, now.toISOString()],
-      );
+      await closeFollowUpForProposal(client, proposalId, now);
     }
 
     if (siblingSucceeded) {

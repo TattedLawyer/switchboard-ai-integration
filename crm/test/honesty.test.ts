@@ -173,16 +173,38 @@ describe("T15 / I1: no Wave-1 doc presents an UNBUILT mechanism as operating", (
     }
   });
 
-  // mutation: delete the "there is no summarisation … built" disclosure from README -> red.
-  //           RUN ✅ 2026-08-10
-  //   Observed: `Tests  1 failed | 10 passed (11)`
-  //     AssertionError: expected '…' to match /no summarisation, no transcript, and no email
-  //                     path built/
+  // mutation: delete the "no summarisation and no transcript email built" disclosure from
+  //           README -> red. RUN ✅ 2026-08-10
+  //   Observed: `Tests  1 failed | 11 passed (12)`
+  //     AssertionError: expected '…' to match /no summarisation and no transcript email built/
   it("README says out loud that summarisation and transcript email are not built", () => {
     // Vacuity guard for the pin above: the positive disclosure must exist.
-    expect(flat("README.md")).toMatch(
-      /no summarisation, no\s*transcript, and no email path built/i,
-    );
+    expect(flat("README.md")).toMatch(/no summarisation and no transcript email built/i);
+  });
+
+  // 🚨 IMPORTANT 1 from the gate review — the harmful-direction claim. The proposer builds
+  // approvable `send_email` cards, but there is NO email executor, so an approved email is
+  // never sent. A doc that implies email is "not built at all" (inert) invites the operator
+  // to enroll email contacts and lose the delivery they think is happening.
+  //
+  // mutation: change README's "there is no email executor" disclosure to "email is fully
+  //           inert / no email path is built" -> red. RUN ✅ 2026-08-10
+  //   Observed: `Tests  1 failed | 11 passed (12)`
+  //     AssertionError: expected '…' to match /no email executor/i  (the disclosure of the
+  //                     half-wired reality is gone once the doc claims email is inert)
+  it("does not claim the email path is inert while the proposer builds send_email cards", () => {
+    const src = crmSrc();
+    // The proposer DOES build send_email cards today (grounded, not asserted from the doc).
+    const emailCardsAreBuilt = /action_type:\s*["']send_email["']/.test(src);
+    // An email EXECUTOR does not exist yet.
+    const emailExecutorExists = /send(Email|Transcript)\s*\(/.test(src);
+    if (!emailCardsAreBuilt || emailExecutorExists) return; // reality changed; pin retires
+
+    const readme = flat("README.md");
+    // Positive: README must disclose the half-wired reality (cards built, no executor).
+    expect(readme).toMatch(/no email executor/i);
+    // Negative: README must NOT claim the email path is wholly unbuilt/inert.
+    expect(readme).not.toMatch(/no email path built at all|email is (fully )?inert/i);
   });
 });
 
