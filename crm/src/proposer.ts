@@ -18,7 +18,7 @@ import type pg from "pg";
 import { claimDue, type ClaimedContact } from "./claim.js";
 import {
   blockFollowUp,
-  hasOpenFollowUp,
+  hasOpenFollowUpBefore,
   openFollowUp,
   type BlockedReason,
 } from "./followups.js";
@@ -111,7 +111,7 @@ export async function runCycle(
   tenantId: string,
   limit: number,
 ): Promise<ContactOutcome[]> {
-  const claimed = await claimDue(deps.db, tenantId, limit);
+  const claimed = await claimDue(deps.db, tenantId, limit, deps.now?.() ?? new Date());
   const out: ContactOutcome[] = [];
   for (const c of claimed) {
     out.push(await proposeForClaimed(deps, tenantId, c));
@@ -129,15 +129,18 @@ export async function proposeForClaimed(
   const dueDate = dueDateIn(claimed.claimedDueAt, settings.timezone);
   const contact = await loadContact(db, claimed.id);
 
-  // The open-guard. A contact already mid-cycle is not proposed again, even if her clock
-  // was moved backwards. Blocked rows deliberately do not count (B4).
-  if (await hasOpenFollowUp(db, contact.id)) {
+  // The open-guard, now date-aware (C1). A contact mid-cycle on an EARLIER due date — a card
+  // still pending approval or execution — is not proposed again. An open row at THIS same
+  // due date falls through: the deterministic key + the door's idempotent replay make a
+  // re-proposal safe, and that is what lets an orphaned open row (crash between the open and
+  // the door POST) self-heal on the next cycle. Blocked rows do not count (B4).
+  if (await hasOpenFollowUpBefore(db, contact.id, dueDate)) {
     return {
       contactId: contact.id,
       dueDate,
       actions: [],
       blockedReason: null,
-      skipped: [{ channel: "call", reason: "an open follow-up already exists" }],
+      skipped: [{ channel: "call", reason: "an open follow-up from an earlier due date exists" }],
     };
   }
 

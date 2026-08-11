@@ -213,6 +213,7 @@ export async function executeCall(
       reachedOrdinal: await currentReached(deps.crmDb, touchId),
     },
     deps.intervals,
+    now,
   );
 
   return {

@@ -109,80 +109,115 @@ export async function recordTouch(
   touchId: string,
   outcome: TouchOutcome,
   settings: IntervalSettings,
+  now: Date = new Date(),
 ): Promise<RecordTouchResult> {
-  const t = await db.query<{
-    contact_id: string;
-    proposal_id: string | null;
-    follow_up_interval_days: number | null;
-  }>(
-    `select t.contact_id, t.proposal_id, c.follow_up_interval_days
-       from crm.touches t join crm.contacts c on c.id = t.contact_id
-      where t.id = $1`,
-    [touchId],
-  );
-  if (t.rowCount !== 1) throw new Error(`no such touch: ${touchId}`);
-  const { contact_id: contactId, proposal_id: proposalId } = t.rows[0];
+  // 🚨 ONE TRANSACTION. The disposition, the rotation, THE FOLLOW-UP CLOSE and the clock all
+  // land together or not at all. C1 was: nothing ever closed the follow-up, so the first
+  // successful cycle silenced the contact for ever. The close belongs beside the clock — and
+  // it must be atomic with it, because "clock advanced, row still open" (a crash between two
+  // autocommit statements) reproduces C1 silently, resurfacing 30 days later. If the BEFORE
+  // UPDATE wrong-person trigger fires, the whole transaction rolls back — correctly: no
+  // clock advance and no close on a defect.
+  const client = await db.connect();
+  try {
+    await client.query("begin");
 
-  // The disposition first — the answers are already committed, and 016's BEFORE UPDATE
-  // trigger is what refuses `wrong_person` against a touch that has any.
-  await db.query(
-    `update crm.touches
-        set disposition = $2, reached_ordinal = $3, message_left = $4, identity_unverified = $5
-      where id = $1`,
-    [
-      touchId,
-      outcome.disposition,
-      outcome.reachedOrdinal ?? null,
-      outcome.messageLeft ?? false,
-      outcome.identityUnverified ?? false,
-    ],
-  );
-
-  const siblingSucceeded = proposalId === null ? false : await siblingAlreadySucceeded(db, touchId, proposalId);
-
-  const rotationAdvanced = ROTATION_ADVANCING_DISPOSITIONS.has(outcome.disposition);
-  if (rotationAdvanced) {
-    await db.query(
-      `update crm.contacts set dial_rotation_ordinal = dial_rotation_ordinal + 1,
-                               updated_at = now()
-        where id = $1`,
-      [contactId],
+    const t = await client.query<{
+      contact_id: string;
+      proposal_id: string | null;
+      follow_up_interval_days: number | null;
+    }>(
+      `select t.contact_id, t.proposal_id, c.follow_up_interval_days
+         from crm.touches t join crm.contacts c on c.id = t.contact_id
+        where t.id = $1`,
+      [touchId],
     );
-  }
+    if (t.rowCount !== 1) throw new Error(`no such touch: ${touchId}`);
+    const { contact_id: contactId, proposal_id: proposalId } = t.rows[0];
 
-  if (siblingSucceeded) {
+    // The disposition first — the answers are already committed, and 016's BEFORE UPDATE
+    // trigger is what refuses `wrong_person` against a touch that has any.
+    await client.query(
+      `update crm.touches
+          set disposition = $2, reached_ordinal = $3, message_left = $4, identity_unverified = $5
+        where id = $1`,
+      [
+        touchId,
+        outcome.disposition,
+        outcome.reachedOrdinal ?? null,
+        outcome.messageLeft ?? false,
+        outcome.identityUnverified ?? false,
+      ],
+    );
+
+    const siblingSucceeded =
+      proposalId === null ? false : await siblingAlreadySucceeded(client, touchId, proposalId);
+
+    const rotationAdvanced = ROTATION_ADVANCING_DISPOSITIONS.has(outcome.disposition);
+    if (rotationAdvanced) {
+      await client.query(
+        `update crm.contacts set dial_rotation_ordinal = dial_rotation_ordinal + 1,
+                                 updated_at = now()
+          where id = $1`,
+        [contactId],
+      );
+    }
+
+    // 🚨 THE CLOSE — every executed disposition closes the cycle's row. A retry is not a
+    // row left open; it is next cycle's NEW row at the short-retry date. Idempotent, so the
+    // second `both` sibling's close is a rowcount-0 no-op (the first leg already closed it).
+    // A touch with no proposal (a direct/unit touch) closes nothing.
+    if (proposalId !== null) {
+      await client.query(
+        `update crm.follow_ups set closed_at = $2
+          where closed_at is null
+            and id in (select fa.follow_up_id from crm.follow_up_actions fa
+                        where fa.proposal_id = $1)`,
+        [proposalId, now.toISOString()],
+      );
+    }
+
+    if (siblingSucceeded) {
+      await client.query("commit");
+      return {
+        disposition: outcome.disposition,
+        advancedClock: false,
+        intervalDaysUsed: null,
+        nextDueAt: null,
+        rotationAdvanced,
+      };
+    }
+
+    const intervalDays = LONG_INTERVAL_DISPOSITIONS.has(outcome.disposition)
+      ? resolveIntervalDays({
+          contactIntervalDays: t.rows[0].follow_up_interval_days,
+          tenantDefaultDays: settings.defaultIntervalDays,
+        })
+      : settings.shortRetryDays;
+
+    const next = addDays(now, intervalDays);
+    await client.query(
+      `update crm.contacts set next_due_at = $2, updated_at = now() where id = $1`,
+      [contactId, next.toISOString()],
+    );
+    await client.query("commit");
     return {
       disposition: outcome.disposition,
-      advancedClock: false,
-      intervalDaysUsed: null,
-      nextDueAt: null,
+      advancedClock: true,
+      intervalDaysUsed: intervalDays,
+      nextDueAt: next,
       rotationAdvanced,
     };
+  } catch (err) {
+    await client.query("rollback").catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
   }
-
-  const intervalDays = LONG_INTERVAL_DISPOSITIONS.has(outcome.disposition)
-    ? resolveIntervalDays({
-        contactIntervalDays: t.rows[0].follow_up_interval_days,
-        tenantDefaultDays: settings.defaultIntervalDays,
-      })
-    : settings.shortRetryDays;
-
-  const next = addDays(new Date(), intervalDays);
-  await db.query(
-    `update crm.contacts set next_due_at = $2, updated_at = now() where id = $1`,
-    [contactId, next.toISOString()],
-  );
-  return {
-    disposition: outcome.disposition,
-    advancedClock: true,
-    intervalDaysUsed: intervalDays,
-    nextDueAt: next,
-    rotationAdvanced,
-  };
 }
 
 async function siblingAlreadySucceeded(
-  db: pg.Pool,
+  db: pg.Pool | pg.PoolClient,
   touchId: string,
   proposalId: string,
 ): Promise<boolean> {

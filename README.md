@@ -185,7 +185,7 @@ reporting a clean run.
   idempotency-keyed, because an approval queue no human can triage disables the
   human-approval constraint rather than merely annoying it. Its client-facing
   login and approval page are the next task; the door is real today.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 1491 tests, the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 1497 tests, the
   dbt build — 101 dbt build steps (15 models, 3 seeds, 83 data tests) — the agent
   action-safety eval, and the identity oracle, against a real Postgres service
   container
@@ -200,7 +200,7 @@ reporting a clean run.
   on a slow machine, and a leftover mock server inherited across steps sharing a
   process table. Each is narrated with its run ID in the
   [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
-- 1491 automated tests, green in CI and locally — including a seeded
+- 1497 automated tests, green in CI and locally — including a seeded
   property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety under
   arbitrary torn writes. That count is not maintained by hand: CI runs
@@ -229,7 +229,7 @@ reporting a clean run.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 1491 tests green across twelve workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
+| Suite | `npm test` + dbt | 1497 tests green across twelve workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
 
 ## What's coming (built in phases, in public)
 
@@ -440,36 +440,49 @@ then the follow-up doesn't happen and the lead goes cold. The loop closes that:
 capture (numbers + provenance + channel)
    → memory (next_due_at; "who is due today")
       → proposal, one per channel, on the approval spine that already exists
-         → contact: her question list, delivered by voice (or a single email)
-            → answers stored per question · summary stored · transcript emailed
-               → clock reset → back to memory
+         → contact: her question list, delivered by voice
+            → answers stored per question
+               → clock reset (and the cycle's follow-up closed) → back to memory
 ```
 
 **The product is step 2.** Everything else feeds or consumes it.
 
-### What it stores, and what it does not
+🚨 **WHAT SHIPS TODAY (Wave 1) vs WHAT DOES NOT.** Wave 1 is capture → memory → proposal →
+call → **answers stored** → clock reset. The **voice vendor is faked in tests** (real
+LiveKit + Twilio SIP + Gemini Live is Wave 2, T16), and **there is no summarisation, no
+transcript, and no email path built at all** — T17 (summary) and T18 (transcript email) are
+Wave 2 and unbuilt. The `crm.touches` columns and CHECK for a summary and a
+`transcript_delivery` status exist in migration 016, but **no code writes them yet**: a call
+today leaves `transcript_delivery = 'pending'` because that is the value written at call
+start and nothing moves it. Do not read the artifacts table below as operating today — it is
+the **designed** end state, and the two rows marked *(Wave 2)* are not built.
+
+### What it will store, and what it does not (design)
 
 Three artifacts, three homes, and none is derived from another at read time:
 
-| Artifact | Home |
-|---|---|
-| Structured **answers** to her questions | Stored, keyed to the question VERSION that was asked |
-| A short **call summary** | Stored, length-capped by a database CHECK, marked generated |
-| The full **transcript** | **Emailed to her; never stored** |
+| Artifact | Home | Built? |
+|---|---|---|
+| Structured **answers** to her questions | Stored, keyed to the question VERSION that was asked | **Wave 1 — built** |
+| A short **call summary** | Stored, length-capped by a database CHECK, marked generated | *Wave 2 (T17) — schema only* |
+| The full **transcript** | **Emailed to her; never stored** | *Wave 2 (T18) — not built* |
 
-**No audio is ever recorded, and no transcript is stored.** There is nothing at rest to
-retain or erase, so there is no retention machinery and no erasure machinery.
+**No audio is ever recorded, and no transcript is ever stored** — by design, in every wave.
+There is nothing at rest to retain or erase, so there is no retention machinery and no
+erasure machinery.
 
-🚨 **The system does store conversation content: the summary.** It is less sensitive than a
-transcript and it is still her client's words about their circumstances. It is generated,
-not verbatim, and there is no stored source to check it against — the pointer to the email
-that holds the real record is the only bridge.
+🚨 **When summarisation ships, the system will store conversation content: the summary.** It
+is less sensitive than a transcript and it is still her client's words about their
+circumstances. It is generated, not verbatim, and there is no stored source to check it
+against — the pointer to the email that will hold the real record is the only bridge. (Today
+no summary is written at all.)
 
-🚨 **If the transcript email fails, the transcript is gone.** No copy, no audio, no
-reconstruct path. A failure is surfaced as `transcript_delivery = 'failed'`; a crash between
-storing the summary and sending is surfaced as a touch stuck at `'pending'`. Neither
+🚨 **When transcript email ships, a failed send means the transcript is gone.** No copy, no
+audio, no reconstruct path; the design surfaces it as `transcript_delivery = 'failed'` and a
+crash between storing the summary and sending as a touch stuck at `'pending'`. Neither
 recovers the transcript. Nothing can — this design is not lossless and no document here may
-say it is.
+say it is. **None of that surfacing is wired yet** (Wave 2); it is described here so the
+tradeoff is on the record before the mechanism lands.
 
 ### What it deliberately does NOT do
 

@@ -223,24 +223,63 @@ describe("T9: a missing name must never cost her a follow-up", () => {
   });
 });
 
-describe("T9: the open-guard", () => {
-  // mutation: drop the `hasOpenFollowUp` check -> red. RUN ✅ 2026-08-09
+describe("T9: the date-aware open-guard (C1 fix)", () => {
+  // 🚨 REWRITTEN FOR C1. The previous test moved `next_due_at` back 30 days by an admin
+  // write and asserted the contact was STILL skipped — which is exactly the C1 bug it should
+  // have caught: a date-independent guard that silences the contact for ever after the first
+  // open row. Moving `next_due_at` backwards is also forged system-owed state (review I2).
+  //
+  // The corrected guard skips only on an open row from an EARLIER due date; a same-date
+  // re-claim RESUMES. Both are driven here through production code with an injected clock —
+  // no admin write to `crm.*`, no `next_due_at` forged. `now()` in `claimDue` is the injected
+  // `vnow`, because Postgres's clock cannot be moved by vitest fake timers.
+  //
+  // mutation: revert the guard to date-independent — `hasOpenFollowUpBefore`'s WHERE back to
+  //           `contact_id = $1 and closed_at is null and blocked_reason is null` with
+  //           `[contactId]` -> red. RUN ✅ 2026-08-10
   //   Observed: `Tests  1 failed | 9 passed (10)`
-  //     error: duplicate key value violates unique constraint "follow_ups_one_open"
-  //   — 016's partial unique index catches it one layer down, which is the right place for
-  //   it to be caught but not a reason to drop the application guard: the DB refusal aborts
-  //   the cycle rather than skipping one contact.
-  it("does not propose again for a contact mid-cycle, even with the clock moved back", async () => {
-    const ana = await seedContact(admin, { dueAt: overdue() });
+  //     AssertionError: expected [] to have a length of 1 but got +0
+  //   — the same-date orphan is SKIPPED instead of resumed, which is the date-independent
+  //   lifetime-lock C1 is. (A first, sloppy attempt dropped only the clause and left the
+  //   `$2` bind, reddening on "bind message supplies 2 parameters" — a wrong-reason red;
+  //   the mutation above is the honest full revert.)
+  it("resumes a same-date orphan but skips an in-flight earlier cycle", async () => {
+    let vnow = new Date(Date.now() + 60_000);
+    const now = (): Date => vnow;
+    const deps = { db: crm, postProposal: undefined as never, now };
+
+    const ana = await seedContact(admin, { dueAt: new Date().toISOString() });
     await seedNumber(admin, ana, "+639171234567");
     const door = fakeDoor();
-    await runCycle({ db: crm, postProposal: door.post }, TEST_TENANT, 10);
-    await admin.query(`update crm.contacts set next_due_at = now() - interval '30 days'`);
 
-    const [second] = await runCycle({ db: crm, postProposal: door.post }, TEST_TENANT, 10);
-    expect(second.actions).toHaveLength(0);
-    expect(second.skipped[0].reason).toMatch(/open follow-up/);
-    expect(door.posted).toHaveLength(1);
+    // Cycle 1 (day 0): opens the row for D0 and proposes. Left in-flight — NOT executed —
+    // so the row stays open and the lease anchors next_due_at at ~D0.
+    const c1 = await runCycle({ ...deps, postProposal: door.post }, TEST_TENANT, 10);
+    expect(c1[0].actions).toHaveLength(1);
+    const d0Key = c1[0].actions[0].idempotencyKey;
+
+    // Day 1: the lease has expired, the card is still pending. The re-claim's pre-update due
+    // date is still D0 (the lease value), so this cycle's due date is D0 — SAME date. The
+    // guard falls through and the orphan/in-flight row RESUMES: the door replays the same id,
+    // one follow-up row, one proposal.
+    vnow = new Date(vnow.getTime() + 24 * 3600_000);
+    const c2 = await runCycle({ ...deps, postProposal: door.post }, TEST_TENANT, 10);
+    expect(c2[0].actions).toHaveLength(1);
+    expect(c2[0].actions[0].idempotencyKey).toBe(d0Key); // same date, same key — a replay
+    expect(door.byKey.size).toBe(1);
+    const rows1 = await admin.query<{ n: string }>(
+      `select count(*) as n from crm.follow_ups where contact_id = $1`,
+      [ana],
+    );
+    expect(rows1.rows[0].n).toBe("1");
+
+    // Day 2: the card is STILL pending. Now the re-claim's pre-update due date is D1 (cycle
+    // 2's lease), so this cycle's due date is D1 while the open row is at D0 — an EARLIER
+    // in-flight cycle. The guard skips: no second card while one is genuinely pending.
+    vnow = new Date(vnow.getTime() + 24 * 3600_000);
+    const c3 = await runCycle({ ...deps, postProposal: door.post }, TEST_TENANT, 10);
+    expect(c3[0].actions).toHaveLength(0);
+    expect(c3[0].skipped[0].reason).toMatch(/earlier due date/);
   });
 });
 

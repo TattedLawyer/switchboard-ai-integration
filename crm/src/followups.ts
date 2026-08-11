@@ -24,73 +24,38 @@ export interface FollowUpRow {
 }
 
 /**
- * Open (or recover) the follow-up for a contact's due-date.
+ * Open (or recover, or resume) the follow-up for a contact's due-date, ATOMICALLY.
  *
- * Returns the row either way. If a row already exists for this `(contact, due_date)` —
- * which is what the blocked path leaves behind — its `blocked_reason` is CLEARED rather
- * than a second row attempted.
+ * 🚨 ONE STATEMENT, NOT SELECT-THEN-INSERT. The previous form was a TOCTOU: two proposers
+ * that both read "no row" then both insert turned a `23505` into an unhandled throw. The
+ * upsert form is available under the exact shipped grants — PostgreSQL 16 docs, opened:
+ * "when `ON CONFLICT DO UPDATE` is specified, you only need `UPDATE` privilege on the
+ * column(s) that are listed to be updated" (`blocked_reason` is in 016's column grant) plus
+ * SELECT on the arbiter columns (granted) — and it collapses THREE paths into one:
+ *   · a genuinely new cycle → INSERT;
+ *   · the blocked-then-unblocked recovery (B-B) → clears `blocked_reason` on the same row;
+ *   · the ORPHAN resume (crash between this open and the door POST left an actionless open
+ *     row at this same due_date) → returns the existing row so the proposer re-POSTs the
+ *     same deterministic key and the door replays.
+ *
+ * The clock is never touched here — it lives on `contacts.next_due_at`.
  */
 export async function openFollowUp(
   db: pg.Pool,
   contactId: string,
   dueDate: string,
 ): Promise<FollowUpRow> {
-  const existing = await selectForDue(db, contactId, dueDate);
-  if (existing) {
-    if (existing.blockedReason !== null) {
-      // THE RECOVERY PATH. The grant covers exactly `(closed_at, blocked_reason)`.
-      await db.query(
-        `update crm.follow_ups set blocked_reason = null where id = $1`,
-        [existing.id],
-      );
-      return { ...existing, blockedReason: null };
-    }
-    return existing;
-  }
-  const r = await db.query<{ id: string }>(
-    `insert into crm.follow_ups (contact_id, due_date) values ($1, $2) returning id`,
-    [contactId, dueDate],
-  );
-  return { id: r.rows[0].id, contactId, dueDate, blockedReason: null, closedAt: null };
-}
-
-/** Record a follow-up we cannot act on, WITHOUT touching the clock. */
-export async function blockFollowUp(
-  db: pg.Pool,
-  contactId: string,
-  dueDate: string,
-  reason: BlockedReason,
-): Promise<FollowUpRow> {
-  const existing = await selectForDue(db, contactId, dueDate);
-  if (existing) return existing;
-  const r = await db.query<{ id: string }>(
-    `insert into crm.follow_ups (contact_id, due_date, blocked_reason)
-     values ($1, $2, $3) returning id`,
-    [contactId, dueDate, reason],
-  );
-  return { id: r.rows[0].id, contactId, dueDate, blockedReason: reason, closedAt: null };
-}
-
-export async function closeFollowUp(db: pg.Pool, followUpId: string): Promise<void> {
-  await db.query(`update crm.follow_ups set closed_at = now() where id = $1`, [followUpId]);
-}
-
-async function selectForDue(
-  db: pg.Pool,
-  contactId: string,
-  dueDate: string,
-): Promise<FollowUpRow | null> {
   const r = await db.query<{
     id: string;
     due_date: string;
     blocked_reason: string | null;
     closed_at: Date | null;
   }>(
-    `select id, due_date::text as due_date, blocked_reason, closed_at
-       from crm.follow_ups where contact_id = $1 and due_date = $2::date`,
+    `insert into crm.follow_ups (contact_id, due_date) values ($1, $2::date)
+       on conflict (contact_id, due_date) do update set blocked_reason = null
+     returning id, due_date::text as due_date, blocked_reason, closed_at`,
     [contactId, dueDate],
   );
-  if (r.rowCount !== 1) return null;
   return {
     id: r.rows[0].id,
     contactId,
@@ -100,12 +65,103 @@ async function selectForDue(
   };
 }
 
-/** Is this contact already mid-cycle? Blocked rows deliberately do NOT count (B4). */
-export async function hasOpenFollowUp(db: pg.Pool, contactId: string): Promise<boolean> {
+/**
+ * Record a follow-up we cannot act on, WITHOUT touching the clock.
+ *
+ * 🚨 Minor 4: the return value must describe THIS row's real state, never assert a block
+ * that a pre-existing row does not carry. The previous form returned any existing
+ * `(contact, due_date)` row unchanged while the caller reported `blocked_reason` regardless
+ * — a lie the moment an unblocked row already existed. The upsert makes the block the row's
+ * actual state and returns it, so the reported reason and the stored reason cannot diverge.
+ */
+export async function blockFollowUp(
+  db: pg.Pool,
+  contactId: string,
+  dueDate: string,
+  reason: BlockedReason,
+): Promise<FollowUpRow> {
+  const r = await db.query<{
+    id: string;
+    due_date: string;
+    blocked_reason: string | null;
+    closed_at: Date | null;
+  }>(
+    `insert into crm.follow_ups (contact_id, due_date, blocked_reason) values ($1, $2::date, $3)
+       on conflict (contact_id, due_date)
+         do update set blocked_reason = coalesce(crm.follow_ups.blocked_reason, excluded.blocked_reason)
+     returning id, due_date::text as due_date, blocked_reason, closed_at`,
+    [contactId, dueDate, reason],
+  );
+  return {
+    id: r.rows[0].id,
+    contactId,
+    dueDate: r.rows[0].due_date,
+    blockedReason: r.rows[0].blocked_reason,
+    closedAt: r.rows[0].closed_at,
+  };
+}
+
+/**
+ * Close a follow-up by its `follow_up_id`, IDEMPOTENTLY and preserving the first close time.
+ *
+ * `where closed_at is null` makes a late sibling's close a rowcount-0 no-op rather than a
+ * timestamp rewrite. `switchboard_crm`'s `update (closed_at, blocked_reason)` grant covers
+ * it — the grant that shipped "for the recovery path (B-B)" now earns its second caller.
+ */
+export async function closeFollowUp(
+  db: pg.Pool | pg.PoolClient,
+  followUpId: string,
+  at: Date = new Date(),
+): Promise<void> {
+  await db.query(
+    `update crm.follow_ups set closed_at = $2 where id = $1 and closed_at is null`,
+    [followUpId, at.toISOString()],
+  );
+}
+
+/** Close the follow-up a touch belongs to, resolved through the shipped link
+ *  `touches.proposal_id → follow_up_actions.proposal_id → follow_up_id`. No new column.
+ *  Idempotent, and a no-op when the touch has no proposal (a direct/unit touch). */
+export async function closeFollowUpForProposal(
+  db: pg.Pool | pg.PoolClient,
+  proposalId: string,
+  at: Date = new Date(),
+): Promise<void> {
+  await db.query(
+    `update crm.follow_ups set closed_at = $2
+      where closed_at is null
+        and id in (select fa.follow_up_id from crm.follow_up_actions fa
+                    where fa.proposal_id = $1)`,
+    [proposalId, at.toISOString()],
+  );
+}
+
+/**
+ * Is this contact mid-cycle on an EARLIER due date? Blocked rows deliberately do NOT count
+ * (B4).
+ *
+ * 🚨 THE `due_date < $2` CLAUSE IS THE C1 FIX. The previous guard was per-contact and
+ * date-independent (`closed_at is null and blocked_reason is null`), so the FIRST open row
+ * silenced the contact for ever — the plan's own T9 open-guard pin ("not proposed again
+ * even with `next_due_at` moved backwards") was satisfiable by a lifetime lock, which is the
+ * failure the product exists to fix, caused by us.
+ *
+ * An open row from an earlier due date is a genuinely in-flight prior cycle (a card pending
+ * approval or execution) — skip, no second card. An open row at THIS SAME due date is either
+ * the once-per-due-date suppression the deterministic key already handles, or an orphan to
+ * resume — fall through and let `openFollowUp`'s upsert + the door's idempotent replay
+ * absorb it (Q3 of the lifecycle research).
+ */
+export async function hasOpenFollowUpBefore(
+  db: pg.Pool,
+  contactId: string,
+  dueDate: string,
+): Promise<boolean> {
   const r = await db.query<{ n: string }>(
     `select count(*) as n from crm.follow_ups
-      where contact_id = $1 and closed_at is null and blocked_reason is null`,
-    [contactId],
+      where contact_id = $1 and closed_at is null and blocked_reason is null
+        and due_date < $2::date`,
+    [contactId, dueDate],
   );
   return Number(r.rows[0].n) > 0;
 }

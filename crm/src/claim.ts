@@ -55,18 +55,26 @@ export async function claimDue(
   db: pg.Pool | pg.PoolClient,
   tenantId: string,
   limit: number,
+  now: Date = new Date(),
 ): Promise<ClaimedContact[]> {
+  // 🚨 THE CLOCK IS A PARAMETER, not `now()` in SQL. Postgres's `now()` cannot be moved by
+  // vitest fake timers — `vi.setSystemTime` is process-local and never reaches another
+  // process (opened: vitest.dev/api/vi) — so a multi-cycle test that drives this loop
+  // through PRODUCTION CODE across virtual days has to inject the clock into the predicate
+  // and the lease. Default `new Date()` keeps production behaviour identical. This also
+  // removes an existing two-clock inconsistency: `recordTouch` already wrote the app clock
+  // into `next_due_at` while this predicate compared it against the DB clock.
   const r = await db.query<{ id: string; claimed_due_at: Date }>(
-    `update crm.contacts c set next_due_at = now() + ($3 || ' minutes')::interval,
+    `update crm.contacts c set next_due_at = $4::timestamptz + ($3 || ' minutes')::interval,
                                updated_at = now()
        from (select id, next_due_at as claimed_due_at
                from crm.contacts
-              where tenant_id = $1 and active and channel <> 'none' and next_due_at <= now()
+              where tenant_id = $1 and active and channel <> 'none' and next_due_at <= $4::timestamptz
               order by next_due_at limit $2
                 for update skip locked) s
       where c.id = s.id
      returning c.id, s.claimed_due_at`,
-    [tenantId, limit, String(CLAIM_LEASE_MINUTES)],
+    [tenantId, limit, String(CLAIM_LEASE_MINUTES), now.toISOString()],
   );
   return r.rows.map((row) => ({ id: row.id, claimedDueAt: row.claimed_due_at }));
 }

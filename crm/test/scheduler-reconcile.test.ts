@@ -108,14 +108,16 @@ describe("T13: the timer never holds the process open", () => {
 });
 
 describe("T13: a crash between the claim and the proposal loses the cycle, not the lead", () => {
-  // 🚨 FINDING, REPORTED RATHER THAN PAPERED OVER. The plan's stated mutation — "move the
-  // claim after the proposal" — was RUN and DID NOT RED: `Tests 5 passed (5)`. The reason is
-  // not that the property is false; it is that this implementation protects it TWICE. The
-  // crash happens after `openFollowUp`, so on restart T9's open-guard refuses the contact
-  // before the claim is ever consulted. The stated mutation therefore cannot isolate the
-  // claim, and §4 forbids adjusting a stubborn pin to make it pass — so the mutation is
-  // recorded as non-discriminating and a SECOND, directly sensitive assertion was added
-  // instead.
+  // 🚨 FINDING, REPORTED RATHER THAN PAPERED OVER (Minor 1 — observation corrected). The
+  // plan's stated mutation — "move the claim after the proposal" — did NOT red *against this
+  // pin as first written*, because this implementation protects the property TWICE: the
+  // crash happens after `openFollowUp`, so on restart the open-guard refuses the contact
+  // before the claim is ever consulted. §4 forbids adjusting a stubborn pin to make it pass,
+  // so the mutation is recorded as non-discriminating and a SECOND, directly sensitive
+  // assertion (`claimDue()` returns nothing inside the lease, line ~152) was added instead.
+  // That second assertion DOES red under its own mutation below — a later reader re-running
+  // "move the claim after the proposal" now hits that assertion and sees a failure, which is
+  // why the wording is "against the pin as first written" rather than "did not red".
   //
   // mutation (the discriminating one): make the claim read without holding — replace the
   //           lease write with `set next_due_at = c.next_due_at` -> red. RUN ✅ 2026-08-09

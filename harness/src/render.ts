@@ -15,6 +15,12 @@ export const NO_TRANSCRIPT_NOTE =
   "no transcript is stored anywhere; this summary cannot be checked against one";
 export const IDENTITY_UNVERIFIED_LABEL =
   "IDENTITY UNVERIFIED — these answers came from this NUMBER, not from a confirmed person";
+// 🚨 Minor 2: a PERMANENTLY-FAILED transcript must not render identically to one not yet
+// attempted. On the surface built to tell her what the record IS and is NOT, "coming" and
+// "gone for ever" are the one distinction §9 says must be visible, and they were both
+// collapsing to "(not yet sent)". `transcript_delivery` carries the fact; render it.
+export const TRANSCRIPT_LOST_NOTE =
+  "TRANSCRIPT LOST — the email send failed and there is no stored copy to resend";
 
 export function escapeHtml(value: string): string {
   return value
@@ -60,6 +66,14 @@ export function renderTouch(t: TouchView): string {
         `${escapeHtml(fmtDate(t.transcriptEmailSentAt))} · ${escapeHtml(NO_TRANSCRIPT_NOTE)}</em></p>`,
     );
     parts.push(`<p>${escapeHtml(t.summary)}</p>`);
+  }
+
+  // The delivery fact, whenever a transcript was owed. `failed` is not `pending`: one is a
+  // record gone for ever, the other is a record still coming.
+  if (t.transcriptDelivery === "failed") {
+    parts.push(`<p><strong>${escapeHtml(TRANSCRIPT_LOST_NOTE)}</strong></p>`);
+  } else if (t.transcriptDelivery === "pending") {
+    parts.push(`<p><em>transcript not yet delivered</em></p>`);
   }
 
   if (t.answers.length > 0) {

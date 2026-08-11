@@ -2308,16 +2308,23 @@ tracked in review ledgers.
 
 ## Follow-up loop (core loop, Wave 1) — disclosed weaknesses
 
-- **If the transcript email fails, the transcript is gone.** No copy, no audio, no
-  reconstruct path. Surfaced as `transcript_delivery = 'failed'`.
-- **A crash between storing the summary and sending the transcript loses the verbatim
-  record.** Mitigated only into VISIBILITY, by writing `transcript_delivery = 'pending'` at
-  call start; the reconcile listing shows it. **Not recoverable.**
-- **The summary is generated, not verbatim, and there is no stored source to check it
-  against.** Its pointer to the email holding the real record is the only bridge, and that
-  pointer is un-retrofittable.
-- **The system stores conversation content** — the summary. Less sensitive than a
-  transcript, still her client's words about their circumstances.
+- 🚨 **Summary, transcript and email are NOT built in Wave 1.** T17 (summary) and T18
+  (transcript email) are Wave 2. The `crm.touches` summary column + CHECK and the
+  `transcript_delivery` status exist in migration 016, but no code writes them: every
+  completed call leaves `transcript_delivery = 'pending'` because that is the call-start
+  value and nothing moves it. The three weaknesses below describe the *designed* Wave-2
+  behaviour and are recorded now so the tradeoffs are on the record before the mechanism
+  lands — they are **not** live defects today.
+- *(Wave 2)* **If the transcript email fails, the transcript is gone.** No copy, no audio, no
+  reconstruct path. Will surface as `transcript_delivery = 'failed'`.
+- *(Wave 2)* **A crash between storing the summary and sending the transcript loses the
+  verbatim record.** Mitigated only into VISIBILITY, by the `transcript_delivery = 'pending'`
+  written at call start; the reconcile listing shows it. **Not recoverable.**
+- *(Wave 2)* **The summary will be generated, not verbatim, and there is no stored source to
+  check it against.** Its pointer to the email holding the real record is the only bridge,
+  and that pointer is un-retrofittable.
+- *(Wave 2)* **The system will store conversation content** — the summary. Less sensitive
+  than a transcript, still her client's words about their circumstances.
 - **Two contacts sharing a number are never merged, and there is no per-number cooldown.**
   Two contacts on one household line, both due the same day, can produce two calls. Accepted
   because the agent identifies itself and asks for a named person, so a second call is
@@ -2328,8 +2335,22 @@ tracked in review ledgers.
   are the contact and is not, nothing here can know. No schema fixes that.
 - **Nameless calls produce answers attributable only to a NUMBER.** Labelled
   (`identity_unverified`), never withheld, never silently mixed with verified answers.
-- **A crash between the claim and the proposal loses that follow-up cycle.** Recovered by
-  the reconcile listing and by the 15-minute claim lease, not automatically re-driven.
+- **A crash between the claim and the door POST self-heals within the claim lease.** Before
+  the follow-up row is inserted, the next claim (15 min) re-drives it. After the row is
+  inserted (the orphan), the date-aware open-guard resumes the same-date row on the next
+  cycle — so it self-heals too, through pure production code. (This was a second C1-shaped
+  hole: until the fix, a crash *after* the insert left an actionless open row that silenced
+  the contact permanently and was invisible to reconcile item 1, and the plan's
+  "self-heals in 15 minutes" was false for that window.)
+- **Rejection cadence is an OWNER DECISION, unset.** When all legs of a follow-up are
+  rejected, the row closes but `recordTouch` never runs (a rejection produces no touch), so
+  `next_due_at` sits at the claim lease-end: the scheduler re-claims the contact every 15
+  minutes until Manila midnight (same due date → same idempotency key → the door replays the
+  rejected proposal → no new card), then emits a fresh card the next day. Net mechanical
+  behaviour today: *"she said no → ask again tomorrow"*, plus a day of no-op claim/POST
+  churn. Whether next-day re-ask is what rejection should mean — and what real `next_due_at`
+  a rejection should write instead — is hers to decide (adjacent to the K-consecutive
+  question), not ours to invent. The mechanical behaviour is left in place pending her call.
 - **AMD reliability on Philippine carriers is unknown.** `unknown_answer` exists because of
   that, and it is deliberately not `answered`.
 - **`channel = 'both'` with no email address on file is under-specified by the plan.**

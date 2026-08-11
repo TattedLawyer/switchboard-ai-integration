@@ -606,13 +606,24 @@ It does **not** list numbers shared across contacts. That listing was removed de
 it invites merging, which this design never does, and a listing whose only available
 response is "do nothing" is a trap rather than information.
 
+🚨 **Wave-1 caveat on the `pending` listing.** In Wave 1 **every** completed call leaves
+`transcript_delivery = 'pending'`, because that value is written at call start and the code
+that would move it to `'sent'` / `'failed'` (T18, transcript email) is **not built**. So the
+`pending` listing is not yet a signal of anything wrong — it will become one when Wave 2
+lands. It is in the reconcile query today so the query is complete when the writer arrives,
+not because it distinguishes healthy from stuck calls yet.
+
 ### Things that do not self-heal
 
-- A touch stuck at `pending` means **a transcript was never delivered and cannot be
-  recovered.** The listing converts silent loss into visible loss; that is the entire
-  improvement available.
 - An `executing` proposal with no outcome means a call died mid-flight. There is no reaper
   and there must not be one: a timer that flips a live in-flight call to `failed` is worse
   than a stuck row.
-- A crash between the claim and the proposal costs **fifteen minutes** — the claim lease —
-  not a follow-up interval.
+- A crash between the claim and the door POST **before** the follow-up row is inserted costs
+  **fifteen minutes** — the claim lease. A crash **after** the row is inserted (the orphan)
+  leaves an actionless open row; the date-aware open-guard resumes it on the next same-date
+  cycle, so it too self-heals within the lease. (Earlier this was documented as always
+  self-healing in fifteen minutes, which was false for the after-insert window until the
+  orphan-resume fix landed.)
+- *(Wave 2, once built)* A touch stuck at `pending` will mean a transcript was never
+  delivered and cannot be recovered — the listing converting silent loss into visible loss.
+  Not yet: see the caveat above.

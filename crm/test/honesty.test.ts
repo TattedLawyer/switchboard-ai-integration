@@ -89,10 +89,15 @@ describe("T15: the summary keeps the docs honest", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("README says out loud that the summary IS conversation content", () => {
-    // Vacuity guard: the pin above passes trivially on a document that says nothing at all
-    // about the summary. This asserts the positive disclosure exists.
-    expect(flat("README.md")).toMatch(/does store conversation content/i);
+  it("README discloses that stored content IS conversation content", () => {
+    // Vacuity guard: the pin above passes trivially on a document that says nothing at all.
+    // This asserts the positive disclosure exists. In Wave 1 the STORED ANSWERS are the
+    // prospect's own words (conversation content) even though the summary is not written yet;
+    // when the summary ships it is a second such store. Either phrasing satisfies the guard,
+    // so it survives the Wave-1→Wave-2 transition without needing an edit.
+    expect(flat("README.md")).toMatch(
+      /store(s)? conversation content|the stored answers are (her|the) (client'?s|prospect'?s) (own )?words/i,
+    );
   });
 });
 
@@ -114,6 +119,70 @@ describe("T15: the CRM↔approval link is never described as an enforced foreign
 
   it("README says the opposite, explicitly", () => {
     expect(flat("README.md")).toMatch(/is not an enforced foreign key/i);
+  });
+});
+
+describe("T15 / I1: no Wave-1 doc presents an UNBUILT mechanism as operating", () => {
+  // 🚨 THE RECURRING FAILURE CLASS ON THIS PROJECT, and T15's other pins do not catch it:
+  // they test for FORBIDDEN claims (inbound calls, an enforced FK, a recoverable
+  // transcript), never for CLAIMING A MECHANISM THE CODE DOES NOT IMPLEMENT. C1's review
+  // found README describing summarisation and transcript email in the present tense while
+  // T17/T18 are Wave 2 and unbuilt.
+  //
+  // The pin is CODE-GROUNDED: it reads whether a writer exists, and only then constrains the
+  // docs. When Wave 2 lands and a writer appears, the guarded block simply stops applying —
+  // the pin never has to be "adjusted".
+  function crmSrc(): string {
+    let out = "";
+    for (const f of readdirSync(join(ROOT, "crm", "src"))) {
+      if (f.endsWith(".ts")) out += readFileSync(join(ROOT, "crm", "src", f), "utf8");
+    }
+    for (const sub of ["cli"]) {
+      for (const f of readdirSync(join(ROOT, "crm", "src", sub))) {
+        if (f.endsWith(".ts")) out += readFileSync(join(ROOT, "crm", "src", sub, f), "utf8");
+      }
+    }
+    return out;
+  }
+
+  // mutation: put the operating claim back — restore
+  //           "answers stored per question · summary stored · transcript emailed" to the
+  //           README diagram -> red. RUN ✅ 2026-08-10
+  //   Observed: `Tests  1 failed | 10 passed (11)`
+  //     AssertionError: README.md presents summary/transcript as operating while no code
+  //                     writes them: expected '…' not to match /answers stored per question
+  //                     · summary stored · transcript emailed/
+  it("does not claim summary/transcript are stored while nothing writes them", () => {
+    const src = crmSrc();
+    // Does a real Wave-2 writer exist yet? (Comments are noise but harmless here — a
+    // commented writer would only make the guard STRICTER, never falsely relax it.)
+    const transcriptWriterExists =
+      /transcript_delivery['"\s]*=\s*['"](sent|failed)/.test(src) ||
+      /send(Transcript|Email)\s*\(/.test(src);
+    const summaryWriterExists = /\bsummary_state\b\s*=/.test(src) || /set\s+summary\b/.test(src);
+
+    if (transcriptWriterExists && summaryWriterExists) return; // Wave 2 shipped; pin retires
+
+    // Wave 1: the docs must NOT present the pipeline as storing a summary or emailing a
+    // transcript as an operating fact, and MUST carry an explicit not-built marker.
+    for (const doc of PUBLISHED) {
+      expect(
+        flat(doc),
+        `${doc} presents summary/transcript as operating while no code writes them`,
+      ).not.toMatch(/answers stored per question\s*·\s*summary stored\s*·\s*transcript emailed/i);
+    }
+  });
+
+  // mutation: delete the "there is no summarisation … built" disclosure from README -> red.
+  //           RUN ✅ 2026-08-10
+  //   Observed: `Tests  1 failed | 10 passed (11)`
+  //     AssertionError: expected '…' to match /no summarisation, no transcript, and no email
+  //                     path built/
+  it("README says out loud that summarisation and transcript email are not built", () => {
+    // Vacuity guard for the pin above: the positive disclosure must exist.
+    expect(flat("README.md")).toMatch(
+      /no summarisation, no\s*transcript, and no email path built/i,
+    );
   });
 });
 

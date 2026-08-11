@@ -12,6 +12,7 @@ import {
   SUMMARY_BANNER_PREFIX,
   NO_TRANSCRIPT_NOTE,
   IDENTITY_UNVERIFIED_LABEL,
+  TRANSCRIPT_LOST_NOTE,
   type TouchView,
 } from "../src/render.js";
 
@@ -104,6 +105,23 @@ describe("T14: a summary never renders bare", () => {
     const html = renderTouch({ ...BASE, summary: null, summaryState: "failed" });
     expect(html).toContain(SUMMARY_BANNER_PREFIX);
     expect(html).toMatch(/summarising FAILED/);
+  });
+
+  // Minor 2.
+  // mutation: render `transcriptDelivery` identically for 'failed' and 'pending' — drop the
+  //           `=== "failed"` branch -> red. RUN ✅ 2026-08-10
+  //   Observed: `Tests  1 failed | 8 passed (9)`
+  //     AssertionError: expected `…` to contain TRANSCRIPT_LOST_NOTE (both collapsed to the
+  //                     pending branch, so a lost transcript rendered as merely not-yet-sent)
+  //
+  // "Coming" and "gone for ever" are the one distinction §9 says must be visible, and both
+  // were collapsing to "(not yet sent)".
+  it("distinguishes a LOST transcript from one not yet sent", () => {
+    const lost = renderTouch({ ...BASE, transcriptDelivery: "failed", transcriptEmailSentAt: null });
+    const pending = renderTouch({ ...BASE, transcriptDelivery: "pending", transcriptEmailSentAt: null });
+    expect(lost).toContain(TRANSCRIPT_LOST_NOTE);
+    expect(pending).not.toContain(TRANSCRIPT_LOST_NOTE);
+    expect(pending).toMatch(/not yet delivered/);
   });
 });
 
