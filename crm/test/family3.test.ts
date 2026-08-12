@@ -536,3 +536,57 @@ describe("Family 3 / Pin 3 — ZERO-ACTION vs IN-FLIGHT discrimination (two-side
     expect(await actionRows(c)).toHaveLength(1);
   });
 });
+
+describe("Family 3 / Pin 5 — PAYLOAD + RATIONALE byte-stability across midnight", () => {
+  // Defensive: the frozen key only dedups if the door ACCEPTS the replay, and the door
+  // compares the payload fingerprint (422 on mismatch). Nothing in the proposal may vary
+  // with the wall clock. Today it does not — the call payload carries no date, and the
+  // rationale's only date is the LAST-TOUCH date, unchanged when nothing executed between
+  // the cycles. This pin stops a future edit from quietly breaking that.
+  //
+  // 🚨 REVIEW M-2 (BINDING): compare the captured DoorProposal.payload and .rationale
+  // directly (the proposer emits a payload; the DOOR computes the hash), and the mutation
+  // must inject a `now()`/AGE-derived token. Injecting the dueDate would NOT red — the fix
+  // freezes the dueDate — so a reviewer must not "repair" this pin by switching mutations.
+  //
+  // mutation: append a now()-derived token to the call rationale in buildCallProposal
+  //           (crm/src/proposer.ts): `+ ` · clock ${Date.now()}`` -> red. RUN ✅ 2026-08-12
+  //   AssertionError: expected '…(entry 1 of 1). · clock 1786561709122' to be
+  //                   '…(entry 1 of 1). · clock 1786561709130' // Object.is equality
+  //     ❯ test/family3.test.ts:578  expect(second.rationale).toBe(first.rationale)
+  //   restored -> 11 passed.
+  //
+  // 🚨 MEASURED LIMIT OF THIS PIN, recorded because it was RUN and did NOT red rather than
+  // reasoned about. The first mutation attempted was the plan's DAY-granularity age token,
+  // `` · clock ${dueDateIn(new Date(), settings.timezone)}``: it PASSED. Both cycles execute
+  // milliseconds apart in REAL time — only the INJECTED clock crosses midnight — so a token
+  // derived from the real wall clock at day granularity is identical in both. This pin
+  // therefore catches (a) fine-grained wall-clock tokens and (b) anything derived from the
+  // cycle's own injected clock, but NOT a real-clock day/age token. Widening it would need
+  // `deps.now` threaded into buildCallProposal, which is a production change, not a pin. Do
+  // not "repair" this pin with a dueDate token either: the fix FREEZES dueDate, so that can
+  // never red (review M-2).
+  it("the two cycles emit an identical payload and rationale", async () => {
+    const { tPre, tPost } = crossMidnightClock();
+    expect(dueDateIn(tPost, TZ)).not.toBe(dueDateIn(tPre, TZ));
+
+    const c = await seedContact(admin, { dueAt: tPre.toISOString() });
+    await seedNumber(admin, c, "+639171234567");
+
+    const crash = capturingCrashDoor();
+    await expect(
+      runCycle({ db: crm, postProposal: crash.post, now: () => tPre }, TEST_TENANT, 10),
+    ).rejects.toThrow("killed at the door");
+
+    const door = fakeDoor();
+    await runCycle({ db: crm, postProposal: door.post, now: () => tPost }, TEST_TENANT, 10);
+
+    const first = crash.posted[0];
+    const second = door.posted[0];
+    expect(second).toBeDefined();
+    expect(second.rationale).toBe(first.rationale);
+    expect(second.payload).toEqual(first.payload); // deep, per M-2
+    expect(second.action_type).toBe(first.action_type);
+    expect(second.idempotency_key).toBe(first.idempotency_key);
+  });
+});
