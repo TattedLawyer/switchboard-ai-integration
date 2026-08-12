@@ -20,6 +20,7 @@ import {
   blockFollowUp,
   hasOpenFollowUpBefore,
   openFollowUp,
+  openZeroActionFollowUpDate,
   type BlockedReason,
 } from "./followups.js";
 import { renderOpening } from "./opening.js";
@@ -126,8 +127,23 @@ export async function proposeForClaimed(
 ): Promise<ContactOutcome> {
   const { db } = deps;
   const settings = await loadSettings(db, tenantId);
-  const dueDate = dueDateIn(claimed.claimedDueAt, settings.timezone);
+  const claimedDate = dueDateIn(claimed.claimedDueAt, settings.timezone);
   const contact = await loadContact(db, claimed.id);
+
+  // 🚨 FAMILY 3 — FREEZE THE KEY ACROSS MIDNIGHT BY READING IT BACK, never re-deriving it.
+  // On a RETRY, `claimedDueAt` is the 15-minute LEASE value the previous cycle wrote — which
+  // past Manila midnight lands on the NEXT date, rolls the deterministic idempotency key,
+  // and turns the date-aware guard below into a PERMANENT silence (the crash orphan at day D
+  // counts against a derived day D+1 for ever; same-day the ORPH path self-heals, cross-day
+  // it never did). The frozen date already exists on disk: `openFollowUp` committed it to
+  // `follow_ups.due_date` before the door POST. So: if the contact has an open, unblocked,
+  // ZERO-ACTION row (the orphan discriminator — a has-action row is a live prior cycle the
+  // guard must keep suppressing), adopt ITS date; the retry then re-derives the
+  // byte-identical key, the guard passes (same date, not earlier), `openFollowUp`'s upsert
+  // resumes the same row, and the door REPLAYS instead of minting a twin. Same-day this is a
+  // no-op (adopted date == claimedDate). Read-back only: no migration, no new grant.
+  const adopted = await openZeroActionFollowUpDate(db, contact.id);
+  const dueDate = adopted ?? claimedDate;
 
   // The open-guard, now date-aware (C1). A contact mid-cycle on an EARLIER due date — a card
   // still pending approval or execution — is not proposed again. An open row at THIS same

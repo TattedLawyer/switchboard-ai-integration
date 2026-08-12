@@ -179,3 +179,46 @@ describe("Family 3 / Task 1 — openZeroActionFollowUpDate discriminates the orp
     expect(await openZeroActionFollowUpDate(crm, c)).toBe("2026-08-10");
   });
 });
+
+describe("Family 3 / Pin 1 — KEY-STABILITY across Manila midnight (the direct root pin)", () => {
+  // mutation: revert the adoption — `const dueDate = adopted ?? claimedDate;` ->
+  //           `const dueDate = claimedDate;` (proposer.ts).
+  // 🚨 I-1: under this mutation the failure mode is SILENCE, not a rolled key. Cycle N+1
+  // derives day D+1, the date-aware guard counts the day-D orphan (`due_date < $2`) and
+  // returns BEFORE openFollowUp or any POST — so no second key is ever POSTed. The red is
+  // the ABSENT second POST (`expected +0 to be 1`), never `byKey.size === 2`, which is
+  // structurally impossible open-first and must not become this pin's target.
+  //
+  // mutation: `const dueDate = adopted ?? claimedDate;` -> `const dueDate = claimedDate;`
+  //   -> red. RUN ✅ 2026-08-12
+  //   AssertionError: expected [] to have a length of 1 but got +0
+  //     ❯ test/family3.test.ts:215  expect(door.posted).toHaveLength(1)
+  //   restored -> 6 passed.
+  it("the cross-midnight retry POSTs again, and the key is byte-identical", async () => {
+    const { tPre, tPost } = crossMidnightClock();
+    // The premise, asserted rather than assumed: the two cycles are on DIFFERENT Manila days.
+    expect(dueDateIn(tPost, TZ)).not.toBe(dueDateIn(tPre, TZ));
+
+    const c = await seedContact(admin, { dueAt: tPre.toISOString() });
+    await seedNumber(admin, c, "+639171234567");
+
+    // Cycle N at 23:56 Manila: the REAL claim writes the lease (tPre + 15min = 00:11 D+1),
+    // openFollowUp commits the day-D row, the door crashes after capturing the ask.
+    const crash = capturingCrashDoor();
+    await expect(
+      runCycle({ db: crm, postProposal: crash.post, now: () => tPre }, TEST_TENANT, 10),
+    ).rejects.toThrow("killed at the door");
+    expect(crash.posted).toHaveLength(1);
+    expect(crash.posted[0].idempotency_key).toBe(`followup:${c}:${dueDateIn(tPre, TZ)}:call`);
+    const orphan = await followUpRows(c);
+    expect(orphan).toHaveLength(1);
+    expect(orphan[0].blocked_reason).toBeNull();
+    expect(orphan[0].closed_at).toBeNull(); // the zero-action orphan, at day D
+
+    // Cycle N+1 at 00:20 Manila, day D+1 (the lease has expired), working door.
+    const door = fakeDoor();
+    await runCycle({ db: crm, postProposal: door.post, now: () => tPost }, TEST_TENANT, 10);
+    expect(door.posted).toHaveLength(1); // ← reds under the mutation: suppressed, no POST at all
+    expect(door.posted[0].idempotency_key).toBe(crash.posted[0].idempotency_key); // byte-identical
+  });
+});
