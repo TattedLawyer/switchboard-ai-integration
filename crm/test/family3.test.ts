@@ -222,3 +222,55 @@ describe("Family 3 / Pin 1 — KEY-STABILITY across Manila midnight (the direct 
     expect(door.posted[0].idempotency_key).toBe(crash.posted[0].idempotency_key); // byte-identical
   });
 });
+
+describe("Family 3 / Pin 4 — LEGACY-ORPHAN heal (the row that predates the fix)", () => {
+  // The orphan a PRE-DEPLOY crash left behind: a zero-action day-D row on disk, the contact's
+  // next_due_at already at the day-D+1 lease value. Nothing in this fixture writes lifecycle
+  // state — the row is opened through production `openFollowUp` and `next_due_at` is set at
+  // contact CREATION (seedContact's `dueAt`), which is input construction, not forgery.
+  //
+  // 🚨 I-1: the discriminating assertion is the HEAL — the SAME follow-up row resumed, an
+  // action recorded against it, the contact not silenced. Reverting the fix does NOT mint a
+  // twin; the guard suppresses the cycle outright.
+  //
+  // mutation: `const dueDate = adopted ?? claimedDate;` -> `const dueDate = claimedDate;`
+  //   -> red. RUN ✅ 2026-08-12
+  //   AssertionError: expected [] to have a length of 1 but got +0
+  //     ❯ test/family3.test.ts:257  expect(outcome.actions).toHaveLength(1)
+  //   restored -> 7 passed.
+  it("resumes the same row and records an action instead of silencing the contact", async () => {
+    const { tPre, tPost } = crossMidnightClock();
+    expect(dueDateIn(tPost, TZ)).not.toBe(dueDateIn(tPre, TZ));
+    const frozen = dueDateIn(tPre, TZ);
+
+    // The pre-deploy orphan: contact due at the surviving 15-minute lease value (00:11 on
+    // day D+1), plus the day-D zero-action row the crashed cycle committed.
+    const lease = new Date(tPre.getTime() + 15 * 60_000);
+    const c = await seedContact(admin, { dueAt: lease.toISOString() });
+    await seedNumber(admin, c, "+639171234567");
+    const legacy = await openFollowUp(crm, c, frozen);
+    expect(await openZeroActionFollowUpDate(crm, c)).toBe(frozen);
+
+    // One cross-midnight cycle at 00:20 on day D+1.
+    const door = fakeDoor();
+    const [outcome] = await runCycle(
+      { db: crm, postProposal: door.post, now: () => tPost },
+      TEST_TENANT,
+      10,
+    );
+
+    // THE HEAL — reds under the revert mutation (the guard returns actions: []).
+    expect(outcome.actions).toHaveLength(1);
+    expect(outcome.actions[0].followUpId).toBe(legacy.id); // the SAME row, resumed
+    expect(outcome.dueDate).toBe(frozen); // the frozen date, not the rolled one
+    expect(outcome.skipped).toHaveLength(0);
+
+    const acts = await actionRows(c);
+    expect(acts).toHaveLength(1);
+    expect(acts[0].follow_up_id).toBe(legacy.id);
+
+    // Belt-and-suspenders only (true in BOTH fixed and mutated code — never the red signal):
+    expect(await followUpRows(c)).toHaveLength(1);
+    expect(door.byKey.size).toBe(1);
+  });
+});
