@@ -37,10 +37,27 @@ import {
   blockFollowUp,
   openZeroActionFollowUpDate,
 } from "../src/followups.js";
+import { executeCall, type ApprovalSpine, type CallResult } from "../src/executor.js";
+import { payloadHash } from "../../approval/src/canonical.js";
+import { beginExecution, finishExecution } from "../../approval/src/execute.js";
+import { decide } from "../../approval/src/decide.js";
+import { placeCallPayloadSchema } from "../../approval/src/proposal.js";
 
 let admin: pg.Pool;
 let crm: pg.Pool;
+let approval: pg.Pool;
 let cleanup: () => Promise<void>;
+
+const SPINE: ApprovalSpine = {
+  beginExecution,
+  finishExecution,
+  parsePayload: (input) => {
+    const r = placeCallPayloadSchema.safeParse(input);
+    return r.success
+      ? { ok: true, value: r.data }
+      : { ok: false, problem: r.error.issues.map((i) => i.path.join(".")).join("; ") };
+  },
+};
 
 const SETTINGS = { intervalDays: 30, shortRetryDays: 3 };
 const TZ = "Asia/Manila";
@@ -95,6 +112,53 @@ function capturingCrashDoor() {
   };
 }
 
+/** The A2 door played as a REAL external actor: it persists a pending `approval.proposals`
+ *  row (owner authority, exactly as the door does) and replays the stored id for a repeated
+ *  key. Pin 2 needs the real proposal so `decide`/`executeCall` can drive it terminal. */
+function realisticDoor() {
+  const posted: DoorProposal[] = [];
+  const post = async (p: DoorProposal): Promise<{ id: string }> => {
+    posted.push(p);
+    const ins = await admin.query<{ id: string }>(
+      `insert into approval.proposals
+         (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash, expires_at)
+       values ($1, $2, $3, $4::jsonb, $5, $6, now() + interval '72 hours')
+       on conflict (tenant_id, idempotency_key) do nothing
+       returning id`,
+      [TEST_TENANT, p.idempotency_key, p.action_type, JSON.stringify(p.payload), p.rationale,
+        payloadHash(p.payload)],
+    );
+    if (ins.rowCount === 1) return { id: ins.rows[0].id };
+    const existing = await admin.query<{ id: string }>(
+      `select id from approval.proposals where tenant_id = $1 and idempotency_key = $2`,
+      [TEST_TENANT, p.idempotency_key],
+    );
+    return { id: existing.rows[0].id };
+  };
+  return { posted, post };
+}
+
+/** The OTHER half of the non-atomicity the proposer's header discloses: the door POST
+ *  SUCCEEDS and the local `follow_up_actions` write dies. A fault-injection seam at the db
+ *  boundary, the mirror of the throwing `postProposal` seam. Reads/writes are otherwise the
+ *  real `switchboard_crm` pool — nothing is stubbed out. */
+function failOnActionInsert(pool: pg.Pool): pg.Pool {
+  return new Proxy(pool, {
+    get(target, prop, receiver) {
+      if (prop === "query") {
+        return async (text: unknown, params?: unknown): Promise<unknown> => {
+          if (typeof text === "string" && text.includes("insert into crm.follow_up_actions")) {
+            throw new Error("killed after the door POST, before the local action write");
+          }
+          return (target.query as (t: unknown, p?: unknown) => Promise<unknown>)(text, params);
+        };
+      }
+      const v = Reflect.get(target, prop, receiver);
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  });
+}
+
 const followUpRows = async (
   contactId: string,
 ): Promise<Array<{ id: string; due_date: string; blocked_reason: string | null; closed_at: Date | null }>> =>
@@ -124,6 +188,11 @@ beforeAll(async () => {
   admin = db.admin;
   crm = db.crm;
   cleanup = db.cleanup;
+  const u = new URL(db.url);
+  u.username = "switchboard_approval";
+  u.password = "switchboard_approval";
+  approval = new pg.Pool({ connectionString: u.toString(), max: 4 });
+  approval.on("error", () => {});
   await seedSettings(admin, SETTINGS);
   await publishQuestionSet(admin, TEST_TENANT, [
     { key: "budget", prompt: "What budget range?", kind: "text" },
@@ -137,9 +206,14 @@ afterEach(async () => {
   await admin.query("delete from crm.follow_ups");
   await admin.query("delete from crm.phone_numbers");
   await admin.query("delete from crm.contacts");
+  await admin.query("delete from approval.executions");
+  await admin.query("delete from approval.decisions");
+  await admin.query("delete from approval.proposals");
+  await admin.query("delete from approval.users");
 });
 
 afterAll(async () => {
+  if (approval) await approval.end().catch(() => {});
   if (cleanup) await cleanup();
 });
 
@@ -272,5 +346,116 @@ describe("Family 3 / Pin 4 — LEGACY-ORPHAN heal (the row that predates the fix
     // Belt-and-suspenders only (true in BOTH fixed and mutated code — never the red signal):
     expect(await followUpRows(c)).toHaveLength(1);
     expect(door.byKey.size).toBe(1);
+  });
+});
+
+describe("Family 3 / Pin 2 — CLOSE LINKAGE across midnight (door wrote, local write died)", () => {
+  // The other half of the disclosed non-atomicity: the door POST SUCCEEDS (a real pending
+  // `approval.proposals` row, p_A, under the day-D key) and the local `follow_up_actions`
+  // insert dies. The durable residue is a zero-action day-D orphan whose proposal already
+  // exists at the door.
+  //
+  // 🚨 REVIEW M-1 + I-1 (BINDING): this pin carries NO "called-at-most-once / double-call"
+  // framing. A second call is structurally impossible in this open-first ordering — under the
+  // revert mutation the guard suppresses cycle N+1 before any POST, so no p_B is ever minted.
+  // The single discriminating property is the HEAL AND ITS LINKAGE: cycle N+1 adopts the
+  // frozen date, replays the same key, the door returns p_A's id, the action row links p_A,
+  // and executing p_A therefore CLOSES the follow-up and sets the real interval clock. Under
+  // the mutation there is no action row at all, so p_A can never close anything and
+  // `closed_at` stays null for ever.
+  //
+  // mutation: `const dueDate = adopted ?? claimedDate;` -> `const dueDate = claimedDate;`
+  //   -> red. RUN ✅ 2026-08-12
+  //   AssertionError: expected [] to have a length of 1 but got +0
+  //     ❯ test/family3.test.ts:403  expect(outcome.actions).toHaveLength(1)
+  //   restored -> 8 passed.
+  it("the healed cycle links p_A, so the executed call closes the row and sets the clock", async () => {
+    const { tPre, tPost } = crossMidnightClock();
+    expect(dueDateIn(tPost, TZ)).not.toBe(dueDateIn(tPre, TZ));
+    const frozen = dueDateIn(tPre, TZ);
+
+    const c = await seedContact(admin, { dueAt: tPre.toISOString() });
+    await seedNumber(admin, c, "+639171234567");
+
+    // Cycle N at 23:56: the door WRITES p_A; the local action insert is killed.
+    const door = realisticDoor();
+    await expect(
+      runCycle(
+        { db: failOnActionInsert(crm), postProposal: door.post, now: () => tPre },
+        TEST_TENANT,
+        10,
+      ),
+    ).rejects.toThrow("before the local action write");
+    const pA = (
+      await admin.query<{ id: string }>(
+        `select id from approval.proposals where tenant_id = $1 and idempotency_key = $2`,
+        [TEST_TENANT, `followup:${c}:${frozen}:call`],
+      )
+    ).rows[0].id;
+    expect(await actionRows(c)).toHaveLength(0); // the zero-action orphan, proposal already live
+    expect(await openZeroActionFollowUpDate(crm, c)).toBe(frozen);
+
+    // Cycle N+1 at 00:20 on day D+1, same door.
+    const [outcome] = await runCycle(
+      { db: crm, postProposal: door.post, now: () => tPost },
+      TEST_TENANT,
+      10,
+    );
+
+    // THE HEAL AND ITS LINKAGE — reds under the revert mutation (actions: [], nothing linked).
+    expect(outcome.actions).toHaveLength(1);
+    expect(outcome.actions[0].proposalId).toBe(pA); // the SAME proposal, replayed, not a twin
+    const acts = await actionRows(c);
+    expect(acts).toHaveLength(1);
+    expect(acts[0].proposal_id).toBe(pA);
+
+    // Her approval, then the production executed path — which is what closes the row.
+    const approver = (
+      await admin.query<{ id: string }>(
+        `insert into approval.users (email) values ($1) returning id`,
+        [`broker-${randomUUID()}@example.com`],
+      )
+    ).rows[0].id;
+    await decide(approval, { proposalId: pA, kind: "approved", approverUserId: approver });
+    const answered: CallResult = {
+      transport: { sipStatus: 200, amdResult: "human" },
+      conversation: "identity_confirmed_complete",
+    };
+    await executeCall(
+      {
+        approvalDb: approval,
+        crmDb: crm,
+        spine: SPINE,
+        window: { windowStart: "00:00:00", windowEnd: "23:59:00", timezone: TZ },
+        intervals: { defaultIntervalDays: SETTINGS.intervalDays, shortRetryDays: SETTINGS.shortRetryDays },
+        now: () => tPost,
+        placeCall: async (ctx) => {
+          for (const [i, p] of ctx.prompts.entries()) await ctx.answer(p.id, `a${i}`);
+          return answered;
+        },
+      },
+      pA,
+    );
+
+    // Closed THROUGH the executed proposal, and the clock is `recordTouch`'s interval — never
+    // the close-pass's start-of-tomorrow re-propose value.
+    const rows = await followUpRows(c);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].closed_at).not.toBeNull();
+    const nextDue = (
+      await admin.query<{ next_due_at: Date | null }>(
+        `select next_due_at from crm.contacts where id = $1`,
+        [c],
+      )
+    ).rows[0].next_due_at;
+    expect(nextDue).not.toBeNull();
+    expect(nextDue!.getTime() - tPost.getTime()).toBeGreaterThan(20 * 86_400_000);
+
+    // Belt-and-suspenders only (true under BOTH the fix and the mutation — never the red):
+    const proposals = await admin.query<{ n: string }>(
+      `select count(*) as n from approval.proposals where tenant_id = $1`,
+      [TEST_TENANT],
+    );
+    expect(Number(proposals.rows[0].n)).toBe(1);
   });
 });
