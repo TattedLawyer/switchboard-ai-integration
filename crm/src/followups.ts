@@ -142,6 +142,42 @@ export async function closeFollowUpForProposal(
 }
 
 /**
+ * Family 3 — the CROSS-MIDNIGHT orphan discriminator: the `due_date` of this contact's
+ * open, unblocked, ZERO-ACTION follow-up row, or null.
+ *
+ * 🚨 THE KEY'S DATE MUST BE READ BACK, NOT RE-DERIVED. The door idempotency key is
+ * deterministic on `dueDate`, and on a RETRY `claimedDueAt` is the 15-minute LEASE value —
+ * which past Manila midnight lands on the NEXT date, rolls the key, and turns the
+ * date-aware guard below into a permanent silence (the orphan at day D counts against a
+ * derived day D+1 for ever). The frozen date the key needs already exists on disk:
+ * `openFollowUp` wrote it before the door POST. Adopting it makes the retry re-derive the
+ * byte-identical key, so the door replays instead of minting a twin.
+ *
+ * The `NOT EXISTS` zero-action filter is the whole safety of the adoption: a row WITH an
+ * action is a genuinely in-flight prior cycle — exactly what `hasOpenFollowUpBefore`
+ * exists to suppress — and adopting ITS date would re-serve a live (or declined) card.
+ * Blocked rows are a separate, surfaced state and are never adopted. `follow_ups_one_open`
+ * (016) guarantees ≤1 candidate; `limit 1` is belt-and-braces, not a hidden choice.
+ */
+export async function openZeroActionFollowUpDate(
+  db: pg.Pool,
+  contactId: string,
+): Promise<string | null> {
+  const r = await db.query<{ due_date: string }>(
+    `select f.due_date::text as due_date
+       from crm.follow_ups f
+      where f.contact_id = $1
+        and f.closed_at is null
+        and f.blocked_reason is null
+        and not exists (select 1 from crm.follow_up_actions fa
+                         where fa.follow_up_id = f.id)
+      limit 1`,
+    [contactId],
+  );
+  return r.rowCount === 1 ? r.rows[0].due_date : null;
+}
+
+/**
  * Is this contact mid-cycle on an EARLIER due date? Blocked rows deliberately do NOT count
  * (B4).
  *
