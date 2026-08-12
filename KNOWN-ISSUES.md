@@ -2369,6 +2369,25 @@ tracked in review ledgers.
   on `blockedFollowUps`, excluded from the open-guard, and recover via the shipped upsert when
   the data arrives, so such a contact is never silenced. The earlier bug — three recurrences
   of the same class — was that the row opened before we knew there was work.
+- **The CROSS-MIDNIGHT crash orphan is healed by freezing the door key (Family 3).** The
+  door's idempotency key is `followup:{contact}:{dueDate}:{channel}`, and `dueDate` used to be
+  derived from the claim's returned `next_due_at` — which on a RETRY is the 15-minute LEASE
+  value. A cycle crashing after the follow-up row is opened but at/before the door POST at,
+  say, 23:56 Manila therefore re-derived the NEXT day's date on retry, rolling the key while
+  the date-aware guard counted the day-D orphan and suppressed the contact **permanently**.
+  (Same Manila day this always self-healed; across midnight it never did.) The proposer now
+  reads the frozen date back off the contact's open, unblocked, **zero-action** follow-up row
+  and adopts it, so the retry re-derives the byte-identical key and the door replays. A row
+  that already HAS an action is a live prior cycle and is never adopted — the guard keeps
+  suppressing it — and blocked rows are never adopted either. No migration and no new grant:
+  the date was already on disk.
+- **Disclosed minor (verified INERT, and pre-existing): a `both`-channel contact that crashes
+  mid-cycle across midnight is suppressed rather than re-driving its EMAIL leg.** Once the
+  call leg has recorded its action the row is has-action, so the cross-midnight adoption above
+  correctly declines to adopt it. This silences nobody today: **no email executor exists**, the
+  call leg carries the follow-up, and the row closes when the call leg resolves. It is
+  independent of the Family 3 fix and predates it. Per-leg completion tracking is deferred
+  until the email executor ships.
 - **Disclosed minor: a contact blocked across MULTIPLE Manila days accretes one blocked row
   per day.** Same-day re-blocks are idempotent (one row), but after the lease crosses midnight
   the claimed due-date advances and a new date's blocked row is written while the prior day's
