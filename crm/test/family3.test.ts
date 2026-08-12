@@ -459,3 +459,80 @@ describe("Family 3 / Pin 2 — CLOSE LINKAGE across midnight (door wrote, local 
     expect(Number(proposals.rows[0].n)).toBe(1);
   });
 });
+
+describe("Family 3 / Pin 3 — ZERO-ACTION vs IN-FLIGHT discrimination (two-sided)", () => {
+  // The NOT EXISTS filter is the whole safety of the fix. Both sides are pinned, each with
+  // its own mutation ON THE PREDICATE (`followups.ts`), not on the adoption line — Pin 1/2/4
+  // already cover reverting adoption. Widening the predicate re-serves a live card; inverting
+  // it strands the orphan. Neither failure is a double call.
+
+  // mutation: drop the zero-action filter — delete the `and not exists (...)` clause from
+  //           openZeroActionFollowUpDate (crm/src/followups.ts:172-173) -> red. RUN ✅ 2026-08-12
+  //   AssertionError: expected [ { channel: 'call', …(5) } ] to have a length of +0 but got 1
+  //     ❯ test/family3.test.ts:501  expect(outcome.actions).toHaveLength(0)
+  //   The in-flight row's date is adopted, the guard falls through, and the card she is
+  //   still holding is re-served. restored -> 10 passed.
+  it("an IN-FLIGHT (has-action) earlier row stays suppressed across midnight", async () => {
+    const { tPre, tPost } = crossMidnightClock();
+    expect(dueDateIn(tPost, TZ)).not.toBe(dueDateIn(tPre, TZ));
+
+    const c = await seedContact(admin, { dueAt: tPre.toISOString() });
+    await seedNumber(admin, c, "+639171234567");
+
+    // Cycle N: a NORMAL, complete cycle at 23:56 — the row is open WITH its call action, a
+    // live card awaiting her decision.
+    const door = fakeDoor();
+    const [first] = await runCycle(
+      { db: crm, postProposal: door.post, now: () => tPre },
+      TEST_TENANT,
+      10,
+    );
+    expect(first.actions).toHaveLength(1);
+    // (the predicate itself is unit-pinned in the Task 1 block; asserting it here too would
+    // short-circuit the widening mutation before it could reach the BEHAVIOUR below, which is
+    // what this pin is actually for.)
+
+    // Cycle N+1 across midnight: the guard must still suppress it.
+    const [outcome] = await runCycle(
+      { db: crm, postProposal: door.post, now: () => tPost },
+      TEST_TENANT,
+      10,
+    );
+    expect(outcome.actions).toHaveLength(0); // ← the red under the widening mutation
+    expect(outcome.skipped).toHaveLength(1);
+    expect(outcome.skipped[0].reason).toMatch(/earlier due date/);
+    expect(await actionRows(c)).toHaveLength(1); // no second action row
+    expect(door.byKey.size).toBe(1);
+  });
+
+  // mutation: invert the filter to require an action — `not exists` -> `exists`
+  //           (crm/src/followups.ts:172) -> red. RUN ✅ 2026-08-12
+  //   AssertionError: expected [] to have a length of 1 but got +0
+  //     ❯ test/family3.test.ts:534  expect(outcome.actions).toHaveLength(1)
+  //   The orphan is never adopted, so hasOpenFollowUpBefore(day D+1) suppresses it for ever
+  //   — the permanent silence this family exists to kill. restored -> 10 passed.
+  it("the reciprocal: a ZERO-ACTION orphan IS adopted and healed", async () => {
+    const { tPre, tPost } = crossMidnightClock();
+    const frozen = dueDateIn(tPre, TZ);
+
+    const c = await seedContact(admin, { dueAt: tPre.toISOString() });
+    await seedNumber(admin, c, "+639171234567");
+
+    const crash = capturingCrashDoor();
+    await expect(
+      runCycle({ db: crm, postProposal: crash.post, now: () => tPre }, TEST_TENANT, 10),
+    ).rejects.toThrow("killed at the door");
+    // (predicate unit-pinned in the Task 1 block — asserting it here would short-circuit the
+    // inverting mutation before it reached the BEHAVIOUR this pin exists to guard.)
+
+    const door = fakeDoor();
+    const [outcome] = await runCycle(
+      { db: crm, postProposal: door.post, now: () => tPost },
+      TEST_TENANT,
+      10,
+    );
+    expect(outcome.actions).toHaveLength(1); // ← the red under the inverting mutation
+    expect(outcome.dueDate).toBe(frozen);
+    expect(await actionRows(c)).toHaveLength(1);
+  });
+});
