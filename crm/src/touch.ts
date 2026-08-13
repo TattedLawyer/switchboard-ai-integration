@@ -64,12 +64,23 @@ export interface StartTouchInput {
   questionSetId?: string | null;
 }
 
-/** Inserted at call start: `pending` delivery, NULL disposition. */
+/** Inserted at call start: `pending` delivery, NULL disposition.
+ *
+ *  🚨 AN EMAIL TOUCH IS BORN WITH `transcript_delivery` NULL, and the value is DERIVED FROM
+ *  THE CHANNEL rather than supplied by the caller. `'pending'` means "a transcript exists
+ *  and has not been sent yet", and T13's reconcile lists it as UNRECOVERABLE LOSS. An email
+ *  has no transcript, so `'pending'` on an email touch would be a permanent false alarm in
+ *  the one report whose entire value is that it fires only on real loss.
+ *
+ *  DERIVED, NOT AN OPTION (deliberate): an option is a thing a future caller can forget; a
+ *  derivation cannot be. There is no third channel to be wrong about — `016:193` permits
+ *  exactly `('call','email')`. */
 export async function beginTouch(db: pg.Pool, input: StartTouchInput): Promise<string> {
+  const transcriptDelivery = input.channel === "email" ? null : "pending";
   const r = await db.query<{ id: string }>(
     `insert into crm.touches
        (contact_id, channel, proposal_id, phone_number_id, question_set_id, transcript_delivery)
-     values ($1, $2, $3, $4, $5, 'pending')
+     values ($1, $2, $3, $4, $5, $6)
      returning id`,
     [
       input.contactId,
@@ -77,6 +88,7 @@ export async function beginTouch(db: pg.Pool, input: StartTouchInput): Promise<s
       input.proposalId ?? null,
       input.phoneNumberId ?? null,
       input.questionSetId ?? null,
+      transcriptDelivery,
     ],
   );
   return r.rows[0].id;

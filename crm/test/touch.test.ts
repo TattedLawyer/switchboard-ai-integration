@@ -245,3 +245,40 @@ describe("Email spike: 'sent' earns the long interval", () => {
     expect(daysFromNow(await dueAt(ana))).toBe(7);
   });
 });
+
+// ── Email spike / Task 3 ─────────────────────────────────────────────────────────────
+describe("Email spike: an email touch is born with no transcript to deliver", () => {
+  const delivery = async (touchId: string): Promise<string | null> => {
+    const r = await admin.query<{ transcript_delivery: string | null }>(
+      `select transcript_delivery from crm.touches where id = $1`,
+      [touchId],
+    );
+    return r.rows[0].transcript_delivery;
+  };
+
+  // mutation: revert `beginTouch` to the `'pending'` literal -> red. RUN ✅ 2026-08-12
+  //   Observed: `Tests  1 failed | 12 passed (13)`
+  //     AssertionError: expected 'pending' to be null
+  //
+  // 'pending' means "a transcript exists and has not been sent yet", and T13's reconcile
+  // lists it as UNRECOVERABLE LOSS. An email has no transcript, so 'pending' on an email
+  // touch is a permanent false alarm in the one report whose value is that it only fires
+  // on real loss.
+  it("leaves transcript_delivery NULL for an email touch", async () => {
+    const ana = await seedContact(admin, { channel: "email", email: "ana@example.com" });
+    const t = await beginTouch(crm, { contactId: ana, channel: "email" });
+    expect(await delivery(t)).toBeNull();
+  });
+
+  // mutation: invert the ternary -> red. RUN ✅ 2026-08-12
+  //   Observed: `Tests  3 failed | 10 passed (13)`
+  //     AssertionError: expected null to be 'pending'   (this pin — the call path lost it)
+  //     AssertionError: expected 'pending' to be null   (the email pin above)
+  //     AssertionError: expected null to be 'pending'   (T5's shipped call-start pin)
+  //   The call path is NOT disturbed, and this is the pin that says so.
+  it("still writes 'pending' for a call touch", async () => {
+    const ana = await seedContact(admin);
+    const t = await beginTouch(crm, { contactId: ana, channel: "call" });
+    expect(await delivery(t)).toBe("pending");
+  });
+});
