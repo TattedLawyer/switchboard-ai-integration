@@ -56,7 +56,7 @@ describe("Task 5: the follow-up email recipient must look like an address", () =
   //   i.e. `.trim()` ACCEPTS " ana@example.com" and returns "ana@example.com" — the sent
   //   address would differ from the stored, hashed and rendered one. Measured, not reasoned.
   it("returns the recipient byte-for-byte as approved, never normalised", () => {
-    for (const to of ["ana@example.com", "Ana.Reyes@Example.COM", "a+tag@example.co.uk"]) {
+    for (const to of ["ana@example.com", "Ana.Reyes@Example.COM", "a+tag@mail.example.com"]) {
       const r = parse({ to });
       expect(r.success, `${to} should parse`).toBe(true);
       if (r.success) expect(r.data.to).toBe(to);
