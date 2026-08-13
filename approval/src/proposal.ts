@@ -118,12 +118,30 @@ export const placeCallPayloadSchema = z
 
 export type PlaceCallPayload = z.infer<typeof placeCallPayloadSchema>;
 
-/** The follow-up email. Execution is blocked on C5; the PROPOSAL path ships now so the
- *  schema is right when the sender lands. Single message only — no sequences (owner). */
+/** The follow-up email. Single message only — no sequences (owner).
+ *
+ *  🚨 EVERY RULE HERE IS A CHECK. NOTHING TRANSFORMS. No `.trim()`, no `.toLowerCase()`,
+ *  no `.transform()`, no coercion — here or anywhere else on the send path. `parsePayload`
+ *  must return the recipient that is STORED in `approval.proposals.payload`, COVERED by
+ *  `payload_hash`, and RENDERED on the card the human approved. One character of divergence
+ *  dissolves that identity silently: a trailing space renders visibly on the card and
+ *  vanishes in the envelope, and the approved-equals-sent property — which the whole
+ *  approval design rests on — becomes unfalsifiable.
+ *
+ *  This would be the first schema in the repo to mutate an approved payload on its way to a
+ *  side effect. Refusing is recoverable; normalising is not. So whitespace is REFUSED, not
+ *  stripped, and the comma refusal closes the multi-recipient string that `.email()` alone
+ *  would let through in some forms. */
 export const followUpEmailPayloadSchema = z
   .object({
     contact_id: z.string().uuid(),
-    to: z.string().min(1),
+    to: z
+      .string()
+      .min(3)
+      .max(254)
+      .email()
+      .refine((v) => !v.includes(","), { message: "one recipient only" })
+      .refine((v) => v === v.trim(), { message: "leading/trailing whitespace" }),
     subject: z.string().min(1),
     body: z.string().min(1),
   })
