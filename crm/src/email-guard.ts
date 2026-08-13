@@ -14,6 +14,47 @@
 // `approval/src/proposal.ts`'s `followUpEmailPayloadSchema` for the other half of that
 // property.
 
+/** The one place the allowlist string becomes a list.
+ *
+ *  🚨 A MALFORMED ENTRY THROWS. A typo must be a STARTUP FAILURE, never a silently-shortened
+ *  list: a silently-shortened list is a fail-closed guard quietly refusing the one address
+ *  the operator meant to permit, and the operator's next move is to widen the config until
+ *  something finally sends. Loud beats subtle here.
+ *
+ *  Unset, empty and whitespace-only all yield `[]` — which `checkSendable` refuses
+ *  everything against. That is the intended reading of "no allowlist configured".
+ *
+ *  Called at the CLI edge only. `process.env` is never read inside this module or inside the
+ *  executor; the resulting list is passed in as an argument. */
+export function parseAllowlist(raw: string | undefined): string[] {
+  if (raw === undefined) return [];
+  if (raw.trim().length === 0) return [];
+
+  const out: string[] = [];
+  for (const part of raw.split(",")) {
+    const entry = part.trim().toLowerCase();
+    if (entry.length === 0) {
+      // An empty ELEMENT is a typo ("a@x,,b@x" — somebody deleted an entry badly), not an
+      // absence. Refused, not dropped.
+      throw new Error(
+        `SWITCHBOARD_EMAIL_ALLOWLIST has an empty entry: ${JSON.stringify(raw)}`,
+      );
+    }
+    if (!ALLOWLIST_ENTRY.test(entry)) {
+      throw new Error(
+        `SWITCHBOARD_EMAIL_ALLOWLIST entry is not an address: ${JSON.stringify(part)}`,
+      );
+    }
+    if (!out.includes(entry)) out.push(entry);
+  }
+  return out;
+}
+
+/** Deliberately stricter and simpler than RFC 5322: one `@`, no whitespace, a dotted
+ *  domain. Refusing more than strictly necessary is the correct trade here — a refusal is
+ *  recoverable, a wrongly-addressed sent email is not. */
+const ALLOWLIST_ENTRY = /^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/;
+
 export interface SendableCandidate {
   to?: unknown;
   subject?: unknown;

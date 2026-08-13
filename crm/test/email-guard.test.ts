@@ -8,7 +8,7 @@
 // The failure mode of a misconfigured allowlist must be "nothing was sent", never "it was
 // sent to whoever was in the payload".
 import { describe, it, expect } from "vitest";
-import { checkSendable } from "../src/email-guard.js";
+import { checkSendable, parseAllowlist } from "../src/email-guard.js";
 
 const ALLOW = ["ana@example.com"];
 const ok = {
@@ -139,5 +139,67 @@ describe("Task 6: checkSendable refuses what is not fit to send", () => {
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.reason).toMatch(re);
     }
+  });
+});
+
+// ── Email spike / Task 7 ─────────────────────────────────────────────────────────────
+// 🚨 A MALFORMED ENTRY THROWS AT PARSE TIME. A typo in the allowlist must be a STARTUP
+// FAILURE, not a silently-shortened list — because a silently-shortened list is a
+// fail-closed guard quietly refusing the one address the operator meant to permit, and the
+// operator's next move is to widen it until something sends.
+describe("Task 7: the allowlist is parsed, normalised, and fails loudly", () => {
+  it("splits and normalises a well-formed list", () => {
+    expect(parseAllowlist("a@example.com, B@Example.COM")).toEqual([
+      "a@example.com",
+      "b@example.com",
+    ]);
+  });
+
+  // mutation: drop a malformed entry instead of throwing -> red. RUN ✅ 2026-08-12
+  //   Observed: `Tests  3 failed | 28 passed (31)` — all three throw cases.
+  it.each([
+    ["a bare word", "not-an-address"],
+    ["a typo among good entries", "a@example.com, b@@example.com"],
+    ["an entry with a space", "a@example.com, b c@example.com"],
+  ])("throws on %s", (_label, raw) => {
+    expect(() => parseAllowlist(raw)).toThrow(/SWITCHBOARD_EMAIL_ALLOWLIST/);
+  });
+
+  // [rev 2 M2] All three were unspecified in rev 1. None is dangerous today — an empty
+  // string can never equal a `.email()`-valid address — but "unspecified" is exactly how a
+  // fail-closed guard later acquires a permissive branch.
+  it("treats unset as an empty list (which Task 6 makes refuse everything)", () => {
+    expect(parseAllowlist(undefined)).toEqual([]);
+  });
+
+  it("treats an empty string as an empty list", () => {
+    expect(parseAllowlist("")).toEqual([]);
+  });
+
+  it("treats a whitespace-only string as an empty list", () => {
+    expect(parseAllowlist("   ")).toEqual([]);
+  });
+
+  // An empty ELEMENT is a typo, not an absence: `"a@x,,b@x"` means somebody deleted an
+  // entry badly. It throws rather than being silently dropped.
+  // mutation: `continue` past the empty element instead of throwing -> red.
+  //           RUN ✅ 2026-08-12
+  //   Observed: `Tests  1 failed | 30 passed (31)`
+  it("throws on an empty element rather than silently dropping it", () => {
+    expect(() => parseAllowlist("a@example.com,,b@example.com")).toThrow(
+      /SWITCHBOARD_EMAIL_ALLOWLIST/,
+    );
+  });
+
+  it("collapses duplicates that differ only in case", () => {
+    expect(parseAllowlist("a@example.com,A@EXAMPLE.COM")).toEqual(["a@example.com"]);
+  });
+
+  // The whole point: what comes out of the parser is what Task 6 fails closed on.
+  it("hands Task 6 a list that refuses an off-list recipient", () => {
+    const allow = parseAllowlist("ana@example.com");
+    expect(checkSendable(ok, allow).ok).toBe(true);
+    expect(checkSendable({ ...ok, to: "stranger@example.com" }, allow).ok).toBe(false);
+    expect(checkSendable(ok, parseAllowlist(undefined)).ok).toBe(false);
   });
 });
