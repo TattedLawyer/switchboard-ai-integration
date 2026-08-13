@@ -12,7 +12,10 @@
     "contact-add": "tsx src/cli/crm-contact-add.ts",
     "number-add": "tsx src/cli/crm-number-add.ts",
     "questions-edit": "tsx src/cli/crm-questions-edit.ts",
+    "start": "tsx src/main.ts",
+    "run-cycle": "tsx src/cli/crm-run-cycle.ts",
     "reconcile": "tsx src/cli/crm-reconcile.ts",
+    "reconcile-loop": "tsx src/cli/crm-reconcile-loop.ts",
     "contact-reactivate": "tsx src/cli/crm-contact-reactivate.ts"
   },
   "dependencies": {

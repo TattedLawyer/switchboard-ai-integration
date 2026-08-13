@@ -20,9 +20,24 @@ export const CYCLE_INTERVAL_MS = 60_000;
  *  burst of cards nobody can triage — the same reasoning as A2's pending cap. */
 export const CYCLE_BATCH = 25;
 
+/**
+ * 🚨 `keepAlive` EXISTS BECAUSE THE UNREF IS ONLY CORRECT FOR AN EMBEDDED CALLER.
+ *
+ * MEASURED on node v24.2.0, not reasoned: a process whose only work is this unref'd timer
+ * exits in **0.056s having fired zero ticks**. Adding a `pg.Pool` does not save it — an
+ * unqueried pool is lazy and holds nothing (0.101s), and a pool that HAS queried holds the
+ * process for exactly `idleTimeoutMillis` (10.1s) and then exits, still without a tick.
+ *
+ * The unref is right when the scheduler is a passenger in a process kept alive by something
+ * else — `approval/src/main.ts` survives on `app.listen`'s ref'd handle, which is why
+ * `expiry.ts` can unref safely. A DAEMON whose entire purpose is this loop has no such
+ * handle, and signal handlers do not hold the event loop open either. So the caller declares
+ * which of the two it is. Default `false` keeps every existing caller byte-identical.
+ */
 export function startScheduler(
   runOnce: () => Promise<unknown>,
   intervalMs: number = CYCLE_INTERVAL_MS,
+  keepAlive = false,
 ): () => void {
   const timer = setInterval(() => {
     void runOnce().catch((err) => {
@@ -33,6 +48,6 @@ export function startScheduler(
       console.error("[crm] follow-up cycle failed (the next tick retries):", err);
     });
   }, intervalMs);
-  timer.unref?.();
+  if (!keepAlive) timer.unref?.();
   return () => clearInterval(timer);
 }
