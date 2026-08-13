@@ -15,8 +15,9 @@ import {
   TEST_TENANT,
 } from "./helpers/crmdb.js";
 import { publishQuestionSet } from "../src/questions.js";
+import { beginTouch } from "../src/touch.js";
 import { startScheduler } from "../src/scheduler.js";
-import { reconcile } from "../src/reconcile.js";
+import { reconcile, formatReconcile } from "../src/reconcile.js";
 import { runCycle, type DoorProposal } from "../src/proposer.js";
 import { claimDue } from "../src/claim.js";
 import { payloadHash } from "../../approval/src/canonical.js";
@@ -266,5 +267,43 @@ describe("T13: reconcile lists exactly the four things", () => {
       "transcriptsStuckPending",
     ]);
     expect(JSON.stringify(r)).not.toContain("+639171234567");
+  });
+});
+
+// ── Email spike / Task 4 ─────────────────────────────────────────────────────────────
+describe("Email spike: reconcile stays silent about email touches", () => {
+  // mutation: revert Task 3's ternary in `beginTouch` to the `'pending'` literal -> red.
+  //           RUN ✅ 2026-08-12
+  //   Observed: `Tests  1 failed | 5 passed (6)`
+  //     AssertionError: expected [ …(2) ] to not include
+  //                     '672ed9cf-6bbb-4c33-bc3c-2a609c04d111'
+  //   i.e. the email touch appeared in the stuck-transcript list beside the call touch.
+  //
+  // This pin lands AFTER Task 3, so it is green on arrival and its red is never observed in
+  // sequence. That is exactly why the revert-mutation below was RUN rather than reasoned: a
+  // pin whose red was never observed is not a pin.
+  //
+  // What it protects: an email has no transcript, so an email touch listed as a stuck
+  // transcript is a permanent false entry in a report that tells the operator, in those
+  // words, that something "CANNOT be recovered". A report that cries wolf on every email is
+  // a report she stops reading, and it is the only place real transcript loss ever surfaces.
+  it("does not list an email touch as a stuck transcript", async () => {
+    const ana = await seedContact(admin, { channel: "email", email: "ana@example.com" });
+    const emailTouch = await beginTouch(crm, { contactId: ana, channel: "email" });
+    // A CALL touch of the same age, as the positive control: the report is working.
+    const callTouch = await beginTouch(crm, { contactId: ana, channel: "call" });
+    await admin.query(
+      `update crm.touches set occurred_at = now() - interval '2 hours' where id = any($1)`,
+      [[emailTouch, callTouch]],
+    );
+
+    const report = await reconcile(admin, { pendingGraceMinutes: 30 });
+    const ids = report.transcriptsStuckPending.map((t) => t.touchId);
+    expect(ids).not.toContain(emailTouch);
+    expect(ids).toContain(callTouch); // vacuity guard: the report DID run and DOES fire
+
+    const text = formatReconcile(report);
+    expect(text).not.toContain(emailTouch);
+    expect(text).toContain(callTouch);
   });
 });
