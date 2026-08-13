@@ -30,12 +30,25 @@ export const DISPOSITIONS = [
   "busy",
   "declined",
   "failed",
+  // 🚨 EMAIL ONLY, AND IT MEANS SUBMISSION ACCEPTED BY THE RELAY — NOT DELIVERED. The nine
+  // above are call outcomes; `resolveDisposition` cannot produce this one. Delivery is
+  // knowable only from a bounce feed this system does not poll, so no repo document may
+  // describe `'sent'` as delivery.
+  "sent",
 ] as const;
 export type Disposition = (typeof DISPOSITIONS)[number];
 
-/** The ONLY disposition that earns the long interval. Everything else is a short retry —
- *  including `partial`, because a call cut off mid-questionnaire has more to ask. */
-export const LONG_INTERVAL_DISPOSITIONS: ReadonlySet<Disposition> = new Set(["answered"]);
+/** The dispositions that earn the long interval. Everything else is a short retry —
+ *  including `partial`, because a call cut off mid-questionnaire has more to ask.
+ *
+ *  `'sent'` is here because a submitted email IS the cycle's contact: there is nothing to
+ *  retry in three days. Its call-side counterpart `'answered'` means the questionnaire
+ *  progressed; `'sent'` claims strictly less — the relay accepted the message — and that is
+ *  the most this system can honestly know. */
+export const LONG_INTERVAL_DISPOSITIONS: ReadonlySet<Disposition> = new Set([
+  "answered",
+  "sent",
+]);
 
 /** `wrong_person` is the only disposition that moves the dial rotation, and it must: the
  *  next cycle re-dialling the same line reaches the same spouse. */

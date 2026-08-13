@@ -209,3 +209,39 @@ describe("T5: the row exists from call start, with a NULL disposition", () => {
     void TEST_TENANT;
   });
 });
+
+// ── Email spike / Task 2 ─────────────────────────────────────────────────────────────
+describe("Email spike: 'sent' earns the long interval", () => {
+  // mutation: remove `"sent"` from LONG_INTERVAL_DISPOSITIONS -> red. RUN ✅ 2026-08-12
+  //   Observed: `Tests  2 failed | 9 passed (11)`
+  //     AssertionError: expected 3 to be 30   (tenant default)
+  //     AssertionError: expected 3 to be 7    (per-contact override)
+  //   i.e. a submitted email fell back to the three-day short retry — the contact emailed
+  //   today and emailed again on Friday.
+  //
+  // 🚨 THE ASSERTION IS ON THE INTERVAL AND THE PERSISTED DATE, not on `advancedClock`.
+  // A pin asserting only `advancedClock === true` stays GREEN under that mutation — the
+  // short-retry branch also advances the clock. `next_due_at` is read back from the
+  // database; nothing here writes it.
+  it("advances a submitted email by the long interval, persisted", async () => {
+    const ana = await seedContact(admin, { channel: "email", email: "ana@example.com" });
+    const t = await beginTouch(crm, { contactId: ana, channel: "email" });
+    const recorded = await recordTouch(crm, t, { disposition: "sent" }, SETTINGS);
+
+    expect(recorded.intervalDaysUsed).toBe(SETTINGS.defaultIntervalDays);
+    expect(daysFromNow(await dueAt(ana))).toBe(SETTINGS.defaultIntervalDays);
+  });
+
+  it("honours a per-contact override for a submitted email too", async () => {
+    const ana = await seedContact(admin, {
+      channel: "email",
+      email: "ana@example.com",
+      intervalDays: 7,
+    });
+    const t = await beginTouch(crm, { contactId: ana, channel: "email" });
+    const recorded = await recordTouch(crm, t, { disposition: "sent" }, SETTINGS);
+
+    expect(recorded.intervalDaysUsed).toBe(7);
+    expect(daysFromNow(await dueAt(ana))).toBe(7);
+  });
+});
