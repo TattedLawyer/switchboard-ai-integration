@@ -14,6 +14,7 @@ import express from "express";
 import { timingSafeEqual } from "node:crypto";
 import type pg from "pg";
 import { parseProposal } from "./proposal.js";
+import { registerHumanRoutes } from "./human.js";
 import {
   IDEMPOTENCY_FINGERPRINT_FIELDS,
   idempotencyFingerprint,
@@ -35,6 +36,11 @@ export interface ApprovalAppOptions {
   tenantId: string;
   proposalToken: string;
   pendingCap: number;
+  /** First Drive — the human decision surface, OPT-IN. Absent, `/queue` and `/decide` are
+   *  not registered at all, so a deployment that does not set it is byte-identical to the
+   *  agent-only door that shipped. See `human.ts` for the conditions under which the
+   *  unauthenticated surface is acceptable. */
+  operatorUserId?: string;
 }
 
 /** Constant-time bearer comparison. Length is compared first because timingSafeEqual
@@ -390,6 +396,15 @@ export function createApprovalApp(pool: pg.Pool, opts: ApprovalAppOptions): expr
       }
     },
   );
+
+  // Registered LAST and only on request. The human routes carry their own body parser, so
+  // the door's parse-after-auth ordering above is untouched.
+  if (opts.operatorUserId) {
+    registerHumanRoutes(app, pool, {
+      tenantId: opts.tenantId,
+      operatorUserId: opts.operatorUserId,
+    });
+  }
 
   return app;
 }

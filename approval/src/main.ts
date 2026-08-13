@@ -53,7 +53,16 @@ export async function main(): Promise<void> {
     proposalToken: proposalToken(),
     pendingCap: pendingCap(),
     actionRateLimit: actionRateLimit(),
+    // First Drive. Env-configured rather than literal: the FK is NOT NULL against
+    // `approval.users`, so a hardcoded uuid fails 23503 on every fresh database.
+    operatorUserId: process.env.APPROVAL_OPERATOR_USER_ID,
   });
+  if (process.env.APPROVAL_OPERATOR_USER_ID) {
+    console.log(
+      "[approval] human decision surface ENABLED at /queue — no login, no CSRF. " +
+        "Acceptable only on a scratch database bound to loopback.",
+    );
+  }
   // A2/T5 — one of expiry's THREE enforcement points, and the least important of them.
   // The door's cap count and the queue read query both filter on `expires_at`
   // independently, so a dead sweeper degrades promptness, not correctness. That is why it
