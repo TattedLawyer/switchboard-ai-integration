@@ -26,6 +26,7 @@ import { beginTouch, recordTouch, type IntervalSettings } from "./touch.js";
 import { recordAnswer } from "./answers.js";
 import { resolveDisposition, type ConversationOutcome, type TransportSignal } from "./disposition.js";
 import { resolveQuestionSetForExecution } from "./questions.js";
+import { checkSendable } from "./email-guard.js";
 
 export class CallRefused extends Error {}
 
@@ -221,6 +222,194 @@ export async function executeCall(
     touchId,
     disposition: recorded.disposition,
     identityUnverified: outcome.identityUnverified || payload.display_name === null,
+    advancedClock: recorded.advancedClock,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// THE EMAIL EXECUTOR — a SIBLING of `executeCall`, not a branch inside it.
+//
+// 🚨 `executeCall` IS NOT EDITED, AND THERE IS NO DISPATCHER. Of `executeCall`'s ~120 lines,
+// question-set resolution, `bound`, the `answer`/`reached` callbacks, `reachedOrdinal` and
+// `identity_unverified` are all call-only. What the two share is ORDERING DISCIPLINE, not
+// code. A dispatcher over two nearly-disjoint bodies is a second spine bought for nothing.
+//
+// THE ORDER, and why each step is where it is:
+//   1. read the proposal            — no row            -> EmailRefused
+//   2. action_type must be send_email                   -> EmailRefused
+//   3. parsePayload (the .email() grammar)              -> EmailRefused
+//   4. checkSendable (placeholders, CR/LF, allowlist)   -> EmailRefused
+//   5. NO GATE CALL — `gates.ts:62` returns {allowed:true} for email unconditionally, so
+//      calling it would be ceremony that reads like a check.
+//   6. beginExecution — the at-most-once claim AND the expiry compare-and-set
+//   7. beginTouch — email touch, transcript_delivery NULL
+//   8. sendEmail — the side effect (the transport re-checks the allowlist here too)
+//   9. finishExecution({ok:true, vendorReference: messageId})
+//  10. recordTouch('sent') — advances the LONG interval AND closes the follow-up, atomically
+//
+// 🚨 STEPS 1–4 ARE ALL BEFORE STEP 6, AND THAT IS THE LOAD-BEARING PROPERTY. A refusal must
+// not burn the proposal's one permitted start, so every refusal leaves ZERO
+// `approval.executions` rows. (Even the expiry refusal, which fires INSIDE `beginExecution`,
+// leaves none: it inserts `started` and then rolls back on the failed CAS.)
+//
+// 🚨 STEP 7 BEFORE STEP 8, mirroring the call path: a touch that exists before the side
+// effect can be reconciled after a crash; one created after cannot. The consequence is
+// disclosed in KNOWN-ISSUES — a crash between 7 and 9 leaves the proposal `executing`, and
+// `executing` is NOT in `closeTerminatedFollowUps`' terminal list, so the follow-up stays
+// open and the date-aware guard silences that contact. This spike does not fix that; it is
+// the first executor that can crash mid-send, which is what makes it newly reachable.
+//
+// 🚨 NO TIMER, NO RETRY, NO CLOCK COMPARISON. `now` is present for parity with the call
+// path and is used ONLY as the timestamp handed to `recordTouch`. It decides nothing.
+
+export class EmailRefused extends Error {}
+
+export interface FollowUpEmailPayload {
+  contact_id: string;
+  to: string;
+  subject: string;
+  body: string;
+}
+
+/** The vendor seam, structurally identical to `crm/src/email-transport.ts`'s `SendEmail`.
+ *  Restated here so `executor.ts` states its own contract; faked in tests. */
+export type SendEmailFn = (msg: {
+  to: string;
+  subject: string;
+  body: string;
+}) => Promise<{ messageId: string; accepted: string[]; rejected: string[]; response: string }>;
+
+/** Mirrors `ApprovalSpine`, differing only in `parsePayload`'s return type. The
+ *  `crm/src` -> `approval/src` import ban is preserved: the composition root wires the real
+ *  functions in. */
+export interface EmailApprovalSpine {
+  beginExecution: (db: pg.Pool, proposalId: string) => Promise<unknown>;
+  finishExecution: (
+    db: pg.Pool,
+    proposalId: string,
+    outcome: { ok: boolean; vendorReference?: string; error?: string },
+  ) => Promise<void>;
+  parsePayload: (
+    input: unknown,
+  ) => { ok: true; value: FollowUpEmailPayload } | { ok: false; problem: string };
+}
+
+export interface EmailExecutorDeps {
+  /** `switchboard_approval` — the spine's DB. */
+  approvalDb: pg.Pool;
+  /** `switchboard_crm` — the CRM side. */
+  crmDb: pg.Pool;
+  sendEmail: SendEmailFn;
+  spine: EmailApprovalSpine;
+  /** 🚨 INJECTED, never read from `process.env` inside this function. */
+  allowlist: readonly string[];
+  intervals: IntervalSettings;
+  /** Present for parity with the call path. Used ONLY as `recordTouch`'s timestamp; it
+   *  decides nothing, and the no-timer pin exists to keep it that way. */
+  now?: () => Date;
+}
+
+export interface ExecutedEmail {
+  proposalId: string;
+  touchId: string;
+  /** Always `'sent'` on success — SUBMISSION ACCEPTED, never "delivered". */
+  disposition: string;
+  messageId: string;
+  advancedClock: boolean;
+}
+
+export async function executeEmail(
+  deps: EmailExecutorDeps,
+  proposalId: string,
+): Promise<ExecutedEmail> {
+  const now = deps.now?.() ?? new Date();
+
+  // 1.
+  const p = await deps.approvalDb.query<{ payload: unknown; action_type: string }>(
+    `select payload, action_type from approval.proposals where id = $1`,
+    [proposalId],
+  );
+  if (p.rowCount !== 1) throw new EmailRefused(`no such proposal: ${proposalId}`);
+
+  // 2.
+  if (p.rows[0].action_type !== "send_email") {
+    throw new EmailRefused(
+      `proposal ${proposalId} is a ${p.rows[0].action_type}, not an email`,
+    );
+  }
+
+  // 3.
+  const parsed = deps.spine.parsePayload(p.rows[0].payload);
+  if (!parsed.ok) {
+    throw new EmailRefused(
+      `proposal ${proposalId} carries a payload that would not produce an email: ${parsed.problem}`,
+    );
+  }
+  const payload = parsed.value;
+
+  // 4. The last refusal before anything is claimed or connected.
+  const sendable = checkSendable({ ...payload }, deps.allowlist);
+  if (!sendable.ok) {
+    throw new EmailRefused(`proposal ${proposalId} is not fit to send: ${sendable.reason}`);
+  }
+
+  // 5. No gate. `gateExecution` returns {allowed:true} for email unconditionally.
+
+  // 6.
+  await deps.spine.beginExecution(deps.approvalDb, proposalId);
+
+  // 7.
+  const touchId = await beginTouch(deps.crmDb, {
+    contactId: payload.contact_id,
+    channel: "email",
+    proposalId,
+    phoneNumberId: null,
+    questionSetId: null,
+  });
+
+  // 8.
+  let submission: Awaited<ReturnType<SendEmailFn>>;
+  try {
+    submission = await deps.sendEmail({
+      to: payload.to,
+      subject: payload.subject,
+      body: payload.body,
+    });
+  } catch (err) {
+    // 🚨 TERMINAL. NO RETRY. The proposal moves to `execution_failed`, and the touch stays
+    // with a NULL disposition — it does NOT claim `'sent'`, because nothing was sent.
+    //
+    // The follow-up row is still OPEN at this point (`recordTouch` never ran), which from
+    // the next Manila midnight silences this contact via the date-aware guard. It is
+    // recoverable: `closeTerminatedFollowUps` counts `execution_failed` as terminal. That
+    // is why RUNBOOK makes `crm reconcile` MANDATORY after any failed send, not optional.
+    await deps.spine.finishExecution(deps.approvalDb, proposalId, {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+
+  // 9. `'sent'` means the relay accepted the submission. It does NOT mean delivered.
+  await deps.spine.finishExecution(deps.approvalDb, proposalId, {
+    ok: true,
+    vendorReference: submission.messageId,
+  });
+
+  // 10.
+  const recorded = await recordTouch(
+    deps.crmDb,
+    touchId,
+    { disposition: "sent" },
+    deps.intervals,
+    now,
+  );
+
+  return {
+    proposalId,
+    touchId,
+    disposition: recorded.disposition,
+    messageId: submission.messageId,
     advancedClock: recorded.advancedClock,
   };
 }
