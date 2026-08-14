@@ -3,11 +3,17 @@
 // and `drive-execute.ts`: 69ad456 closed cross-workspace src imports on purpose, and the
 // composition root is the one thing that must cross, so it lives outside both tsconfigs.
 //
-// 🚨 STILL A STUB SENDER. Nothing leaves the building. The touch it writes carries
-// disposition 'sent', which migration 017 defines as "the relay accepted the submission" —
-// a convenient fiction on a scratch database and a lie anywhere else. Replacing this sender
-// is the next step, and it is the step that also ends the deferral of auth and CSRF, because
-// the moment mail can leave, an unauthenticated /decide sends it.
+// 🚨 THE SENDER IS EITHER REAL OR A STUB, AND THE STUB IS THE DEFAULT. Real SMTP engages
+// only when SMTP_HOST, SMTP_USER, SMTP_PASS and SMTP_FROM are ALL present. A partially
+// configured relay degrades to "nothing left the building" — never to "sent to whoever was
+// in the env". The banner at startup says which one is live, because the difference between
+// those two states is the difference between a rehearsal and mailing a real person.
+//
+// 🚨 WHEN LIVE, THE BROWSER SURFACE MUST BE OFF. `/queue` and `/decide` are opt-in on
+// APPROVAL_OPERATOR_USER_ID and have no login and no CSRF defence. Leaving them registered
+// while mail can leave means anyone who can reach that port sends email as the operator.
+// Approve through `approval/src/cli/approve.ts` instead until the session work lands: a
+// local process is not a cross-site request forgery target.
 import pg from "pg";
 import { beginExecution, finishExecution, findStuckExecutions } from "../approval/src/execute.js";
 import { followUpEmailPayloadSchema } from "../approval/src/proposal.js";
@@ -17,6 +23,7 @@ import {
   type EmailApprovalSpine,
   type SendEmailFn,
 } from "../crm/src/executor.js";
+import { smtpSender } from "../crm/src/email-transport.js";
 
 const DEFAULT_INTERVAL_MS = 60_000; // Precedent, not invention: CYCLE_INTERVAL_MS
 // (scheduler.ts) and SWEEP_INTERVAL_MS (expiry.ts) are both 60s, and executor latency is
@@ -63,6 +70,36 @@ async function main(): Promise<void> {
   if (allowlist.length === 0) {
     throw new Error("SWITCHBOARD_EMAIL_ALLOWLIST is empty — every recipient would be refused");
   }
+
+  // 🚨 THE SENDER IS CHOSEN HERE, AND THE DEFAULT IS THE ONE THAT CANNOT REACH ANYONE.
+  // Real SMTP requires SMTP_HOST, SMTP_USER, SMTP_PASS and SMTP_FROM to ALL be present;
+  // anything less and the stub stands. That direction matters: a half-configured relay must
+  // degrade to "nothing left the building", never to "sent to whoever was in the env".
+  // `smtpSender` re-checks the allowlist itself, immediately before opening the socket, so
+  // the guarantee belongs to the thing that opens sockets rather than to this call site.
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  const smtpFrom = process.env.SMTP_FROM;
+  const live = Boolean(smtpHost && smtpUser && smtpPass && smtpFrom);
+  const sendEmail: SendEmailFn = live
+    ? smtpSender(
+        {
+          host: smtpHost as string,
+          port: Number(process.env.SMTP_PORT ?? 587),
+          user: smtpUser as string,
+          pass: smtpPass as string,
+          from: smtpFrom as string,
+          // Postmark routes to a named Message Stream by header. Omitting it is NOT an
+          // error — it silently uses the default `outbound` stream, which is a
+          // wrong-destination failure that reports success.
+          ...(process.env.POSTMARK_MESSAGE_STREAM
+            ? { headers: { "X-PM-Message-Stream": process.env.POSTMARK_MESSAGE_STREAM } }
+            : {}),
+        },
+        allowlist,
+      )
+    : stubSender;
 
   // ONE pool each, for the life of the process. `drive-execute.ts` builds and ends its pools
   // per invocation because it is one-shot; doing that per tick would be connection churn.
@@ -115,7 +152,7 @@ async function main(): Promise<void> {
     for (const row of approved.rows) {
       try {
         const out = await executeEmail(
-          { approvalDb, crmDb, sendEmail: stubSender, spine: SPINE, allowlist, intervals },
+          { approvalDb, crmDb, sendEmail, spine: SPINE, allowlist, intervals },
           row.id,
         );
         console.log(
@@ -136,7 +173,11 @@ async function main(): Promise<void> {
   const stop = startScheduler(tick, intervalMs, true);
   console.log(
     `[exec] executor daemon running: db=${dbName} tenant=${tenantId} every ${intervalMs}ms ` +
-      `(STUB sender — nothing leaves the building)`,
+      (live
+        ? `— LIVE SMTP via ${smtpHost} as ${smtpFrom}, stream=` +
+          `${process.env.POSTMARK_MESSAGE_STREAM ?? "(default outbound)"}, allowlist=` +
+          `[${allowlist.join(", ")}]. MAIL CAN LEAVE THE BUILDING.`
+        : `(STUB sender — nothing leaves the building)`),
   );
 
   let shuttingDown = false;

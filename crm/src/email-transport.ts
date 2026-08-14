@@ -45,6 +45,20 @@ export interface SmtpConfig {
   pass: string;
   /** The confirmed sender signature. A relay will refuse an unconfirmed one, loudly. */
   from: string;
+  /**
+   * Relay-specific headers, verbatim.
+   *
+   * 🚨 EXISTS FOR ONE DOCUMENTED REASON: Postmark routes a message to a named Message Stream
+   * via `X-PM-Message-Stream: <stream-id>`, and OMITTING it is not an error — the message
+   * silently goes out through the default `outbound` transactional stream instead. That is a
+   * wrong-destination failure that reports success, so the header is passed explicitly
+   * rather than left to a default nobody chose.
+   *
+   * NOT a general extension point for caller-supplied text. Values are refused if they carry
+   * CR/LF, for the same reason the recipient and subject are: a newline here is header
+   * injection, and this is the one file that can open a socket.
+   */
+  headers?: Readonly<Record<string, string>>;
 }
 
 /** Nodemailer's own documented values, restated so they are reviewable here rather than
@@ -88,6 +102,7 @@ export interface MailTransport {
     to: string;
     subject: string;
     text: string;
+    headers?: Record<string, string>;
   }) => Promise<unknown>;
 }
 
@@ -123,12 +138,20 @@ export function smtpSender(
     if (!permitted.includes(msg.to.toLowerCase())) {
       throw new Error(`recipient ${msg.to} is not on the allowlist`);
     }
+    // Same CR/LF refusal as the recipient and subject above, applied to header values: a
+    // newline in a header is injection, and this file is the only one that opens a socket.
+    for (const [k, v] of Object.entries(config.headers ?? {})) {
+      if (/[\r\n]/.test(k) || /[\r\n]/.test(v)) {
+        throw new Error(`header ${JSON.stringify(k)} contains a carriage return or newline`);
+      }
+    }
 
     const info = (await tx.sendMail({
       from: config.from,
       to: msg.to,
       subject: msg.subject,
       text: msg.body,
+      ...(config.headers ? { headers: { ...config.headers } } : {}),
     })) as {
       messageId?: string;
       accepted?: unknown[];
