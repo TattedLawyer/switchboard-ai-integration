@@ -10,7 +10,12 @@
 // catching it. `executeEmail`'s check is the one that refuses BEFORE any connection opens;
 // this one is the one that holds when someone forgets `executeEmail`.
 import { describe, it, expect } from "vitest";
-import { smtpSender, buildTransportOptions, type EmailSubmission } from "../src/email-transport.js";
+import {
+  smtpSender,
+  buildTransportOptions,
+  PROPOSAL_METADATA_HEADER,
+  type EmailSubmission,
+} from "../src/email-transport.js";
 
 const CONFIG = {
   host: "smtp.example.com",
@@ -97,6 +102,67 @@ describe("Task 8: the transport is bound to the allowlist (defence in depth)", (
     const s = stub({ messageId: "<x>", accepted: [], rejected: [] });
     const send = smtpSender(CONFIG, ALLOW, s.transport);
     await expect(send({ ...MSG, to: "ana@example.com\r\nBcc: stranger@example.com" })).rejects.toThrow();
+    expect(s.calls.length).toBe(0);
+  });
+});
+
+describe("bounce correlation: the proposal id rides to the relay as message metadata", () => {
+  // Without this header, an accepted-then-refused message is an UNMATCHED bounce nothing
+  // can compensate — the Bounce API returns no Metadata, so the details-lookup hop is the
+  // only road back to the proposal, and this header is what puts the id at the end of it.
+  // mutation: drop the per-message header merge (send only `config.headers`) -> red.
+  //           RUN ✅ 2026-08-15
+  //   Observed: `Tests  1 failed | 10 passed (11)`
+  //     × sets X-PM-Metadata-proposal-id from msg.proposalId, alongside constructor headers
+  //     AssertionError: expected undefined to be '11111111-2222-3333-4444-555555555555'
+  it("sets X-PM-Metadata-proposal-id from msg.proposalId, alongside constructor headers", async () => {
+    const s = stub({
+      messageId: "<abc@relay>",
+      accepted: ["ana@example.com"],
+      rejected: [],
+      response: "250 2.0.0 OK",
+    });
+    const send = smtpSender(
+      { ...CONFIG, headers: { "X-PM-Message-Stream": "outbound-test" } },
+      ALLOW,
+      s.transport,
+    );
+    await send({ ...MSG, proposalId: "11111111-2222-3333-4444-555555555555" });
+
+    expect(s.calls.length).toBe(1);
+    const m = s.calls[0] as { headers?: Record<string, string> };
+    expect(m.headers?.[PROPOSAL_METADATA_HEADER]).toBe(
+      "11111111-2222-3333-4444-555555555555",
+    );
+    // The constructor-level stream header is still there — the per-message value is an
+    // addition, not a replacement.
+    expect(m.headers?.["X-PM-Message-Stream"]).toBe("outbound-test");
+  });
+
+  it("sends no metadata header at all when the caller has no proposal", async () => {
+    const s = stub({
+      messageId: "<abc@relay>",
+      accepted: ["ana@example.com"],
+      rejected: [],
+      response: "250 2.0.0 OK",
+    });
+    const send = smtpSender(CONFIG, ALLOW, s.transport);
+    await send(MSG);
+    const m = s.calls[0] as { headers?: Record<string, string> };
+    expect(m.headers?.[PROPOSAL_METADATA_HEADER]).toBeUndefined();
+  });
+
+  // The contract amendment kept the CR/LF refusal: the one per-message value is under the
+  // same injection guard as everything else that reaches a header.
+  // mutation: skip the proposalId CR/LF check -> red. RUN ✅ 2026-08-15
+  //   Observed: `Tests  1 failed | 10 passed (11)`
+  //     AssertionError: promise resolved "{ messageId: '<x>', …(3) }" instead of rejecting
+  it("refuses a CR/LF proposal id before anything opens", async () => {
+    const s = stub({ messageId: "<x>", accepted: ["ana@example.com"], rejected: [] });
+    const send = smtpSender(CONFIG, ALLOW, s.transport);
+    await expect(
+      send({ ...MSG, proposalId: "x\r\nBcc: stranger@example.com" }),
+    ).rejects.toThrow(/carriage return|newline/i);
     expect(s.calls.length).toBe(0);
   });
 });

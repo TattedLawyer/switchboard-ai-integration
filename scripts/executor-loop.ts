@@ -24,6 +24,12 @@ import {
   type SendEmailFn,
 } from "../crm/src/executor.js";
 import { smtpSender } from "../crm/src/email-transport.js";
+import {
+  reconcileBounces,
+  formatBounceReport,
+  postmarkBounceFeed,
+  type BounceFeed,
+} from "../crm/src/bounces.js";
 
 const DEFAULT_INTERVAL_MS = 60_000; // Precedent, not invention: CYCLE_INTERVAL_MS
 // (scheduler.ts) and SWEEP_INTERVAL_MS (expiry.ts) are both 60s, and executor latency is
@@ -101,6 +107,16 @@ async function main(): Promise<void> {
       )
     : stubSender;
 
+  // 🚨 BOUNCE RECONCILIATION IS A TICK PHASE OF THIS DAEMON, NOT A FOURTH PROCESS. It
+  // engages only when POSTMARK_SERVER_TOKEN is present — the API credential is a separate
+  // decision from the SMTP one, even though Postmark uses the same value for both — and
+  // degrades to OFF, loudly, in the banner. Without it, a message Postmark accepts and
+  // later refuses stays recorded as 'sent' for ever, which is the defect this phase ends.
+  const postmarkToken = process.env.POSTMARK_SERVER_TOKEN;
+  const bounceFeed: BounceFeed | null = postmarkToken
+    ? postmarkBounceFeed(postmarkToken)
+    : null;
+
   // ONE pool each, for the life of the process. `drive-execute.ts` builds and ends its pools
   // per invocation because it is one-shot; doing that per tick would be connection churn.
   const approvalDb = new pg.Pool({ connectionString: required("APPROVAL_DATABASE_URL") });
@@ -122,6 +138,14 @@ async function main(): Promise<void> {
     defaultIntervalDays: s.rows[0].default_interval_days,
     shortRetryDays: s.rows[0].short_retry_days,
   };
+
+  // The last bounce report actually printed. An unmatched bounce sits in the bounded poll
+  // window for weeks, and reprinting the same aggregate every tick is silence by noise —
+  // so the report surfaces when it CHANGES (including on the first tick), and compensations
+  // and anomalies, which alter the report by occurring, always print at least once.
+  // Deliberately in-process, not a DB cursor: losing it on restart re-prints one report,
+  // and idempotency never rests on it (that is the per-proposal 'bounced'-touch check).
+  let lastBounceReport: string | null = null;
 
   const tick = async (): Promise<void> => {
     // 🚨 `expires_at > now()` IS NOT DECORATION. Without it an approved-but-expired row is
@@ -145,6 +169,26 @@ async function main(): Promise<void> {
         `[exec] WARNING: ${stuck.length} execution(s) started and never finished — ` +
           `these are stuck and need a person: ${stuck.map((x) => x.proposal_id).join(", ")}`,
       );
+    }
+
+    // 🚨 THE BOUNCE PHASE RUNS EVEN WHEN NOTHING IS APPROVED — a bounce is the aftermath
+    // of a PAST tick's send, and gating it on today's queue would silence exactly the
+    // ticks that have nothing else to say. Failures here are per-tick and non-fatal, same
+    // boundary reasoning as the per-proposal catch below.
+    if (bounceFeed !== null) {
+      try {
+        const report = await reconcileBounces({ crmDb, feed: bounceFeed, intervals });
+        const text = formatBounceReport(report);
+        if (text !== null && text !== lastBounceReport) {
+          console.log(`[exec] ${text.split("\n").join("\n[exec] ")}`);
+        }
+        lastBounceReport = text;
+      } catch (err) {
+        console.error(
+          `[exec] bounce reconcile failed this tick: ` +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
     }
 
     if (approved.rowCount === 0) return; // Quiet when idle. See the proposer daemon.
@@ -177,7 +221,11 @@ async function main(): Promise<void> {
         ? `— LIVE SMTP via ${smtpHost} as ${smtpFrom}, stream=` +
           `${process.env.POSTMARK_MESSAGE_STREAM ?? "(default outbound)"}, allowlist=` +
           `[${allowlist.join(", ")}]. MAIL CAN LEAVE THE BUILDING.`
-        : `(STUB sender — nothing leaves the building)`),
+        : `(STUB sender — nothing leaves the building)`) +
+      (bounceFeed !== null
+        ? ` Bounce reconciliation ON (Postmark API).`
+        : ` Bounce reconciliation OFF — no POSTMARK_SERVER_TOKEN; an accepted-then-refused` +
+          ` message will stay recorded as 'sent'.`),
   );
 
   let shuttingDown = false;

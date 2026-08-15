@@ -272,11 +272,17 @@ export interface FollowUpEmailPayload {
 }
 
 /** The vendor seam, structurally identical to `crm/src/email-transport.ts`'s `SendEmail`.
- *  Restated here so `executor.ts` states its own contract; faked in tests. */
+ *  Restated here so `executor.ts` states its own contract; faked in tests.
+ *
+ *  `proposalId` is the correlation handle for the bounce reconciler: the transport carries
+ *  it to the relay as message metadata, and a later ASYNCHRONOUS refusal is matched back to
+ *  this proposal's touch through it (`bounces.ts`). The executor passes an id; the
+ *  vendor-specific header spelling stays in the transport. */
 export type SendEmailFn = (msg: {
   to: string;
   subject: string;
   body: string;
+  proposalId?: string;
 }) => Promise<{ messageId: string; accepted: string[]; rejected: string[]; response: string }>;
 
 /** Mirrors `ApprovalSpine`, differing only in `parsePayload`'s return type. The
@@ -367,13 +373,16 @@ export async function executeEmail(
     questionSetId: null,
   });
 
-  // 8.
+  // 8. `proposalId` rides along as message metadata so that when the relay accepts now and
+  //    refuses later, the bounce reconciler can find its way back to this touch. It is the
+  //    ONLY per-message addition; the payload bytes themselves are untouched.
   let submission: Awaited<ReturnType<SendEmailFn>>;
   try {
     submission = await deps.sendEmail({
       to: payload.to,
       subject: payload.subject,
       body: payload.body,
+      proposalId,
     });
   } catch (err) {
     // 🚨 TERMINAL. NO RETRY. The proposal moves to `execution_failed`, and the touch stays

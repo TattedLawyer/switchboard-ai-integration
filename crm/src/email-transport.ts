@@ -15,13 +15,35 @@
 // and the no-timer pin (`no-timers.test.ts`) is what keeps it that way.
 //
 // 🚨 NOTHING HERE MEANS "DELIVERED". `EmailSubmission` records what the relay ACCEPTED.
-// Delivery is knowable only asynchronously, from a bounce feed this system does not poll.
+// Delivery is knowable only asynchronously, from the bounce feed — which `bounces.ts` now
+// polls, correlating each bounce back to its proposal via the metadata header below.
 import nodemailer from "nodemailer";
+
+/** The Postmark metadata key that carries our proposal id, and the SMTP header that sets it
+ *  (`X-PM-Metadata-{key}`; key ≤ 20 chars, value ≤ 80 — a UUID is 36 and fits). ONE
+ *  exported name for both sides of the correlation: the sender writes it here and the
+ *  bounce reconciler (`bounces.ts`) reads `Metadata[PROPOSAL_METADATA_KEY]` back from the
+ *  Messages API, so the two cannot drift apart. */
+export const PROPOSAL_METADATA_KEY = "proposal-id";
+export const PROPOSAL_METADATA_HEADER = `X-PM-Metadata-${PROPOSAL_METADATA_KEY}`;
 
 export interface EmailMessage {
   to: string;
   subject: string;
   body: string;
+  /**
+   * The approval-side proposal id this message executes, carried to the relay as
+   * `X-PM-Metadata-proposal-id` so an ASYNCHRONOUS refusal (a bounce) can be correlated
+   * back to the touch that recorded `'sent'`. Optional because the transport must not
+   * refuse a caller that has no proposal — but `executeEmail` always passes it, and
+   * without it a bounced message is an unmatched bounce nothing can compensate.
+   *
+   * 🚨 THIS IS THE ONE PER-MESSAGE VALUE, AND IT IS A NAMED FIELD, NOT A HEADERS BAG. The
+   * constructor-level `SmtpConfig.headers` contract below ("NOT a general extension
+   * point") stands: callers still cannot supply arbitrary header text. The vendor-specific
+   * header NAME lives in this file — the vendor seam — not in the executor.
+   */
+  proposalId?: string;
 }
 
 /** What we learned from handing the relay a message. NOT a delivery receipt. */
@@ -57,6 +79,13 @@ export interface SmtpConfig {
    * NOT a general extension point for caller-supplied text. Values are refused if they carry
    * CR/LF, for the same reason the recipient and subject are: a newline here is header
    * injection, and this is the one file that can open a socket.
+   *
+   * 🚨 CONTRACT AMENDMENT (bounce reconciliation, 2026-08-15): exactly ONE per-message
+   * header now exists alongside these constructor-level ones — `PROPOSAL_METADATA_HEADER`,
+   * derived inside this file from `EmailMessage.proposalId`. It is not caller-supplied
+   * header text (the caller passes an id, not a header), it carries the same CR/LF
+   * refusal, and no second per-message header may be added without amending this contract
+   * again, in writing, here.
    */
   headers?: Readonly<Record<string, string>>;
 }
@@ -145,13 +174,27 @@ export function smtpSender(
         throw new Error(`header ${JSON.stringify(k)} contains a carriage return or newline`);
       }
     }
+    // The one per-message header value, under the same refusal. A proposal id is a DB UUID
+    // in every shipped caller, but this file does not trust its callers — that is the point
+    // of re-checking here at all.
+    if (msg.proposalId !== undefined && /[\r\n]/.test(msg.proposalId)) {
+      throw new Error("the proposal id contains a carriage return or newline");
+    }
+
+
+    const headers: Record<string, string> = {
+      ...(config.headers ?? {}),
+      ...(msg.proposalId !== undefined
+        ? { [PROPOSAL_METADATA_HEADER]: msg.proposalId }
+        : {}),
+    };
 
     const info = (await tx.sendMail({
       from: config.from,
       to: msg.to,
       subject: msg.subject,
       text: msg.body,
-      ...(config.headers ? { headers: { ...config.headers } } : {}),
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
     })) as {
       messageId?: string;
       accepted?: unknown[];

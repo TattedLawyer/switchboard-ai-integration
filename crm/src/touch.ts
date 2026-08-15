@@ -32,9 +32,18 @@ export const DISPOSITIONS = [
   "failed",
   // 🚨 EMAIL ONLY, AND IT MEANS SUBMISSION ACCEPTED BY THE RELAY — NOT DELIVERED. The nine
   // above are call outcomes; `resolveDisposition` cannot produce this one. Delivery is
-  // knowable only from a bounce feed this system does not poll, so no repo document may
+  // knowable only from the bounce feed — polled by `bounces.ts` — so no repo document may
   // describe `'sent'` as delivery.
   "sent",
+  // 🚨 EMAIL ONLY: THE RELAY ACCEPTED THE SUBMISSION AND LATER REFUSED TO DELIVER IT.
+  // Appended by the bounce reconciler (`bounces.ts`) as a NEW touch beside the `'sent'`
+  // one — NEVER by amending it, because the `'sent'` row is not false: the submission WAS
+  // accepted. APPEND, NEVER AMEND is the rule, written here because the grant physically
+  // permits the flip (`update (disposition, ...)`) and discipline is the only thing
+  // preventing it. Not in `LONG_INTERVAL_DISPOSITIONS`: a bounced cycle made no contact,
+  // so the clock moves to the short retry. `resolveDisposition` cannot produce this one
+  // either.
+  "bounced",
 ] as const;
 export type Disposition = (typeof DISPOSITIONS)[number];
 

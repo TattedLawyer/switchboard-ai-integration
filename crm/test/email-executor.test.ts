@@ -470,3 +470,35 @@ describe("Task 9 pin 6: a failed send is RECOVERABLE, and the recovery is pinned
     expect(await hasOpenFollowUpBefore(crm, ana, tomorrow)).toBe(false);
   });
 });
+
+describe("bounce correlation: executeEmail hands the transport the proposal id", () => {
+  // Without this, the transport writes no metadata, the bounce feed's details-lookup hop
+  // dead-ends, and an accepted-then-refused message can never be walked back — the exact
+  // three-times-measured defect. The payload BYTES stay untouched (the card↔envelope
+  // identity pin above still holds); the id is carried beside them, not inside them.
+  // mutation: stop passing `proposalId` at step 8 -> red. RUN ✅ 2026-08-15
+  //   Observed: `Tests  2 failed | 13 passed (15)`
+  //     × passes the executing proposal's id alongside the approved bytes
+  //     AssertionError: expected undefined to be '2a84bc3c-8c4f-400d-9180-e018df6a02a2'
+  //   (the second concurrent failure was Task 9 pin 6's known 16:00–24:00-UTC timezone
+  //   defect, red at the baseline of this run too — not this mutation's doing)
+  it("passes the executing proposal's id alongside the approved bytes", async () => {
+    const ana = await emailContact();
+    const proposalId = await proposeAndApprove(ana);
+    const calls: Array<{ to: string; proposalId?: string }> = [];
+    const recorder: SendEmailFn = async (msg) => {
+      calls.push({ to: msg.to, proposalId: msg.proposalId });
+      return {
+        messageId: `<${randomUUID()}@relay.example.com>`,
+        accepted: [msg.to],
+        rejected: [],
+        response: "250 2.0.0 OK",
+      };
+    };
+
+    await executeEmail(deps(recorder), proposalId);
+
+    expect(calls.length).toBe(1);
+    expect(calls[0].proposalId).toBe(proposalId);
+  });
+});
