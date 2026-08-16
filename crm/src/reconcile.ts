@@ -1,7 +1,8 @@
 // Core loop / T13 — reconcile, AND the owner-run terminal-state close pass.
 //
-// 🚨 THE REPORT LISTS FIVE THINGS. The fifth ("passed on") arrived with the close pass — see
-// below. The list is still closed on purpose:
+// 🚨 THE REPORT LISTS SIX THINGS. The fifth ("passed on") arrived with the close pass; the
+// sixth ("no digest recorded") arrived with the daily digest. The list is still closed on
+// purpose:
 //
 //   1. CLAIMED, NO PROPOSAL — the disclosed non-atomicity between the claim and the door
 //      POST. Self-heals when the 15-minute lease expires; listed so a persistent pattern is
@@ -19,6 +20,12 @@
 //      pass) and the contact is stopped, not silently bricked; this listing is how she sees
 //      the leads she dismissed and can revisit them. Unlike the shared-numbers trap, its
 //      available response is an ACTION (revisit), so it is information, not a trap.
+//   6. NO DIGEST RECORDED FOR TODAY'S LOCAL DATE — the executor's daily-digest phase (due
+//      07:00 in `outreach_settings.timezone`, recorded in `crm.digest_sends`) has not run
+//      for today, checked after a grace hour. A persistently failing digest otherwise
+//      surfaces only on the executor's stderr — the watchdog needs its own watchdog, and
+//      this owner listing is it. Its available response is an ACTION (fix the executor's
+//      config), so it is information, not a trap.
 //
 // 🚨 "SHARED NUMBERS ACROSS CONTACTS" IS DELIBERATELY ABSENT. §5.2 deleted that listing with
 // a reasoned argument: it invites an action — merging — that this design has decided never
@@ -52,6 +59,10 @@ export interface ReconcileReport {
   /** Leads she rejected: closed and stopped, surfaced so a "stop" is her move and not a
    *  silent drop. She revisits by re-setting the contact due (`crm-contact-add`-adjacent). */
   passedOnLeads: Array<{ contactId: string; displayName: string | null; dueDate: string; reason: string | null }>;
+  /** Tenants past the digest grace time with no `crm.digest_sends` row for today's LOCAL
+   *  date — a digest phase that is off or persistently failing, visible somewhere other
+   *  than the executor's stderr. */
+  digestMissing: Array<{ tenantId: string; localDate: string }>;
 }
 
 export type CloseReason = "rejected" | "expired_or_failed";
@@ -161,6 +172,11 @@ export interface ReconcileOptions {
   pendingGraceMinutes?: number;
   /** How long an `executing` proposal may sit. */
   executingGraceMinutes?: number;
+  /** Local time (in each tenant's `outreach_settings.timezone`) after which a missing
+   *  digest row for today is worth naming. One hour after the 07:00 send time, so the
+   *  listing never races the executor's own tick. Tests pass "00:00" to make the check
+   *  clock-independent. */
+  digestDueLocalTime?: string;
 }
 
 export async function reconcile(
@@ -250,6 +266,24 @@ export async function reconcile(
       limit 500`,
   );
 
+  // 6. No digest recorded for today's LOCAL date, after the grace time. The local date is
+  //    computed by Postgres against each tenant's timezone — the same clock authority the
+  //    digest phase itself uses (`crm/src/digest.ts`), so the two can never disagree about
+  //    which date "today" is. `::text` because node-pg parses a bare `date` through the
+  //    process locale, which is the boundary bug this repo keeps paying for.
+  const digestDue = opts.digestDueLocalTime ?? "08:00";
+  const digestMissing = await admin.query<{ tenant_id: string; local_date: string }>(
+    `select s.tenant_id, ((now() at time zone s.timezone)::date)::text as local_date
+       from crm.outreach_settings s
+      where (now() at time zone s.timezone)::time >= $1::time
+        and not exists (
+              select 1 from crm.digest_sends d
+               where d.tenant_id = s.tenant_id
+                 and d.digest_date = (now() at time zone s.timezone)::date)
+      order by s.tenant_id`,
+    [digestDue],
+  );
+
   return {
     claimedWithNoProposal: claimed.rows.map((r) => ({
       contactId: r.contact_id,
@@ -276,6 +310,10 @@ export async function reconcile(
       displayName: r.display_name,
       dueDate: r.due_date,
       reason: r.reason,
+    })),
+    digestMissing: digestMissing.rows.map((r) => ({
+      tenantId: r.tenant_id,
+      localDate: r.local_date,
     })),
   };
 }
@@ -319,6 +357,13 @@ export function formatReconcile(r: ReconcileReport): string {
     lines.push(
       `  ${p.contactId}  ${p.displayName ?? "(no name on file)"}  rejected ${p.dueDate}` +
         `${p.reason ? `  — "${p.reason}"` : ""}`,
+    );
+  }
+  lines.push(`daily digest not recorded: ${r.digestMissing.length}`);
+  for (const d of r.digestMissing) {
+    lines.push(
+      `  tenant ${d.tenantId}  no digest recorded for local date ${d.localDate} ` +
+        `(due 07:00 local — the executor's digest phase is off or failing)`,
     );
   }
   return lines.join("\n");

@@ -32,6 +32,7 @@ import {
   postmarkBounceFeed,
   type BounceFeed,
 } from "../crm/src/bounces.js";
+import { runDailyDigest, DIGEST_SEND_LOCAL_TIME } from "../crm/src/digest.js";
 
 const DEFAULT_INTERVAL_MS = 60_000; // Precedent, not invention: CYCLE_INTERVAL_MS
 // (scheduler.ts) and SWEEP_INTERVAL_MS (expiry.ts) are both 60s, and executor latency is
@@ -119,6 +120,19 @@ async function main(): Promise<void> {
     ? postmarkBounceFeed(postmarkToken)
     : null;
 
+  // 🚨 THE DAILY DIGEST IS A TICK PHASE OF THIS DAEMON, NOT A FOURTH PROCESS — same
+  // reasoning as the bounce phase, plus one that is specific to it: this loop is the ONLY
+  // process holding both pools, each as its own least-privilege role, and every digest
+  // figure lands wholly on one pool or the other (no cross-schema JOIN is needed or
+  // permitted). It must NOT move to the owner-credentialed reconcile daemon: that would
+  // put the socket-opening mail path on the credential that can re-grant privileges.
+  // Gated on APPROVAL_PUBLIC_URL — the queue link is the digest's whole call to action,
+  // and a digest pointing nowhere is worse than a loud OFF in the banner. Recipients come
+  // from active `approval.users` rows; each must be on SWITCHBOARD_EMAIL_ALLOWLIST or
+  // `smtpSender` refuses the send.
+  const approvalPublicUrl = (process.env.APPROVAL_PUBLIC_URL ?? "").replace(/\/+$/, "");
+  const digestOn = approvalPublicUrl !== "";
+
   // ONE pool each, for the life of the process. `drive-execute.ts` builds and ends its pools
   // per invocation because it is one-shot; doing that per tick would be connection churn.
   const approvalDb = new pg.Pool({ connectionString: required("APPROVAL_DATABASE_URL") });
@@ -169,7 +183,10 @@ async function main(): Promise<void> {
     if (stuck.length > 0) {
       console.warn(
         `[exec] WARNING: ${stuck.length} execution(s) started and never finished — ` +
-          `these are stuck and need a person: ${stuck.map((x) => x.proposal_id).join(", ")}`,
+          // `proposalId`, not `proposal_id`: StuckExecution maps the row to camelCase.
+          // The snake_case read printed "undefined" for every id (this file sits outside
+          // every tsconfig, so no typecheck ever saw it). Found 2026-08-16.
+          `these are stuck and need a person: ${stuck.map((x) => x.proposalId).join(", ")}`,
       );
     }
 
@@ -188,6 +205,49 @@ async function main(): Promise<void> {
       } catch (err) {
         console.error(
           `[exec] bounce reconcile failed this tick: ` +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
+    }
+
+    // 🚨 THE DIGEST PHASE RUNS EVEN WHEN NOTHING IS APPROVED — like the bounce phase, and
+    // for a sharper reason: the digest's most important edition is the one for a day when
+    // nothing else happened, because "Nothing needs you today" is what disambiguates a
+    // quiet system from a dead one. `runDailyDigest` is a quiet no-op until 07:00 in her
+    // timezone and at most once per local date (crm.digest_sends); failures are per-tick
+    // and non-fatal, and the next tick retries — toward noise, never toward silence.
+    if (digestOn) {
+      try {
+        const d = await runDailyDigest({
+          approvalDb,
+          crmDb,
+          tenantId,
+          sendEmail,
+          queueUrl: `${approvalPublicUrl}/queue`,
+          findStuckExecutions,
+          stuckAfterSeconds: STUCK_AFTER_SECONDS,
+        });
+        if (d.sent) {
+          console.log(
+            `[exec] daily digest for ${d.localDate} sent to ${d.recipients.join(", ")} — ` +
+              `subject: ${JSON.stringify(d.subject)}`,
+          );
+          for (const f of d.failed) {
+            console.error(
+              `[exec] daily digest: send to ${f.email} failed: ${f.error} — recipients ` +
+                `are active approval.users rows and each must be on SWITCHBOARD_EMAIL_ALLOWLIST`,
+            );
+          }
+          if (d.duplicateRace) {
+            console.warn(
+              `[exec] daily digest for ${d.localDate} was already recorded — a second ` +
+                `executor daemon appears to be running; both sent, nothing lost`,
+            );
+          }
+        }
+      } catch (err) {
+        console.error(
+          `[exec] daily digest failed this tick (the next tick retries): ` +
             (err instanceof Error ? err.message : String(err)),
         );
       }
@@ -227,7 +287,13 @@ async function main(): Promise<void> {
       (bounceFeed !== null
         ? ` Bounce reconciliation ON (Postmark API).`
         : ` Bounce reconciliation OFF — no POSTMARK_SERVER_TOKEN; an accepted-then-refused` +
-          ` message will stay recorded as 'sent'.`),
+          ` message will stay recorded as 'sent'.`) +
+      (digestOn
+        ? ` Daily digest ON — ${DIGEST_SEND_LOCAL_TIME} in outreach_settings.timezone, to` +
+          ` active approval.users (each must be on SWITCHBOARD_EMAIL_ALLOWLIST), queue at` +
+          ` ${approvalPublicUrl}/queue.`
+        : ` Daily digest OFF — no APPROVAL_PUBLIC_URL; nothing will tell the broker her` +
+          ` approval queue exists, and an expired proposal stays a silent loss.`),
   );
 
   let shuttingDown = false;

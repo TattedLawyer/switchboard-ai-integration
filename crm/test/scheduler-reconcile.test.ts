@@ -256,12 +256,16 @@ describe("T13: reconcile lists exactly the four things", () => {
     await seedNumber(admin, a, "+639171234567");
     await seedNumber(admin, b, "+639171234567");
     const r = await reconcile(admin);
-    // FIVE listings now (the close pass added `passedOnLeads`). Shared numbers remain absent
-    // — §5.2's trap has an available response of only "do nothing"; the passed-on listing's
-    // available response is an ACTION (revisit), which is why it is information, not a trap.
+    // SIX listings now (the close pass added `passedOnLeads`; the daily digest added
+    // `digestMissing`, 2026-08-16 — this closed-list pin fired on that addition, exactly as
+    // designed, and the key is added here deliberately). Shared numbers remain absent
+    // — §5.2's trap has an available response of only "do nothing"; the passed-on and
+    // digest-missing listings' available responses are ACTIONS (revisit / fix the executor
+    // config), which is why they are information, not traps.
     expect(Object.keys(r).sort()).toEqual([
       "blockedFollowUps",
       "claimedWithNoProposal",
+      "digestMissing",
       "executingWithNoOutcome",
       "passedOnLeads",
       "transcriptsStuckPending",
