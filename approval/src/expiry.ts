@@ -21,12 +21,13 @@
 //
 // 🚨 WHAT THIS COSTS ON THE `approved` SIDE, said plainly. An approved row that is not
 // executed within its window becomes `expired`, which is terminal — a DESTROYED HUMAN
-// DECISION, with no re-proposal path inside A2 (A5 owns re-proposal). Since A2 ships no
-// executor, EVERY approved row meets this timer. It is not unsafe today, because nobody
-// can approve until A0b ships login. It becomes unsafe THE DAY A0b LANDS WITHOUT A5. The
-// retention is still right — OWASP sources expiry to the approval record, and an approval
-// that never lapses is a standing authorisation by another name — but the cost is real and
-// is carried in KNOWN-ISSUES rather than absorbed silently.
+// DECISION, with no re-proposal path inside A2 (A5 owns re-proposal). 🚨 A0b HAS SHIPPED
+// LOGIN AND A5 HAS NOT SHIPPED RE-PROPOSAL, so this cost is LIVE: a real person's
+// approval can now age out unexecuted (the executor loop narrows the window; an executor
+// outage longer than the TTL still destroys decisions). The retention is still right —
+// OWASP sources expiry to the approval record, and an approval that never lapses is a
+// standing authorisation by another name — but the cost is real and is carried in
+// KNOWN-ISSUES rather than absorbed silently.
 //
 // 🚨 `executing` IS DELIBERATELY EXEMPT AND HAS NO TIMER-DRIVABLE EXIT. A row whose
 // executor died stays `executing` forever: the sweeper must not move it, because a timer

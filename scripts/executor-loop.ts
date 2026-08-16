@@ -9,11 +9,13 @@
 // in the env". The banner at startup says which one is live, because the difference between
 // those two states is the difference between a rehearsal and mailing a real person.
 //
-// 🚨 WHEN LIVE, THE BROWSER SURFACE MUST BE OFF. `/queue` and `/decide` are opt-in on
-// APPROVAL_OPERATOR_USER_ID and have no login and no CSRF defence. Leaving them registered
-// while mail can leave means anyone who can reach that port sends email as the operator.
-// Approve through `approval/src/cli/approve.ts` instead until the session work lands: a
-// local process is not a cross-site request forgery target.
+// THE BROWSER SURFACE IS AUTHENTICATED NOW (A0b). `/queue` and `/decide` are opt-in on
+// APPROVAL_HUMAN_SURFACE=1 and sit behind magic-link login, a database-backed session and
+// a CSRF pair (synchronizer token + Sec-Fetch-Site); every decision is attributed to the
+// signed-in approver's user id from the SESSION. APPROVAL_OPERATOR_USER_ID no longer
+// exists — the unauthenticated variant this comment used to warn about cannot be
+// configured any more. Boot the surface through `scripts/approval-service.ts`, which
+// wires the real link sender; `approval/src/cli/approve.ts` remains for operators.
 import pg from "pg";
 import { beginExecution, finishExecution, findStuckExecutions } from "../approval/src/execute.js";
 import { followUpEmailPayloadSchema } from "../approval/src/proposal.js";

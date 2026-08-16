@@ -184,7 +184,9 @@ reporting a clean run.
   so retire the read-only claim rather than defeat it. Proposals are capped and
   idempotency-keyed, because an approval queue no human can triage disables the
   human-approval constraint rather than merely annoying it. Its client-facing
-  login and approval page are the next task; the door is real today.
+  login and approval page are real too: magic-link sign-in (one-time links,
+  hashed at rest), database-backed sessions, CSRF defence, and every decision
+  row naming the signed-in approver's user id.
 - **CI:** the `ci` workflow runs on every push — typecheck, all 1534 tests, the
   dbt build — 101 dbt build steps (15 models, 3 seeds, 83 data tests) — the agent
   action-safety eval, and the identity oracle, against a real Postgres service

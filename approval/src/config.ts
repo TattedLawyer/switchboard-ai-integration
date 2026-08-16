@@ -103,6 +103,100 @@ export function bindHost(): string {
   return process.env.APPROVAL_BIND_HOST ?? "127.0.0.1";
 }
 
+/**
+ * A0b — the HUMAN surface's configuration. Opt-in, explicit, and fail-closed.
+ *
+ * `APPROVAL_HUMAN_SURFACE=1` is what registers `/login`, `/queue` and `/decide` at all.
+ * Absent, the service is the agent-door-only deployment that shipped with A1, byte for
+ * byte. When present, the surface demands a session secret and a public base URL at BOOT
+ * — a login page that cannot mint a valid link, or a session cookie signed with an
+ * accidental default, is a deployment mistake that must refuse to listen rather than
+ * half-work.
+ */
+export function humanSurfaceEnabled(): boolean {
+  return process.env.APPROVAL_HUMAN_SURFACE === "1";
+}
+
+/** Same class as DEV_PROPOSAL_TOKEN: published, so reachable only behind the explicit
+ *  ALLOW_DEV_SECRETS opt-in. */
+export const DEV_SESSION_SECRET = "demo-session-secret";
+
+/** Signs the session cookie. Required whenever the human surface is enabled. */
+export function sessionSecret(): string {
+  const explicit = process.env.APPROVAL_SESSION_SECRET;
+  if (explicit) return explicit;
+  if (devSecretsAllowed()) return DEV_SESSION_SECRET;
+  throw new Error(
+    "APPROVAL_SESSION_SECRET is not set — refusing to sign session cookies with a " +
+      "published fallback. Set APPROVAL_SESSION_SECRET, or set ALLOW_DEV_SECRETS=1 for " +
+      "local demo use only.",
+  );
+}
+
+/**
+ * The origin the APPROVER'S BROWSER uses — the base every magic link is minted under.
+ * Distinct from APPROVAL_BASE_URL, which is where the AGENT posts proposals: on a real
+ * deployment the human reaches a TLS hostname while the agent posts loopback, and
+ * conflating the two would bake a loopback address into her sign-in email.
+ */
+export function approvalPublicUrl(): string {
+  const raw = process.env.APPROVAL_PUBLIC_URL;
+  if (!raw) {
+    throw new Error(
+      "APPROVAL_PUBLIC_URL is required when APPROVAL_HUMAN_SURFACE=1 — it is the origin " +
+        "the approver's browser uses, and every magic link is minted under it. No default " +
+        "on purpose: a guessed origin makes sign-in links that point somewhere nobody serves.",
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`invalid APPROVAL_PUBLIC_URL "${raw}": must be an absolute http(s) URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`invalid APPROVAL_PUBLIC_URL "${raw}": must be http or https`);
+  }
+  return raw.replace(/\/+$/, "");
+}
+
+/**
+ * THE DOCUMENTED DEV PATH for the session cookie, and the only one.
+ *
+ * The production cookie is `__Host-`-prefixed and Secure — non-negotiable, because the
+ * prefix is what makes the cookie unsettable by a sibling subdomain or a non-secure
+ * origin. But a `__Host-` cookie DOES NOT EXIST over plain http on a LAN address
+ * (browsers refuse to store it; localhost is exempted by Chrome and Firefox, historically
+ * not by Safari), and express-session itself refuses to SET a `secure: true` cookie on a
+ * non-TLS connection. So local http development needs an explicit, loud opt-out:
+ * `APPROVAL_COOKIE_INSECURE=1` renames the cookie (the `__Host-` prefix would be a lie
+ * without Secure) and drops the Secure attribute. It is banner-logged at boot, and it is a
+ * SEPARATE switch from ALLOW_DEV_SECRETS because weakening transport is not a secrets
+ * question and must be chosen on its own.
+ */
+export function cookieInsecureDev(): boolean {
+  return process.env.APPROVAL_COOKIE_INSECURE === "1";
+}
+
+/**
+ * MAGIC-LINK PARAMETERS. All three are JUDGMENT with no source, surfaced here in the
+ * PROPOSAL_TTL_HOURS idiom rather than buried as unexplained constants.
+ *
+ * · 15 minutes: long enough to walk from "Send me a link" to an inbox, short enough that
+ *   a link lying in a mailbox is stale before most humans would re-find it. The ADR's
+ *   mitigation shape is "short expiry, single use"; the numeral is ours.
+ * · 5 requests per hour per ACCOUNT: bounds what a stranger who knows the approver's
+ *   email can make us send her, and what a bug can burn through the relay. Per-account
+ *   rather than per-IP because this surface sits behind loopback or one operator's
+ *   reverse proxy, where source addresses collapse.
+ * · 7 days rolling: the session decision recorded in the A0b brief — a rolling window,
+ *   not remember-me machinery.
+ */
+export const LOGIN_TOKEN_TTL_MINUTES = 15;
+export const LOGIN_REQUEST_RATE_LIMIT = 5;
+export const LOGIN_REQUEST_WINDOW_MINUTES = 60;
+export const SESSION_TTL_DAYS = 7;
+
 /** One aggregated boot assertion. Named variables, one throw, before anything listens. */
 export function assertApprovalConfig(): void {
   const missing: string[] = [];
@@ -110,14 +204,21 @@ export function assertApprovalConfig(): void {
   if (!process.env.AGENT_PROPOSAL_TOKEN && !devSecretsAllowed()) {
     missing.push("AGENT_PROPOSAL_TOKEN");
   }
+  if (humanSurfaceEnabled()) {
+    if (!process.env.APPROVAL_SESSION_SECRET && !devSecretsAllowed()) {
+      missing.push("APPROVAL_SESSION_SECRET");
+    }
+    if (!process.env.APPROVAL_PUBLIC_URL) missing.push("APPROVAL_PUBLIC_URL");
+  }
   if (missing.length > 0) {
     throw new Error(
       `approval service: missing required configuration: ${missing.join(", ")} — set them` +
-        `${missing.includes("AGENT_PROPOSAL_TOKEN") ? ", or set ALLOW_DEV_SECRETS=1 for local demo use only" : ""}.`,
+        `${missing.some((m) => m === "AGENT_PROPOSAL_TOKEN" || m === "APPROVAL_SESSION_SECRET") ? ", or set ALLOW_DEV_SECRETS=1 for local demo use only" : ""}.`,
     );
   }
   pendingCap(); // range-check now, at boot, not on the first proposal
   actionRateLimit(); // same: a bad rate limit is a boot refusal, never a silent NaN
+  if (humanSurfaceEnabled()) approvalPublicUrl(); // malformed URL is a boot refusal too
 }
 
 /**
@@ -138,8 +239,9 @@ export function assertApprovalConfig(): void {
  *
  * WHAT THE NUMBER OPERATIONALLY MEANS, said plainly rather than buried: an APPROVED row
  * that is not executed within it becomes `expired`, which is terminal — a destroyed human
- * decision, with no re-proposal path inside A2 (that is A5's). Harmless today because
- * nobody can approve until A0b ships login. Unsafe the day A0b lands without A5.
+ * decision, with no re-proposal path inside A2 (that is A5's). 🚨 A0b HAS NOW SHIPPED
+ * LOGIN AND A5 HAS NOT SHIPPED RE-PROPOSAL, so this is a LIVE cost, not a latent one:
+ * a real person's approval can now age out unexecuted. KNOWN-ISSUES carries it.
  */
 export const PROPOSAL_TTL_HOURS = 72;
 

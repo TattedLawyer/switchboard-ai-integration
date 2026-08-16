@@ -1319,7 +1319,10 @@ from data that is correctly attributed rather than from a nil-tenant pile.
 
 ## Approval queue (Phase 3 / A1) — two open halves shipped with the door
 
-- **A1 ships an approval queue nothing can drain — AMENDED AT A2, in three halves.**
+- ~~A1 ships an approval queue nothing can drain — AMENDED AT A2, in three halves~~
+  *Paid (A0b, 2026-08-16):* login shipped, so the missing half — a human who can
+  actually decide — exists; the entry's body is kept unstruck below because its
+  emergency-drain remedy is pinned and still load-bearing.
   As shipped with the door: `switchboard_approval` held `select, insert` and
   deliberately no `UPDATE`, so rows entered `pending` and **could not leave**, and
   once `PENDING_PROPOSAL_CAP` (default 100) accumulated the door answered `429`
@@ -1342,12 +1345,59 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   *expired*, not *rejected*, because nobody decided. A published remedy that has
   silently become a failing statement is worse than no remedy.
 
-  **What survives until A0b.** Nobody can *deliberately* reach a terminal state,
-  because nobody can log in: `approval.users` gives the broker a row, not a
-  session. A2 delivers a correct, tested, pinned approval mechanism that the end
-  user cannot yet reach. It remains a *liveness* limitation and not a safety one.
+  **CLOSED by A0b (2026-08-16), kept for the emergency remedy above.** A0b shipped
+  magic-link login, a database-backed session and the authenticated `/queue` +
+  `/decide` pages (migration 019, `approval/src/human.ts`), so a signed-in approver
+  can now deliberately reach `approved` and `rejected`; the queue drains by
+  decision, by expiry, or — in an emergency — by the `expired` statement above,
+  which remains the ONLY correct manual drain because an operator draining a
+  wedged queue is still not deciding anything.
 
-  *Owner: A0b (the client-facing approval page) — it brings login and session; A2 already brought the approver identity, the lifecycle UPDATE and the grant. Trigger: this entry closes when A0b's approve/reject path lands and a human can actually decide.*
+  *Owner: closed by A0b. The emergency-drain paragraph stays load-bearing and pinned (`ingest/test/approval-honesty.test.ts`).*
+
+- 🚨 **A0b's login is a magic link, and a magic link is a bearer token in an
+  inbox — whoever controls the approver's MAILBOX can approve.** Stated here
+  because the ADR (`docs/adr/approver-identity.md`) requires this honesty line in
+  terms rather than as a placeholder. What the mechanism IS: a CSPRNG token,
+  hashed at rest, single-use by atomic compare-and-set, 15-minute expiry,
+  rate-limited per account, session regenerated at login, one append-only audit
+  row per login, CSRF defended twice (synchronizer token + Sec-Fetch-Site with an
+  Origin fallback that refuses when both are absent). What it is NOT: proof of
+  the person. It authenticates *reach into a mailbox*, so mailbox compromise is
+  approval compromise, and no property of this repo changes that. Sub-limits that
+  travel with it, disclosed rather than discovered:
+    · **email resolution is exact byte equality** (015's `lower(email)` index is
+      storage hygiene, never a predicate), so the address typed at login must
+      match the seeded address exactly — a case-variant silently does not log in,
+      by design, and the operator hears about it as "no email arrived";
+    · **the outbound allowlist gates sign-in mail too** — the composition root
+      (`scripts/approval-service.ts`) sends through the same `smtpSender`, so an
+      approver whose address is not on `SWITCHBOARD_EMAIL_ALLOWLIST` cannot
+      receive a link (a loud 503, not a silent drop);
+    · **the `__Host-`/Secure cookie does not exist over plain http on a LAN
+      address** — the documented dev path is `APPROVAL_COOKIE_INSECURE=1`
+      (banner-logged, renamed cookie), and the production cookie is never
+      weakened;
+    · **auth availability is coupled to email deliverability** — the ADR's own
+      caveat: if her domain's mail breaks, she cannot log in *and* the system
+      cannot send;
+    · **timing leaks approver-list membership** — the request path renders one
+      identical page for every outcome, but an active approver's request awaits
+      the real SMTP send before answering while an unknown address returns after
+      one SELECT, so a caller timing `POST /login/request` can tell a registered
+      address from a stranger's — a disclosed deviation from OWASP's "avoid
+      timing discrepancies between valid and invalid cases". Weighed and kept in
+      `approval/src/login.ts`: the send stays on the response path so a failed
+      send earns the requester a loud 503 instead of wearing the
+      anti-enumeration page (respond-before-send would close the timing oracle
+      by opening a silent never-sent path), and padding to equalise a variable
+      SMTP round trip is a guessed bound that leaks when exceeded. The leak is
+      membership only, each probe of a real address mails that mailbox visibly,
+      a relay-outage 503 leaks the same membership more loudly (same terms), and
+      the bind is loopback today. Trigger for the respond-before-send shape plus
+      operator alerting: this surface facing a network strangers can time.
+
+  *Owner: A0b, shipped 2026-08-16. Trigger for revisiting: a second approver class, a non-loopback bind without TLS, or evidence of mailbox-compromise risk the customer cannot accept — the ADR names a password fallback as an explicit decision, never a reach-for.*
 
 - **No per-window rate limit on the proposal door.** A1 shipped the two flood
   controls that were free while the table was being created — a unique
@@ -1435,9 +1485,12 @@ from data that is correctly attributed rather than from a nil-tenant pile.
   lapses is a standing authorisation by another name — so `approved → expired` is
   a real, terminal transition. But re-proposal belongs to A5, which is not built,
   and A2 ships no executor either, so **every** approved row currently meets this
-  timer. It is harmless today for one reason only: nobody can approve anything
-  until A0b ships login. It becomes a live defect the day A0b lands without A5,
-  and at that point a broker's decision can evaporate with no trace of a remedy.
+  timer. 🚨 **A0b HAS NOW SHIPPED LOGIN (2026-08-16) AND A5 HAS NOT SHIPPED
+  RE-PROPOSAL, so this is a LIVE defect, exactly as this entry predicted**: a real
+  person can approve, and her decision can evaporate unexecuted with no trace of
+  a remedy. The executor loop narrows the practical window (it polls approved
+  rows every minute), but "narrow" is not "closed" — an executor outage longer
+  than the TTL still destroys decisions.
   The 72 hours is itself a JUDGMENT with no source; it is named in
   `approval/src/config.ts` rather than buried. For scale: RFC 6749 RECOMMENDs **10
   minutes** for a consent artifact and RFC 7519/9068 permit clock leeway of "no more

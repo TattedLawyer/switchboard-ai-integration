@@ -377,12 +377,12 @@ describe("bounce pin 3: classification — quiet, loud, and silent are three dif
   //   would never be seen.
   it("no metadata → quiet count; metadata with no touch → loud anomaly; both distinct", async () => {
     // Not ours: a message with no proposal-id metadata (a UI send, another deployment).
-    const uiSend = bounce({ email: "someone@example.org", messageId: "pm-ui-send" });
+    const uiSend = bounce({ email: "someone@elsewhere.example.com", messageId: "pm-ui-send" });
     // No message id at all — nothing to even look up.
-    const noId = bounce({ email: "mystery@example.org", messageId: null });
+    const noId = bounce({ email: "mystery@elsewhere.example.com", messageId: null });
     // Claims to be ours, but no touch anywhere: a real anomaly.
     const ghostProposal = randomUUID();
-    const ghost = bounce({ email: "ghost@example.org", messageId: "pm-ghost" });
+    const ghost = bounce({ email: "ghost@elsewhere.example.com", messageId: "pm-ghost" });
 
     const feed = fakeFeed([uiSend, noId, ghost], {
       "pm-ui-send": {},
@@ -476,7 +476,7 @@ describe("bounce pin 5: unmatched bounces surface as an aggregate, never a per-b
   //   drowns — silence by noise, the failure class the design forbids.
   it("ten not-ours bounces produce one aggregate line plus the newest few", async () => {
     const bounces = Array.from({ length: 10 }, (_, i) =>
-      bounce({ email: `other-${i}@example.org`, messageId: `pm-other-${i}` }),
+      bounce({ email: `other-${i}@elsewhere.example.com`, messageId: `pm-other-${i}` }),
     );
     const metadata = Object.fromEntries(bounces.map((b) => [b.messageId as string, {}]));
     const feed = fakeFeed(bounces, metadata);

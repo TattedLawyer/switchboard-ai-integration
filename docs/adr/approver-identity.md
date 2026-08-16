@@ -1,6 +1,6 @@
 # ADR: approver identity — the client approves, through an authenticated surface we own
 
-**Status:** accepted (Phase 3, plan item A0b) — decision recorded, not yet implemented
+**Status:** accepted (Phase 3, plan item A0b) — implemented 2026-08-16 (migration 019, `approval/src/human.ts` + `login.ts`; see the implementation addendum at the end)
 **Owner decision:** 2026-08-07 — the CLIENT approves, through their own dashboard. Not us.
 **Applies to:** A2 (approval queue), A3 (audit log), C1's dashboard shell, C5 (delivery channel)
 **Plan:** `docs/superpowers/plans/2026-08-07-phase3-agent-layer.md` (A0b; global constraints #1, #4)
@@ -328,3 +328,43 @@ shipped path today. We do not claim tamper-proofing, and we do not claim tamper-
 against the host operator for any period after the last published head."* A2's whole
 obligation towards it is that decision rows are append-only and therefore chainable, which
 `42501` on UPDATE and DELETE delivers.
+
+---
+
+# Implementation addendum (A0b, 2026-08-16) — what shipped, against this decision
+
+The surface this ADR decided now exists, in the enumerated "minimal" scope and nothing
+beyond it:
+
+- **Login** — magic link, as recommended: request at `/login`, consume at
+  `/login/consume`. Every caveat this ADR refused to smooth is mechanised in
+  `approval/src/login.ts` and migration `019_approval_auth.sql`: CSPRNG tokens **hashed at
+  rest**, **single-use** by atomic compare-and-set, **15-minute expiry**, **rate-limited
+  per account**, and **an audit row for every login** in an append-only
+  `approval_auth.login_audit` (no role holds UPDATE or DELETE on it). The emailed link
+  lands on a GET that consumes nothing — mailbox scanners prefetch GETs — and the consume
+  is a POST behind CSRF.
+- **Session** — `express-session` over `connect-pg-simple`, in a NEW `approval_auth`
+  schema because the `approval` schema's append-only rule (no DELETE anywhere) is about
+  the audit trail and a session store requires DELETE. `__Host-`-prefixed Secure cookie,
+  HttpOnly, SameSite=Lax, rolling ~7 days, id regenerated at login. The session table is
+  migration-created (`createTableIfMissing: false`): the service role holds CREATE on no
+  schema, measured, and a table minted outside the checksum-pinned ledger is the defect
+  class `migrate.ts` refuses.
+- **One page** — `/queue` with approve / reject / not-now, behind the session, with CSRF
+  defended twice (synchronizer token AND `Sec-Fetch-Site` with an Origin fallback that
+  refuses when both are absent). Amend-then-approve remains schema-only, as KNOWN-ISSUES
+  records.
+- **The audit row names her user id** — `approver_user_id` on every decision comes from
+  the SESSION of the person who completed the link. The configured-operator shim
+  (`APPROVAL_OPERATOR_USER_ID`) is deleted, not deprecated.
+- **The stub-vs-C5 sequencing** resolved as this ADR predicted, in reverse order: the
+  real transactional channel (Postmark, DKIM'd) landed FIRST, so no stub was needed —
+  the sign-in link rides the same `smtpSender` seam at the composition root
+  (`scripts/approval-service.ts`).
+
+What was NOT built, per the scope bound above: no roles, no permission matrix, no org
+entity, no multi-tenancy, no password fallback, no remember-me or device tokens — a
+rolling session is the whole session story. The honesty line this ADR owes is published
+in KNOWN-ISSUES: **a magic link is a bearer token in an inbox; whoever controls the
+approver's mailbox can approve, and no property of this repo changes that.**

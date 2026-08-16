@@ -24,8 +24,11 @@
 // `gap-ack.ts`, which `approver-identity.md:151-156` already blesses as "an operator tool
 // for an engineer". 🚨 That tool's attribution-not-authentication framing is correct FOR
 // THAT ROLE and must NOT creep into the client-facing approval path: adding a row here
-// gives someone a user id, it does not give them a way to log in. Until A0b ships login
-// and session, NOBODY CAN ACTUALLY PRESS APPROVE.
+// gives someone a user id, it does not hand them a session. Since A0b, the row IS the
+// admission ticket to magic-link login: /login sends a one-time link to EXACTLY this
+// email address (exact byte equality — see migration 015's lower(email) warning), so the
+// address entered here is the address that can sign in, and disabling the row is what
+// revokes that.
 //
 // Usage:
 //   node --import tsx src/cli/approval-user-add.ts --email <address>
@@ -84,8 +87,9 @@ async function main(): Promise<void> {
       );
       console.log(`created approver ${r.rows[0].id}  ${r.rows[0].email}`);
       console.log(
-        "this gives them a user id, NOT a way to log in — until A0b ships login and session, " +
-          "nobody can press Approve.",
+        "they can now sign in by magic link at /login, using EXACTLY this address (byte-" +
+          "for-byte — case variants do not resolve). If the deployment sends real mail, " +
+          "the address must also be on SWITCHBOARD_EMAIL_ALLOWLIST or the link is refused.",
       );
     } catch (err) {
       // Never a silent success and never a silent no-op: an operator who believes they

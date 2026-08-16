@@ -1,20 +1,26 @@
 // Phase 3 / A1 — the approval service's HTTP surface.
 //
-// Today it mounts exactly one route: the internal door the agent host posts proposals to.
-// A0b's remaining half — the client's login, session and approval page — mounts on this
-// same app later; that is the whole reason the writer lives here rather than in the agent
-// process (the service exists regardless, so the marginal deployment cost of keeping the
-// agent credential-free is zero processes).
+// It mounts the internal door the agent host posts proposals to, and — opt-in — A0b's
+// human surface: login, session and the approval page (`human.ts`). The two are one
+// process on purpose (the service exists regardless, so the marginal deployment cost of
+// keeping the agent credential-free is zero processes), and they are DIFFERENT DOORS on
+// purpose:
 //
-// The door is INTERNAL. It is loopback-bound by default (config.ts `bindHost`) and
-// authenticated by a bearer secret. It is not, and must never become, a client-facing
-// route: a human approver's authority is a different thing from an agent's authority to
-// ask, and merging them would let a compromised agent host approve its own proposal.
+//   · The door is INTERNAL. Loopback-bound by default (config.ts `bindHost`),
+//     authenticated by a bearer secret, body parsed only AFTER auth. It is not, and must
+//     never become, a client-facing route: a human approver's authority is a different
+//     thing from an agent's authority to ask, and merging them would let a compromised
+//     agent host approve its own proposal.
+//   · The human surface is COOKIE-authenticated with CSRF defence, and its session/CSRF
+//     middleware is mounted PER HUMAN ROUTE, never app-wide. App-wide, the bearer door
+//     would start emitting Set-Cookie and writing a session row per agent POST — a door
+//     contract change the agent tests pin — and the door's deliberate parse-after-auth
+//     ordering below would gain a pre-auth body parser it was designed not to have.
 import express from "express";
 import { timingSafeEqual } from "node:crypto";
 import type pg from "pg";
 import { parseProposal } from "./proposal.js";
-import { registerHumanRoutes } from "./human.js";
+import { registerHumanRoutes, type HumanSurfaceOptions } from "./human.js";
 import {
   IDEMPOTENCY_FINGERPRINT_FIELDS,
   idempotencyFingerprint,
@@ -36,11 +42,13 @@ export interface ApprovalAppOptions {
   tenantId: string;
   proposalToken: string;
   pendingCap: number;
-  /** First Drive — the human decision surface, OPT-IN. Absent, `/queue` and `/decide` are
-   *  not registered at all, so a deployment that does not set it is byte-identical to the
-   *  agent-only door that shipped. See `human.ts` for the conditions under which the
-   *  unauthenticated surface is acceptable. */
-  operatorUserId?: string;
+  /** A0b — the human decision surface, OPT-IN. Absent, `/login`, `/queue` and `/decide`
+   *  are not registered at all, so a deployment that does not configure it is
+   *  byte-identical to the agent-only door that shipped. Everything the surface needs —
+   *  session secret, cookie mode, public origin, the link sender — arrives here
+   *  explicitly; there is no operator-id fallback, because the approver is whoever the
+   *  SESSION names and nothing else. */
+  human?: Omit<HumanSurfaceOptions, "tenantId">;
 }
 
 /** Constant-time bearer comparison. Length is compared first because timingSafeEqual
@@ -397,13 +405,11 @@ export function createApprovalApp(pool: pg.Pool, opts: ApprovalAppOptions): expr
     },
   );
 
-  // Registered LAST and only on request. The human routes carry their own body parser, so
-  // the door's parse-after-auth ordering above is untouched.
-  if (opts.operatorUserId) {
-    registerHumanRoutes(app, pool, {
-      tenantId: opts.tenantId,
-      operatorUserId: opts.operatorUserId,
-    });
+  // Registered LAST and only on request. The human routes carry their own body parser and
+  // their own per-route session/CSRF middleware, so the door's parse-after-auth ordering
+  // above is untouched and the door never emits Set-Cookie.
+  if (opts.human) {
+    registerHumanRoutes(app, pool, { tenantId: opts.tenantId, ...opts.human });
   }
 
   return app;
