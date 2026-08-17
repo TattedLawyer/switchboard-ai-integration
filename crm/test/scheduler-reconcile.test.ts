@@ -256,18 +256,20 @@ describe("T13: reconcile lists exactly the four things", () => {
     await seedNumber(admin, a, "+639171234567");
     await seedNumber(admin, b, "+639171234567");
     const r = await reconcile(admin);
-    // SIX listings now (the close pass added `passedOnLeads`; the daily digest added
-    // `digestMissing`, 2026-08-16 — this closed-list pin fired on that addition, exactly as
-    // designed, and the key is added here deliberately). Shared numbers remain absent
-    // — §5.2's trap has an available response of only "do nothing"; the passed-on and
-    // digest-missing listings' available responses are ACTIONS (revisit / fix the executor
-    // config), which is why they are information, not traps.
+    // SEVEN listings now (the close pass added `passedOnLeads`; the daily digest added
+    // `digestMissing`, 2026-08-16; the sheet foundation added `sheetHealth`, 2026-08-17 —
+    // this closed-list pin fired on each addition, exactly as designed, and each key is
+    // added here deliberately). Shared numbers remain absent — §5.2's trap has an
+    // available response of only "do nothing"; the passed-on, digest-missing and
+    // sheet-health listings' available responses are ACTIONS (revisit / fix the executor
+    // config / re-share or repair the sheet), which is why they are information, not traps.
     expect(Object.keys(r).sort()).toEqual([
       "blockedFollowUps",
       "claimedWithNoProposal",
       "digestMissing",
       "executingWithNoOutcome",
       "passedOnLeads",
+      "sheetHealth",
       "transcriptsStuckPending",
     ]);
     expect(JSON.stringify(r)).not.toContain("+639171234567");

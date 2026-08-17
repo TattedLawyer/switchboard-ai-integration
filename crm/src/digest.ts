@@ -37,6 +37,12 @@
 // `crm/src` may not import `approval/src`.
 import type pg from "pg";
 import type { SendEmail } from "./email-transport.js";
+import {
+  sheetHealth,
+  sheetHealthLines,
+  sheetReadCode,
+  type SheetHealth,
+} from "./sheet-adopt.js";
 
 export interface DigestDeps {
   /** `switchboard_approval` — proposals, users, executions. */
@@ -74,6 +80,13 @@ export interface DigestCounts {
    *  and is not queryable. */
   bouncesRecorded: number;
   stuck: number;
+  /** The tenant's linked sheet, when one exists: last read outcome + missing-row count,
+   *  read on the CRM pool (021 grants SELECT on the two health tables for exactly this).
+   *  The three unhealthy states demand three DIFFERENT actions — wait / re-share with the
+   *  named service account / check the sheet — so the body renders three different
+   *  sentences (`sheetHealthLines`), and `sheet_row_missing` blocks already ride the
+   *  blocked totals above. */
+  sheet?: SheetHealth | null;
 }
 
 export type DigestRun =
@@ -112,6 +125,24 @@ export function formatDigestSubject(c: DigestCounts): string {
   if (c.expiredUnseen > 0) parts.push(`${c.expiredUnseen} expired unseen`);
   if (blockedTotal > 0) parts.push(`${blockedTotal} blocked`);
   if (c.stuck > 0) parts.push(`${c.stuck} stuck`);
+  // The sheet only reaches the SUBJECT when it needs her — a healthy sheet is body-only.
+  // (`sheet_row_missing` blocks are already inside `blockedTotal`.)
+  if (c.sheet && c.sheet.lastReadOk === false) {
+    switch (sheetReadCode(c.sheet.lastReadDetail)) {
+      case "permission_revoked":
+        parts.push("sheet access revoked");
+        break;
+      case "breaker_count":
+      case "breaker_drift":
+        parts.push("sheet import halted");
+        break;
+      case "refused":
+        parts.push("sheet headers need attention");
+        break;
+      default:
+        parts.push("sheet unreachable");
+    }
+  }
   return parts.length > 0 ? parts.join(", ") : "Nothing needs you today";
 }
 
@@ -140,6 +171,10 @@ export function formatDigestBody(
   lines.push(
     `Executions started and never finished (need a person): ${c.stuck}`,
   );
+  if (c.sheet) {
+    // Same sentences as the reconcile listing — one wording per state, never two.
+    lines.push(...sheetHealthLines(c.sheet));
+  }
   return lines.join("\n");
 }
 
@@ -236,6 +271,9 @@ export async function runDailyDigest(deps: DigestDeps): Promise<DigestRun> {
     [deps.tenantId, since.toISOString()],
   );
 
+  // The linked sheet's health — CRM pool (SELECT on the two health tables, 021).
+  const sheets = await sheetHealth(deps.crmDb, deps.tenantId);
+
   const counts: DigestCounts = {
     waiting: pending.rows[0].waiting,
     expiringSoon: pending.rows[0].expiring_soon,
@@ -244,6 +282,7 @@ export async function runDailyDigest(deps: DigestDeps): Promise<DigestRun> {
     blocked: blocked.rows.map((r) => ({ reason: r.reason, count: r.n })),
     bouncesRecorded: bounces.rows[0].n,
     stuck: stuck.length,
+    sheet: sheets[0] ?? null,
   };
 
   // ── Recipients: the active approver list, NOT an env var. Every one of them must also

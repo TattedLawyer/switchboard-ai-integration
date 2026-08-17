@@ -50,6 +50,7 @@
 import type pg from "pg";
 import { CLAIM_LEASE_MINUTES } from "./due.js";
 import { closeFollowUp } from "./followups.js";
+import { sheetHealth, sheetHealthLines, type SheetHealth } from "./sheet-adopt.js";
 
 export interface ReconcileReport {
   claimedWithNoProposal: Array<{ contactId: string; displayName: string | null; leaseEndsAt: Date }>;
@@ -63,6 +64,10 @@ export interface ReconcileReport {
    *  date — a digest phase that is off or persistently failing, visible somewhere other
    *  than the executor's stderr. */
   digestMissing: Array<{ tenantId: string; localDate: string }>;
+  /** The linked sheet(s): last read outcome and missing-row count. The three unhealthy
+   *  states demand three DIFFERENT actions (wait / re-share / check the sheet), so
+   *  `formatReconcile` renders three different sentences (`sheetHealthLines`). */
+  sheetHealth: SheetHealth[];
 }
 
 export type CloseReason = "rejected" | "expired_or_failed";
@@ -284,6 +289,10 @@ export async function reconcile(
     [digestDue],
   );
 
+  // 7. Sheet health — the linked sheet's last read and missing-row count. Owner pool:
+  //    same principal that runs the adoption pass.
+  const sheets = await sheetHealth(admin);
+
   return {
     claimedWithNoProposal: claimed.rows.map((r) => ({
       contactId: r.contact_id,
@@ -315,6 +324,7 @@ export async function reconcile(
       tenantId: r.tenant_id,
       localDate: r.local_date,
     })),
+    sheetHealth: sheets,
   };
 }
 
@@ -365,6 +375,10 @@ export function formatReconcile(r: ReconcileReport): string {
       `  tenant ${d.tenantId}  no digest recorded for local date ${d.localDate} ` +
         `(due 07:00 local — the executor's digest phase is off or failing)`,
     );
+  }
+  lines.push(`linked sheets: ${r.sheetHealth.length}`);
+  for (const h of r.sheetHealth) {
+    for (const l of sheetHealthLines(h)) lines.push(`  ${l}`);
   }
   return lines.join("\n");
 }

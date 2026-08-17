@@ -99,7 +99,7 @@ describe("phone claims MULTIPLE columns, in sheet order — dial order is entry 
 
   it("row phones come out in sheet order across columns", () => {
     const m = mustResolve(["Phone", "Name", "Email", "Mobile 2"]);
-    const row = contactRowFields(m, ["0917-123-4567", "Maria", "m@x.ph", "0918-123-4567"]);
+    const row = contactRowFields(m, ["0917-123-4567", "Maria", "m@x.example.com", "0918-123-4567"]);
     expect(row.phones.map((p) => p.e164)).toEqual(["+639171234567", "+639181234567"]);
     expect(row.phoneProblems).toEqual([]);
   });
@@ -121,7 +121,7 @@ describe("multiple numbers inside ONE cell", () => {
 
   it("does NOT split on hyphens or inner spaces — those live inside numbers", () => {
     const m = mustResolve(["Name", "Contact #"]);
-    const row = contactRowFields(m, ["Maria", "+63 917 123 4567"]);
+    const row = contactRowFields(m, ["Maria", "+63 917 1234567"]);
     expect(row.phones.map((p) => p.e164)).toEqual(["+639171234567"]);
     expect(row.phoneProblems).toEqual([]);
   });
@@ -161,8 +161,8 @@ describe('"" → null at the boundary — the opening.ts nameless path depends o
   //       ("Hi , this is…" would be spoken) and identityUnverified stays false.
   it("empty and whitespace-only name cells become null", () => {
     const m = mustResolve(["Name", "Email"]);
-    expect(contactRowFields(m, ["", "m@x.ph"]).displayName).toBeNull();
-    expect(contactRowFields(m, ["   ", "m@x.ph"]).displayName).toBeNull();
+    expect(contactRowFields(m, ["", "m@x.example.com"]).displayName).toBeNull();
+    expect(contactRowFields(m, ["   ", "m@x.example.com"]).displayName).toBeNull();
     // Short row: the name column simply absent from the cells array.
     expect(contactRowFields(m, []).displayName).toBeNull();
   });

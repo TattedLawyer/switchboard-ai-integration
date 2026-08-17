@@ -20,6 +20,8 @@
 // it. Three processes, three credentials, and the widest one does the least.
 import { getOwnerPool } from "../db.js";
 import { reconcile, formatReconcile, closeTerminatedFollowUps } from "../reconcile.js";
+import { runSheetAdoptionAll, DEFAULT_MAX_CHANGES, DEFAULT_MAX_DRIFT_PCT } from "../sheet-adopt.js";
+import { sheetTransportFromEnv, SHEETS_KEY_FILE_ENV } from "../sheet-client.js";
 import { startScheduler } from "../scheduler.js";
 
 const DEFAULT_INTERVAL_MS = 60_000;
@@ -36,6 +38,22 @@ async function main(): Promise<void> {
   // `approval.proposals` closes nothing and says nothing.
   await pool.query("select 1 from approval.proposals limit 1");
 
+  // The sheet transport: DEGRADES OFF LOUDLY when unconfigured. Off means the linked
+  // sheet's rows stop being adopted — a state the operator must know about at boot, once,
+  // in plain words, rather than discover from a digest that quietly stopped mentioning
+  // new contacts.
+  const transport = sheetTransportFromEnv();
+  if (transport === null) {
+    console.error(
+      `[sheet] ${SHEETS_KEY_FILE_ENV} is not set — SHEET ADOPTION IS OFF. Linked-sheet ` +
+        `rows will not become contacts until the key file path is provided.`,
+    );
+  }
+  const thresholds = {
+    maxChanges: Number(process.env.CRM_SHEET_MAX_CHANGES ?? DEFAULT_MAX_CHANGES),
+    maxDriftPct: Number(process.env.CRM_SHEET_MAX_DRIFT_PCT ?? DEFAULT_MAX_DRIFT_PCT),
+  };
+
   const pass = async (): Promise<void> => {
     const closed = await closeTerminatedFollowUps(pool);
     if (closed.length > 0) {
@@ -44,6 +62,23 @@ async function main(): Promise<void> {
         `[close] closed ${closed.length} terminal follow-up(s): ${rejected} rejected ` +
           `(stopped & surfaced), ${closed.length - rejected} expired/failed (re-proposed)`,
       );
+    }
+    // The adoption pass — owner-credentialed, per-sheet isolated, every outcome recorded
+    // in `crm.sheet_reads`. Quiet when there is nothing to say; loud on any state change.
+    if (transport !== null) {
+      for (const r of await runSheetAdoptionAll(pool, transport, thresholds)) {
+        if (!r.completed) {
+          console.error(`[sheet] ${r.spreadsheetId}: ${r.detail}`);
+        } else if (
+          r.adopted + r.rebound + r.reactivated + r.blocked + r.recovered + r.rowErrors.length >
+          0
+        ) {
+          console.log(`[sheet] ${r.spreadsheetId}: ${r.detail}`);
+          for (const e of r.rowErrors) {
+            console.error(`[sheet]   row ${e.rowIndex}: ${e.error}`);
+          }
+        }
+      }
     }
     // The listings are the operator's surface, not the loop's work — printing them every
     // minute would bury the close lines that actually mean something happened.

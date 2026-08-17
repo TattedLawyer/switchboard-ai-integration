@@ -16,7 +16,8 @@
     "run-cycle": "tsx src/cli/crm-run-cycle.ts",
     "reconcile": "tsx src/cli/crm-reconcile.ts",
     "reconcile-loop": "tsx src/cli/crm-reconcile-loop.ts",
-    "contact-reactivate": "tsx src/cli/crm-contact-reactivate.ts"
+    "contact-reactivate": "tsx src/cli/crm-contact-reactivate.ts",
+    "sheet": "tsx src/cli/crm-sheet.ts"
   },
   "dependencies": {
     "libphonenumber-js": "1.13.10",

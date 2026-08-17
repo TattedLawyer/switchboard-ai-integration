@@ -16,9 +16,16 @@ import type pg from "pg";
 // Every reason a follow-up can be BLOCKED — a data-completeness gap that must SURFACE, never
 // silence. `no_email_address` and `no_phone_number` are per-contact; `no_question_set` is a
 // tenant-global config gap (she has authored no questions yet) that the surface aggregates.
+// `sheet_row_missing` is written by the OWNER-run adoption pass (`sheet-adopt.ts`), not the
+// proposer: the contact's row vanished from a healthy sheet snapshot, so the follow-up is
+// blocked and the clock paused — never deactivated (owner decision).
 // `crm.follow_ups.blocked_reason` is `text null` with no CHECK, so adding values needs no
 // migration — the type is the contract.
-export type BlockedReason = "no_email_address" | "no_phone_number" | "no_question_set";
+export type BlockedReason =
+  | "no_email_address"
+  | "no_phone_number"
+  | "no_question_set"
+  | "sheet_row_missing";
 
 export interface FollowUpRow {
   id: string;

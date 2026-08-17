@@ -189,7 +189,7 @@ function blankToNull(cell: string | undefined): string | null {
 }
 
 // Conservative in-cell separators only: slash, comma, semicolon, newline. Never hyphens
-// or spaces — those live INSIDE numbers ("0917-123-4567", "+63 917 123 4567").
+// or spaces — those live INSIDE numbers ("0917-123-4567", "+63 917 1234567").
 const CELL_SEPARATORS = /[/,;\n]+/;
 
 /**
