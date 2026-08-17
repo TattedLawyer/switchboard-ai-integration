@@ -19,7 +19,13 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import type pg from "pg";
 import { randomUUID } from "node:crypto";
-import { freshCrmDb, seedContact, seedSettings, TEST_TENANT } from "./helpers/crmdb.js";
+import {
+  dayAfter,
+  freshCrmDb,
+  seedContact,
+  seedSettings,
+  TEST_TENANT,
+} from "./helpers/crmdb.js";
 import { payloadHash } from "../../approval/src/canonical.js";
 import { beginExecution, finishExecution } from "../../approval/src/execute.js";
 import { followUpEmailPayloadSchema } from "../../approval/src/proposal.js";
@@ -193,6 +199,28 @@ const nextDueAt = async (contactId: string): Promise<Date | null> => {
   return r.rows[0].next_due_at;
 };
 
+/** The bounced cycle's own Manila `due_date`, read back. `dayAfter(...)` of this is the
+ *  clock-free guard boundary: the UTC-rendered "now + 1 day" it replaces sat a day behind
+ *  Manila from 16:00 UTC to midnight, and the two `hasOpenFollowUpBefore(...) === false`
+ *  pins below were VACUOUS in that window — a wrongly-reopened row at Manila-today was
+ *  invisible to the boundary, so the reopen mutation did not red them. Measured 2026-08-16
+ *  23:56 UTC: under the reopen mutation, pin 1's "proposable again" assertion stayed green.
+ *  fixture fix RUN ✅ 2026-08-16 — reopen mutation re-run against the fixed boundary at a
+ *  NORMAL hour and at a shifted in-window hour (20:00Z), both red:
+ *    Observed (both runs): `Tests  2 failed | 6 skipped (10)` — the "proposable again"
+ *    assertion itself reds (AssertionError: expected true to be false), so the vacuity
+ *    window is gone. */
+const followUpDueDate = async (proposalId: string): Promise<string> => {
+  const r = await admin.query<{ due_date: string }>(
+    `select f.due_date::text as due_date from crm.follow_ups f
+       join crm.follow_up_actions a on a.follow_up_id = f.id
+      where a.proposal_id = $1`,
+    [proposalId],
+  );
+  expect(r.rowCount).toBe(1);
+  return r.rows[0].due_date;
+};
+
 const followUpCloseTime = async (proposalId: string): Promise<Date | null> => {
   const r = await admin.query<{ closed_at: Date | null }>(
     `select f.closed_at from crm.follow_ups f
@@ -254,8 +282,9 @@ describe("bounce pin 1: a refused message is learned, and the contact becomes pr
       INTERVALS.shortRetryDays,
     );
 
-    // Proposable again: no open earlier row silences the next cycle.
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    // Proposable again: no open earlier row silences the next cycle. Boundary derived from
+    // the row's own due_date — no clock — so this pin bites at any wall-clock hour.
+    const tomorrow = dayAfter(await followUpDueDate(proposalId));
     expect(await hasOpenFollowUpBefore(crm, contactId, tomorrow)).toBe(false);
   });
 
@@ -301,7 +330,7 @@ describe("bounce pin 1: a refused message is learned, and the contact becomes pr
     await reconcileBounces({ crmDb: crm, feed, intervals: INTERVALS });
 
     expect(await followUpCloseTime(proposalId)).toEqual(closedBefore);
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    const tomorrow = dayAfter(await followUpDueDate(proposalId));
     expect(await hasOpenFollowUpBefore(crm, contactId, tomorrow)).toBe(false);
   });
 });

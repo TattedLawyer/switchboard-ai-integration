@@ -289,7 +289,7 @@ async function buildCallProposal(
     openingLineNoName: settings.opening_line_no_name,
   });
 
-  const last = await lastTouchSummary(db, contact.id);
+  const last = await lastTouchSummary(db, contact.id, settings.timezone);
   const intervalDays = contact.follow_up_interval_days ?? settings.default_interval_days;
 
   return {
@@ -357,7 +357,11 @@ function buildEmailProposal(contact: ContactRow, key: string): LegBuild {
   };
 }
 
-async function lastTouchSummary(db: pg.Pool, contactId: string): Promise<string> {
+async function lastTouchSummary(
+  db: pg.Pool,
+  contactId: string,
+  timezone: string,
+): Promise<string> {
   const r = await db.query<{ occurred_at: Date; disposition: string | null }>(
     `select occurred_at, disposition from crm.touches
       where contact_id = $1 order by occurred_at desc limit 1`,
@@ -365,7 +369,13 @@ async function lastTouchSummary(db: pg.Pool, contactId: string): Promise<string>
   );
   if (r.rowCount !== 1) return "never contacted";
   const d = r.rows[0];
-  return `last contacted ${d.occurred_at.toISOString().slice(0, 10)} (${d.disposition ?? "in progress"})`;
+  // 🚨 RENDERED IN HER TIMEZONE, never UTC. A touch whose instant fell 00:00–08:00 Manila
+  // (16:00–24:00 UTC — every bounce the reconciler appends overnight, every off-window
+  // execution) rendered the PREVIOUS Manila day under `toISOString()`, permanently, on the
+  // one field a human reads to decide. NOTE the rationale is part of the door's idempotency
+  // FINGERPRINT and the suppression key — changing these bytes has a bounded deploy ripple
+  // (see the 2026-08-16 fix commit).
+  return `last contacted ${dueDateIn(d.occurred_at, timezone)} (${d.disposition ?? "in progress"})`;
 }
 
 async function currentRotation(db: pg.Pool, contactId: string): Promise<number> {

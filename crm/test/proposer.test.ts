@@ -11,6 +11,7 @@ import {
   seedContact,
   seedNumber,
   seedSettings,
+  TEST_INSTANT,
   TEST_TENANT,
 } from "./helpers/crmdb.js";
 import { publishQuestionSet } from "../src/questions.js";
@@ -243,12 +244,26 @@ describe("T9: the date-aware open-guard (C1 fix)", () => {
   //   lifetime-lock C1 is. (A first, sloppy attempt dropped only the clause and left the
   //   `$2` bind, reddening on "bind message supplies 2 parameters" — a wrong-reason red;
   //   the mutation above is the honest full revert.)
+  // 🚨 SEEDED FROM `TEST_INSTANT` (11:00 Manila), NEVER THE MACHINE CLOCK. Seeded from
+  // `new Date()`, this fixture silently stopped constructing the scenario it names for the
+  // last ~16 minutes of every Manila day: cycle 1's 15-minute lease crossed Manila midnight,
+  // cycle 2's due date became D+1 (an EARLIER open row), and production's SKIP was then
+  // CORRECT for the scenario actually built — the test red for its own defect, daily.
+  // `claimDue` is fully parameterized (predicate and lease both bind `$4`), so a fixed
+  // instant plus the injected `vnow` is sufficient; no database-side clock is involved.
+  // fixture fix RUN ✅ 2026-08-16, red reconstructed at shifted clock 15:50Z (Manila 23:50):
+  //   Observed (pre-fix, filtered run): `Tests  1 failed | 9 skipped (10)`
+  //     AssertionError: expected [] to have a length of 1 but got +0   (at c2, the resume)
+  //   Post-fix, same shifted clock, whole file: `Tests  11 passed (11)`.
+  // guard mutation RE-RUN ✅ 2026-08-16 against the fixed fixture (filtered run):
+  //   Observed: `Tests  1 failed | 10 skipped (11)`
+  //     AssertionError: expected [] to have a length of 1 but got +0
   it("resumes a same-date orphan but skips an in-flight earlier cycle", async () => {
-    let vnow = new Date(Date.now() + 60_000);
+    let vnow = new Date(TEST_INSTANT.getTime() + 60_000);
     const now = (): Date => vnow;
     const deps = { db: crm, postProposal: undefined as never, now };
 
-    const ana = await seedContact(admin, { dueAt: new Date().toISOString() });
+    const ana = await seedContact(admin, { dueAt: TEST_INSTANT.toISOString() });
     await seedNumber(admin, ana, "+639171234567");
     const door = fakeDoor();
 
@@ -280,6 +295,32 @@ describe("T9: the date-aware open-guard (C1 fix)", () => {
     const c3 = await runCycle({ ...deps, postProposal: door.post }, TEST_TENANT, 10);
     expect(c3[0].actions).toHaveLength(0);
     expect(c3[0].skipped[0].reason).toMatch(/earlier due date/);
+  });
+});
+
+describe("T9: the rationale renders the last touch in HER timezone", () => {
+  // mutation: render `occurred_at` via its UTC date (the pre-fix
+  //           `toISOString`-prefix form) -> red. RUN ✅ 2026-08-16
+  //   Observed: `Tests  1 failed | 10 passed (11)`
+  //     AssertionError: expected 'Ana Reyes is due: last contacted 2026-0…' to contain
+  //                     'last contacted 2026-08-10'   (it said 2026-08-09 — the previous
+  //                     Manila day, permanently, on the field the human reads to decide)
+  //
+  // The touch instant is 17:30Z = 01:30 Manila NEXT day. Every bounce the reconciler
+  // appends overnight and every off-window execution lands in that 00:00–08:00 Manila band.
+  it("shows the Manila date for a touch that occurred 00:00-08:00 Manila", async () => {
+    const ana = await seedContact(admin, { dueAt: overdue() });
+    await seedNumber(admin, ana, "+639171234567");
+    await admin.query(
+      `insert into crm.touches (contact_id, channel, transcript_delivery, disposition, occurred_at)
+       values ($1, 'call', 'sent', 'no_answer', '2026-08-09T17:30:00Z')`,
+      [ana],
+    );
+    const door = fakeDoor();
+    const [outcome] = await runCycle({ db: crm, postProposal: door.post }, TEST_TENANT, 10);
+
+    expect(outcome.actions).toHaveLength(1);
+    expect(door.posted[0].rationale).toContain("last contacted 2026-08-10");
   });
 });
 

@@ -11,6 +11,32 @@ import { freshTestDb } from "../../../ingest/test/helpers/testdb.js";
 
 export const TEST_TENANT = "00000000-0000-0000-0000-0000000000c1";
 
+/**
+ * A FIXED instant, safely mid-Manila-day: 03:00Z = 11:00 Asia/Manila. Fixtures that need
+ * "a real moment in time" seed from THIS (driving production clocks via the injected
+ * `now`), never from the machine clock. A fixture seeded from `new Date()` near Manila
+ * midnight silently stops constructing the scenario it names — a 15-minute lease crosses
+ * the Manila date line and "same date" becomes "next date" (the defect family behind the
+ * 2026-08-16 sweep; see date-idiom.pin.test.ts).
+ */
+export const TEST_INSTANT = new Date("2026-03-03T03:00:00Z");
+
+/**
+ * The guard boundary AFTER a follow-up's own due date, derived from the row's read-back
+ * `due_date` (a Manila calendar date, `YYYY-MM-DD`) with pure calendar arithmetic — NO
+ * clock. `hasOpenFollowUpBefore(db, contact, dayAfter(dueDate))` can therefore see an open
+ * row at that due date at ANY wall-clock hour; the previous idiom
+ * (UTC-rendered "now + 1 day") drifted one day behind Manila from 16:00 UTC to midnight,
+ * turning the boundary blind — and the assertions on it vacuous — eight hours a day.
+ */
+export function dayAfter(dueDate: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dueDate);
+  if (!m) throw new Error(`dayAfter expects YYYY-MM-DD, got: ${dueDate}`);
+  const next = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + 1));
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}-${pad(next.getUTCDate())}`;
+}
+
 export interface CrmDb {
   /** Migration owner. The operator CLIs' role. */
   admin: pg.Pool;

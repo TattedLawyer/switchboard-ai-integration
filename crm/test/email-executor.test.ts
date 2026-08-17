@@ -18,6 +18,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import type pg from "pg";
 import { randomUUID } from "node:crypto";
 import {
+  dayAfter,
   freshCrmDb,
   seedContact,
   seedSettings,
@@ -454,7 +455,22 @@ describe("Task 9 pin 6: a failed send is RECOVERABLE, and the recovery is pinned
       [proposalId],
     );
     expect(before.rows[0].closed_at).toBeNull();
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    // 🚨 THE GUARD BOUNDARY USES NO CLOCK: it is the row's OWN Manila due_date (read back
+    // above) + 1 day. The previous idiom — UTC-rendered "now + 1 day" — sat one day behind
+    // Manila from 16:00 UTC to midnight, could not see the open row, and redded this test
+    // eight hours a day while production compared Manila-to-Manila correctly. Deliberately
+    // the read-back form rather than `dueDateIn(now + 1d, "Asia/Manila")`: the property
+    // pinned here is the RELATIVE guard semantics (open row at due date D is visible at
+    // boundary D+1); absolute Manila-date correctness is pinned by the proposer/date suite,
+    // and no clock read means a midnight tick mid-test cannot split the two derivations.
+    // fixture fix RUN ✅ 2026-08-16, red observed at the REAL wall clock 23:51 UTC:
+    //   Observed (pre-fix, filtered run): `Tests  1 failed | 14 skipped (15)`
+    //     AssertionError: expected false to be true   (the boundary blind to the open row)
+    //   Post-fix, clock shifted back inside the window (20:00Z): `Tests 1 passed | 14 skipped`.
+    // closeTerminatedFollowUps mutation RE-RUN ✅ 2026-08-16 against the fixed boundary:
+    //   Observed: `Tests  1 failed | 14 skipped (15)`
+    //     AssertionError: expected null not to be null   (the row stayed open)
+    const tomorrow = dayAfter(before.rows[0].due_date);
     expect(await hasOpenFollowUpBefore(crm, ana, tomorrow)).toBe(true);
 
     await closeTerminatedFollowUps(admin);
