@@ -16,6 +16,7 @@ import {
   linkSheet,
   unlinkSheet,
   runSheetAdoptionAll,
+  adoptionThresholdsFromEnv,
   sheetHealth,
   sheetHealthLines,
 } from "../sheet-adopt.js";
@@ -61,7 +62,9 @@ async function main(): Promise<void> {
         if (transport === null) {
           throw new Error(`${SHEETS_KEY_FILE_ENV} is not set — cannot reach the sheet`);
         }
-        for (const r of await runSheetAdoptionAll(pool, transport)) {
+        // Same validated env thresholds as the loop — a one-shot adopt with a typo'd
+        // breaker variable must refuse exactly the way the daemon does.
+        for (const r of await runSheetAdoptionAll(pool, transport, adoptionThresholdsFromEnv())) {
           console.log(`${r.spreadsheetId}: ${r.detail}`);
           for (const e of r.rowErrors) console.error(`  row ${e.rowIndex}: ${e.error}`);
         }

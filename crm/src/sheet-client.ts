@@ -8,7 +8,9 @@
 //
 // 🚨 CREDENTIALS ARE A FILE PATH, NEVER INLINE JSON. `SHEETS_SERVICE_ACCOUNT_KEY_FILE`
 // names the key file on disk (mode 600, outside the repo). The key material is read at
-// construction and held in memory only; nothing here logs it, returns it, or writes it.
+// construction and held in memory only; nothing here logs it, returns it, or writes it —
+// with one caveat stated because it is true: a MALFORMED key file makes `JSON.parse` throw
+// a SyntaxError that quotes a few characters of the file's text in its message.
 // When the variable is unset the transport DEGRADES OFF: `sheetTransportFromEnv` returns
 // null and the caller must say so loudly — a silently-absent sheet integration is the
 // silence-failure class this repo names as its worst.
@@ -96,6 +98,12 @@ const MAX_ATTEMPTS = 5;
 const BASE_DELAY_MS = 250;
 const MAX_DELAY_MS = 8_000;
 
+/** Every fetch carries `AbortSignal.timeout` — a hung read used to block NOTHING while the
+ *  scheduler fired the next tick regardless, which is exactly how adoption passes came to
+ *  overlap. The signal also bounds the body read, so a stalled response cannot wedge a
+ *  pass past the per-sheet advisory lock's usefulness. */
+const FETCH_TIMEOUT_MS = 30_000;
+
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const b64url = (o: unknown): string =>
@@ -108,12 +116,13 @@ export class SheetClient implements SheetTransport {
 
   constructor(keyFilePath: string) {
     // Throws loudly on a missing/garbled file — a transport that half-exists is worse
-    // than one that refuses at construction.
+    // than one that refuses at construction. (A garbled file's JSON.parse error quotes a
+    // few characters of the file's text — the header's stated caveat.)
     const parsed = JSON.parse(readFileSync(keyFilePath, "utf8")) as Partial<ServiceAccountKey>;
     if (!parsed.client_email || !parsed.private_key) {
       throw new Error(
         `${keyFilePath} is not a service-account key file (client_email/private_key missing). ` +
-          `Nothing from the file is echoed here on purpose.`,
+          `Nothing from the file is echoed by this message on purpose.`,
       );
     }
     this.key = { client_email: parsed.client_email, private_key: parsed.private_key };
@@ -140,6 +149,7 @@ export class SheetClient implements SheetTransport {
         grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
         assertion: `${unsigned}.${sig}`,
       }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     const body = (await res.json()) as { access_token?: string; expires_in?: number };
     if (!res.ok || !body.access_token) {
@@ -167,6 +177,7 @@ export class SheetClient implements SheetTransport {
             "content-type": "application/json",
             ...(init.headers ?? {}),
           },
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         });
       } catch (err) {
         // Network-level failure (DNS, refused, reset): retryable, bounded by the loop.

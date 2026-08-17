@@ -19,13 +19,18 @@ import type pg from "pg";
 // `sheet_row_missing` is written by the OWNER-run adoption pass (`sheet-adopt.ts`), not the
 // proposer: the contact's row vanished from a healthy sheet snapshot, so the follow-up is
 // blocked and the clock paused — never deactivated (owner decision).
+// `sheet_divergent` is also the adoption pass's: a value-integrity breaker halt pauses the
+// contacts whose sheet values no longer match what is stored — a halt that left outreach
+// running against possibly-corrupt stored details would not be a safety measure. Closed by
+// the next COMPLETED pass over the same refs.
 // `crm.follow_ups.blocked_reason` is `text null` with no CHECK, so adding values needs no
 // migration — the type is the contract.
 export type BlockedReason =
   | "no_email_address"
   | "no_phone_number"
   | "no_question_set"
-  | "sheet_row_missing";
+  | "sheet_row_missing"
+  | "sheet_divergent";
 
 export interface FollowUpRow {
   id: string;

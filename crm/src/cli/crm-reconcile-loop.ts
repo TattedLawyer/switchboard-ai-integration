@@ -20,7 +20,7 @@
 // it. Three processes, three credentials, and the widest one does the least.
 import { getOwnerPool } from "../db.js";
 import { reconcile, formatReconcile, closeTerminatedFollowUps } from "../reconcile.js";
-import { runSheetAdoptionAll, DEFAULT_MAX_CHANGES, DEFAULT_MAX_DRIFT_PCT } from "../sheet-adopt.js";
+import { runSheetAdoptionAll, adoptionThresholdsFromEnv } from "../sheet-adopt.js";
 import { sheetTransportFromEnv, SHEETS_KEY_FILE_ENV } from "../sheet-client.js";
 import { startScheduler } from "../scheduler.js";
 
@@ -49,10 +49,10 @@ async function main(): Promise<void> {
         `rows will not become contacts until the key file path is provided.`,
     );
   }
-  const thresholds = {
-    maxChanges: Number(process.env.CRM_SHEET_MAX_CHANGES ?? DEFAULT_MAX_CHANGES),
-    maxDriftPct: Number(process.env.CRM_SHEET_MAX_DRIFT_PCT ?? DEFAULT_MAX_DRIFT_PCT),
-  };
+  // VALIDATED at boot, same as the interval above: `Number("2O")` is NaN, every `>` against
+  // NaN is false, and a typo'd threshold would silently disable both breaker arms. Refusing
+  // to boot is the only honest behaviour for a disabled safety feature.
+  const thresholds = adoptionThresholdsFromEnv();
 
   const pass = async (): Promise<void> => {
     const closed = await closeTerminatedFollowUps(pool);
@@ -67,7 +67,11 @@ async function main(): Promise<void> {
     // in `crm.sheet_reads`. Quiet when there is nothing to say; loud on any state change.
     if (transport !== null) {
       for (const r of await runSheetAdoptionAll(pool, transport, thresholds)) {
-        if (!r.completed) {
+        if (r.skipped) {
+          // Not an error: the overlapping pass records the outcome. Logged because an
+          // overlap means a pass is outliving the interval — worth a line, not a siren.
+          console.log(`[sheet] ${r.spreadsheetId}: ${r.detail}`);
+        } else if (!r.completed) {
           console.error(`[sheet] ${r.spreadsheetId}: ${r.detail}`);
         } else if (
           r.adopted + r.rebound + r.reactivated + r.blocked + r.recovered + r.rowErrors.length >

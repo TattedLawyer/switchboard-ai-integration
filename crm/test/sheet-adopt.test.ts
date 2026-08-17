@@ -9,7 +9,16 @@ import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import { freshCrmDb, sqlstate, TEST_TENANT } from "./helpers/crmdb.js";
 import { FakeSheet, type FakeRow } from "./helpers/fakesheet.js";
-import { linkSheet, runSheetAdoption, type AdoptionReport } from "../src/sheet-adopt.js";
+import {
+  linkSheet,
+  runSheetAdoption,
+  adoptionThresholdsFromEnv,
+  SHEET_ADOPT_LOCK_NS,
+  DEFAULT_MAX_CHANGES,
+  DEFAULT_MAX_DRIFT_PCT,
+  DEFAULT_DISPLACEMENT_HALT,
+  type AdoptionReport,
+} from "../src/sheet-adopt.js";
 
 let admin: pg.Pool;
 let crm: pg.Pool;
@@ -291,7 +300,7 @@ describe("missing rows — blocked and surfaced, never deactivated", () => {
   });
 });
 
-describe("the circuit breaker — both arms halt BEFORE any write", () => {
+describe("the circuit breaker — every arm halts BEFORE any adoption write", () => {
   // mutation: disable the count-arm `if` in `runSheetAdoption` -> red. RUN ✅ 2026-08-17
   //   Observed: `Tests  1 failed | 12 passed (13)`
   //     AssertionError: expected true to be false // Object.is equality  (r.completed)
@@ -318,13 +327,15 @@ describe("the circuit breaker — both arms halt BEFORE any write", () => {
     expect(read.detail).toMatch(/^breaker_count: /);
   });
 
-  // mutation: disable the drift-arm `if` in `runSheetAdoption` -> red. RUN ✅ 2026-08-17
-  //   Observed: `Tests  1 failed | 12 passed (13)`
+  // mutation (M1): disable BOTH value-integrity arms (displacement + drift `if`s) -> red.
+  // (This pin originally covered the drift arm alone; a full-column rotation is a
+  // PERMUTATION, so the displacement arm — the primary — now fires first.)
+  // RUN ✅ 2026-08-17:
+  //   Observed: `Tests  5 failed | 17 passed (22)` — this pin red with
   //     AssertionError: expected true to be false // Object.is equality  (r.completed)
   //   i.e. with only the count arm standing, the scrambled pass ran to completion — every
   //   ref present, none new, ZERO planned changes, so the count arm saw nothing while
-  //   every row bound one person's name to another's number. That blindness is why the
-  //   drift arm exists. Restored, green.
+  //   every row bound one person's name to another's number. Restored, green.
   it("halts on a PARTIAL-RANGE SORT: values scrambled under unchanged refs, no ref moved, no ref missing", async () => {
     const people = ["Ana", "Ben", "Cara", "Dan", "Ely", "Fe"];
     const { sheet, run, linkedSheetId } = await linkedFake(
@@ -344,16 +355,27 @@ describe("the circuit breaker — both arms halt BEFORE any write", () => {
 
     const r = await run();
     expect(r.completed).toBe(false);
-    expect(r.code).toBe("breaker_drift");
+    // Every "new" value in a rotation is stored under a DIFFERENT ref — the displacement
+    // arm halts before the percentage backstop is even consulted.
+    expect(r.code).toBe("breaker_displacement");
     // The count arm saw NOTHING to do — every ref present, none new — so without the
-    // drift arm this pass would have completed and bound names to the wrong numbers.
+    // value-integrity arms this pass would have completed and bound names to the wrong
+    // numbers.
     expect(r.adopted + r.blocked + r.refsMinted).toBe(0);
     const read = await latestRead(linkedSheetId);
     expect(read.ok).toBe(false);
-    expect(read.detail).toMatch(/^breaker_drift: /);
+    expect(read.detail).toMatch(/^breaker_displacement: /);
     expect(read.detail).toContain("PARTIAL-RANGE SORT");
-    // Stored state untouched: every name still beside its own email.
-    expect(await contactsOf(linkedSheetId)).toEqual(before);
+    // Stored IDENTITY untouched: every name still beside its own email. Clocks are now
+    // deliberately PAUSED by the halt (its own pin below), so compare identity, not clocks.
+    const identity = (rows: ContactRow[]) =>
+      rows.map(({ id, display_name, email_address, active }) => ({
+        id,
+        display_name,
+        email_address,
+        active,
+      }));
+    expect(identity(await contactsOf(linkedSheetId))).toEqual(identity(before));
   });
 
   it("re-baselines accepted drift so gradual legitimate edits never accumulate into a halt", async () => {
@@ -378,6 +400,355 @@ describe("the circuit breaker — both arms halt BEFORE any write", () => {
     const r2 = await run();
     expect(r2.completed).toBe(true);
     expect(r2.synced).toBe(0);
+  });
+});
+
+describe("displacement — a sort is a permutation; moved values halt, novel values sync", () => {
+  const pad = (i: number): string => String(1000000 + i).slice(1); // 7 digits, distinct
+  const book = (n: number): FakeRow[] =>
+    Array.from({ length: n }, (_, i) =>
+      row(`Person${i}`, `p${i}@example.com`, `0917${pad(i)}`),
+    );
+  const swapNameEmail = (a: FakeRow, b: FakeRow): void => {
+    for (const col of [0, 1]) {
+      const t = a.cells[col];
+      a.cells[col] = b.cells[col];
+      b.cells[col] = t;
+    }
+  };
+  interface Binding {
+    display_name: string | null;
+    email_address: string | null;
+    phones: string[];
+  }
+  const bindings = async (linkedSheetId: string): Promise<Map<string, Binding>> => {
+    const out = new Map<string, Binding>();
+    for (const c of await contactsOf(linkedSheetId)) {
+      const p = await admin.query<{ phone_e164: string }>(
+        `select phone_e164 from crm.phone_numbers where contact_id = $1 order by ordinal`,
+        [c.id],
+      );
+      out.set(c.id, {
+        display_name: c.display_name,
+        email_address: c.email_address,
+        phones: p.rows.map((x) => x.phone_e164),
+      });
+    }
+    return out;
+  };
+
+  // THE DEMONSTRATED ATTACK, reproduced as the acceptance pin: a 12-row book, one adjacent
+  // name+email swap per pass — 2/12 = 16.7%, permanently under the 20% percentage arm —
+  // ran ELEVEN passes with zero halts and fully rotated the database: every contact bound
+  // to another person's phone number. The displacement arm must halt PASS 1 with zero rows
+  // corrupted, and every subsequent pass, because a swap MOVES values and moved values are
+  // stored under a different ref.
+  // mutation (M1a): disable the displacement-arm `if` alone -> red. RUN ✅ 2026-08-17
+  //   Observed: `Tests  4 failed | 18 passed (22)` — this pin red with
+  //     AssertionError: expected true to be false // Object.is equality  (r.completed, pass 1)
+  //   i.e. the swap pass ran to COMPLETION with the percentage arm fully armed: 2/12 =
+  //   16.7% is under 20%, so only the displacement arm stands between one adjacent swap
+  //   per pass and a fully rotated book. (The three 100%-scramble pins went red on code —
+  //   'breaker_drift' instead of 'breaker_displacement' — the backstop catching what the
+  //   disabled primary should have.) Restored, green.
+  it("halts pass 1 of the 11-pass adjacent-swap rotation with zero rows corrupted — and every later pass too", async () => {
+    const { sheet, run, linkedSheetId } = await linkedFake(book(12));
+    const first = await run();
+    expect(first.completed).toBe(true);
+    expect(first.adopted).toBe(12);
+    const before = await bindings(linkedSheetId);
+
+    // Eleven passes, one adjacent name+email swap before each — the full rotation.
+    for (let pass = 1; pass <= 11; pass++) {
+      swapNameEmail(sheet.rows[pass], sheet.rows[pass + 1]);
+      const r = await run();
+      expect(r.completed).toBe(false); // ← pass 1 is the one that mattered; all 11 hold
+      expect(r.code).toBe("breaker_displacement");
+      expect(r.synced + r.adopted + r.rebound).toBe(0); // nothing written to identities
+    }
+
+    // ZERO rows corrupted: every contact still binds its own name, email AND phone.
+    expect(await bindings(linkedSheetId)).toEqual(before);
+    const read = await latestRead(linkedSheetId);
+    expect(read.detail).toMatch(/^breaker_displacement: /);
+  });
+
+  // mutation (M8): make divergence + displacement blind to phones again (drop the
+  // `newPhones.length > 0` term and the phone displacement count) -> red. RUN ✅ 2026-08-17
+  //   Observed: `Tests  2 failed | 20 passed (22)` — this pin red with
+  //     AssertionError: expected true to be false // Object.is equality  (r.completed)
+  //   (the phone-sync pin red alongside it: `expected +0 to be 1` on r.synced — same
+  //   blindness, phones never synced)
+  //   i.e. the phone-column-only scramble passed CLEAN — the review's failure 2 verbatim:
+  //   the arm compared only name+email while every contact kept another person's number.
+  //   Restored, green.
+  it("halts a phone-column-only scramble — the arm compares phones, not just name+email", async () => {
+    const { sheet, run, linkedSheetId } = await linkedFake(book(4));
+    await run();
+    const before = await bindings(linkedSheetId);
+
+    // She sorts ONLY the phone column: numbers rotate one row down, names/emails stay.
+    const data = sheet.rows.slice(1);
+    const rotated = data.map((_, i) => data[(i + 1) % data.length].cells[2]);
+    data.forEach((r2, i) => {
+      r2.cells[2] = rotated[i];
+    });
+
+    const r = await run();
+    expect(r.completed).toBe(false);
+    expect(r.code).toBe("breaker_displacement");
+    expect(await bindings(linkedSheetId)).toEqual(before); // no cross-contamination stored
+  });
+
+  // mutation (M2): reintroduce the deleted min-sample (`matched.length >= 5 &&` on the
+  // displacement arm) -> red. RUN ✅ 2026-08-17
+  //   Observed: `Tests  2 failed | 20 passed (22)` — this pin AND the phone-scramble pin:
+  //     AssertionError: expected 'breaker_drift' to be 'breaker_displacement'
+  //   i.e. with a min-sample every 4-row book slips past the primary arm (here the
+  //   percentage backstop still caught 4/4 = 100%; a 2-of-4 swap — 50% with the pct arm
+  //   raised for a run, or any book under every percentage — would sync silently, which is
+  //   the demonstrated failure 3). The absolute count must not carry a sample floor.
+  //   Restored, green.
+  it("halts a fully scrambled 4-row book — the absolute count has NO minimum sample", async () => {
+    const { sheet, run, linkedSheetId } = await linkedFake(book(4));
+    await run();
+    const before = await bindings(linkedSheetId);
+
+    const data = sheet.rows.slice(1);
+    const rotated = data.map((_, i) => [...data[(i + 1) % data.length].cells]);
+    data.forEach((r2, i) => {
+      r2.cells = rotated[i];
+    });
+
+    const r = await run();
+    expect(r.completed).toBe(false);
+    expect(r.code).toBe("breaker_displacement");
+    expect(await bindings(linkedSheetId)).toEqual(before);
+  });
+
+  it("does NOT halt a single legitimate edit — novel values sync, even in a tiny book", async () => {
+    const { sheet, run, linkedSheetId } = await linkedFake(book(3));
+    await run();
+
+    // A real edit produces a NOVEL value: no other ref stores it, nothing is displaced.
+    // 1 of 3 = 33% — over the old percentage arm's threshold, which is why the pct
+    // backstop requires two moved rows: one changed row is an edit at ANY book size.
+    sheet.rows[1].cells[0] = "Person0 Reyes-Santos";
+    const r = await run();
+    expect(r.completed).toBe(true);
+    expect(r.synced).toBe(1);
+    const renamed = (await contactsOf(linkedSheetId)).find(
+      (c) => c.email_address === "p0@example.com",
+    );
+    expect(renamed?.display_name).toBe("Person0 Reyes-Santos");
+  });
+
+  // mutation (M3): drop the `pauseDivergent()` call from the displacement halt -> red.
+  // RUN ✅ 2026-08-17
+  //   Observed: `Tests  1 failed | 21 passed (22)`
+  //     AssertionError: expected 2026-08-17T23:01:56.376Z to be null   (next_due_at)
+  //   i.e. the halted contacts stayed DUE: the halt stopped adopting while outreach kept
+  //   running — the proposer would keep proposing from stored (possibly already-corrupt)
+  //   contacts and phones, the review's failure 4: a halt that is not a safety measure.
+  //   Restored, green.
+  it("a halt PAUSES the divergent contacts — blocked sheet_divergent, clock null — and a clean pass recovers them", async () => {
+    const { sheet, run, linkedSheetId } = await linkedFake(book(4));
+    await run();
+    const originalCells = sheet.rows.slice(1).map((r2) => [...r2.cells]);
+
+    const data = sheet.rows.slice(1);
+    const rotated = data.map((_, i) => [...data[(i + 1) % data.length].cells]);
+    data.forEach((r2, i) => {
+      r2.cells = rotated[i];
+    });
+    const halted = await run();
+    expect(halted.completed).toBe(false);
+
+    // Every divergent contact: still active, clock PAUSED, blocked with the new reason.
+    for (const c of await contactsOf(linkedSheetId)) {
+      expect(c.active).toBe(true); // blocked ≠ deactivated, same as sheet_row_missing
+      expect(c.next_due_at).toBeNull();
+      const fup = await admin.query(
+        `select blocked_reason from crm.follow_ups where contact_id = $1 and closed_at is null`,
+        [c.id],
+      );
+      expect(fup.rows).toEqual([{ blocked_reason: "sheet_divergent" }]);
+    }
+
+    // She undoes the sort: the next pass completes, closes the blocks, restarts clocks.
+    data.forEach((r2, i) => {
+      r2.cells = originalCells[i];
+    });
+    const clean = await run();
+    expect(clean.completed).toBe(true);
+    expect(clean.recovered).toBe(4);
+    for (const c of await contactsOf(linkedSheetId)) {
+      expect(c.next_due_at).not.toBeNull();
+      const open = await admin.query(
+        `select 1 from crm.follow_ups where contact_id = $1 and closed_at is null`,
+        [c.id],
+      );
+      expect(open.rows).toEqual([]);
+    }
+  });
+});
+
+describe("matched-row sync — her corrections reach the stored contact, phones included", () => {
+  // mutation (M7): drop the `insertPhone` loop from the matched-row sync -> red.
+  // RUN ✅ 2026-08-17
+  //   Observed: `Tests  1 failed | 21 passed (22)`
+  //     AssertionError: expected [ { phone_e164: '+639171234567' } ] to deeply equal [ …(2) ]
+  //   i.e. the review's failure 5 verbatim: phones were written ONLY at adoption, so the
+  //   broker correcting a number in her sheet never reached the dialer. Restored, green.
+  it("a corrected phone number on a matched row lands in phone_numbers, insert-only", async () => {
+    const { sheet, run, linkedSheetId } = await linkedFake([
+      row("Ana", "ana@example.com", "0917 123 4567"),
+      row("Ben", "ben@example.com", "0918 555 1234"),
+    ]);
+    await run();
+
+    // She fixes Ana's number to a NOVEL one — one divergent row, no halt.
+    sheet.rows[1].cells[2] = "0917 999 8888";
+    const r = await run();
+    expect(r.completed).toBe(true);
+    expect(r.synced).toBe(1);
+
+    const ana = (await contactsOf(linkedSheetId)).find(
+      (c) => c.email_address === "ana@example.com",
+    );
+    const phones = await admin.query(
+      `select phone_e164 from crm.phone_numbers where contact_id = $1 order by ordinal`,
+      [ana?.id],
+    );
+    // Insert-only by design: the old number is FILTERED from dialing decisions by absence
+    // from the sheet, never DELETED (016 grants no DELETE; removal is an operator action).
+    expect(phones.rows).toEqual([
+      { phone_e164: "+639171234567" },
+      { phone_e164: "+639179998888" },
+    ]);
+
+    // Same edit does not count as drift again next pass — the phone baseline re-based.
+    const r2 = await run();
+    expect(r2.completed).toBe(true);
+    expect(r2.synced).toBe(0);
+  });
+});
+
+describe("cell-clearing — an emptied row is a vanished row, not a nameless contact", () => {
+  // mutation (M6): restore the old dataRows filter (`r.ref !== null || …`) so a cleared
+  // row still counts as present -> red. RUN ✅ 2026-08-17
+  //   Observed: `Tests  1 failed | 21 passed (22)`
+  //     AssertionError: expected +0 to be 1 // Object.is equality   (r.blocked)
+  //   i.e. no block was written for the row she emptied: the contact stayed active and
+  //   due — and would keep being contacted with the nameless greeting. Restored, green.
+  it("clearing a row's cells (ref still alive) blocks the contact like a deletion, and refilling recovers it", async () => {
+    const { sheet, run, linkedSheetId } = await linkedFake([
+      row("Ana", "ana@example.com", "0917 123 4567"),
+      row("Ben", "ben@example.com", "0918 555 1234"),
+    ]);
+    await run();
+    const ana = (await contactsOf(linkedSheetId)).find(
+      (c) => c.email_address === "ana@example.com",
+    ) as ContactRow;
+    const anaRow = sheet.rows.find((r2) => r2.ref === ana.row_ref) as FakeRow;
+    const savedCells = [...anaRow.cells];
+    anaRow.cells = anaRow.cells.map(() => ""); // she clears the cells; the ref stays
+
+    const r = await run();
+    expect(r.completed).toBe(true);
+    expect(r.blocked).toBe(1);
+    const after = (await contactsOf(linkedSheetId)).find((c) => c.id === ana.id);
+    expect(after?.active).toBe(true); // blocked, never deactivated — owner decision
+    expect(after?.next_due_at).toBeNull();
+    expect(after?.display_name).toBe("Ana"); // stored identity untouched by the blanks
+    const fup = await admin.query(
+      `select blocked_reason from crm.follow_ups where contact_id = $1 and closed_at is null`,
+      [ana.id],
+    );
+    expect(fup.rows).toEqual([{ blocked_reason: "sheet_row_missing" }]);
+
+    // She types the row back in: same ref, same recovery as a restored deletion.
+    anaRow.cells = savedCells;
+    const r2 = await run();
+    expect(r2.recovered).toBe(1);
+  });
+});
+
+describe("one pass per sheet — the advisory lock refuses an overlap", () => {
+  // mutation (M4): ignore the lock result (`locked = true` instead of the query's answer)
+  // -> red. RUN ✅ 2026-08-17
+  //   Observed: `Tests  1 failed | 21 passed (22)`
+  //     AssertionError: expected false to be true // Object.is equality  (r.skipped)
+  //   i.e. the second pass ran INSIDE the first one's window — the demonstrated
+  //   concurrency defect (duplicate contacts minted; a live contact blocked from a stale
+  //   snapshot). Restored, green.
+  it("skips quietly while another session holds the sheet's lock, and runs after release", async () => {
+    const { run, linkedSheetId } = await linkedFake([row("Ana", "ana@example.com")]);
+    await run(); // first import, records one read
+
+    const holder = await admin.connect();
+    try {
+      const got = await holder.query<{ locked: boolean }>(
+        `select pg_try_advisory_lock(hashtextextended($1 || $2, 0)) as locked`,
+        [SHEET_ADOPT_LOCK_NS, linkedSheetId],
+      );
+      expect(got.rows[0].locked).toBe(true);
+
+      const r = await run();
+      expect(r.skipped).toBe(true);
+      expect(r.completed).toBe(false);
+      // Quiet means QUIET: the overlapping pass records the ledger row, not the skipper —
+      // two rows for one read would be noise.
+      const reads = await admin.query<{ n: number }>(
+        `select count(*)::int as n from crm.sheet_reads where linked_sheet_id = $1`,
+        [linkedSheetId],
+      );
+      expect(reads.rows[0].n).toBe(1); // only the first import's row
+
+      await holder.query(`select pg_advisory_unlock(hashtextextended($1 || $2, 0))`, [
+        SHEET_ADOPT_LOCK_NS,
+        linkedSheetId,
+      ]);
+    } finally {
+      holder.release();
+    }
+
+    // Lock released — a crashed pass releases it the same way (session close): the next
+    // pass runs normally.
+    const r2 = await run();
+    expect(r2.skipped).toBe(false);
+    expect(r2.completed).toBe(true);
+  });
+});
+
+describe("threshold env validation — a typo'd breaker variable refuses to boot", () => {
+  // mutation (M5): revert `adoptionThresholdsFromEnv` to the `Number(raw)` passthrough ->
+  // red. RUN ✅ 2026-08-17
+  //   Observed: `Tests  1 failed | 21 passed (22)`
+  //     AssertionError: expected [Function] to throw an error
+  //   i.e. `Number("2O")` is NaN, every `>` against NaN is false, and BOTH breaker arms
+  //   were silently disabled by one typo — the function handed NaN thresholds straight to
+  //   the pass. The interval variable already refused to boot; the safety feature now does
+  //   the same. Restored, green.
+  it("throws on NaN/garbage for each breaker variable; defaults apply when unset", () => {
+    expect(() => adoptionThresholdsFromEnv({ CRM_SHEET_MAX_CHANGES: "2O" })).toThrow(
+      /CRM_SHEET_MAX_CHANGES/,
+    );
+    expect(() => adoptionThresholdsFromEnv({ CRM_SHEET_MAX_DRIFT_PCT: "twenty" })).toThrow(
+      /CRM_SHEET_MAX_DRIFT_PCT/,
+    );
+    expect(() => adoptionThresholdsFromEnv({ CRM_SHEET_DISPLACEMENT_HALT: "NaN" })).toThrow(
+      /CRM_SHEET_DISPLACEMENT_HALT/,
+    );
+    // Out of range is garbage too: 0 or negative would also disable an arm.
+    expect(() => adoptionThresholdsFromEnv({ CRM_SHEET_MAX_DRIFT_PCT: "0" })).toThrow(
+      /CRM_SHEET_MAX_DRIFT_PCT/,
+    );
+    expect(adoptionThresholdsFromEnv({})).toEqual({
+      maxChanges: DEFAULT_MAX_CHANGES,
+      maxDriftPct: DEFAULT_MAX_DRIFT_PCT,
+      displacementHalt: DEFAULT_DISPLACEMENT_HALT,
+    });
   });
 });
 

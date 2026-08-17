@@ -133,6 +133,7 @@ export function formatDigestSubject(c: DigestCounts): string {
         parts.push("sheet access revoked");
         break;
       case "breaker_count":
+      case "breaker_displacement":
       case "breaker_drift":
         parts.push("sheet import halted");
         break;
