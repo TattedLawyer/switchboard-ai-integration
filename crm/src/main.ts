@@ -19,6 +19,7 @@ import pg from "pg";
 import { getCrmPool } from "./db.js";
 import { claimDue } from "./claim.js";
 import { proposeForClaimed, type DoorProposal, type ProposerDeps } from "./proposer.js";
+import { DoorReplyError } from "./door-reply.js";
 import { startScheduler, CYCLE_INTERVAL_MS, CYCLE_BATCH } from "./scheduler.js";
 
 export const REQUIRED_CRM_ROLE = "switchboard_crm";
@@ -80,7 +81,13 @@ async function main(): Promise<void> {
     });
     const text = await res.text();
     if (res.status !== 200 && res.status !== 201) {
-      throw new Error(`door refused ${p.action_type} (${res.status}): ${text}`);
+      // 🚨 TYPED, so the STATUS survives to the proposer. `proposeForClaimed` converts a 422
+      // fingerprint mismatch (a crashed cycle's retry whose bytes changed — Family 4) into a
+      // surfaced blocked follow-up instead of a per-cycle throw loop; a bare `Error` here
+      // would strip the status and leave that fix unreachable in the one process that runs
+      // unattended. Everything else about this contract is unchanged: 409/422/429/5xx all
+      // still throw, and the per-contact catch below still absorbs them.
+      throw new DoorReplyError(res.status, `door refused ${p.action_type} (${res.status}): ${text}`);
     }
     const body = JSON.parse(text) as { id?: string };
     if (!body.id) throw new Error(`door returned ${res.status} without an id: ${text}`);

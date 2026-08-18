@@ -18,11 +18,13 @@ import type pg from "pg";
 import { claimDue, type ClaimedContact } from "./claim.js";
 import {
   blockFollowUp,
+  DETAILS_CHANGED_REASON,
   hasOpenFollowUpBefore,
   openFollowUp,
   openZeroActionFollowUpDate,
   type BlockedReason,
 } from "./followups.js";
+import { DoorReplyError } from "./door-reply.js";
 import { renderOpening } from "./opening.js";
 import { selectQuestionSetForProposal } from "./questions.js";
 
@@ -234,7 +236,57 @@ export async function proposeForClaimed(
     }
     const built = leg.result;
     const key = idempotencyKey(contact.id, dueDate, leg.channel);
-    const { id } = await deps.postProposal(built.proposal);
+
+    // 🚨 FAMILY 4 — THE CHANGED-RETRY POISON, and the ONE status this catch may match.
+    //
+    // A crash between the POST below and the action insert leaves a zero-action orphan that
+    // retries under the SAME frozen key (Family 3). If ANY fingerprint byte changed in the
+    // meantime — a sheet edit to the email, a bounce touch moving the date inside
+    // `lastTouchSummary`'s rationale — the door refuses 422 for ever: the orphan freezes the
+    // due date so the key never rolls, expiry cannot heal it (the close pass inner-joins
+    // through actions and cannot see a zero-action row; the fingerprint pre-check answers
+    // before the terminal-replay branch, so even an `expired` row poisons the key), and
+    // nothing surfaces — permanent, invisible silence. So a 422 becomes a SURFACED BLOCK:
+    // blocked rows are excluded from `openZeroActionFollowUpDate` and from the date-aware
+    // guard, so the next Manila day derives a fresh key and the contact heals on its own.
+    //
+    // 🚨 422 ONLY. NEVER 409. A 409 terminal replay happens NORMALLY in the same-day window
+    // between an `execution_failed` outcome and the close pass running — and the close pass
+    // (`closeTerminatedFollowUps`) requires `blocked_reason is null`, so blocking on 409
+    // would strand that row open-blocked for ever. A 409 must keep propagating (or, once an
+    // adapter interprets it through `interpretDoorReply`, resolve to the id): it is an
+    // answer, not a mismatch. Every other status (429, 5xx, transport) is transient and
+    // must keep throwing so the lease retries it.
+    let posted: { id: string };
+    try {
+      posted = await deps.postProposal(built.proposal);
+    } catch (err) {
+      if (err instanceof DoorReplyError && err.status === 422) {
+        const row = await blockFollowUp(db, contact.id, dueDate, DETAILS_CHANGED_REASON);
+        skipped.push({ channel: leg.channel, reason: DETAILS_CHANGED_REASON });
+        // Legs not yet posted are NOT posted against a row just declared dead — a sibling
+        // card here would double-serve tomorrow, when the fresh key re-proposes them all.
+        for (const rest of resolved.slice(resolved.indexOf(leg) + 1)) {
+          if (rest.result.ok) {
+            skipped.push({
+              channel: rest.channel,
+              reason: "not proposed — this follow-up was blocked this cycle",
+            });
+          }
+        }
+        return {
+          contactId: contact.id,
+          dueDate,
+          actions,
+          // Minor-4 discipline: report the row's REAL stored state, which `blockFollowUp`'s
+          // coalesce preserves if some other writer blocked it first.
+          blockedReason: (row.blockedReason ?? DETAILS_CHANGED_REASON) as BlockedReason,
+          skipped,
+        };
+      }
+      throw err;
+    }
+    const { id } = posted;
     await db.query(
       `insert into crm.follow_up_actions (follow_up_id, channel, proposal_id)
        values ($1, $2, $3)

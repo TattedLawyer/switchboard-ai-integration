@@ -25,12 +25,30 @@ import type pg from "pg";
 // the next COMPLETED pass over the same refs.
 // `crm.follow_ups.blocked_reason` is `text null` with no CHECK, so adding values needs no
 // migration — the type is the contract.
+// Family 4 — written by the proposer when the door refuses a crashed cycle's retry because
+// the ask's bytes changed since the original POST (a sheet edit, a bounce touch moving the
+// date inside the rationale). Without this block the refusal repeats invisibly forever: the
+// zero-action orphan freezes the due date, so the deterministic key never rolls, and neither
+// expiry nor the close pass can see a row with no actions. Blocking SURFACES it (digest +
+// reconcile) and — because blocked rows are excluded from `openZeroActionFollowUpDate` and
+// the date-aware guard — lets the next Manila day derive a fresh key and heal on its own.
+//
+// 🚨 THE TEXT IS HERS, NOT OURS. `blocked_reason` is rendered verbatim to the broker in the
+// digest and the reconcile listing, so this one reads as a plain-English sentence, states
+// what happened honestly, and tells her the one thing she needs to know: nothing is needed
+// from her. No wire jargon (no status codes, no "fingerprint").
+// (One literal, no concatenation: `"a" + "b"` types as `string`, which would silently widen
+// the BlockedReason union to accept anything.)
+export const DETAILS_CHANGED_REASON =
+  "an earlier follow-up attempt was interrupted, and this contact's details changed before it could be retried; a fresh follow-up will be proposed by the next day — nothing for you to do";
+
 export type BlockedReason =
   | "no_email_address"
   | "no_phone_number"
   | "no_question_set"
   | "sheet_row_missing"
-  | "sheet_divergent";
+  | "sheet_divergent"
+  | typeof DETAILS_CHANGED_REASON;
 
 export interface FollowUpRow {
   id: string;
