@@ -285,7 +285,11 @@ interface BoundContact {
   active: boolean;
 }
 
-const norm = (s: string | null): string => (s ?? "").trim().toLowerCase();
+/** The adoption pass's normalisation — trim + lowercase. EXPORTED so the send-time
+ *  recheck (`send-recheck.ts`) compares recipients under the SAME rule: one definition,
+ *  because two `norm`s that drift apart would let the same sheet edit read as "changed"
+ *  to one reader and "unchanged" to the other. */
+export const norm = (s: string | null): string => (s ?? "").trim().toLowerCase();
 
 async function recordRead(
   db: pg.Pool | pg.PoolClient,

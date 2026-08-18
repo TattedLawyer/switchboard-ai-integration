@@ -25,6 +25,8 @@ import {
   type EmailApprovalSpine,
   type SendEmailFn,
 } from "../crm/src/executor.js";
+import { liveDetailRecheck } from "../crm/src/send-recheck.js";
+import { sheetTransportFromEnv, SHEETS_KEY_FILE_ENV } from "../crm/src/sheet-client.js";
 import { smtpSender } from "../crm/src/email-transport.js";
 import {
   reconcileBounces,
@@ -137,6 +139,22 @@ async function main(): Promise<void> {
   // per invocation because it is one-shot; doing that per tick would be connection churn.
   const approvalDb = new pg.Pool({ connectionString: required("APPROVAL_DATABASE_URL") });
   const crmDb = new pg.Pool({ connectionString: required("CRM_DATABASE_URL") });
+
+  // 🚨 THE SEND-TIME RECHECK (Piece C) IS WIRED HERE, because this daemon is the only
+  // process holding both roles and the proposer's transport seam already exists. NO new
+  // DB grants: the recheck reads only what 021/022 already grant `switchboard_crm`.
+  // A null transport is NOT a licence to send: sheet-bound sends WAIT (the recheck's own
+  // rule) until the key file is configured — loud here, once, instead of silently mailing
+  // addresses the sheet may have corrected.
+  const sheetTransport = sheetTransportFromEnv();
+  if (sheetTransport === null) {
+    console.log(
+      `[exec] ${SHEETS_KEY_FILE_ENV} not set — the send-time sheet recheck cannot read ` +
+        `the live sheet, so sends to SHEET-BOUND contacts will WAIT until it is ` +
+        `configured; manual contacts send normally.`,
+    );
+  }
+  const recheckLiveDetails = liveDetailRecheck(crmDb, sheetTransport);
 
   const dbName = (await approvalDb.query<{ d: string }>("select current_database() as d"))
     .rows[0].d;
@@ -258,7 +276,7 @@ async function main(): Promise<void> {
     for (const row of approved.rows) {
       try {
         const out = await executeEmail(
-          { approvalDb, crmDb, sendEmail, spine: SPINE, allowlist, intervals },
+          { approvalDb, crmDb, sendEmail, spine: SPINE, allowlist, intervals, recheckLiveDetails },
           row.id,
         );
         console.log(

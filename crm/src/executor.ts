@@ -94,6 +94,11 @@ export interface ExecutorDeps {
   spine: ApprovalSpine;
   window: OutreachWindow;
   intervals: IntervalSettings;
+  /** Piece C's seam, MIRRORED here for the call path — declared so the two executors
+   *  state the same contract, but `executeCall` does NOT invoke it yet: the call
+   *  recipient is a phone number, not `payload.to`, so wiring it is NOT trivially
+   *  symmetric and is deliberately out of Piece C's scope. Absent == "send". */
+  recheckLiveDetails?: (payload: PlaceCallPayload) => Promise<Recheck>;
   now?: () => Date;
 }
 
@@ -241,6 +246,9 @@ export async function executeCall(
 //   4. checkSendable (placeholders, CR/LF, allowlist)   -> EmailRefused
 //   5. NO GATE CALL — `gates.ts:62` returns {allowed:true} for email unconditionally, so
 //      calling it would be ceremony that reads like a check.
+//  5b. recheckLiveDetails (Piece C, optional) — the send-time recheck against her LIVE
+//      sheet. "send" proceeds; "wait" refuses HERE, before the claim; "block" claims and
+//      immediately fails. Absent seam == unconditional "send".
 //   6. beginExecution — the at-most-once claim AND the expiry compare-and-set
 //   7. beginTouch — email touch, transcript_delivery NULL
 //   8. sendEmail — the side effect (the transport re-checks the allowlist here too)
@@ -300,6 +308,13 @@ export interface EmailApprovalSpine {
   ) => { ok: true; value: FollowUpEmailPayload } | { ok: false; problem: string };
 }
 
+/** The send-time recheck's verdict (Piece C — `send-recheck.ts` is the implementation;
+ *  the executor only obeys the verdict). */
+export type Recheck =
+  | { verdict: "send" }
+  | { verdict: "wait"; reason: string }
+  | { verdict: "block"; reason: string };
+
 export interface EmailExecutorDeps {
   /** `switchboard_approval` — the spine's DB. */
   approvalDb: pg.Pool;
@@ -310,6 +325,11 @@ export interface EmailExecutorDeps {
   /** 🚨 INJECTED, never read from `process.env` inside this function. */
   allowlist: readonly string[];
   intervals: IntervalSettings;
+  /** Piece C — the send-time recheck against her LIVE sheet, between `checkSendable` and
+   *  `beginExecution`. OPTIONAL: absent means unconditional "send" — every existing
+   *  caller compiles and behaves unchanged. Injected (`send-recheck.ts` via the
+   *  composition root), never imported here. */
+  recheckLiveDetails?: (payload: FollowUpEmailPayload) => Promise<Recheck>;
   /** Present for parity with the call path. Used ONLY as `recordTouch`'s timestamp; it
    *  decides nothing, and the no-timer pin exists to keep it that way. */
   now?: () => Date;
@@ -360,6 +380,40 @@ export async function executeEmail(
   }
 
   // 5. No gate. `gateExecution` returns {allowed:true} for email unconditionally.
+
+  // 5b. THE SEND-TIME RECHECK (Piece C). A card approved on Monday can be sent on Tuesday
+  //     to an address she has since corrected in her sheet; the proposer read live at
+  //     PROPOSAL time, and this is the only reader at SEND time. The seam is optional:
+  //     absent means unconditional "send", so every caller without it behaves as before.
+  //
+  // 🚨 "WAIT" IS BEFORE THE CLAIM, "BLOCK" IS AFTER IT — the asymmetry is the point.
+  //     · "wait" is a TRANSIENT doubt (breaker halted, sheet unreachable, transport
+  //       unconfigured, row not found yet): refusing HERE — before `beginExecution` —
+  //       preserves the load-bearing property above: ZERO `approval.executions` rows, the
+  //       proposal stays `approved`, and the next tick retries for free.
+  //     · "block" is a TERMINAL verdict (the recipient she approved is no longer the
+  //       recipient her sheet names): the claim is taken and IMMEDIATELY failed, because
+  //       `execution_failed` is only reachable through `finishExecution`, which demands a
+  //       `started` row — and `execution_failed` is terminal, so the proposal cannot be
+  //       retried into the wrong inbox and `closeTerminatedFollowUps` can clean up.
+  //       NO touch row: `beginTouch` is step 7 and must not run — nothing was attempted
+  //       against the contact, so nothing may claim to have touched them.
+  if (deps.recheckLiveDetails !== undefined) {
+    const recheck = await deps.recheckLiveDetails(payload);
+    if (recheck.verdict === "wait") {
+      throw new EmailRefused(
+        `proposal ${proposalId} is not sendable right now: ${recheck.reason}`,
+      );
+    }
+    if (recheck.verdict === "block") {
+      await deps.spine.beginExecution(deps.approvalDb, proposalId);
+      await deps.spine.finishExecution(deps.approvalDb, proposalId, {
+        ok: false,
+        error: recheck.reason,
+      });
+      throw new EmailRefused(`proposal ${proposalId} must not be sent: ${recheck.reason}`);
+    }
+  }
 
   // 6.
   await deps.spine.beginExecution(deps.approvalDb, proposalId);
