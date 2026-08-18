@@ -14,7 +14,14 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import type pg from "pg";
 import { randomUUID } from "node:crypto";
-import { freshCrmDb, seedSettings, TEST_TENANT } from "./helpers/crmdb.js";
+import {
+  freshCrmDb,
+  seedContact,
+  seedLinkedSheet,
+  seedSettings,
+  TEST_TENANT,
+} from "./helpers/crmdb.js";
+import { FakeSheet } from "./helpers/fakesheet.js";
 import { addContact, addNumber } from "../src/intake.js";
 import { publishQuestionSet } from "../src/questions.js";
 import { runCycle, proposeForClaimed, type DoorProposal } from "../src/proposer.js";
@@ -96,6 +103,7 @@ afterEach(async () => {
   await admin.query("delete from crm.follow_ups");
   await admin.query("delete from crm.phone_numbers");
   await admin.query("delete from crm.contacts");
+  await admin.query("delete from crm.linked_sheets");
 });
 
 afterAll(async () => {
@@ -205,19 +213,35 @@ describe("V3 Test BB — both, both arms fail: BLOCKED; but a partial gap is NOT
   });
 
   it("P4a control: both WITH address, no number → email builds → ≥1 action, NOT blocked", async () => {
+    // SHEET-BOUND since Part 2 / migration 022: an email leg can only build from a live
+    // sheet row (a manual contact's email leg now blocks with the honest not-on-the-sheet
+    // reason — proposer-sheet.test.ts P10). The P4a property under pin is unchanged: a
+    // partial gap on a contact that produced ≥1 action is data-completeness, not silence.
     const t0 = T0();
-    const c = await addContact(admin, {
-      tenantId: TEST_TENANT,
+    const linked = await seedLinkedSheet(admin);
+    const ref = randomUUID();
+    const sheet = new FakeSheet(linked.spreadsheetId, ["Name", "Email", "Contact #"], [
+      { ref, cells: ["Dina Ong", "dina@example.com", ""] }, // address, no number
+    ]);
+    const cId = await seedContact(admin, {
       displayName: "Dina Ong",
       channel: "both",
-      source: "referral",
-      emailAddress: "dina@example.com",
+      email: "dina@example.com",
+      dueAt: t0.toISOString(),
+      linkedSheetId: linked.id,
+      rowRef: ref,
     });
-    const c1 = await cycle(c.id, t0);
-    expect(c1.outcome?.actions.map((a) => a.channel)).toEqual(["email"]);
-    expect(c1.outcome?.blockedReason).toBeNull();
-    expect(await openUnblockedCount(c.id)).toBe(1); // a normal, healthy open row
-    expect(await blockedReasonsFor(c.id)).toEqual([]);
+    const door = fakeDoor();
+    const out = await runCycle(
+      { db: crm, postProposal: door.post, now: () => t0, sheet },
+      TEST_TENANT,
+      10,
+    );
+    const outcome = out.find((o) => o.contactId === cId);
+    expect(outcome?.actions.map((a) => a.channel)).toEqual(["email"]);
+    expect(outcome?.blockedReason).toBeNull();
+    expect(await openUnblockedCount(cId)).toBe(1); // a normal, healthy open row
+    expect(await blockedReasonsFor(cId)).toEqual([]);
   });
 });
 

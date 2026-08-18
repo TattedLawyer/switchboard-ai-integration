@@ -18,6 +18,7 @@
 // 409-after-rejection path (which is reachable from the second run onward) a mystery.
 import { getCrmPool } from "../db.js";
 import { runCycle, type DoorProposal } from "../proposer.js";
+import { sheetTransportFromEnv, SHEETS_KEY_FILE_ENV } from "../sheet-client.js";
 
 const arg = (name: string): string | undefined => {
   const i = process.argv.indexOf(`--${name}`);
@@ -40,6 +41,19 @@ async function main(): Promise<void> {
 
   const db = getCrmPool();
 
+  // The linked-sheet transport, wired exactly as the daemon wires it (Part 2): `runCycle`
+  // reads ONE snapshot per cycle and sheet-bound contacts propose from LIVE details. Null
+  // is "not configured", said out loud — a first drive whose sheet-bound contacts silently
+  // skip would be exactly the silent-empty failure this file exists to avoid.
+  const sheet = sheetTransportFromEnv();
+  if (sheet === null) {
+    console.log(
+      `${SHEETS_KEY_FILE_ENV} not set — the sheet integration is OFF for this run. ` +
+        `Contacts bound to a linked sheet will be SKIPPED (their details are read live ` +
+        `from the sheet, never from stored copies); manual contacts run normally.`,
+    );
+  }
+
   // The door, spoken to exactly as an agent host would speak to it.
   const postProposal = async (p: DoorProposal): Promise<{ id: string }> => {
     const res = await fetch(`${base}/internal/proposals`, {
@@ -59,7 +73,7 @@ async function main(): Promise<void> {
   };
 
   try {
-    const outcomes = await runCycle({ db, postProposal }, tenant, limit);
+    const outcomes = await runCycle({ db, postProposal, sheet }, tenant, limit);
     if (outcomes.length === 0) {
       // NOT "nothing to do" — say which of the two it is, because a first drive that prints
       // a cheerful nothing is exactly the silent-empty failure this project keeps finding.

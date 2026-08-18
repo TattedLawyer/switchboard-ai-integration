@@ -39,8 +39,43 @@ import type pg from "pg";
 // from her. No wire jargon (no status codes, no "fingerprint").
 // (One literal, no concatenation: `"a" + "b"` types as `string`, which would silently widen
 // the BlockedReason union to accept anything.)
+// (The promise is deliberately soft: the retry happens on its own, but not necessarily
+// first thing the next day — the first next-day cycle can re-derive the old date from the
+// claim lease and only the one after rolls to a fresh key — and if her edit removed the
+// channel's details entirely there is nothing to propose until she restores them. "Will be
+// proposed by the next day" overpromised on both counts.)
 export const DETAILS_CHANGED_REASON =
-  "an earlier follow-up attempt was interrupted, and this contact's details changed before it could be retried; a fresh follow-up will be proposed by the next day — nothing for you to do";
+  "an earlier follow-up attempt was interrupted, and this contact's details changed before it could be retried; the system will try again on its own using the contact's current details — nothing for you to do";
+
+// Part 2 — written by the proposer for a MANUAL contact (no sheet row) whose channel wants
+// email. 🚨 PER THE OWNER'S RULING this must NOT say "no_email_address": after migration
+// 022 the proposer reads email addresses only from the linked sheet, so a manually-added
+// contact's address may well be ON FILE and merely unreadable here — reporting "no email
+// address" would be a false statement rendered verbatim to the broker. Same plain-English
+// standard as DETAILS_CHANGED_REASON: states what is true and names her one available
+// action. (One literal, no concatenation — see the note above.)
+export const MANUAL_CONTACT_EMAIL_REASON =
+  "this contact is not on the linked sheet, and email follow-ups take their address from the sheet — add this contact to the sheet to enable email follow-ups";
+
+// Part 2 — written by the proposer when a sheet row's phone cells contain only entries
+// that could not be read as dialable numbers. Distinct from `no_phone_number` on purpose:
+// the row HAS numbers, so claiming there are none would be false; what she needs to know
+// is that the entries as typed are unreadable, and where to fix them.
+export const UNREADABLE_SHEET_PHONES_REASON =
+  "the phone numbers on this contact's sheet row could not be read as dialable numbers — fix them on the sheet and calling resumes on its own";
+
+// F2 — written by the proposer when a sheet row's email cell holds something that cannot
+// be read as an address ("see business card"). The phone twin above already existed; the
+// asymmetry was the defect: unvalidated, the cell's text flowed VERBATIM into
+// `payload.to`, and the door's envelope schema accepts it (measured 2026-08-18 — 201, the
+// unsendable wrong card would reach her queue and die only after approval, at the
+// executor's grammar check). Distinct from `no_email_address` on purpose: the row HAS an
+// email cell, so claiming there is none would be false; what she needs to know is that
+// the entry as typed is unreadable, and where to fix it. Same standard as its siblings:
+// renders verbatim to a non-technical broker, plain English, no wire jargon.
+// (One literal, no concatenation — see the note above DETAILS_CHANGED_REASON.)
+export const UNREADABLE_SHEET_EMAIL_REASON =
+  "the email on this contact's sheet row could not be read as an email address — fix it on the sheet and email follow-ups resume on their own";
 
 export type BlockedReason =
   | "no_email_address"
@@ -48,7 +83,23 @@ export type BlockedReason =
   | "no_question_set"
   | "sheet_row_missing"
   | "sheet_divergent"
-  | typeof DETAILS_CHANGED_REASON;
+  | typeof DETAILS_CHANGED_REASON
+  | typeof MANUAL_CONTACT_EMAIL_REASON
+  | typeof UNREADABLE_SHEET_PHONES_REASON
+  | typeof UNREADABLE_SHEET_EMAIL_REASON;
+
+// 🚨 COMPILE-TIME PIN: the union above must never silently widen to `string`. If any of
+// the three `typeof` constants is converted to a concatenation (`"a" + "b"` types as
+// `string`), every literal in the union is absorbed and `BlockedReason` accepts anything —
+// with ZERO compile errors anywhere else. When that happens the conditional below resolves
+// to `never` and the assignment fails `tsc --noEmit` with TS2322. The VALUE form is
+// deliberate: an unused type-alias instantiation is deferred and never checked (measured
+// 2026-08-18 — the alias form stayed green under the widened constant), so only the
+// assignment makes the workspace typecheck (which covers `src`) enforce this. The twin pin
+// in door-mismatch-block.test.ts guards any full-program check that includes tests.
+type _BlockedReasonStaysNarrow = string extends BlockedReason ? never : true;
+const _blockedReasonStaysNarrow: _BlockedReasonStaysNarrow = true;
+void _blockedReasonStaysNarrow;
 
 export interface FollowUpRow {
   id: string;

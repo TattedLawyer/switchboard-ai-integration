@@ -23,9 +23,11 @@ import {
   dayAfter,
   freshCrmDb,
   seedContact,
+  seedLinkedSheet,
   seedSettings,
   TEST_TENANT,
 } from "./helpers/crmdb.js";
+import { FakeSheet } from "./helpers/fakesheet.js";
 import { payloadHash } from "../../approval/src/canonical.js";
 import { beginExecution, finishExecution } from "../../approval/src/execute.js";
 import { followUpEmailPayloadSchema } from "../../approval/src/proposal.js";
@@ -76,9 +78,11 @@ afterEach(async () => {
   await admin.query("delete from crm.follow_up_actions");
   await admin.query("delete from crm.follow_ups");
   await admin.query("delete from crm.contacts");
+  await admin.query("delete from crm.linked_sheets");
   await admin.query("delete from approval.executions");
   await admin.query("delete from approval.decisions");
   await admin.query("delete from approval.proposals");
+  emailSheet = null;
 });
 
 afterAll(async () => {
@@ -109,7 +113,7 @@ async function proposeAndApprove(contactId: string): Promise<string> {
     proposalId = ins.rows[0].id;
     return { id: proposalId };
   };
-  await runCycle({ db: crm, postProposal: door }, TEST_TENANT, 10);
+  await runCycle({ db: crm, postProposal: door, sheet: emailSheet }, TEST_TENANT, 10);
   expect(proposalId, "the shipped proposer must have produced a proposal").not.toBe("");
 
   const approver = await admin.query<{ id: string }>(
@@ -172,12 +176,25 @@ function bounce(o: Partial<BounceRecord> = {}): BounceRecord {
   };
 }
 
-const emailContact = () =>
-  seedContact(admin, {
+/** SHEET-BOUND since Part 2 / migration 022 — the email-executor suite's rationale,
+ *  verbatim: the shipped proposer reads the address LIVE from the linked sheet, so the
+ *  fixture that produces the `send_email` proposal moved onto the sheet. Every bounce
+ *  property under pin is unchanged. */
+let emailSheet: FakeSheet | null = null;
+const emailContact = async (): Promise<string> => {
+  const linked = await seedLinkedSheet(admin);
+  const ref = randomUUID();
+  emailSheet = new FakeSheet(linked.spreadsheetId, ["Name", "Email"], [
+    { ref, cells: ["Ana Reyes", "ana@example.com"] },
+  ]);
+  return seedContact(admin, {
     channel: "email",
     email: "ana@example.com",
     displayName: "Ana Reyes",
+    linkedSheetId: linked.id,
+    rowRef: ref,
   });
+};
 
 /** Every touch for a proposal, oldest first, read back through the OWNER pool. */
 const touches = async (

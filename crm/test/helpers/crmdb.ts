@@ -84,6 +84,12 @@ export interface SeedContactOptions {
   intervalDays?: number | null;
   dueAt?: string | null;
   tenant?: string;
+  /** Sheet identity — BOTH or NEITHER (021's `contacts_sheet_identity_paired`). Seeding a
+   *  sheet-bound contact through the owner pool mirrors what the owner-run adoption pass
+   *  does; the proposer then reads the DETAILS live from the sheet, never from these
+   *  stored columns (which the CRM role cannot read post-022). */
+  linkedSheetId?: string;
+  rowRef?: string;
 }
 
 /** Created through the OWNER pool, because that is what `crm-contact-add` does. */
@@ -94,9 +100,9 @@ export async function seedContact(
   const r = await admin.query<{ id: string }>(
     `insert into crm.contacts
        (tenant_id, display_name, email_address, channel, source, source_detail,
-        looking_for, active, follow_up_interval_days, next_due_at)
+        looking_for, active, follow_up_interval_days, next_due_at, linked_sheet_id, row_ref)
      values ($1, $2, $3, $4, 'referral', 'Rotary breakfast', 'a 2BR near Alabang',
-             $5, $6, $7)
+             $5, $6, $7, $8, $9)
      returning id`,
     [
       o.tenant ?? TEST_TENANT,
@@ -106,9 +112,28 @@ export async function seedContact(
       o.active ?? true,
       o.intervalDays ?? null,
       o.dueAt === undefined ? new Date().toISOString() : o.dueAt,
+      o.linkedSheetId ?? null,
+      o.rowRef ?? null,
     ],
   );
   return r.rows[0].id;
+}
+
+/** A linked sheet, seeded through the OWNER pool (link/unlink is owner territory —
+ *  021's grant block). One active sheet per tenant (`linked_sheets_one_active`), so a
+ *  test file's afterEach must `delete from crm.linked_sheets` after its contacts. */
+export async function seedLinkedSheet(
+  admin: pg.Pool,
+  spreadsheetId?: string,
+  tenant = TEST_TENANT,
+): Promise<{ id: string; spreadsheetId: string }> {
+  const sid = spreadsheetId ?? `fake-${Math.random().toString(36).slice(2)}`;
+  const r = await admin.query<{ id: string }>(
+    `insert into crm.linked_sheets (tenant_id, spreadsheet_id, label)
+     values ($1, $2, 'Her master list') returning id`,
+    [tenant, sid],
+  );
+  return { id: r.rows[0].id, spreadsheetId: sid };
 }
 
 export async function seedNumber(

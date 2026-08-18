@@ -9,11 +9,13 @@ import { randomUUID } from "node:crypto";
 import {
   freshCrmDb,
   seedContact,
+  seedLinkedSheet,
   seedNumber,
   seedSettings,
   TEST_INSTANT,
   TEST_TENANT,
 } from "./helpers/crmdb.js";
+import { FakeSheet } from "./helpers/fakesheet.js";
 import { publishQuestionSet } from "../src/questions.js";
 import { runCycle, type DoorProposal } from "../src/proposer.js";
 import { placeCallPayloadSchema } from "../../approval/src/proposal.js";
@@ -42,6 +44,39 @@ function fakeDoor() {
 
 const overdue = () => new Date(Date.now() - 86_400_000).toISOString();
 
+/** A SHEET-BOUND contact whose details live on a FakeSheet row.
+ *
+ *  WHY THE EMAIL-LEG TESTS BELOW CHANGED (Part 2 / migration 022): the proposer now reads
+ *  email/name/context LIVE from the linked sheet, and `switchboard_crm` cannot SELECT the
+ *  stored detail columns at all (42501, pinned in migration-022.test.ts). A MANUAL email
+ *  contact therefore blocks with the honest not-on-the-sheet reason (pinned in
+ *  proposer-sheet.test.ts P10), so every pin about the email leg's CONTENT or about
+ *  `no_email_address` must drive a sheet-bound contact — the only kind whose address the
+ *  proposer is permitted to see. The properties pinned are unchanged.
+ */
+async function sheetContact(o: {
+  name?: string;
+  email?: string;
+  phone?: string;
+  channel?: "call" | "email" | "both";
+  dueAt?: string;
+}): Promise<{ contactId: string; ref: string; sheet: FakeSheet }> {
+  const linked = await seedLinkedSheet(admin);
+  const ref = randomUUID();
+  const sheet = new FakeSheet(linked.spreadsheetId, ["Name", "Email", "Contact #"], [
+    { ref, cells: [o.name ?? "Ana Reyes", o.email ?? "", o.phone ?? ""] },
+  ]);
+  const contactId = await seedContact(admin, {
+    displayName: o.name ?? "Ana Reyes",
+    email: o.email ?? null,
+    channel: o.channel ?? "email",
+    dueAt: o.dueAt ?? overdue(),
+    linkedSheetId: linked.id,
+    rowRef: ref,
+  });
+  return { contactId, ref, sheet };
+}
+
 beforeAll(async () => {
   const db = await freshCrmDb();
   admin = db.admin;
@@ -60,6 +95,7 @@ afterEach(async () => {
   await admin.query("delete from crm.follow_ups");
   await admin.query("delete from crm.phone_numbers");
   await admin.query("delete from crm.contacts");
+  await admin.query("delete from crm.linked_sheets");
 });
 
 afterAll(async () => {
@@ -105,14 +141,15 @@ describe("T9: channel='both' is TWO proposals sharing one follow_up", () => {
   // a SECOND APPROVAL SPINE. The product agrees: the channels have different execution-time
   // gates, partial failure is representable, and divergent decisions are a feature.
   it("emits a call and an email under one follow_up_id", async () => {
-    const ana = await seedContact(admin, {
+    // Sheet-bound since Part 2: the email leg's address is readable only from the sheet.
+    const { contactId: ana, sheet } = await sheetContact({
       channel: "both",
       email: "ana@example.com",
-      dueAt: overdue(),
+      phone: "0917 123 4567",
     });
     await seedNumber(admin, ana, "+639171234567");
     const door = fakeDoor();
-    const [outcome] = await runCycle({ db: crm, postProposal: door.post }, TEST_TENANT, 10);
+    const [outcome] = await runCycle({ db: crm, postProposal: door.post, sheet }, TEST_TENANT, 10);
 
     expect(outcome.actions.map((a) => a.channel).sort()).toEqual(["call", "email"]);
     expect(new Set(outcome.actions.map((a) => a.followUpId)).size).toBe(1);
@@ -132,14 +169,18 @@ describe("T9: email preferred, no address on file", () => {
   // available outcome. The block is recorded and surfaced; the clock is untouched, so the
   // moment she types the address the next cycle proceeds.
   it("records a blocked follow-up, emits nothing, and never calls", async () => {
-    const ana = await seedContact(admin, {
+    // Sheet-bound since Part 2: `no_email_address` is a statement about HER SHEET ROW —
+    // the only address the proposer can see — so the pin drives a row with no email cell.
+    // (The manual-contact variant now blocks with the honest not-on-the-sheet reason,
+    // pinned in proposer-sheet.test.ts P10.)
+    const { contactId: ana, sheet } = await sheetContact({
       channel: "email",
-      email: null,
-      dueAt: overdue(),
+      email: "",
+      phone: "0917 123 4567",
     });
     await seedNumber(admin, ana, "+639171234567"); // a number EXISTS — and is not used
     const door = fakeDoor();
-    const [outcome] = await runCycle({ db: crm, postProposal: door.post }, TEST_TENANT, 10);
+    const [outcome] = await runCycle({ db: crm, postProposal: door.post, sheet }, TEST_TENANT, 10);
 
     expect(outcome.blockedReason).toBe("no_email_address");
     expect(outcome.actions).toHaveLength(0);
@@ -155,19 +196,20 @@ describe("T9: email preferred, no address on file", () => {
   it("recovers on the next cycle once she adds the address, on the SAME row", async () => {
     // Both cycles must land on the SAME due-date for this to be the recovery path rather
     // than an ordinary next-day row — so "a minute ago", not "yesterday".
-    const ana = await seedContact(admin, {
+    const { contactId: ana, sheet } = await sheetContact({
       channel: "email",
-      email: null,
+      email: "",
       dueAt: new Date(Date.now() - 60_000).toISOString(),
     });
     const door = fakeDoor();
-    await runCycle({ db: crm, postProposal: door.post }, TEST_TENANT, 10);
+    await runCycle({ db: crm, postProposal: door.post, sheet }, TEST_TENANT, 10);
 
-    await admin.query(`update crm.contacts set email_address = 'ana@example.com' where id = $1`, [
-      ana,
-    ]);
+    // She types the address INTO THE SHEET (Part 2: the master list is hers). No adoption
+    // pass runs between the cycles — the proposer reads the address live, while the
+    // stored column stays empty and, post-022, unreadable.
+    sheet.rows[1].cells[1] = "ana@example.com";
     await admin.query(`update crm.contacts set next_due_at = now() - interval '1 minute'`);
-    const [second] = await runCycle({ db: crm, postProposal: door.post }, TEST_TENANT, 10);
+    const [second] = await runCycle({ db: crm, postProposal: door.post, sheet }, TEST_TENANT, 10);
 
     expect(second.blockedReason).toBeNull();
     expect(second.actions.map((a) => a.channel)).toEqual(["email"]);

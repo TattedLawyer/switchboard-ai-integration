@@ -10,7 +10,15 @@
 // the production sweep (`closeTerminatedFollowUps`), never from a fixture write to `crm.*`.
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import pg from "pg";
-import { freshCrmDb, seedSettings, TEST_TENANT } from "./helpers/crmdb.js";
+import { randomUUID } from "node:crypto";
+import {
+  freshCrmDb,
+  seedContact,
+  seedLinkedSheet,
+  seedSettings,
+  TEST_TENANT,
+} from "./helpers/crmdb.js";
+import { FakeSheet } from "./helpers/fakesheet.js";
 import { addContact, addNumber } from "../src/intake.js";
 import { publishQuestionSet } from "../src/questions.js";
 import { runCycle, type DoorProposal } from "../src/proposer.js";
@@ -76,23 +84,50 @@ async function approve(proposalId: string): Promise<void> {
   await decide(approval, { proposalId, kind: "approved", approverUserId: await anApprover() });
 }
 
+/** The email variant is SHEET-BOUND since Part 2 / migration 022: the proposer reads the
+ *  address LIVE from the linked sheet (a manual email contact now blocks with the honest
+ *  not-on-the-sheet reason — proposer-sheet.test.ts P10). The call variant stays manual
+ *  intake, unchanged. The terminal-close properties under pin are untouched. */
+let sheet: FakeSheet | null = null;
+
 async function contactAndCycle1(
   channel: "call" | "email",
   vnow: Date,
 ): Promise<{ contactId: string; proposalId: string; door: ReturnType<typeof realisticDoor> }> {
-  const contact = await addContact(admin, {
-    tenantId: TEST_TENANT,
-    displayName: "Ana Reyes",
-    channel,
-    source: "referral",
-    emailAddress: channel === "email" ? "ana@example.com" : null,
-  });
-  if (channel === "call") await addNumber(admin, contact.id, "+639171234567");
+  let contactId: string;
+  if (channel === "email") {
+    const linked = await seedLinkedSheet(admin);
+    const ref = randomUUID();
+    sheet = new FakeSheet(linked.spreadsheetId, ["Name", "Email"], [
+      { ref, cells: ["Ana Reyes", "ana@example.com"] },
+    ]);
+    contactId = await seedContact(admin, {
+      displayName: "Ana Reyes",
+      channel: "email",
+      email: "ana@example.com",
+      dueAt: vnow.toISOString(),
+      linkedSheetId: linked.id,
+      rowRef: ref,
+    });
+  } else {
+    const contact = await addContact(admin, {
+      tenantId: TEST_TENANT,
+      displayName: "Ana Reyes",
+      channel,
+      source: "referral",
+    });
+    await addNumber(admin, contact.id, "+639171234567");
+    contactId = contact.id;
+  }
   const door = realisticDoor();
-  const cycle = await runCycle({ db: crm, postProposal: door.post, now: () => vnow }, TEST_TENANT, 10);
-  const out = cycle.find((o) => o.contactId === contact.id);
+  const cycle = await runCycle(
+    { db: crm, postProposal: door.post, now: () => vnow, sheet },
+    TEST_TENANT,
+    10,
+  );
+  const out = cycle.find((o) => o.contactId === contactId);
   expect(out?.actions).toHaveLength(1);
-  return { contactId: contact.id, proposalId: out!.actions[0].proposalId, door };
+  return { contactId, proposalId: out!.actions[0].proposalId, door };
 }
 
 const isOpen = async (contactId: string): Promise<boolean> =>
@@ -107,7 +142,11 @@ const isOpen = async (contactId: string): Promise<boolean> =>
 
 const cycle2Actions = async (contactId: string, vnow: Date): Promise<number> => {
   const door = realisticDoor();
-  const c = await runCycle({ db: crm, postProposal: door.post, now: () => vnow }, TEST_TENANT, 10);
+  const c = await runCycle(
+    { db: crm, postProposal: door.post, now: () => vnow, sheet },
+    TEST_TENANT,
+    10,
+  );
   return c.find((o) => o.contactId === contactId)?.actions.length ?? 0;
 };
 
@@ -137,10 +176,12 @@ afterEach(async () => {
   await admin.query("delete from crm.follow_ups");
   await admin.query("delete from crm.phone_numbers");
   await admin.query("delete from crm.contacts");
+  await admin.query("delete from crm.linked_sheets");
   await admin.query("delete from approval.executions");
   await admin.query("delete from approval.decisions");
   await admin.query("delete from approval.proposals");
   await admin.query("delete from approval.users");
+  sheet = null;
 });
 
 afterAll(async () => {

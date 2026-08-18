@@ -21,6 +21,8 @@ import { claimDue } from "./claim.js";
 import { proposeForClaimed, type DoorProposal, type ProposerDeps } from "./proposer.js";
 import { DoorReplyError } from "./door-reply.js";
 import { startScheduler, CYCLE_INTERVAL_MS, CYCLE_BATCH } from "./scheduler.js";
+import { loadSheetCycleContext } from "./sheet-read.js";
+import { sheetTransportFromEnv, SHEETS_KEY_FILE_ENV } from "./sheet-client.js";
 
 export const REQUIRED_CRM_ROLE = "switchboard_crm";
 
@@ -94,17 +96,40 @@ async function main(): Promise<void> {
     return { id: body.id };
   };
 
-  const deps: ProposerDeps = { db, postProposal };
+  // The linked-sheet transport (Part 2). Null is "not configured" and must be LOUD at
+  // boot, not silent: with a sheet linked, every sheet-bound contact skips each cycle
+  // until the key file is set — a silently-absent sheet integration is the silence class
+  // this repo names as its worst.
+  const sheet = sheetTransportFromEnv();
+  if (sheet === null) {
+    console.log(
+      `[crm] ${SHEETS_KEY_FILE_ENV} not set — the sheet integration is OFF. Contacts bound ` +
+        `to a linked sheet will SKIP every cycle (details are read live from the sheet, ` +
+        `never from stored copies); manual contacts run normally.`,
+    );
+  }
+
+  const deps: ProposerDeps = { db, postProposal, sheet };
 
   const cycle = async (): Promise<void> => {
     const claimed = await claimDue(db, tenantId, CYCLE_BATCH, new Date());
     if (claimed.length === 0) return; // Quiet on purpose: 1,440 "nothing to do" lines a day
     // buries the lines that matter. Log work and state changes only.
+    // 🚨 ONE SNAPSHOT PER TICK — the same cycle context for every claimed contact, one
+    // Sheets API read however large the batch. An unavailable sheet is logged ONCE per
+    // tick here; each affected contact then reports the skip in its own outcome.
+    const sheetCtx = await loadSheetCycleContext(db, tenantId, sheet);
+    if (sheetCtx.kind === "unavailable") {
+      console.error(
+        `[crm] linked sheet unavailable this cycle — sheet-bound contacts skip ` +
+          `(no blocks, no clock changes; the claim lease retries them): ${sheetCtx.reason}`,
+      );
+    }
     let proposed = 0;
     let failed = 0;
     for (const c of claimed) {
       try {
-        const outcome = await proposeForClaimed(deps, tenantId, c);
+        const outcome = await proposeForClaimed(deps, tenantId, c, sheetCtx);
         proposed += outcome.actions.length;
         for (const s of outcome.skipped) {
           console.log(`[crm] contact ${c.id}: skipped ${s.channel} — ${s.reason}`);

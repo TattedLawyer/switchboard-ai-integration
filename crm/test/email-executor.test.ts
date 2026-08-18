@@ -21,9 +21,11 @@ import {
   dayAfter,
   freshCrmDb,
   seedContact,
+  seedLinkedSheet,
   seedSettings,
   TEST_TENANT,
 } from "./helpers/crmdb.js";
+import { FakeSheet } from "./helpers/fakesheet.js";
 import { payloadHash } from "../../approval/src/canonical.js";
 import { beginExecution, finishExecution } from "../../approval/src/execute.js";
 import { followUpEmailPayloadSchema } from "../../approval/src/proposal.js";
@@ -88,9 +90,11 @@ afterEach(async () => {
   await admin.query("delete from crm.follow_up_actions");
   await admin.query("delete from crm.follow_ups");
   await admin.query("delete from crm.contacts");
+  await admin.query("delete from crm.linked_sheets");
   await admin.query("delete from approval.executions");
   await admin.query("delete from approval.decisions");
   await admin.query("delete from approval.proposals");
+  emailSheet = null;
 });
 
 afterAll(async () => {
@@ -124,7 +128,7 @@ async function proposeAndApprove(
     proposalId = ins.rows[0].id;
     return { id: proposalId };
   };
-  await runCycle({ db: crm, postProposal: door }, TEST_TENANT, 10);
+  await runCycle({ db: crm, postProposal: door, sheet: emailSheet }, TEST_TENANT, 10);
   expect(proposalId, "the shipped proposer must have produced a proposal").not.toBe("");
 
   if (opts.approve !== false) await approve(proposalId);
@@ -179,12 +183,26 @@ const deps = (sendEmail: SendEmailFn, allowlist: readonly string[] = ALLOW) => (
   intervals: INTERVALS,
 });
 
-const emailContact = () =>
-  seedContact(admin, {
+/** SHEET-BOUND since Part 2 / migration 022: the shipped proposer reads the email address
+ *  LIVE from the linked sheet (a manual contact's email leg now blocks with the honest
+ *  not-on-the-sheet reason — proposer-sheet.test.ts P10 — and `switchboard_crm` cannot
+ *  SELECT the stored address at all). Everything this suite pins about `executeEmail` is
+ *  unchanged; only the fixture that produces the proposal moved onto the sheet. */
+let emailSheet: FakeSheet | null = null;
+const emailContact = async (): Promise<string> => {
+  const linked = await seedLinkedSheet(admin);
+  const ref = randomUUID();
+  emailSheet = new FakeSheet(linked.spreadsheetId, ["Name", "Email"], [
+    { ref, cells: ["Ana Reyes", "ana@example.com"] },
+  ]);
+  return seedContact(admin, {
     channel: "email",
     email: "ana@example.com",
     displayName: "Ana Reyes",
+    linkedSheetId: linked.id,
+    rowRef: ref,
   });
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
 describe("Task 9 pin 1: the happy path", () => {

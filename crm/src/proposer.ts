@@ -15,10 +15,14 @@
 // 🚨 THE CLOCK IS NOT TOUCHED HERE. `recordTouch` owns it. The claim writes a lease and
 // nothing else.
 import type pg from "pg";
+import { z } from "zod";
 import { claimDue, type ClaimedContact } from "./claim.js";
 import {
   blockFollowUp,
   DETAILS_CHANGED_REASON,
+  MANUAL_CONTACT_EMAIL_REASON,
+  UNREADABLE_SHEET_EMAIL_REASON,
+  UNREADABLE_SHEET_PHONES_REASON,
   hasOpenFollowUpBefore,
   openFollowUp,
   openZeroActionFollowUpDate,
@@ -27,6 +31,9 @@ import {
 import { DoorReplyError } from "./door-reply.js";
 import { renderOpening } from "./opening.js";
 import { selectQuestionSetForProposal } from "./questions.js";
+import { loadSheetCycleContext, type SheetCycleContext } from "./sheet-read.js";
+import type { SheetTransport } from "./sheet-client.js";
+import type { ContactRowFields } from "./sheet-columns.js";
 
 export type Channel = "call" | "email";
 
@@ -46,6 +53,10 @@ export interface ProposerDeps {
   db: pg.Pool;
   postProposal: PostProposal;
   now?: () => Date;
+  /** The linked sheet's transport (Part 2). Null/absent means "not configured": with a
+   *  linked sheet present, every sheet-bound contact SKIPS each cycle — loudly at the
+   *  caller — and manual contacts run unchanged. Never a stored-detail fall-back. */
+  sheet?: SheetTransport | null;
 }
 
 export interface ProposedAction {
@@ -66,15 +77,18 @@ export interface ContactOutcome {
   skipped: Array<{ channel: Channel; reason: string }>;
 }
 
+// 🚨 NO DETAIL COLUMNS. Post-022 `switchboard_crm` cannot SELECT `email_address`,
+// `source_detail` or `looking_for` — details come from the LIVE sheet row (sheet-bound
+// contacts) or are honestly null (manual contacts). Widening this row shape back is a
+// 42501 at runtime, pinned in migration-022.test.ts.
 interface ContactRow {
   id: string;
   tenant_id: string;
   display_name: string | null;
-  email_address: string | null;
   channel: "call" | "email" | "both" | "none";
-  source_detail: string | null;
-  looking_for: string | null;
   follow_up_interval_days: number | null;
+  linked_sheet_id: string | null;
+  row_ref: string | null;
 }
 
 interface SettingsRow {
@@ -115,9 +129,13 @@ export async function runCycle(
   limit: number,
 ): Promise<ContactOutcome[]> {
   const claimed = await claimDue(deps.db, tenantId, limit, deps.now?.() ?? new Date());
+  if (claimed.length === 0) return [];
+  // 🚨 ONE SNAPSHOT PER CYCLE, never per contact: every claimed contact reads the same
+  // sheet state, and the API is hit once however large the batch.
+  const sheetCtx = await loadSheetCycleContext(deps.db, tenantId, deps.sheet ?? null);
   const out: ContactOutcome[] = [];
   for (const c of claimed) {
-    out.push(await proposeForClaimed(deps, tenantId, c));
+    out.push(await proposeForClaimed(deps, tenantId, c, sheetCtx));
   }
   return out;
 }
@@ -126,11 +144,95 @@ export async function proposeForClaimed(
   deps: ProposerDeps,
   tenantId: string,
   claimed: ClaimedContact,
+  // Default = "no linked sheet". Under the default a SHEET-BOUND contact SKIPS (fail-safe
+  // — never the stored copy); manual contacts are unaffected. `runCycle` and the daemon
+  // always pass the real cycle context.
+  sheetCtx: SheetCycleContext = { kind: "no_linked_sheet" },
 ): Promise<ContactOutcome> {
   const { db } = deps;
   const settings = await loadSettings(db, tenantId);
   const claimedDate = dueDateIn(claimed.claimedDueAt, settings.timezone);
   const contact = await loadContact(db, claimed.id);
+
+  const channels: Channel[] =
+    contact.channel === "both"
+      ? ["call", "email"]
+      : contact.channel === "none"
+        ? []
+        : [contact.channel];
+
+  // ── The LIVE row for a sheet-bound contact (Part 2 / Piece A). ────────────────────────
+  // 🚨 SHEET UNREACHABLE => SKIP, NOT BLOCK. No follow_ups row, no blocked reason, no
+  // clock write — the 15-minute claim lease this cycle already took simply expires and
+  // the next cycle re-claims. NEVER fall back to stored details: the card would carry
+  // exactly the stale data the live read exists to kill (and post-022 this role cannot
+  // read them anyway — the 42501 is the control, pinned in migration-022.test.ts).
+  //
+  // 🚨 A ROW ABSENT FROM THE SNAPSHOT (deleted, or cleared to blanks — the cell-clearing
+  // rule) is the SAME skip: recording `sheet_row_missing` is the OWNER-run adoption
+  // pass's job. Note the boundary honestly: 016's grants DO let this role insert a
+  // follow_ups block and null next_due_at (both were proved reachable), so writing the
+  // block here is prevented by CONVENTION, not by a permission — the convention being
+  // that a missing-row verdict belongs to the pass that also detects recovery and
+  // restarts the clock, and a proposer-side copy of it would fight that lifecycle. This
+  // comment pins the boundary; do not claim a 42501 enforces it.
+  let live: ContactRowFields | null = null;
+  if (contact.row_ref !== null) {
+    const skip = (reason: string): ContactOutcome => ({
+      contactId: contact.id,
+      dueDate: claimedDate,
+      actions: [],
+      blockedReason: null,
+      skipped: channels.map((channel) => ({ channel, reason })),
+    });
+    // 🚨 F1b — AN OPEN SHEET-LEVEL BLOCK GATES THE LIVE READ TOO. `sheet_divergent` (a
+    // value-integrity breaker halt paused this contact: its sheet values no longer match
+    // what is stored) and `sheet_row_missing` (its row vanished from a healthy snapshot)
+    // are the OWNER-run adoption pass's verdicts, and that pass also owns recovery —
+    // closing the block and restarting the clock. A contact can be DUE while such a block
+    // is open (an executed in-flight card's recordTouch restarts the clock), and
+    // proposing from the live row then would build a card from the very values the pass
+    // declared untrustworthy — or resurrect a row she deleted. Worse, `openFollowUp`'s
+    // upsert CLEARS `blocked_reason` on today's row (the B-B recovery path), so a propose
+    // here would STEAMROLL the pass's block on its way to the wrong card. Skip: no
+    // proposal, no new row, no clock change — the pass's next completed run closes the
+    // block and outreach resumes. 016 grants this role SELECT on `crm.follow_ups`
+    // (confirmed against the migration's grant block).
+    const paused = await db.query(
+      `select 1 from crm.follow_ups
+        where contact_id = $1 and closed_at is null
+          and blocked_reason in ('sheet_row_missing', 'sheet_divergent')
+        limit 1`,
+      [contact.id],
+    );
+    if ((paused.rowCount ?? 0) > 0) {
+      return skip(
+        "this contact is paused by a sheet-level block (its sheet row went missing or " +
+          "its values diverged from storage); the sheet adoption pass owns recovery — " +
+          "nothing was proposed this cycle",
+      );
+    }
+    if (sheetCtx.kind === "unavailable") {
+      return skip(
+        `the linked sheet could not be read this cycle (${sheetCtx.reason}); ` +
+          `nothing was proposed or recorded — the claim lease expires and the next cycle retries`,
+      );
+    }
+    if (sheetCtx.kind === "no_linked_sheet" || sheetCtx.linkedSheetId !== contact.linked_sheet_id) {
+      return skip(
+        "this contact is bound to a sheet that is not the active linked sheet this cycle; " +
+          "nothing was proposed — the claim lease expires and the next cycle retries",
+      );
+    }
+    const row = sheetCtx.rowsByRef.get(contact.row_ref);
+    if (row === undefined) {
+      return skip(
+        "this contact's sheet row was not in the snapshot (deleted or cleared); " +
+          "nothing was proposed — the sheet adoption pass records missing rows",
+      );
+    }
+    live = row;
+  }
 
   // 🚨 FAMILY 3 — FREEZE THE KEY ACROSS MIDNIGHT BY READING IT BACK, never re-deriving it.
   // On a RETRY, `claimedDueAt` is the 15-minute LEASE value the previous cycle wrote — which
@@ -162,13 +264,6 @@ export async function proposeForClaimed(
     };
   }
 
-  const channels: Channel[] =
-    contact.channel === "both"
-      ? ["call", "email"]
-      : contact.channel === "none"
-        ? []
-        : [contact.channel];
-
   // 🚨 OPTION B (V3): COMPUTE THE BUILDABLE LEGS FIRST, open the row only if ≥1 leg builds.
   //
   // The follow-up row must never exist without work to do. Opening it unconditionally (the
@@ -188,8 +283,8 @@ export async function proposeForClaimed(
     channel,
     build:
       channel === "call"
-        ? buildCallProposal(db, tenantId, contact, settings, idempotencyKey(contact.id, dueDate, channel))
-        : Promise.resolve(buildEmailProposal(contact, idempotencyKey(contact.id, dueDate, channel))),
+        ? buildCallProposal(db, tenantId, contact, live, settings, idempotencyKey(contact.id, dueDate, channel))
+        : Promise.resolve(buildEmailProposal(contact, live, idempotencyKey(contact.id, dueDate, channel))),
   }));
   const resolved = await Promise.all(
     legs.map(async (l) => ({ channel: l.channel, result: await l.build })),
@@ -197,18 +292,36 @@ export async function proposeForClaimed(
   const buildable = resolved.filter((l) => l.result.ok);
 
   if (buildable.length === 0) {
-    // Every wanted leg failed. Pick the PRIMARY block reason — a call-arm data gap
-    // (`no_phone_number` / `no_question_set`) outranks the email-arm one, so a `both` with no
-    // address surfaces the more actionable gap. `channel = 'none'` yields no legs and is not a
-    // data gap she can fix, so it blocks nothing and simply returns.
-    const reasons = resolved.flatMap((l) => (!l.result.ok ? [l.result.blockReason] : []));
+    // Every wanted leg failed or skipped. Pick the PRIMARY block reason — a call-arm data
+    // gap (`no_phone_number` / unreadable phones / `no_question_set`) outranks the
+    // email-arm one, so a `both` with no address surfaces the more actionable gap.
+    // `channel = 'none'` yields no legs and is not a data gap she can fix, so it blocks
+    // nothing and simply returns. A leg that SKIPPED (sheet numbers awaiting adoption)
+    // never contributes a block reason: a skip is "not this cycle", a block is a
+    // surfaced data gap, and conflating them would write a false reason to her queue.
+    const reasons = resolved.flatMap((l) =>
+      !l.result.ok && l.result.kind === "block" ? [l.result.blockReason] : [],
+    );
     const primary =
       reasons.find((r) => r === "no_phone_number") ??
+      reasons.find((r) => r === UNREADABLE_SHEET_PHONES_REASON) ??
       reasons.find((r) => r === "no_question_set") ??
+      reasons.find((r) => r === UNREADABLE_SHEET_EMAIL_REASON) ??
       reasons.find((r) => r === "no_email_address") ??
+      reasons.find((r) => r === MANUAL_CONTACT_EMAIL_REASON) ??
       null;
     if (primary === null) {
-      return { contactId: contact.id, dueDate, actions: [], blockedReason: null, skipped: [] };
+      // Nothing blockable: `none`, or every leg skipped this cycle. No row is opened
+      // (Option B) and no block is written — the skip reasons surface in the return.
+      return {
+        contactId: contact.id,
+        dueDate,
+        actions: [],
+        blockedReason: null,
+        skipped: resolved
+          .filter((l) => !l.result.ok)
+          .map((l) => ({ channel: l.channel, reason: legReason(l.result as LegFail | LegSkip) })),
+      };
     }
     await blockFollowUp(db, contact.id, dueDate, primary);
     return {
@@ -218,7 +331,7 @@ export async function proposeForClaimed(
       blockedReason: primary,
       skipped: resolved
         .filter((l) => !l.result.ok)
-        .map((l) => ({ channel: l.channel, reason: (l.result as LegFail).blockReason })),
+        .map((l) => ({ channel: l.channel, reason: legReason(l.result as LegFail | LegSkip) })),
     };
   }
 
@@ -231,7 +344,7 @@ export async function proposeForClaimed(
     if (!leg.result.ok) {
       // A partial gap on a contact that DID produce ≥1 action (P4a): a data-completeness
       // item, not a silence. Surfaced in the return value; the row is open and healthy.
-      skipped.push({ channel: leg.channel, reason: leg.result.blockReason });
+      skipped.push({ channel: leg.channel, reason: legReason(leg.result) });
       continue;
     }
     const built = leg.result;
@@ -262,6 +375,25 @@ export async function proposeForClaimed(
       posted = await deps.postProposal(built.proposal);
     } catch (err) {
       if (err instanceof DoorReplyError && err.status === 422) {
+        // 🚨 ONLY WHEN NO LEG HAS POSTED THIS CYCLE. A sibling that already posted means
+        // this row carries a LIVE CARD pending in her queue. Blocking the row would (a)
+        // hide it from the date-aware guard, so the next day proposes BOTH legs again and
+        // she gets a second pending call card for the same contact, and (b) hide it from
+        // the close pass (`closeTerminatedFollowUps` requires `blocked_reason is null`),
+        // so a rejection of that live card would strand the row open for ever. The refused
+        // leg is reported skipped with an honest reason; the open ACTIONED row then
+        // suppresses tomorrow via `hasOpenFollowUpBefore` and closes normally when the
+        // live card reaches a terminal state. Pinned in door-mismatch-block T5/T6.
+        if (actions.length > 0) {
+          skipped.push({
+            channel: leg.channel,
+            reason:
+              "an earlier attempt on this channel was interrupted, and the contact's details " +
+              "changed before it could be retried; skipped this cycle — the follow-up " +
+              "continues on the channel whose card is already in the queue",
+          });
+          continue;
+        }
         const row = await blockFollowUp(db, contact.id, dueDate, DETAILS_CHANGED_REASON);
         skipped.push({ channel: leg.channel, reason: DETAILS_CHANGED_REASON });
         // Legs not yet posted are NOT posted against a row just declared dead — a sibling
@@ -314,29 +446,108 @@ interface BuiltProposal {
 }
 interface LegFail {
   ok: false;
+  kind: "block";
   blockReason: BlockedReason;
 }
-type LegBuild = BuiltProposal | LegFail;
+/** "Not this cycle", as distinct from a surfaced data gap: nothing is opened and nothing
+ *  is blocked — the reason travels in the outcome's `skipped` (and the daemon log) and
+ *  the claim lease retries. Used when the sheet's numbers have not been adopted yet: a
+ *  `no_phone_number` block there would be a false statement about her sheet. */
+interface LegSkip {
+  ok: false;
+  kind: "skip";
+  reason: string;
+}
+type LegBuild = BuiltProposal | LegFail | LegSkip;
+
+const legReason = (r: LegFail | LegSkip): string =>
+  r.kind === "block" ? r.blockReason : r.reason;
 
 async function buildCallProposal(
   db: pg.Pool,
   tenantId: string,
   contact: ContactRow,
+  live: ContactRowFields | null,
   settings: SettingsRow,
   key: string,
 ): Promise<LegBuild> {
+  // 🚨 CONTACT-SCOPED, and the scope is load-bearing: this is the ONLY source of the
+  // E.164 → phone_number_id resolution below. `loadNumbers` selects
+  // `where contact_id = $1`, so a number that appears on this contact's sheet row but is
+  // STORED under a different contact (a displaced value — a sort, a cross-row paste, a
+  // shared household line mid-reorganisation) can never resolve to that other contact's
+  // phone_number_id. Unscoped, it would corrupt both the call payload and the touch
+  // attribution that hangs off phone_number_id. Pinned (P6, proposer-sheet.test.ts).
   const numbers = await loadNumbers(db, contact.id);
-  if (numbers.length === 0) return { ok: false, blockReason: "no_phone_number" };
+
+  interface Candidate {
+    id: string;
+    phone_e164: string;
+  }
+  let candidates: Candidate[];
+  let listLabel: (idx: number) => string;
+
+  if (live === null) {
+    // MANUAL CONTACT — the call leg is unchanged: stored numbers, stored dial order.
+    if (numbers.length === 0) return { ok: false, kind: "block", blockReason: "no_phone_number" };
+    candidates = numbers;
+    // The stored ordinal, as before, so the card names the entry she recognises.
+    listLabel = (idx) => `entry ${numbers[idx].ordinal + 1} of ${numbers.length}`;
+  } else {
+    // SHEET-BOUND CONTACT — 🚨 THE PHONE FIX. Dial candidates are the LIVE sheet numbers
+    // in SHEET ORDER, deduped by E.164 (two columns, or two spellings of one number,
+    // would otherwise inflate the list and skew the rotation), each resolved to its
+    // stored row purely to supply the phone_number_id the payload grammar requires. A
+    // stored number absent from the sheet is filtered BY ABSENCE — never deleted (016
+    // grants no DELETE; removal stays an operator action).
+    const byE164 = new Map(numbers.map((n) => [n.phone_e164, n]));
+    const seen = new Set<string>();
+    const liveOrder = live.phones.filter((p) => {
+      if (seen.has(p.e164)) return false;
+      seen.add(p.e164);
+      return true;
+    });
+    candidates = liveOrder.flatMap((p) => {
+      const stored = byE164.get(p.e164);
+      return stored === undefined ? [] : [{ id: stored.id, phone_e164: stored.phone_e164 }];
+    });
+    if (candidates.length === 0) {
+      if (liveOrder.length > 0) {
+        // The row DOES carry phones; storage just hasn't adopted them yet. A
+        // `no_phone_number` block would be FALSE — skip this cycle and let the owner-run
+        // adoption pass sync them (its insert-only phone sync exists for exactly this).
+        return {
+          ok: false,
+          kind: "skip",
+          reason:
+            "the sheet lists phone number(s) not yet adopted into storage; skipped this " +
+            "cycle — the sheet adoption pass syncs them",
+        };
+      }
+      if (live.phoneProblems.length > 0) {
+        // Numbers exist but none could be read. Say THAT, not "there are none".
+        return { ok: false, kind: "block", blockReason: UNREADABLE_SHEET_PHONES_REASON };
+      }
+      return { ok: false, kind: "block", blockReason: "no_phone_number" };
+    }
+    listLabel = (idx) => `entry ${idx + 1} of ${candidates.length}`;
+  }
+
   const set = await selectQuestionSetForProposal(db, tenantId);
-  if (set === null) return { ok: false, blockReason: "no_question_set" };
+  if (set === null) return { ok: false, kind: "block", blockReason: "no_question_set" };
 
   // 🚨 MODULO THE LIVE COUNT, never the stored ordinal used as an array index. She deletes
-  // a number and the stored rotation index is suddenly past the end — an index straight
-  // into the array either crashes or skips the whole list.
+  // a number (manual) or removes one from the sheet (sheet-bound) and the stored rotation
+  // index is suddenly past the end — an index straight into the array either crashes or
+  // skips the whole list.
   const rotation = await currentRotation(db, contact.id);
-  const pick = numbers[rotation % numbers.length];
+  const idx = rotation % candidates.length;
+  const pick = candidates[idx];
 
-  const opening = renderOpening(contact.display_name, {
+  // The name the card renders and the agent speaks: LIVE for a sheet-bound contact —
+  // a correction on the sheet reaches the very next card, no adoption pass in between.
+  const displayName = live === null ? contact.display_name : live.displayName;
+  const opening = renderOpening(displayName, {
     openingLine: settings.opening_line,
     openingLineNoName: settings.opening_line_no_name,
   });
@@ -355,21 +566,25 @@ async function buildCallProposal(
         contact_id: contact.id,
         phone_number_id: pick.id,
         phone_e164: pick.phone_e164,
-        display_name: contact.display_name,
+        display_name: displayName,
         opening_line: opening.line,
         question_set_id: set.id,
         context: {
-          source_detail: contact.source_detail,
-          looking_for: contact.looking_for,
+          // LIVE for sheet-bound; honestly null for manual — post-022 the stored copies
+          // are unreadable to this role, and a null beats a stale or invented value.
+          source_detail: live === null ? null : live.sourceDetail,
+          looking_for: live === null ? null : live.lookingFor,
         },
       },
       // 🚨 WHY THIS CONTACT, WHY NOW, WHICH NUMBER. A constant rationale is "an instruction
       // wearing a proposal's clothes" (proposal.ts:38-39) — the human cannot judge an ask
-      // that does not say what it is.
+      // that does not say what it is. The entry count is the count of numbers ACTUALLY
+      // dialable today — for a sheet-bound contact that is the live candidate list, so a
+      // stale stored number can never be presented as a legitimate "entry 1 of 2".
       rationale:
-        `${contact.display_name ?? "This number has no name on file"} is due: ` +
+        `${displayName ?? "This number has no name on file"} is due: ` +
         `${last} · follow-up interval ${intervalDays} days · ` +
-        `calling ${pick.phone_e164} (entry ${pick.ordinal + 1} of ${numbers.length}).` +
+        `calling ${pick.phone_e164} (${listLabel(idx)}).` +
         (opening.path === "nameless"
           ? " No name on file, so the agent opens as an associate of yours and the answers " +
             "will be stored labelled identity-unverified."
@@ -378,15 +593,52 @@ async function buildCallProposal(
   };
 }
 
-function buildEmailProposal(contact: ContactRow, key: string): LegBuild {
-  // 🚨 EMAIL PREFERRED, NO ADDRESS ON FILE is a BLOCK, not a fall-back to calling —
+/** The `to` rules of the door's `followUpEmailPayloadSchema`, copied byte-for-byte from
+ *  `approval/src/proposal.ts` — `crm/src` may not import `approval/src` (executor.ts's
+ *  ban), so the copy is deliberate and names its source, exactly as scheduler.ts copies
+ *  expiry's shape. The door and the executor stay authoritative downstream; this is the
+ *  proposer refusing to BUILD what they would refuse to send. */
+const liveEmailShape = z
+  .string()
+  .min(3)
+  .max(254)
+  .email()
+  .refine((v) => !v.includes(","), { message: "one recipient only" })
+  .refine((v) => v === v.trim(), { message: "leading/trailing whitespace" });
+
+function buildEmailProposal(
+  contact: ContactRow,
+  live: ContactRowFields | null,
+  key: string,
+): LegBuild {
+  // 🚨 MANUAL CONTACT: post-022 the proposer cannot read a stored address at all, and PER
+  // THE OWNER'S RULING it must not claim "no_email_address" — the address may be on file
+  // and merely unreadable. The HONEST reason says the contact is not on the linked sheet.
+  // Intake (`crm-contact-add`, owner role) keeps accepting such contacts unchanged.
+  if (live === null) {
+    return { ok: false, kind: "block", blockReason: MANUAL_CONTACT_EMAIL_REASON };
+  }
+  // 🚨 EMAIL PREFERRED, NO ADDRESS ON THE SHEET is a BLOCK, not a fall-back to calling —
   // overriding her stated preference at the moment we have least information is the worst
   // available outcome. The email leg simply fails to build; whether that becomes a blocked
-  // row depends (Option B) on whether any OTHER leg built.
-  if (contact.email_address === null || contact.email_address === "") {
-    return { ok: false, blockReason: "no_email_address" };
+  // row depends (Option B) on whether any OTHER leg built. (`contactRowFields` already
+  // normalizes an empty cell to null.)
+  if (live.emailAddress === null) {
+    return { ok: false, kind: "block", blockReason: "no_email_address" };
   }
-  const who = contact.display_name ?? "there";
+  // 🚨 F2 — THE DOOR'S OWN SHAPE RULES, APPLIED BEFORE THE LEG BUILDS. A cell like
+  // "see business card" is an email COLUMN entry, not an address; unvalidated it flowed
+  // VERBATIM into `payload.to`, and the door's envelope schema accepts the payload
+  // opaquely (measured 2026-08-18: HTTP 201), so the unsendable wrong card would reach
+  // her queue and die only after approval, at the executor's grammar check. The phone leg
+  // already had its twin (UNREADABLE_SHEET_PHONES_REASON); the asymmetry was the defect.
+  // A refusal here becomes a SURFACED block with the honest reason — never the false
+  // "no_email_address" (the row HAS an email cell), never a card she cannot judge.
+  // Nothing is transformed: `checkSendable`'s rule — refuse, don't normalise.
+  if (!liveEmailShape.safeParse(live.emailAddress).success) {
+    return { ok: false, kind: "block", blockReason: UNREADABLE_SHEET_EMAIL_REASON };
+  }
+  const who = live.displayName ?? "there";
   return {
     ok: true,
     proposal: {
@@ -394,16 +646,18 @@ function buildEmailProposal(contact: ContactRow, key: string): LegBuild {
       action_type: "send_email",
       payload: {
         contact_id: contact.id,
-        to: contact.email_address,
+        // THE `to` IS THE SHEET'S, read this cycle: an address she corrected reaches the
+        // very next card with no adoption pass in between (P2).
+        to: live.emailAddress,
         subject: "Following up",
         body:
           `Hi ${who} — just following up on our conversation` +
-          (contact.looking_for ? ` about ${contact.looking_for}` : "") +
+          (live.lookingFor ? ` about ${live.lookingFor}` : "") +
           `. Is now a good time to talk?`,
       },
       rationale:
         `${who} is due and prefers email` +
-        (contact.source_detail ? ` (met at ${contact.source_detail})` : "") +
+        (live.sourceDetail ? ` (met at ${live.sourceDetail})` : "") +
         `. Single message, no sequence.`,
     },
   };
@@ -439,9 +693,12 @@ async function currentRotation(db: pg.Pool, contactId: string): Promise<number> 
 }
 
 async function loadContact(db: pg.Pool, id: string): Promise<ContactRow> {
+  // 🚨 EXACTLY THE COLUMNS THAT SURVIVE MIGRATION 022's revoke. Adding
+  // email_address / source_detail / looking_for back is a 42501 under `switchboard_crm`
+  // — details are the sheet's, read live, or honestly null for a manual contact.
   const r = await db.query<ContactRow>(
-    `select id, tenant_id, display_name, email_address, channel, source_detail,
-            looking_for, follow_up_interval_days
+    `select id, tenant_id, display_name, channel, follow_up_interval_days,
+            linked_sheet_id, row_ref
        from crm.contacts where id = $1`,
     [id],
   );
