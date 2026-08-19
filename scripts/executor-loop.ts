@@ -38,6 +38,8 @@ import {
 } from "../crm/src/executor.js";
 import { stubPlaceCall, livekitPlaceCall } from "../crm/src/call-transport.js";
 import type { OutreachWindow } from "../crm/src/gates.js";
+import { createEmbedder } from "../crm/src/kb/embedder.js";
+import { knowledgeLookup } from "../crm/src/kb/lookup.js";
 import { liveDetailRecheck } from "../crm/src/send-recheck.js";
 import { sheetTransportFromEnv, SHEETS_KEY_FILE_ENV } from "../crm/src/sheet-client.js";
 import { smtpSender } from "../crm/src/email-transport.js";
@@ -207,6 +209,28 @@ async function main(): Promise<void> {
   }
   const recheckLiveDetails = liveDetailRecheck(crmDb, sheetTransport);
 
+  // 🚨 THE KNOWLEDGE SEAM IS CHOSEN THE SAME WAY AS THE TRANSPORTS, AND ABSENT IS THE
+  // DEFAULT. `createEmbedder()` is the ONE eager model construction this process performs
+  // (~3.5s, embedder.ts doctrine: construction, not first call) and it is attempted at
+  // composition time; if the vendored model is missing it throws NAMING THE FIX
+  // (scripts/fetch-embedding-model.sh), and this daemon degrades to "the agent has no
+  // knowledge base" — `executeCall`'s optional seam, calls proceed unchanged — never to a
+  // per-call stall or a mid-call crash. All logic lives in `crm/src` (the factory and the
+  // cap); this file only chooses and wires, like everything else here. The tenant is bound
+  // HERE, once — the seam's call signature has no tenant field, deliberately.
+  let lookupKnowledge: ReturnType<typeof knowledgeLookup> | undefined;
+  let kbBanner: string;
+  try {
+    const embedder = await createEmbedder();
+    lookupKnowledge = knowledgeLookup(crmDb, embedder, tenantId);
+    kbBanner = ` Knowledge lookup ON (local embedder loaded; capped per call).`;
+  } catch (err) {
+    lookupKnowledge = undefined;
+    kbBanner =
+      ` Knowledge lookup OFF — the agent has no knowledge base on calls: ` +
+      (err instanceof Error ? err.message : String(err));
+  }
+
   const dbName = (await approvalDb.query<{ d: string }>("select current_database() as d"))
     .rows[0].d;
   if (dbName === "switchboard") {
@@ -337,7 +361,15 @@ async function main(): Promise<void> {
       try {
         if (row.action_type === "place_call") {
           const out = await executeCall(
-            { approvalDb, crmDb, placeCall, spine: CALL_SPINE, window, intervals },
+            {
+              approvalDb,
+              crmDb,
+              placeCall,
+              spine: CALL_SPINE,
+              window,
+              intervals,
+              ...(lookupKnowledge === undefined ? {} : { lookupKnowledge }),
+            },
             row.id,
           );
           console.log(
@@ -399,7 +431,8 @@ async function main(): Promise<void> {
           ` active approval.users (each must be on SWITCHBOARD_EMAIL_ALLOWLIST), queue at` +
           ` ${approvalPublicUrl}/queue.`
         : ` Daily digest OFF — no APPROVAL_PUBLIC_URL; nothing will tell the broker her` +
-          ` approval queue exists, and an expired proposal stays a silent loss.`),
+          ` approval queue exists, and an expired proposal stays a silent loss.`) +
+      kbBanner,
   );
 
   let shuttingDown = false;

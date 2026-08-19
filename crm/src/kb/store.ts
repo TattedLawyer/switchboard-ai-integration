@@ -22,6 +22,9 @@ export interface RetrievedChunk {
   kind: string;
   title: string;
   text: string;
+  /** When the broker last saved the entry this chunk came from — the staleness signal
+   *  the call path's KnowledgePassage carries to the agent. */
+  updatedAt: Date;
   /** Cosine distance (`<=>`): 0 = identical direction, 1 = orthogonal, 2 = opposite. */
   distance: number;
 }
@@ -66,6 +69,7 @@ export async function searchGeneralChunks(
             c.ordinal   as ordinal,
             e.kind      as kind,
             e.title     as title,
+            e.updated_at as updated_at,
             c.text      as text,
             (c.embedding <=> $2::vector) as distance
        from kb.general_chunks c
@@ -83,6 +87,7 @@ export async function searchGeneralChunks(
     ordinal: row.ordinal as number,
     kind: row.kind as string,
     title: row.title as string,
+    updatedAt: row.updated_at as Date,
     text: row.text as string,
     distance: Number(row.distance),
   }));

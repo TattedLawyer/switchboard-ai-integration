@@ -36,7 +36,8 @@
 //    the approved payload names ONE number, and a second dial is a call the human never
 //    approved. Speak `payload.opening_line` exactly as bound; nothing is templated at
 //    call time — she approved those words.
-import type { PlaceCall } from "./executor.js";
+import type { KnowledgeLookupOutcome, PlaceCall } from "./executor.js";
+import type { ConversationOutcome, TransportSignal } from "./disposition.js";
 
 /**
  * The stub. The call twin of the loop's `stubSender`, with one improvement: it is
@@ -55,6 +56,94 @@ export const stubPlaceCall: PlaceCall = async (ctx) => {
   );
   return { transport: { sipStatus: 480 }, conversation: null };
 };
+
+/** One scripted exchange: what the fake prospect ASKS before answering (each ask is one
+ *  knowledge lookup), and what they ANSWER to the current approved question. */
+export interface ScriptedTurn {
+  /** Questions the prospect throws at the agent before answering this prompt. */
+  asks?: string[];
+  /** The prospect's answer to prompt N — committed via `ctx.answer` the moment it exists. */
+  answer: string;
+}
+
+/** A whole scripted conversation, plus the RAW signals it ends with (rule 3: the script
+ *  reports signals; `disposition.ts` alone decides what they mean). */
+export interface CallScript {
+  turns: ScriptedTurn[];
+  transport: TransportSignal;
+  conversation: ConversationOutcome | null;
+}
+
+/** What one ask brought back — the executor's outcome verbatim, or the honest admission
+ *  that no knowledge base exists on this call (`ctx.lookupKnowledge` absent). */
+export interface ScriptedLookup {
+  question: string;
+  outcome: KnowledgeLookupOutcome | "no-knowledge-base";
+}
+
+/** Filled in AS THE CALL RUNS, so a test (or a rehearsal operator) can see exactly what
+ *  reached the adapter, in order. */
+export interface ScriptedCallLog {
+  /** `payload.opening_line`, verbatim — rule 4: she approved those words. */
+  openingSpoken: string | null;
+  lookups: ScriptedLookup[];
+}
+
+export interface ScriptedCall {
+  placeCall: PlaceCall;
+  log: ScriptedCallLog;
+}
+
+/**
+ * The FAKE VENDOR — a scripted caller that proves the whole loop with no carrier account:
+ * it "answers", hears the opening line, interjects knowledge questions, and works through
+ * the approved question list, honouring this file's 4-rule contract:
+ *   1. STREAM, NEVER BUFFER — `ctx.answer`/`ctx.reached` fire per turn, mid-call, so a
+ *      script that dies half-way leaves exactly the answers already given (the
+ *      no-rollback guarantee stays true even in rehearsal).
+ *   2. DIE HONESTLY — a script that disagrees with the approved prompt list (more turns
+ *      than questions) THROWS; it never invents a `CallResult` around the mismatch.
+ *   3. REPORT RAW SIGNALS, DECIDE NOTHING — `script.transport`/`script.conversation` are
+ *      returned verbatim; fewer turns than prompts is simply a caller who hung up early,
+ *      and the script's own signals say so.
+ *   4. DIAL EXACTLY ONCE — a second invocation of the same scripted call THROWS, and the
+ *      opening line is logged exactly as bound, never templated.
+ *
+ * When the script asks and the call carries NO knowledge base (`ctx.lookupKnowledge`
+ * absent), the log records "no-knowledge-base" and the intake continues — the agent
+ * without knowledge is still an agent with a questionnaire.
+ */
+export function scriptedPlaceCall(script: CallScript): ScriptedCall {
+  const log: ScriptedCallLog = { openingSpoken: null, lookups: [] };
+  let dialed = false;
+  const placeCall: PlaceCall = async (ctx) => {
+    if (dialed) {
+      throw new Error("scriptedPlaceCall: this call was already placed — rule 4, dial exactly once");
+    }
+    dialed = true;
+    if (script.turns.length > ctx.prompts.length) {
+      throw new Error(
+        `scriptedPlaceCall: the script answers ${script.turns.length} questions but the ` +
+          `approved set has ${ctx.prompts.length} — refusing to invent prompts (rule 2)`,
+      );
+    }
+    log.openingSpoken = ctx.payload.opening_line;
+    for (const [i, turn] of script.turns.entries()) {
+      for (const question of turn.asks ?? []) {
+        if (ctx.lookupKnowledge === undefined) {
+          log.lookups.push({ question, outcome: "no-knowledge-base" });
+        } else {
+          log.lookups.push({ question, outcome: await ctx.lookupKnowledge({ text: question }) });
+        }
+      }
+      // Committed NOW, not at hang-up (rule 1).
+      await ctx.answer(ctx.prompts[i].id, turn.answer);
+      await ctx.reached(i + 1);
+    }
+    return { transport: script.transport, conversation: script.conversation };
+  };
+  return { placeCall, log };
+}
 
 /**
  * The explicit config surface a real LiveKit adapter needs (T16: LiveKit + SIP trunk +

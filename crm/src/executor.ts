@@ -65,6 +65,64 @@ export interface ApprovalSpine {
   ) => { ok: true; value: PlaceCallPayload } | { ok: false; problem: string };
 }
 
+// ═══ THE KNOWLEDGE SEAM (C6 reaching the call path) ═════════════════════════════════════
+// Declared HERE, like `Recheck`, because the executor states its own contracts and
+// `crm/src/kb/lookup.ts` (the implementation) imports the types — never the reverse.
+
+/**
+ * One retrieved passage, carrying enough for the agent to be HONEST about it:
+ *   · `text` — verbatim from her saved entry; the agent quotes, never invents.
+ *   · `updatedAt` — when SHE last saved the underlying entry. Staleness is commercial
+ *     harm (an agent quoting a sold property), so the timestamp rides with every passage
+ *     and the agent can hedge ("as of early August…") or decline.
+ *   · `title`/`kind` — so the agent can NAME its source instead of asserting from nowhere.
+ *   · `entryId` — provenance for audit; chunk internals (ids, ordinals) stay below the seam.
+ *   · `distance` — cosine distance of the match, so the adapter can refuse a far match
+ *     instead of quoting the least-irrelevant thing in the store.
+ */
+export interface KnowledgePassage {
+  text: string;
+  title: string;
+  kind: string;
+  entryId: string;
+  updatedAt: Date;
+  distance: number;
+}
+
+/** The DEPS seam — pure retrieval, tenant-bound at construction (composition root), so
+ *  neither the executor nor any adapter can name a tenant. Optional exactly like
+ *  `recheckLiveDetails`: absent ⇒ the agent has no knowledge base. */
+export type LookupKnowledge = (q: {
+  text: string;
+  topK?: number;
+}) => Promise<KnowledgePassage[]>;
+
+/**
+ * 🚨 THE PER-CALL LOOKUP CAP. A caller who keeps asking gets an honest handoff ("I'll
+ * have Marisol get back to you"), not an unbounded Q&A session on her phone bill. It is
+ * enforced in `executeCall` — NOT in the kb factory — because it is CALL-LIFECYCLE state:
+ * the factory's function is built once per process and shared across calls, so a counter
+ * there would leak across calls; and the policy must hold for ANY future lookup
+ * implementation, which makes it the executor's rule about calls, not the store's rule
+ * about search.
+ */
+export const KNOWLEDGE_LOOKUP_CAP = 3;
+
+/**
+ * What the ADAPTER sees per lookup. A discriminated union, because the three
+ * non-answers are different sentences in the agent's mouth:
+ *   · ok + []        — searched, nothing relevant: "I don't have that information."
+ *   · capped         — over the per-call budget: hand off, stop offering to check.
+ *   · failed         — the lookup broke: "I can't check that right now." The call
+ *     SURVIVES (a broken knowledge base must degrade a live conversation, never kill
+ *     it), and the failure is logged loudly by the executor.
+ * `remaining` tells the adapter how many lookups are left, so it can stop offering
+ * before it hits the wall.
+ */
+export type KnowledgeLookupOutcome =
+  | { ok: true; passages: KnowledgePassage[]; remaining: number }
+  | { ok: false; reason: "capped" | "failed"; remaining: number };
+
 export interface CallContext {
   touchId: string;
   payload: PlaceCallPayload;
@@ -74,6 +132,10 @@ export interface CallContext {
   answer: (questionId: string, value: string) => Promise<void>;
   /** How far down the list we have got. */
   reached: (ordinal: number) => Promise<void>;
+  /** Ask the broker's knowledge base, mid-call — capped, fail-soft, tenant-scoped below
+   *  the seam. ABSENT when the deps carry no `lookupKnowledge`: the adapter can only
+   *  consume what the executor built; it can never construct a lookup itself. */
+  lookupKnowledge?: (q: { text: string; topK?: number }) => Promise<KnowledgeLookupOutcome>;
 }
 
 export interface CallResult {
@@ -99,6 +161,12 @@ export interface ExecutorDeps {
    *  recipient is a phone number, not `payload.to`, so wiring it is NOT trivially
    *  symmetric and is deliberately out of Piece C's scope. Absent == "send". */
   recheckLiveDetails?: (payload: PlaceCallPayload) => Promise<Recheck>;
+  /** The knowledge seam (C6 on the call path), OPTIONAL exactly like the recheck above:
+   *  absent ⇒ the agent has no knowledge base and the call proceeds unchanged. Injected
+   *  from the composition root (`crm/src/kb/lookup.ts`'s factory, embedder constructed
+   *  ONCE at startup); `executeCall` wraps it with the per-call cap and the fail-soft
+   *  boundary before the adapter ever sees it. */
+  lookupKnowledge?: LookupKnowledge;
   now?: () => Date;
 }
 
@@ -223,6 +291,44 @@ export async function executeCall(
 
   const bound = set.questions.map((q) => q.id);
 
+  // 3b. THE KNOWLEDGE SEAM, wrapped for THIS call. The wrapper — not the kb factory —
+  //     owns the per-call cap (call-lifecycle state; see KNOWLEDGE_LOOKUP_CAP's header),
+  //     so the adapter can consume lookups but can never construct or un-cap them.
+  const lookupDep = deps.lookupKnowledge;
+  let lookupsUsed = 0;
+  const lookupKnowledge =
+    lookupDep === undefined
+      ? undefined
+      : async (q: { text: string; topK?: number }): Promise<KnowledgeLookupOutcome> => {
+          // The cap refusal costs nothing and consumes nothing: the store is never
+          // reached, and the adapter is TOLD, so it can hand off instead of re-asking.
+          if (lookupsUsed >= KNOWLEDGE_LOOKUP_CAP) {
+            return { ok: false, reason: "capped", remaining: 0 };
+          }
+          lookupsUsed += 1;
+          try {
+            const passages = await lookupDep(q);
+            return { ok: true, passages, remaining: KNOWLEDGE_LOOKUP_CAP - lookupsUsed };
+          } catch (err) {
+            // 🚨 FAIL-SOFT, DELIBERATELY (K7). A live human is on the line: a broken
+            // knowledge base degrades the ANSWER ("I can't check that right now" — the
+            // adapter sees `failed`), never the CALL — an unhandled throw here would drop
+            // the conversation, discard the intake in progress, and wedge the proposal
+            // `executing`. The failed attempt still counts against the cap: the cap
+            // bounds work ATTEMPTED, and a broken store must not be hammered mid-call.
+            // Visible to the operator here, loudly, naming the touch.
+            console.error(
+              `[executor] knowledge lookup failed mid-call (touch=${touchId}) — the call ` +
+                `continues without it: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            return {
+              ok: false,
+              reason: "failed",
+              remaining: KNOWLEDGE_LOOKUP_CAP - lookupsUsed,
+            };
+          }
+        };
+
   // 4. The call.
   let result: CallResult;
   try {
@@ -243,6 +349,7 @@ export async function executeCall(
           ordinal,
         ]);
       },
+      ...(lookupKnowledge === undefined ? {} : { lookupKnowledge }),
     });
   } catch (err) {
     // 🚨 NOTHING IS ROLLED BACK. See the file header. The proposal stays `executing` and
