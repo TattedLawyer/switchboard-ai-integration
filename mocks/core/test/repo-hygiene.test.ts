@@ -2,6 +2,16 @@ import { describe, expect, it } from "vitest";
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  PH_FIXTURE_ALLOWLIST,
+  PH_FIXTURE_ALLOWLIST_CAP,
+  PH_MOBILE,
+  PH_MOBILE_SECOND_DIGIT,
+  SSN_SHAPE,
+  US_PHONE_SHAPE,
+  canonicalPhMobile,
+  findPhoneOffenders,
+} from "./phone-hygiene.js";
 
 // Repo-WIDE hygiene. The per-mock hygiene tests prove what the GENERATORS emit is
 // synthetic; this file backs the README's stronger claim — no real emails or PII-shaped
@@ -31,8 +41,8 @@ for (const f of files) {
 
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 const SYNTHETIC = /@([A-Za-z0-9-]+\.)*example\.com$/i;
-const SSN_SHAPE = /\b\d{3}-\d{2}-\d{4}\b/;
-const US_PHONE_SHAPE = /\b\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}\b/;
+// SSN_SHAPE / US_PHONE_SHAPE / PH_MOBILE now live in ./phone-hygiene.ts (imported
+// above) so the same objects drive the scan, the pure-function pins and the self-tests.
 
 describe("repo-wide hygiene (every tracked text file, not just generator output)", () => {
   it("scans a plausible corpus (guards against a silently empty file list)", () => {
@@ -50,12 +60,13 @@ describe("repo-wide hygiene (every tracked text file, not just generator output)
     expect(offenders).toEqual([]);
   });
 
-  it("no SSN- or US-phone-shaped strings in any tracked file", () => {
-    const offenders: string[] = [];
-    for (const [f, s] of texts) {
-      if (SSN_SHAPE.test(s) || US_PHONE_SHAPE.test(s)) offenders.push(f);
-    }
-    expect(offenders).toEqual([]);
+  // Amended (B1): the phone arm now goes through findPhoneOffenders — PH mobiles are
+  // matched first (against the frozen fixture allowlist) and masked with same-length
+  // filler before the US/SSN passes, and every finding names the file AND the number.
+  // Before this, `+63 917 111 2222` was misread as US-shaped while a real `0917 …`
+  // number passed clean.
+  it("no PH-mobile-, SSN- or US-phone-shaped strings in any tracked file (frozen PH fixtures allowlisted)", () => {
+    expect(findPhoneOffenders(texts, PH_FIXTURE_ALLOWLIST)).toEqual([]);
   });
 
   it("self-test: the detectors actually catch violations (not vacuously green)", () => {
@@ -69,6 +80,93 @@ describe("repo-wide hygiene (every tracked text file, not just generator output)
     expect(US_PHONE_SHAPE.test("(415) 555" + " 0100")).toBe(true);
     expect(US_PHONE_SHAPE.test("415-555-" + "0142")).toBe(true);
     expect(US_PHONE_SHAPE.test("2026-07-22T10:00:00Z")).toBe(false); // ISO dates don't trip it
+  });
+});
+
+// Phase-3 amendment (B1): the product is Philippines-first and does outbound calling,
+// yet the guard above could not see PH mobile numbers at all — and worse, misread the
+// legitimate `+63 917 111 2222` fixture spelling as a US number (the space after +63 is
+// a word boundary, so the trailing `9XX XXX XXXX` matched US_PHONE_SHAPE). The scan now
+// lives in ./phone-hygiene.ts as a pure function so it can be exercised against
+// synthetic corpora here, and the repo-wide wiring is pinned separately below (P8).
+describe("PH mobile hygiene (pure-function pins over findPhoneOffenders)", () => {
+  // Offender fixtures are built by CONCATENATION so this tracked file never carries a
+  // non-allowlisted PH-shaped literal of its own. Allowlisted spellings may appear
+  // literally — that is exactly what the allowlist permits.
+  const ph9 = "0998" + " 765 " + "4321"; // 9XX space, NOT allowlisted
+  const ph8 = "0895" + " 123 " + "9876"; // 8XX space (DITO allocations), NOT allowlisted
+  const usNum = "415-555-" + "0142";
+  const ssn = "078" + "-05-" + "1120";
+
+  it("P1: a non-allowlisted 9XX PH mobile is caught, message names file AND number", () => {
+    const out = findPhoneOffenders([["docs/somewhere.md", `call me at ${ph9} today`]], PH_FIXTURE_ALLOWLIST);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toContain("docs/somewhere.md");
+    expect(out[0]).toContain(ph9);
+  });
+
+  it("P2: a non-allowlisted 8XX/DITO-space PH mobile is caught (prefix class is pinned)", () => {
+    // The coverage decision is a visible constant, not a buried literal: DITO's
+    // allocations start with 8, so a 9XX-only class silently drops a whole carrier.
+    expect(PH_MOBILE_SECOND_DIGIT).toBe("[89]");
+    const out = findPhoneOffenders([["docs/elsewhere.md", `ring ${ph8} now`]], PH_FIXTURE_ALLOWLIST);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toContain("docs/elsewhere.md");
+    expect(out[0]).toContain(ph8);
+  });
+
+  it("P3: an allowlisted fixture number passes, in canonical and spaced spellings", () => {
+    expect(findPhoneOffenders([["crm/test/x.test.ts", 'phone: "+639171112222"']], PH_FIXTURE_ALLOWLIST)).toEqual([]);
+    expect(findPhoneOffenders([["crm/test/x.test.ts", 'phone: "0917 111 2222"']], PH_FIXTURE_ALLOWLIST)).toEqual([]);
+  });
+
+  it("P4: a +63-spelled PH mobile is NOT reported as US-shaped (the exact CI failure)", () => {
+    const spelled = "+63 917 111 2222";
+    // The defect mechanism, pinned: the RAW text IS US-shaped (space after +63 is a
+    // word boundary), which is why US matching must run on PH-masked text only.
+    expect(US_PHONE_SHAPE.test(spelled)).toBe(true);
+    expect(findPhoneOffenders([["crm/test/proposer-sheet.test.ts", `cells: { phone: "${spelled}" }`]], PH_FIXTURE_ALLOWLIST)).toEqual([]);
+  });
+
+  it("P5: same-length filler masking never FABRICATES a US or SSN offender (digit merge)", () => {
+    // Verified by execution: deleting the PH match instead of masking it fabricates
+    // offenders that exist nowhere in the file — in the first string below, deletion
+    // splices `415-` onto `555-0142` (a US shape); in the second, `078-` onto
+    // `05-1120` (an SSN shape). Same-length filler leaves both files clean. (The
+    // fabricated results are deliberately NOT spelled contiguously in this comment —
+    // the repo-wide scan reads this very file.) Both strings embed the allowlisted
+    // 0917 111 2222 (canonical +639171112222).
+    const merged = [
+      ["notes/a.md", "ref 415-0917 111 2222555-0142"],
+      ["notes/b.md", "078-0917 111 222205-1120"],
+    ] as const;
+    expect(findPhoneOffenders(merged, PH_FIXTURE_ALLOWLIST)).toEqual([]);
+  });
+
+  it("P6: genuine US-shaped and SSN-shaped strings are still caught, with file and value", () => {
+    const out = findPhoneOffenders(
+      [["notes/us.md", `fax ${usNum}`], ["notes/ssn.md", `id ${ssn}`]],
+      PH_FIXTURE_ALLOWLIST,
+    );
+    expect(out).toHaveLength(2);
+    expect(out.some((o) => o.includes("notes/us.md") && o.includes(usNum))).toBe(true);
+    expect(out.some((o) => o.includes("notes/ssn.md") && o.includes(ssn))).toBe(true);
+  });
+
+  it("P7: the allowlist is non-empty and capped (the cap bounds VOLUME, not veracity)", () => {
+    expect(PH_FIXTURE_ALLOWLIST.size).toBeGreaterThan(0);
+    expect(PH_FIXTURE_ALLOWLIST.size).toBeLessThanOrEqual(PH_FIXTURE_ALLOWLIST_CAP);
+  });
+
+  it("P8: real-corpus plausibility — the tracked tree yields a NON-EMPTY PH fixture set, exactly the allowlist", () => {
+    // Without this, the pure-function pins stay green while the real wiring is broken
+    // (empty `git ls-files`, or a drifted regex/canonicaliser at the call site).
+    const found = new Set<string>();
+    for (const [, s] of texts) {
+      for (const m of s.matchAll(PH_MOBILE)) found.add(canonicalPhMobile(m[0]));
+    }
+    expect(found.size).toBeGreaterThan(0);
+    expect([...found].sort()).toEqual([...PH_FIXTURE_ALLOWLIST].sort());
   });
 });
 
