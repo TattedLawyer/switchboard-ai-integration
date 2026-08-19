@@ -8,8 +8,9 @@
 // configured relay degrades to "nothing left the building" — never to "sent to whoever was
 // in the env". The banner at startup says which one is live, because the difference between
 // those two states is the difference between a rehearsal and mailing a real person. The
-// CALL transport is chosen the same way (see the LIVEKIT_* block in `main`), with one
-// addition: the live factory is deliberately unimplemented (T16) and throws at startup.
+// CALL transport is chosen the same way (see the LIVEKIT_* block in `main`); its live
+// factory (`livekitPlaceCall`, T16) validates at CONSTRUCTION and dispatches the separate
+// agent worker (`voice-agent/worker.ts`) per call.
 //
 // THE BROWSER SURFACE IS AUTHENTICATED NOW (A0b). `/queue` and `/decide` are opt-in on
 // APPROVAL_HUMAN_SURFACE=1 and sit behind magic-link login, a database-backed session and
@@ -143,24 +144,28 @@ async function main(): Promise<void> {
 
   // 🚨 THE CALL TRANSPORT IS CHOSEN THE SAME WAY, AND THE STUB IS THE DEFAULT. The live
   // seam engages only when LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
-  // LIVEKIT_SIP_TRUNK_ID and CALL_MODEL_API_KEY are ALL present; anything less and
-  // `stubPlaceCall` stands — a half-configured trunk degrades to "nobody's phone rings",
-  // never to "dialled whatever was in the env". Today `livekitPlaceCall` THROWS at
-  // construction ("not implemented — T16"), so a fully-configured vendor env stops this
-  // daemon HERE, at composition time, before any proposal is claimed — a loud startup
-  // death instead of approved cards wedged `executing` one by one.
+  // LIVEKIT_SIP_TRUNK_ID, LIVEKIT_AGENT_NAME and CALL_MODEL_API_KEY are ALL present;
+  // anything less and `stubPlaceCall` stands — a half-configured trunk degrades to
+  // "nobody's phone rings", never to "dialled whatever was in the env". The live factory
+  // is REAL now (T16): it validates the config at CONSTRUCTION, so a malformed vendor env
+  // still stops this daemon HERE, at composition time, before any proposal is claimed — a
+  // loud startup death instead of approved cards wedged `executing` one by one. The agent
+  // name must be the one `voice-agent/worker.ts` registers under, or every dispatched
+  // call waits for a worker that never claims it.
   const lkUrl = process.env.LIVEKIT_URL;
   const lkKey = process.env.LIVEKIT_API_KEY;
   const lkSecret = process.env.LIVEKIT_API_SECRET;
   const lkTrunk = process.env.LIVEKIT_SIP_TRUNK_ID;
+  const lkAgentName = process.env.LIVEKIT_AGENT_NAME;
   const lkModelKey = process.env.CALL_MODEL_API_KEY;
-  const callLive = Boolean(lkUrl && lkKey && lkSecret && lkTrunk && lkModelKey);
+  const callLive = Boolean(lkUrl && lkKey && lkSecret && lkTrunk && lkAgentName && lkModelKey);
   const placeCall: PlaceCall = callLive
     ? livekitPlaceCall({
         url: lkUrl as string,
         apiKey: lkKey as string,
         apiSecret: lkSecret as string,
         sipTrunkId: lkTrunk as string,
+        agentName: lkAgentName as string,
         modelApiKey: lkModelKey as string,
       })
     : stubPlaceCall;
@@ -418,10 +423,13 @@ async function main(): Promise<void> {
           `[${allowlist.join(", ")}]. MAIL CAN LEAVE THE BUILDING.`
         : `(STUB sender — nothing leaves the building)`) +
       (callLive
-        ? ` Call transport LIVE via LiveKit ${lkUrl} trunk=${lkTrunk}. CALLS CAN LEAVE` +
+        ? ` Call transport LIVE via LiveKit ${lkUrl} trunk=${lkTrunk} agent=${lkAgentName}` +
+          ` (the voice-agent worker must be running under that name). CALLS CAN LEAVE` +
           ` THE BUILDING.`
-        : ` Call transport STUB — no phone rings (LiveKit/model env incomplete); approved` +
-          ` calls execute against the canned no-answer.`) +
+        : ` Call transport STUB — no phone rings (LiveKit/model env incomplete: needs` +
+          ` LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_SIP_TRUNK_ID,` +
+          ` LIVEKIT_AGENT_NAME, CALL_MODEL_API_KEY); approved calls execute against the` +
+          ` canned no-answer.`) +
       (bounceFeed !== null
         ? ` Bounce reconciliation ON (Postmark API).`
         : ` Bounce reconciliation OFF — no POSTMARK_SERVER_TOKEN; an accepted-then-refused` +

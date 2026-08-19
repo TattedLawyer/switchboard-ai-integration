@@ -1,0 +1,21 @@
+{
+  "name": "@switchboard/voice-agent",
+  "private": true,
+  "type": "module",
+  "description": "The LiveKit agent worker — the conversation half of the call vendor (T16). DELIBERATELY NOT IN THE ROOT WORKSPACES: @livekit/agents drags an ONNX/media/LLM stack that must never enter the crm workspace or the root install (the dependency trade recorded in crm/src/call-transport.ts). Run `npm install` HERE, only on the machine that runs the worker. Never a dependency of anything.",
+  "scripts": {
+    "dev": "tsx worker.ts dev",
+    "start": "tsx worker.ts start"
+  },
+  "dependencies": {
+    "@livekit/agents": "1.6.4",
+    "@livekit/agents-plugin-google": "1.6.4",
+    "@livekit/rtc-node": "^0.13.33",
+    "livekit-server-sdk": "^2.18.0",
+    "pg": "^8.12.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
+}
