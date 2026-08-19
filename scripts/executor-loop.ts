@@ -7,7 +7,9 @@
 // only when SMTP_HOST, SMTP_USER, SMTP_PASS and SMTP_FROM are ALL present. A partially
 // configured relay degrades to "nothing left the building" — never to "sent to whoever was
 // in the env". The banner at startup says which one is live, because the difference between
-// those two states is the difference between a rehearsal and mailing a real person.
+// those two states is the difference between a rehearsal and mailing a real person. The
+// CALL transport is chosen the same way (see the LIVEKIT_* block in `main`), with one
+// addition: the live factory is deliberately unimplemented (T16) and throws at startup.
 //
 // THE BROWSER SURFACE IS AUTHENTICATED NOW (A0b). `/queue` and `/decide` are opt-in on
 // APPROVAL_HUMAN_SURFACE=1 and sit behind magic-link login, a database-backed session and
@@ -18,13 +20,24 @@
 // wires the real link sender; `approval/src/cli/approve.ts` remains for operators.
 import pg from "pg";
 import { beginExecution, finishExecution, findStuckExecutions } from "../approval/src/execute.js";
-import { followUpEmailPayloadSchema } from "../approval/src/proposal.js";
+import {
+  followUpEmailPayloadSchema,
+  placeCallPayloadSchema,
+} from "../approval/src/proposal.js";
 import { startScheduler } from "../crm/src/scheduler.js";
 import {
+  executeCall,
   executeEmail,
+  selectApprovedActions,
+  CallRefused,
+  EmailRefused,
+  type ApprovalSpine,
   type EmailApprovalSpine,
+  type PlaceCall,
   type SendEmailFn,
 } from "../crm/src/executor.js";
+import { stubPlaceCall, livekitPlaceCall } from "../crm/src/call-transport.js";
+import type { OutreachWindow } from "../crm/src/gates.js";
 import { liveDetailRecheck } from "../crm/src/send-recheck.js";
 import { sheetTransportFromEnv, SHEETS_KEY_FILE_ENV } from "../crm/src/sheet-client.js";
 import { smtpSender } from "../crm/src/email-transport.js";
@@ -46,6 +59,20 @@ const SPINE: EmailApprovalSpine = {
   finishExecution,
   parsePayload: (input) => {
     const r = followUpEmailPayloadSchema.safeParse(input);
+    return r.success
+      ? { ok: true, value: r.data }
+      : { ok: false, problem: r.error.issues.map((i) => i.path.join(".")).join("; ") };
+  },
+};
+
+// The call twin of SPINE, differing only in the grammar `parsePayload` wraps. Same
+// composition-root exemption: `crm/src` may not import `approval/src`, so the real A2
+// functions and the real schema are wired together HERE and injected at the seam.
+const CALL_SPINE: ApprovalSpine = {
+  beginExecution,
+  finishExecution,
+  parsePayload: (input) => {
+    const r = placeCallPayloadSchema.safeParse(input);
     return r.success
       ? { ok: true, value: r.data }
       : { ok: false, problem: r.error.issues.map((i) => i.path.join(".")).join("; ") };
@@ -112,6 +139,30 @@ async function main(): Promise<void> {
       )
     : stubSender;
 
+  // 🚨 THE CALL TRANSPORT IS CHOSEN THE SAME WAY, AND THE STUB IS THE DEFAULT. The live
+  // seam engages only when LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
+  // LIVEKIT_SIP_TRUNK_ID and CALL_MODEL_API_KEY are ALL present; anything less and
+  // `stubPlaceCall` stands — a half-configured trunk degrades to "nobody's phone rings",
+  // never to "dialled whatever was in the env". Today `livekitPlaceCall` THROWS at
+  // construction ("not implemented — T16"), so a fully-configured vendor env stops this
+  // daemon HERE, at composition time, before any proposal is claimed — a loud startup
+  // death instead of approved cards wedged `executing` one by one.
+  const lkUrl = process.env.LIVEKIT_URL;
+  const lkKey = process.env.LIVEKIT_API_KEY;
+  const lkSecret = process.env.LIVEKIT_API_SECRET;
+  const lkTrunk = process.env.LIVEKIT_SIP_TRUNK_ID;
+  const lkModelKey = process.env.CALL_MODEL_API_KEY;
+  const callLive = Boolean(lkUrl && lkKey && lkSecret && lkTrunk && lkModelKey);
+  const placeCall: PlaceCall = callLive
+    ? livekitPlaceCall({
+        url: lkUrl as string,
+        apiKey: lkKey as string,
+        apiSecret: lkSecret as string,
+        sipTrunkId: lkTrunk as string,
+        modelApiKey: lkModelKey as string,
+      })
+    : stubPlaceCall;
+
   // 🚨 BOUNCE RECONCILIATION IS A TICK PHASE OF THIS DAEMON, NOT A FOURTH PROCESS. It
   // engages only when POSTMARK_SERVER_TOKEN is present — the API credential is a separate
   // decision from the SMTP one, even though Postmark uses the same value for both — and
@@ -162,8 +213,15 @@ async function main(): Promise<void> {
     throw new Error("refusing to run against the named `switchboard` database");
   }
 
-  const s = await crmDb.query<{ default_interval_days: number; short_retry_days: number }>(
-    `select default_interval_days, short_retry_days from crm.outreach_settings
+  const s = await crmDb.query<{
+    default_interval_days: number;
+    short_retry_days: number;
+    window_start: string;
+    window_end: string;
+    timezone: string;
+  }>(
+    `select default_interval_days, short_retry_days, window_start, window_end, timezone
+       from crm.outreach_settings
       where tenant_id = $1`,
     [tenantId],
   );
@@ -171,6 +229,14 @@ async function main(): Promise<void> {
   const intervals = {
     defaultIntervalDays: s.rows[0].default_interval_days,
     shortRetryDays: s.rows[0].short_retry_days,
+  };
+  // The outreach window `executeCall`'s gate evaluates at EXECUTION time. Postgres `time`
+  // renders 'HH:MM:SS'; `OutreachWindow` documents that spelling and `gates.ts` slices to
+  // HH:MM, so the values pass through verbatim.
+  const window: OutreachWindow = {
+    windowStart: s.rows[0].window_start,
+    windowEnd: s.rows[0].window_end,
+    timezone: s.rows[0].timezone,
   };
 
   // The last bounce report actually printed. An unmatched bounce sits in the bounded poll
@@ -182,18 +248,12 @@ async function main(): Promise<void> {
   let lastBounceReport: string | null = null;
 
   const tick = async (): Promise<void> => {
-    // 🚨 `expires_at > now()` IS NOT DECORATION. Without it an approved-but-expired row is
-    // selected every tick forever, and `beginExecution`'s compare-and-set refuses it every
-    // time — a permanent poison that only ever reaches a log. The queue read filters
-    // expiry the same way and for the same reason (queue.ts), independently of the sweeper,
-    // because a sweeper alone fails open during exactly the outage that matters.
-    const approved = await approvalDb.query<{ id: string }>(
-      `select id from approval.proposals
-        where tenant_id = $1 and state = 'approved' and action_type = 'send_email'
-          and expires_at > now()
-        order by created_at, id`,
-      [tenantId],
-    );
+    // The selection — approved, unexpired, both action types, oldest first — lives in
+    // `selectApprovedActions` (crm/src/executor.ts), NOT here: this file sits outside
+    // every tsconfig, so the query and its row type stay where the compiler and the pins
+    // can see them (its 🚨 expires_at anti-poison rationale is stated there too), and
+    // this loop only runs it and branches on the string.
+    const approved = await selectApprovedActions(approvalDb, tenantId);
 
     // Reported per tick when non-empty, because `executing` has no reaper by design and this
     // is the only surface that would ever mention it. A human decides; no timer adjudicates.
@@ -271,25 +331,48 @@ async function main(): Promise<void> {
       }
     }
 
-    if (approved.rowCount === 0) return; // Quiet when idle. See the proposer daemon.
+    if (approved.length === 0) return; // Quiet when idle. See the proposer daemon.
 
-    for (const row of approved.rows) {
+    for (const row of approved) {
       try {
-        const out = await executeEmail(
-          { approvalDb, crmDb, sendEmail, spine: SPINE, allowlist, intervals, recheckLiveDetails },
-          row.id,
-        );
-        console.log(
-          `[exec] executed ${row.id} touch=${out.touchId} disposition=${out.disposition} ` +
-            `clockAdvanced=${out.advancedClock}`,
-        );
+        if (row.action_type === "place_call") {
+          const out = await executeCall(
+            { approvalDb, crmDb, placeCall, spine: CALL_SPINE, window, intervals },
+            row.id,
+          );
+          console.log(
+            `[exec] executed ${row.id} (call) touch=${out.touchId} ` +
+              `disposition=${out.disposition} clockAdvanced=${out.advancedClock}`,
+          );
+        } else {
+          const out = await executeEmail(
+            { approvalDb, crmDb, sendEmail, spine: SPINE, allowlist, intervals, recheckLiveDetails },
+            row.id,
+          );
+          console.log(
+            `[exec] executed ${row.id} (email) touch=${out.touchId} ` +
+              `disposition=${out.disposition} clockAdvanced=${out.advancedClock}`,
+          );
+        }
       } catch (err) {
         // PER-PROPOSAL, same reasoning as the proposer's per-contact boundary: one refused
         // recipient must not stop every other approved action in the batch.
-        console.error(
-          `[exec] proposal ${row.id} failed: ` +
-            (err instanceof Error ? err.message : String(err)),
-        );
+        //
+        // 🚨 A REFUSAL IS NOT AN ERROR. Outside the outreach window EVERY approved call
+        // throws `CallRefused` every tick for up to ~18 hours a day — which is correct
+        // and free (a window refusal leaves ZERO `approval.executions` rows; the next
+        // in-window tick executes it), so it logs at `log`, not `error`. `console.error`
+        // is reserved for genuine failures, or it becomes a nightly storm nobody reads.
+        // (The few terminal refusals — recheck "block", a vanished question set — move
+        // the proposal out of `approved`, so they stop being selected on the next tick.)
+        if (err instanceof CallRefused || err instanceof EmailRefused) {
+          console.log(`[exec] proposal ${row.id} refused, will retry: ${err.message}`);
+        } else {
+          console.error(
+            `[exec] proposal ${row.id} failed: ` +
+              (err instanceof Error ? err.message : String(err)),
+          );
+        }
       }
     }
   };
@@ -302,6 +385,11 @@ async function main(): Promise<void> {
           `${process.env.POSTMARK_MESSAGE_STREAM ?? "(default outbound)"}, allowlist=` +
           `[${allowlist.join(", ")}]. MAIL CAN LEAVE THE BUILDING.`
         : `(STUB sender — nothing leaves the building)`) +
+      (callLive
+        ? ` Call transport LIVE via LiveKit ${lkUrl} trunk=${lkTrunk}. CALLS CAN LEAVE` +
+          ` THE BUILDING.`
+        : ` Call transport STUB — no phone rings (LiveKit/model env incomplete); approved` +
+          ` calls execute against the canned no-answer.`) +
       (bounceFeed !== null
         ? ` Bounce reconciliation ON (Postmark API).`
         : ` Bounce reconciliation OFF — no POSTMARK_SERVER_TOKEN; an accepted-then-refused` +

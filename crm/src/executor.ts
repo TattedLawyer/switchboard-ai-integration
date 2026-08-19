@@ -110,6 +110,43 @@ export interface ExecutedCall {
   advancedClock: boolean;
 }
 
+/** One row of the executor daemon's per-tick selection. */
+export interface ApprovedActionRow {
+  id: string;
+  action_type: "send_email" | "place_call";
+}
+
+/**
+ * The executor daemon's per-tick selection: every approved, UNEXPIRED card of a type this
+ * process knows how to execute, oldest first. The daemon dispatches on `action_type` and
+ * nothing else.
+ *
+ * Defined HERE, not in `scripts/executor-loop.ts`, because the loop sits outside every
+ * tsconfig (its header says so, and a real bug shipped there because no typecheck ever saw
+ * it) — the query and its row type live where the compiler and the pins can both see them,
+ * and the loop only runs it and branches on the string.
+ *
+ * 🚨 `expires_at > now()` IS NOT DECORATION. Without it an approved-but-expired row is
+ * selected every tick forever, and `beginExecution`'s compare-and-set refuses it every
+ * time — a permanent poison that only ever reaches a log. The queue read filters expiry
+ * the same way and for the same reason (queue.ts), independently of the sweeper, because
+ * a sweeper alone fails open during exactly the outage that matters.
+ */
+export async function selectApprovedActions(
+  db: pg.Pool,
+  tenantId: string,
+): Promise<ApprovedActionRow[]> {
+  const r = await db.query<ApprovedActionRow>(
+    `select id, action_type from approval.proposals
+      where tenant_id = $1 and state = 'approved'
+        and action_type in ('send_email', 'place_call')
+        and expires_at > now()
+      order by created_at, id`,
+    [tenantId],
+  );
+  return r.rows;
+}
+
 export async function executeCall(
   deps: ExecutorDeps,
   proposalId: string,
@@ -144,6 +181,15 @@ export async function executeCall(
     window: deps.window,
   });
   if (!gate.allowed) throw new CallRefused(gate.reason ?? "refused by the outreach window");
+
+  // 1b. ── STEP C INSERTION POINT — the call-side live-details recheck goes HERE, and is
+  //     DELIBERATELY NOT IMPLEMENTED YET (awaiting the owner's ruling on its semantics).
+  //     This is the same slot `executeEmail` runs `recheckLiveDetails` in — after every
+  //     refusal-shaped guard, before `beginExecution` — so a "wait" burns nothing (zero
+  //     `approval.executions` rows) and a "block" can take the claim and terminally fail
+  //     it. `ExecutorDeps.recheckLiveDetails` above already declares the seam; the call
+  //     recipient is a phone number rather than `payload.to`, so the verdict surface is
+  //     NOT trivially symmetric and nothing here pretends it is.
 
   // 2. The at-most-once claim AND the expiry check, in one compare-and-set.
   await deps.spine.beginExecution(deps.approvalDb, proposalId);

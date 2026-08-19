@@ -10,9 +10,20 @@ import {
   TEST_TENANT,
 } from "./helpers/crmdb.js";
 import { payloadHash } from "../../approval/src/canonical.js";
-import { beginExecution, finishExecution } from "../../approval/src/execute.js";
+import {
+  beginExecution,
+  finishExecution,
+  findStuckExecutions,
+} from "../../approval/src/execute.js";
 import { placeCallPayloadSchema } from "../../approval/src/proposal.js";
-import { executeCall, CallRefused, type ApprovalSpine, type CallResult } from "../src/executor.js";
+import {
+  executeCall,
+  selectApprovedActions,
+  CallRefused,
+  type ApprovalSpine,
+  type CallResult,
+} from "../src/executor.js";
+import { stubPlaceCall } from "../src/call-transport.js";
 
 // The REAL A2 functions and the REAL grammar, wired in at the seam. Test code is the
 // established exception to the no-cross-workspace-import rule (see
@@ -93,6 +104,47 @@ async function seedApprovedCall(opts: {
         where id = $1`,
       [id, opts.expiresInHours],
     );
+  }
+  return id;
+}
+
+/** A `send_email` proposal in `approved`, reached the same way (P7's second live card). */
+async function seedApprovedEmail(contactId: string): Promise<string> {
+  const payload = {
+    contact_id: contactId,
+    to: "ana@example.com",
+    subject: "Checking in",
+    body: "Hi Ana — following up on the 2BR near Alabang.",
+  };
+  const ins = await admin.query<{ id: string }>(
+    `insert into approval.proposals
+       (tenant_id, idempotency_key, action_type, payload, rationale, payload_hash, expires_at)
+     values ($1, $2, 'send_email', $3::jsonb, 'due today', $4, now() + interval '72 hours')
+     returning id`,
+    [
+      TEST_TENANT,
+      `email-${Math.random().toString(36).slice(2)}`,
+      JSON.stringify(payload),
+      payloadHash(payload),
+    ],
+  );
+  const id = ins.rows[0].id;
+  const approver = await admin.query<{ id: string }>(
+    `insert into approval.users (email) values ($1) returning id`,
+    [`broker-${Math.random().toString(36).slice(2)}@example.com`],
+  );
+  const c = await admin.connect();
+  try {
+    await c.query("begin");
+    await c.query(
+      `insert into approval.decisions (proposal_id, kind, approver_user_id, renderer_version)
+       values ($1, 'approved', $2, 'seed')`,
+      [id, approver.rows[0].id],
+    );
+    await c.query(`update approval.proposals set state = 'approved' where id = $1`, [id]);
+    await c.query("commit");
+  } finally {
+    c.release();
   }
   return id;
 }
@@ -189,6 +241,22 @@ describe("T11: a vendor death mid-call keeps what the prospect already said", ()
     );
     expect(touch.rows[0].disposition).toBeNull(); // the call never ended
     expect(touch.rows[0].reached_ordinal).toBe(1);
+
+    // P2 (T15): the wedge is VISIBLE. `executing` has no reaper and no timer-driven exit
+    // by design, so reconcile's stuck-execution report is the ONLY surface that will ever
+    // mention this proposal — it must list it, or the no-rollback stance is unauditable.
+    //
+    // mutations, both RUN ✅ 2026-08-18:
+    //   (a) `finishExecution({ok:false})` in `executeCall`'s catch (tidy the wedge away):
+    //       `Tests  1 failed | 8 passed (9)`
+    //       AssertionError: expected 'execution_failed' to be 'executing'
+    //       — caught by the STATE assertion above before this one is reached.
+    //   (b) `findStuckExecutions` reads `s.kind = 'succeeded'` (the report goes blind while
+    //       the state stays `executing` — the variant only THIS assertion can catch):
+    //       `Tests  1 failed | 8 passed (9)`
+    //       AssertionError: expected [] to deeply equal [ Array(1) ]
+    const stuck = await findStuckExecutions(approval, 0);
+    expect(stuck.map((s) => s.proposalId)).toEqual([proposalId]);
   });
 });
 
@@ -372,5 +440,159 @@ describe("T11: the happy path, end to end on the fake vendor", () => {
     expect(await stateOf(proposalId)).toBe("approved");
     const started = await admin.query(`select 1 from approval.executions`);
     expect(started.rowCount).toBe(0);
+  });
+});
+
+describe("T15: raw transport signals reach the touch through disposition.ts", () => {
+  // These three pin the EXECUTOR's use of `resolveDisposition` — `disposition.test.ts`
+  // already pins `mapTransport` at the unit level, but nothing until now pinned that a
+  // vendor's raw signals actually arrive at the TOUCH ROW uninterpreted. The vendor
+  // reports; `disposition.ts` decides; the executor records. (See the contract header in
+  // `src/call-transport.ts`.)
+
+  // P3. mutation: make `mapTransport` treat 200+machine as a conversation (the vendor's
+  //     200 OK taken at face value) -> red: the voicemail trap documented at
+  //     disposition.ts:33-42 reopens and a machine pick-up buys the prospect a full
+  //     follow-up interval of silence. RUN ✅ 2026-08-18
+  //   Observed: `Tests  1 failed | 8 passed (9)`
+  //     AssertionError: expected 'unknown_answer' to be 'voicemail'
+  it("records 200 + AMD machine as voicemail, never answered", async () => {
+    const ana = await seedContact(admin);
+    const num = await seedNumber(admin, ana, "+639171234567");
+    const proposalId = await seedApprovedCall({ contactId: ana, phoneNumberId: num });
+
+    const r = await executeCall(
+      {
+        approvalDb: approval,
+        crmDb: crm,
+        spine: SPINE,
+        window: WINDOW,
+        intervals: INTERVALS,
+        placeCall: async () => ({
+          transport: { sipStatus: 200, amdResult: "machine" },
+          conversation: null,
+          messageLeft: true,
+        }),
+      },
+      proposalId,
+    );
+
+    expect(r.disposition).toBe("voicemail");
+    expect(await stateOf(proposalId)).toBe("executed");
+    const t = await admin.query<{ disposition: string | null }>(
+      `select disposition from crm.touches`,
+    );
+    expect(t.rows[0].disposition).toBe("voicemail");
+  });
+
+  // P4. mutation: default the 200-with-no-AMD branch to `answered` -> red: ignorance
+  //     laundered into a successful contact. RUN ✅ 2026-08-18
+  //   Observed: `Tests  1 failed | 8 passed (9)`
+  //     AssertionError: expected 'answered' to be 'unknown_answer'
+  it("records 200 with no AMD verdict as unknown_answer — ignorance is not contact", async () => {
+    const ana = await seedContact(admin);
+    const num = await seedNumber(admin, ana, "+639171234567");
+    const proposalId = await seedApprovedCall({ contactId: ana, phoneNumberId: num });
+
+    const r = await executeCall(
+      {
+        approvalDb: approval,
+        crmDb: crm,
+        spine: SPINE,
+        window: WINDOW,
+        intervals: INTERVALS,
+        placeCall: async () => ({
+          transport: { sipStatus: 200 },
+          conversation: null,
+        }),
+      },
+      proposalId,
+    );
+
+    expect(r.disposition).toBe("unknown_answer");
+    expect(r.disposition).not.toBe("answered");
+    const t = await admin.query<{ disposition: string | null }>(
+      `select disposition from crm.touches`,
+    );
+    expect(t.rows[0].disposition).toBe("unknown_answer");
+  });
+
+  // P5. mutation: stop carrying `payload.display_name === null` into `recordTouch`'s
+  //     `identityUnverified` -> red: the final update silently CLEARS the flag the call
+  //     start wrote, and a nameless touch claims a verified identity. RUN ✅ 2026-08-18
+  //   Observed: `Tests  1 failed | 8 passed (9)`
+  //     AssertionError: expected false to be true  (the touch row's identity_unverified)
+  //
+  // The existing nameless pin above covers a HUMAN-answered nameless call, where the
+  // conversation outcome itself carries the flag. This one uses the REAL `stubPlaceCall`
+  // (no answer, no conversation, `identityUnverified: false` from `resolveDisposition`),
+  // so the flag can ONLY survive through the payload-derived carry — namelessness is a
+  // property of the CALL, not of how it ended.
+  it("labels a nameless call identity_unverified even when nobody answered", async () => {
+    const nameless = await seedContact(admin, { displayName: null });
+    const num = await seedNumber(admin, nameless, "+639179999999");
+    const proposalId = await seedApprovedCall({
+      contactId: nameless,
+      phoneNumberId: num,
+      displayName: null,
+    });
+
+    const r = await executeCall(
+      {
+        approvalDb: approval,
+        crmDb: crm,
+        spine: SPINE,
+        window: WINDOW,
+        intervals: INTERVALS,
+        placeCall: stubPlaceCall,
+      },
+      proposalId,
+    );
+
+    expect(r.disposition).toBe("no_answer");
+    expect(r.identityUnverified).toBe(true);
+    const t = await admin.query<{ identity_unverified: boolean; disposition: string | null }>(
+      `select identity_unverified, disposition from crm.touches`,
+    );
+    expect(t.rows[0].identity_unverified).toBe(true);
+    expect(t.rows[0].disposition).toBe("no_answer");
+  });
+});
+
+describe("T15: what the loop selects to execute", () => {
+  // P7. The daemon's selection, pinned HERE in typed code rather than in the script: the
+  // loop sits outside every tsconfig (its header says so, and a real bug shipped there),
+  // so the query lives in `selectApprovedActions` (src/executor.ts) where the compiler and
+  // this pin can both see it, and the loop only runs it and branches on the string.
+  //
+  // mutations, each -> red, ALL RUN ✅ 2026-08-18:
+  //   (a) drop `and expires_at > now()`   — the anti-poison filter: an approved-but-expired
+  //       row is otherwise selected every tick forever and refused every time.
+  //       Observed: `Tests  1 failed | 9 passed (10)` — the expired place_call appears as a
+  //       third row: `expected [ { …(2) }, { …(2) }, { …(2) } ] to deeply equal [ … ]`
+  //   (b) narrow to `action_type = 'send_email'` — the defect this pin exists to end:
+  //       approved call cards executed by NOTHING.
+  //       Observed: `Tests  1 failed | 9 passed (10)` — the place_call row vanishes:
+  //       `expected [ { …(2) } ] to deeply equal [ { …(2) }, { …(2) } ]`
+  //   (c) `order by created_at desc`      — approved cards must run oldest-first.
+  //       Observed: `Tests  1 failed | 9 passed (10)` — same two rows, reversed.
+  it("returns live send_email and place_call cards in created_at,id order, never expired ones", async () => {
+    const ana = await seedContact(admin);
+    const num = await seedNumber(admin, ana, "+639171234567");
+    const callId = await seedApprovedCall({ contactId: ana, phoneNumberId: num });
+    const emailId = await seedApprovedEmail(ana);
+    const expiredId = await seedApprovedCall({
+      contactId: ana,
+      phoneNumberId: num,
+      expiresInHours: -1,
+    });
+
+    const rows = await selectApprovedActions(approval, TEST_TENANT);
+
+    expect(rows).toEqual([
+      { id: callId, action_type: "place_call" },
+      { id: emailId, action_type: "send_email" },
+    ]);
+    expect(rows.map((r) => r.id)).not.toContain(expiredId);
   });
 });
