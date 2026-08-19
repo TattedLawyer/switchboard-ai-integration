@@ -23,8 +23,29 @@ import { reconcile, formatReconcile, closeTerminatedFollowUps } from "../reconci
 import { runSheetAdoptionAll, adoptionThresholdsFromEnv } from "../sheet-adopt.js";
 import { sheetTransportFromEnv, SHEETS_KEY_FILE_ENV } from "../sheet-client.js";
 import { startScheduler } from "../scheduler.js";
+import { createEmbedder } from "../kb/embedder.js";
+import {
+  runKbEmbedPass,
+  formatKbEmbedReport,
+  DEFAULT_KB_EMBED_LIMIT,
+} from "../kb/embed-pass.js";
 
 const DEFAULT_INTERVAL_MS = 60_000;
+
+/** Entries the embed pass may process per tick — validated at boot like the interval:
+ *  `Number("2O")` is NaN and a garbage bound must refuse to boot, not silently misbehave. */
+function kbEmbedLimitFromEnv(): number {
+  const raw = process.env.CRM_KB_EMBED_LIMIT;
+  if (raw === undefined || raw === "") return DEFAULT_KB_EMBED_LIMIT;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < 1 || n > 1_000_000) {
+    throw new Error(
+      `invalid CRM_KB_EMBED_LIMIT "${raw}" — expected a positive integer. Refusing to run: ` +
+        `an unparseable bound would silently change how much knowledge one pass indexes.`,
+    );
+  }
+  return n;
+}
 
 async function main(): Promise<void> {
   const intervalMs = Number(process.env.CRM_RECONCILE_INTERVAL_MS ?? DEFAULT_INTERVAL_MS);
@@ -53,6 +74,17 @@ async function main(): Promise<void> {
   // NaN is false, and a typo'd threshold would silently disable both breaker arms. Refusing
   // to boot is the only honest behaviour for a disabled safety feature.
   const thresholds = adoptionThresholdsFromEnv();
+  const kbEmbedLimit = kbEmbedLimitFromEnv();
+
+  // 🚨 THE EMBEDDER IS CONSTRUCTED ONCE, HERE, AT DAEMON STARTUP — never per pass and
+  // never per entry (call-transport.ts doctrine: "it throws at CONSTRUCTION, not per
+  // call"). The eager load costs ~3.5s and ~560MB once; done lazily it would put that
+  // stall inside a scheduled tick, and a MISSING vendored model would surface as a
+  // per-pass error line scrolling by forever instead of what it actually is: a daemon
+  // that cannot do its job. createEmbedder() dies naming the fix
+  // (scripts/fetch-embedding-model.sh), main() rethrows, the process exits non-zero.
+  const embedder = await createEmbedder();
+  console.log(`[kb] local embedder loaded (limit ${kbEmbedLimit} entries/pass)`);
 
   const pass = async (): Promise<void> => {
     const closed = await closeTerminatedFollowUps(pool);
@@ -82,6 +114,17 @@ async function main(): Promise<void> {
             console.error(`[sheet]   row ${e.rowIndex}: ${e.error}`);
           }
         }
+      }
+    }
+    // The embed pass — her knowledge entries chunked and embedded so retrieval can find
+    // them. The pass needs no more than `switchboard_crm`'s grants (pinned in
+    // kb-embed-pass.test.ts through that pool); this daemon's owner credential strictly
+    // exceeds them. Quiet when there was nothing to do; loud on any work or failure.
+    const kb = await runKbEmbedPass(pool, embedder, { limit: kbEmbedLimit });
+    if (kb.skipped || kb.candidates > 0 || kb.failures.length > 0) {
+      console.log(`[kb] ${formatKbEmbedReport(kb)}`);
+      for (const f of kb.failures) {
+        console.error(`[kb]   entry ${f.entryId}: ${f.error}`);
       }
     }
     // The listings are the operator's surface, not the loop's work — printing them every
