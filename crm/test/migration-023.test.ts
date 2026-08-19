@@ -191,7 +191,28 @@ describe("023: role surface — each role holds exactly the verbs its job perfor
   });
 
   it("the approval role holds nothing on chunks — embedding is the daemon's job", async () => {
-    expect(await sqlstate(() => approval.query(`select id from kb.general_chunks`))).toBe("42501");
+    // ENUMERATED COLUMN BY COLUMN, not just `select id`. Postgres privileges are
+    // per-column: a future `grant select (embedded_at) on kb.general_chunks to
+    // switchboard_approval` would move this boundary while a one-column `id` probe
+    // stayed green — the exact vacuity 024 made live, because 024's whole design brief
+    // was "expose index state WITHOUT any grant on the base table" and a column-level
+    // grant is the tempting shortcut. Every column is asserted, and `select *` with it,
+    // so NO column-level grant of any subset can leave this pin green.
+    for (const col of [
+      "id",
+      "entry_id",
+      "text",
+      "content_hash",
+      "embedding",
+      "embedded_at",
+      "ordinal",
+    ]) {
+      expect(
+        await sqlstate(() => approval.query(`select ${col} from kb.general_chunks`)),
+        `column ${col}`,
+      ).toBe("42501");
+    }
+    expect(await sqlstate(() => approval.query(`select * from kb.general_chunks`))).toBe("42501");
   });
 
   it("the crm role reads entries but cannot write them", async () => {

@@ -2437,10 +2437,13 @@ tracked in review ledgers.
 - **Disclosed minor (verified INERT, and pre-existing): a `both`-channel contact that crashes
   mid-cycle across midnight is suppressed rather than re-driving its EMAIL leg.** Once the
   call leg has recorded its action the row is has-action, so the cross-midnight adoption above
-  correctly declines to adopt it. This silences nobody today: **no email executor exists**, the
-  call leg carries the follow-up, and the row closes when the call leg resolves. It is
-  independent of the Family 3 fix and predates it. Per-leg completion tracking is deferred
-  until the email executor ships.
+  correctly declines to adopt it. ⚠️ **2026-08-19: THE BASIS FOR CALLING THIS INERT IS GONE.**
+  This entry said "no email executor exists" — one does now (`executeEmail`, and it has sent
+  real mail), so the argument that nobody is silenced no longer holds on its own terms. The
+  call leg still carries the follow-up and the row still closes when the call leg resolves,
+  so the practical exposure may be unchanged — but that has NOT been re-verified since the
+  executor shipped. Re-assess before relying on this entry. Per-leg completion tracking is
+  still deferred.
 - **Disclosed minor: a contact blocked across MULTIPLE Manila days accretes one blocked row
   per day.** Same-day re-blocks are idempotent (one row), but after the lease crosses midnight
   the claimed due-date advances and a new date's blocked row is written while the prior day's

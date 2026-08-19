@@ -61,6 +61,7 @@ import {
   type SendLoginLink,
 } from "./login.js";
 import { SESSION_TTL_DAYS } from "./config.js";
+import { registerKnowledgeRoutes } from "./knowledge.js";
 
 declare module "express-session" {
   interface SessionData {
@@ -541,6 +542,25 @@ export function registerHumanRoutes(
         console.error("[approval] decision failed:", err);
         fail(503, err instanceof Error ? err.message : String(err));
       }
+    },
+  );
+
+  // ── The knowledge authoring surface (knowledge.ts) ───────────────────────────────────
+  // Registered with the SAME middleware instances the decision surface uses — one session
+  // store, one CSRF secret, one login gate — and BEFORE the CSRF error handler below, so
+  // its stale-token refusals land on the same "Not recorded" page.
+  registerKnowledgeRoutes(
+    app,
+    pool,
+    { tenantId: opts.tenantId },
+    {
+      sessionMw,
+      fetchMetadataGuard,
+      form,
+      csrfSynchronisedProtection,
+      requireLogin,
+      csrfField,
+      page,
     },
   );
 

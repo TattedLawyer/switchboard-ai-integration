@@ -187,7 +187,7 @@ reporting a clean run.
   login and approval page are real too: magic-link sign-in (one-time links,
   hashed at rest), database-backed sessions, CSRF defence, and every decision
   row naming the signed-in approver's user id.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 1823 tests, the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 1846 tests, the
   dbt build — 101 dbt build steps (15 models, 3 seeds, 83 data tests) — the agent
   action-safety eval, and the identity oracle, against a real Postgres service
   container
@@ -202,7 +202,7 @@ reporting a clean run.
   on a slow machine, and a leftover mock server inherited across steps sharing a
   process table. Each is narrated with its run ID in the
   [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
-- 1823 automated tests, green in CI and locally — including a seeded
+- 1846 automated tests, green in CI and locally — including a seeded
   property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety under
   arbitrary torn writes. That count is not maintained by hand: CI runs
@@ -231,7 +231,7 @@ reporting a clean run.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 1823 tests green across twelve workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
+| Suite | `npm test` + dbt | 1846 tests green across twelve workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
 
 ## What's coming (built in phases, in public)
 
@@ -459,13 +459,19 @@ migration 016, but **no code writes them yet**: a call today leaves
 moves it. Do not read the artifacts table below as operating today — it is the **designed**
 end state, and the two rows marked *(Wave 2)* are not built.
 
-🚨 **EMAIL IS HALF-WIRED, and this is stated plainly because the harmful direction is to
-imply it is inert.** For a contact whose channel is `email` or `both`, the proposer **does
-build and POST a real `send_email` card** that she can approve — but **there is no email
-executor**: `executeCall` handles `place_call` only, and nothing consumes a `send_email`
-proposal (the sender is Wave 2 / C5). An approved email card ages to `expired` and is closed
-by the owner-run close pass (below), so it no longer silences the contact — **but the email
-is never actually sent** until Wave 2. Do not enroll email contacts expecting delivery.
+**EMAIL IS WIRED END TO END.** For a contact whose channel is `email` or `both`, the
+proposer builds and POSTs a real `send_email` card; she approves it in `/queue`; and
+`executeEmail` sends it through the configured relay, recording the submission against the
+touch. Bounces are reconciled asynchronously, because a relay that accepts now can refuse
+later. Before anything leaves, a send-time recheck reads her live sheet: if the recipient
+she approved is no longer the recipient her sheet names, the card is blocked rather than
+sent, and if the sheet cannot be trusted (a halted adoption breaker, an open divergence
+block) the send WAITS instead of guessing.
+
+🚨 **CALLS ARE NOT WIRED.** `place_call` cards are proposed, rendered and approvable, and
+`executeCall` orchestrates the whole call lifecycle — but `PlaceCall` has no production
+implementation: no telephony vendor exists in any `package.json`, and the factory throws at
+construction rather than pretending. Do not enroll call contacts expecting a call.
 
 ### What it will store, and what it does not (design)
 
