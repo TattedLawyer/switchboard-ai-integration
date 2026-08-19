@@ -33,7 +33,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        # pgvector/pgvector: same image swap as docker-compose.yml (migration 023 needs
+        # `create extension vector`); pinned to the same 0.8.6-pg16 so CI and dev agree.
+        image: pgvector/pgvector:0.8.6-pg16
         env:
           POSTGRES_USER: switchboard
           POSTGRES_PASSWORD: switchboard
@@ -75,6 +77,19 @@ jobs:
         run: npm run typecheck
       - name: migrate
         run: npm run migrate -w ingest
+      # Migration 023's embedder/chunker tests construct the REAL local model, and the
+      # weights are deliberately not in git (~560MB; vendor/models/MANIFEST.sha256 is the
+      # committed trust anchor). Cached on the manifest's hash so the download happens
+      # once per model revision; on miss, the fetch script downloads at the pinned
+      # revision and verifies every byte against the manifest before installing — a
+      # mismatch fails this step rather than poisoning the cache.
+      - name: restore vendored embedding model
+        uses: actions/cache@v4
+        with:
+          path: vendor/models
+          key: embedding-model-${{ hashFiles('vendor/models/MANIFEST.sha256') }}
+      - name: fetch + verify vendored embedding model (no-op on cache hit)
+        run: bash scripts/fetch-embedding-model.sh
       - name: workspace test suites (incl. gating action-safety eval)
         # Teed, because the next step needs the per-workspace counts this prints.
         # pipefail so a red suite is still a red step through the pipe.

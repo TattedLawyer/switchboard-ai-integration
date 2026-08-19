@@ -20,6 +20,7 @@
     "sheet": "tsx src/cli/crm-sheet.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "4.2.0",
     "libphonenumber-js": "1.13.10",
     "nodemailer": "7.0.13",
     "pg": "^8.12.0",

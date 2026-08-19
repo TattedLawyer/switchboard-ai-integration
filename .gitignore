@@ -9,3 +9,8 @@ warehouse/.user.yml
 
 # Internal audit brief — must never be committed (see progress ledger).
 HANDOFF-*.md
+
+# Vendored embedding-model weights (~560MB) — NEVER committed; the committed
+# MANIFEST.sha256 is the trust anchor and scripts/fetch-embedding-model.sh restores them.
+vendor/models/**
+!vendor/models/MANIFEST.sha256
