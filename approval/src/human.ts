@@ -62,6 +62,8 @@ import {
 } from "./login.js";
 import { SESSION_TTL_DAYS } from "./config.js";
 import { registerKnowledgeRoutes } from "./knowledge.js";
+import { registerCardCaptureRoutes } from "./card-capture.js";
+import { registerTestboardRoutes } from "./testboard.js";
 
 declare module "express-session" {
   interface SessionData {
@@ -563,6 +565,10 @@ export function registerHumanRoutes(
       page,
     },
   );
+
+  // Card capture (card-capture.ts) — same instances, same doctrine, same one-call shape as above.
+  registerCardCaptureRoutes(app, pool, { tenantId: opts.tenantId }, { sessionMw, fetchMetadataGuard, form, csrfSynchronisedProtection, requireLogin, csrfField, page });
+  registerTestboardRoutes(app, pool, { tenantId: opts.tenantId }, { sessionMw, fetchMetadataGuard, form, csrfSynchronisedProtection, requireLogin, csrfField, page }); // throwaway testboard — registers ONLY under SWITCHBOARD_TESTBOARD=1 (see testboard.ts header)
 
   // The synchronizer-token refusal surfaces here (csrf-sync answers via next(err)). It is
   // registered at the END of the human routes, sees only their errors, and passes
