@@ -53,6 +53,13 @@ jobs:
       # existing configurations, while the docs claimed the opposite. Named explicitly
       # here so CI runs the posture the README publishes.
       AGENT_DATABASE_URL: postgres://switchboard_agent:switchboard_agent@localhost:5433/switchboard
+      # The CRM daemons' credential (proposer + executor), REQUIRED by crm/src/db.ts and
+      # never derived — the role IS the privilege boundary (migration 016). Same
+      # credential-substitution shape as the two above and as crm/test/helpers/crmdb.ts:
+      # migration 016 mints switchboard_crm with a password equal to its own name for
+      # local dev and CI. Named explicitly here for the same reason AGENT_DATABASE_URL
+      # is: CI must run the posture the docs publish, not a derivation of the owner URL.
+      CRM_DATABASE_URL: postgres://switchboard_crm:switchboard_crm@localhost:5433/switchboard
       # CI runs the synthetic demo fixture on the published dev secrets BY DESIGN —
       # the same explicit opt-in demo.sh/chaos.sh declare. Without this, the A2
       # fail-closed gate (correctly) refuses to boot the pipeline. Proven live: the

@@ -54,6 +54,9 @@ const SPINE: ApprovalSpine = {
 const TENANT_B = "00000000-0000-0000-0000-0000000000b2";
 const WINDOW = { windowStart: "00:00:00", windowEnd: "23:59:00", timezone: "Asia/Manila" };
 const INTERVALS = { defaultIntervalDays: 30, shortRetryDays: 3 };
+// Piece 1 (call allowlist): the number this file dials, injected exactly as the
+// composition root does. Additive only - no assertion in this file changed.
+const PHONE_ALLOW = ["+639171234567"];
 
 let admin: pg.Pool;
 let crm: pg.Pool;
@@ -229,6 +232,7 @@ function deps(overrides: Partial<ExecutorDeps> = {}): ExecutorDeps {
     spine: SPINE,
     window: WINDOW,
     intervals: INTERVALS,
+    phoneAllowlist: PHONE_ALLOW,
     placeCall: async () => ({ transport: { sipStatus: 480 }, conversation: null }),
     ...overrides,
   };

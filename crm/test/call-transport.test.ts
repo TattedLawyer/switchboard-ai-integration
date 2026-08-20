@@ -90,6 +90,9 @@ const CFG: LiveKitCallConfig = {
   sipTrunkId: "trunk-1",
   agentName: "switchboard-intake",
   modelApiKey: "model-key",
+  // Piece 1 (call allowlist): the number this file dials, injected exactly as the
+  // composition root does. Additive only - no assertion in this file changed.
+  phoneAllowlist: ["+639171234567"],
 };
 
 const HUMAN_REPORT: AgentCallReport = {

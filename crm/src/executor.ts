@@ -27,6 +27,7 @@ import { recordAnswer } from "./answers.js";
 import { resolveDisposition, type ConversationOutcome, type TransportSignal } from "./disposition.js";
 import { resolveQuestionSetForExecution } from "./questions.js";
 import { checkSendable } from "./email-guard.js";
+import { checkCallable } from "./call-guard.js";
 
 export class CallRefused extends Error {}
 
@@ -156,6 +157,14 @@ export interface ExecutorDeps {
   spine: ApprovalSpine;
   window: OutreachWindow;
   intervals: IntervalSettings;
+  /** 🚨 The numbers this deployment may dial — the call twin of `EmailExecutorDeps.
+   *  allowlist`, and the same doctrine: INJECTED, never read from `process.env` inside
+   *  this function, so no test and no future caller can accidentally widen it. Empty
+   *  means refuse every call (fail-closed). Checked BEFORE `beginExecution`, so a
+   *  refusal burns no execution row; `livekitPlaceCall` re-checks it immediately before
+   *  the dial, so a caller that bypasses this executor still cannot dial an unlisted
+   *  number. */
+  phoneAllowlist: readonly string[];
   /** Piece C's seam, MIRRORED here for the call path — declared so the two executors
    *  state the same contract, but `executeCall` does NOT invoke it yet: the call
    *  recipient is a phone number, not `payload.to`, so wiring it is NOT trivially
@@ -239,6 +248,19 @@ export async function executeCall(
     );
   }
   const payload = parsed.value;
+
+  // 0. THE PHONE ALLOWLIST — the call twin of `executeEmail`'s step 4 (`checkSendable`),
+  //    and in the same position for the same reason: BEFORE the gate and BEFORE
+  //    `beginExecution`, so a refusal burns no execution row, records no touch, and
+  //    leaves the proposal `approved`. 🚨 FAIL-CLOSED: an empty injected list refuses
+  //    every call. Exact match on the approved E.164 bytes; `call-guard.ts` owns the
+  //    doctrine (no prefixes, no wildcards, nothing read from the environment here).
+  const callable = checkCallable(payload.phone_e164, deps.phoneAllowlist);
+  if (!callable.ok) {
+    throw new CallRefused(
+      `proposal ${proposalId} must not be dialled: ${callable.reason}`,
+    );
+  }
 
   // 1. THE GATE, before anything moves. Approval on Tuesday does not make a Thursday call
   //    permitted, and a refusal here must not consume the one start the proposal gets.

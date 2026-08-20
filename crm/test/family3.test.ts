@@ -428,6 +428,9 @@ describe("Family 3 / Pin 2 — CLOSE LINKAGE across midnight (door wrote, local 
         spine: SPINE,
         window: { windowStart: "00:00:00", windowEnd: "23:59:00", timezone: TZ },
         intervals: { defaultIntervalDays: SETTINGS.intervalDays, shortRetryDays: SETTINGS.shortRetryDays },
+        // Piece 1 (call allowlist): the number this file dials, injected exactly as the
+        // composition root does. Additive only — no assertion in this file changed.
+        phoneAllowlist: ["+639171234567"],
         now: () => tPost,
         placeCall: async (ctx) => {
           for (const [i, p] of ctx.prompts.entries()) await ctx.answer(p.id, `a${i}`);

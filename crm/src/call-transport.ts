@@ -49,6 +49,7 @@ import { AgentDispatchClient, RoomServiceClient, SipClient } from "livekit-serve
 import type { CallContext, KnowledgeLookupOutcome, PlaceCall } from "./executor.js";
 import type { ConversationOutcome, TransportSignal } from "./disposition.js";
 import { encodeCallJobMetadata, parseAgentCallReport } from "./call-bridge.js";
+import { checkCallable, E164_EXACT } from "./call-guard.js";
 
 /**
  * The stub. The call twin of the loop's `stubSender`, with one improvement: it is
@@ -176,6 +177,16 @@ export interface LiveKitCallConfig {
    *  process — validated here so a half-configured deployment dies at composition time
    *  instead of dispatching jobs to a worker that cannot speak. */
   modelApiKey: string;
+  /** 🚨 The numbers this deployment may dial — the SECOND check (the executor's
+   *  `phoneAllowlist` is the first), re-verified immediately before the dial so a caller
+   *  that bypasses the executor still cannot ring an unlisted number. The email twin is
+   *  `smtpSender`'s allowlist constructor argument (spike review I5: the fail-closed
+   *  property belongs to the thing that reaches the vendor). INJECTED like every other
+   *  field here — parsed from SWITCHBOARD_PHONE_ALLOWLIST at the composition root, never
+   *  read from `process.env` in this module. An EMPTY list refuses at construction (the
+   *  L1 doctrine): a live dialer that may dial nobody is a misconfiguration, and it dies
+   *  at composition time rather than refusing per call. */
+  phoneAllowlist: readonly string[];
 }
 
 /**
@@ -226,7 +237,8 @@ const REPORT_DEADLINE_MS = (MAX_CALL_DURATION_S + 60) * 1_000;
  *  through `livekitPlaceCall`. */
 function validateConfig(cfg: LiveKitCallConfig): void {
   const missing = (Object.keys(cfg) as Array<keyof LiveKitCallConfig>).filter(
-    (k) => typeof cfg[k] !== "string" || cfg[k].trim() === "",
+    (k) =>
+      k !== "phoneAllowlist" && (typeof cfg[k] !== "string" || (cfg[k] as string).trim() === ""),
   );
   if (missing.length > 0) {
     throw new Error(
@@ -240,6 +252,27 @@ function validateConfig(cfg: LiveKitCallConfig): void {
       `LiveKit call config: url ${JSON.stringify(cfg.url)} is not a LiveKit server URL ` +
         `(wss:// or https://)`,
     );
+  }
+  // 🚨 THE PHONE ALLOWLIST, AT CONSTRUCTION. Empty refuses HERE — a live dialer whose
+  // allowlist permits nobody would refuse every call one by one; the misconfiguration is
+  // composition-time, so the death is too, naming the fix. A malformed entry throws for
+  // the same reason `parsePhoneAllowlist` throws: a silently-unmatchable entry is a
+  // fail-closed guard quietly refusing the one number the operator meant to permit.
+  const entries = (cfg.phoneAllowlist ?? []).map((n) => n.trim()).filter((n) => n.length > 0);
+  if (entries.length === 0) {
+    throw new Error(
+      "LiveKit call config: the phone allowlist is empty — this dialer could never dial " +
+        "anyone (fail-closed). Set SWITCHBOARD_PHONE_ALLOWLIST, or do not configure the " +
+        "live call transport.",
+    );
+  }
+  for (const entry of cfg.phoneAllowlist) {
+    if (!E164_EXACT.test(entry.trim())) {
+      throw new Error(
+        `LiveKit call config: phone allowlist entry is not an E.164 number: ` +
+          JSON.stringify(entry),
+      );
+    }
   }
 }
 
@@ -369,6 +402,17 @@ export function livekitPlaceCall(
       );
     }
     dialed = true;
+
+    // 🚨 THE SECOND ALLOWLIST CHECK — before ANY vendor operation, so a refusal leaks no
+    // dispatched agent job and leaves nothing to clean up. Through the executor path this
+    // can never fire (`executeCall` refused before `beginExecution`); it exists for the
+    // caller that bypasses the executor, which is exactly the caller that must not be
+    // able to dial an unlisted number. A throw here is honest (contract rule 2): nothing
+    // was dialled, and nothing pretends otherwise.
+    const callable = checkCallable(ctx.payload.phone_e164, cfg.phoneAllowlist);
+    if (!callable.ok) {
+      throw new Error(`livekitPlaceCall refuses to dial: ${callable.reason}`);
+    }
 
     const roomName = `call-${ctx.touchId}`;
 

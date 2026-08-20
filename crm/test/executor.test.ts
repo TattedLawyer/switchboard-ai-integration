@@ -49,6 +49,9 @@ let questionIds: string[];
 
 const WINDOW = { windowStart: "00:00:00", windowEnd: "23:59:00", timezone: "Asia/Manila" };
 const INTERVALS = { defaultIntervalDays: 30, shortRetryDays: 3 };
+// Piece 1 (call allowlist): every number this file dials, injected exactly as the
+// composition root does. Additive only - no assertion in this file changed.
+const PHONE_ALLOW = ["+639171234567", "+639179999999"];
 
 /** A `place_call` proposal in `approved`, reached the way the system reaches it. */
 async function seedApprovedCall(opts: {
@@ -219,6 +222,7 @@ describe("T11: a vendor death mid-call keeps what the prospect already said", ()
           spine: SPINE,
           window: WINDOW,
           intervals: INTERVALS,
+          phoneAllowlist: PHONE_ALLOW,
           placeCall: async (ctx) => {
             await ctx.answer(questionIds[0], "around 5, maybe 6");
             await ctx.reached(1);
@@ -316,6 +320,7 @@ describe("T11: an expired approval cannot start a call", () => {
           spine: SPINE,
           window: WINDOW,
           intervals: INTERVALS,
+          phoneAllowlist: PHONE_ALLOW,
           placeCall: async () => {
             vendorCalled = true;
             return { transport: { sipStatus: 200, amdResult: "human" }, conversation: null };
@@ -348,6 +353,7 @@ describe("T11: the happy path, end to end on the fake vendor", () => {
         spine: SPINE,
         window: WINDOW,
         intervals: INTERVALS,
+        phoneAllowlist: PHONE_ALLOW,
         placeCall: async (ctx) => {
           expect(ctx.prompts.map((p) => p.questionKey)).toEqual(["budget", "timeline"]);
           for (const [i, p] of ctx.prompts.entries()) {
@@ -387,6 +393,7 @@ describe("T11: the happy path, end to end on the fake vendor", () => {
         spine: SPINE,
         window: WINDOW,
         intervals: INTERVALS,
+        phoneAllowlist: PHONE_ALLOW,
         placeCall: async (ctx) => {
           await ctx.answer(ctx.prompts[0].id, "two bedrooms");
           await ctx.reached(1);
@@ -429,6 +436,7 @@ describe("T11: the happy path, end to end on the fake vendor", () => {
           // A window that cannot contain "now" in any timezone this test could run in.
           window: { windowStart: "03:00:00", windowEnd: "03:01:00", timezone: "Asia/Manila" },
           intervals: INTERVALS,
+          phoneAllowlist: PHONE_ALLOW,
           now: () => new Date("2026-08-11T14:00:00Z"), // 22:00 Manila
           placeCall: async () => {
             throw new Error("the vendor must never be reached");
@@ -468,6 +476,7 @@ describe("T15: raw transport signals reach the touch through disposition.ts", ()
         spine: SPINE,
         window: WINDOW,
         intervals: INTERVALS,
+        phoneAllowlist: PHONE_ALLOW,
         placeCall: async () => ({
           transport: { sipStatus: 200, amdResult: "machine" },
           conversation: null,
@@ -501,6 +510,7 @@ describe("T15: raw transport signals reach the touch through disposition.ts", ()
         spine: SPINE,
         window: WINDOW,
         intervals: INTERVALS,
+        phoneAllowlist: PHONE_ALLOW,
         placeCall: async () => ({
           transport: { sipStatus: 200 },
           conversation: null,
@@ -544,6 +554,7 @@ describe("T15: raw transport signals reach the touch through disposition.ts", ()
         spine: SPINE,
         window: WINDOW,
         intervals: INTERVALS,
+        phoneAllowlist: PHONE_ALLOW,
         placeCall: stubPlaceCall,
       },
       proposalId,

@@ -119,6 +119,9 @@ async function driveCycle(
       spine: SPINE,
       window: { windowStart: "00:00:00", windowEnd: "23:59:00", timezone: "Asia/Manila" },
       intervals: { defaultIntervalDays: SETTINGS.intervalDays, shortRetryDays: SETTINGS.shortRetryDays },
+      // Piece 1 (call allowlist): every number this file dials, injected exactly as the
+      // composition root does. Additive only — no assertion in this file changed.
+      phoneAllowlist: ["+639171234567", "+639178888888", "+639179999999"],
       now: () => vnow,
       placeCall: async (ctx) => {
         for (const [i, prompt] of ctx.prompts.entries()) {

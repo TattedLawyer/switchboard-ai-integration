@@ -378,6 +378,9 @@ describe("the close pass does not touch an executed cycle", () => {
         spine: SPINE,
         window: { windowStart: "00:00:00", windowEnd: "23:59:00", timezone: "Asia/Manila" },
         intervals: { defaultIntervalDays: 30, shortRetryDays: 3 },
+        // Piece 1 (call allowlist): the number this file dials, injected exactly as the
+        // composition root does. Additive only — no assertion in this file changed.
+        phoneAllowlist: ["+639171234567"],
         now: () => t0,
         placeCall: async (ctx) => {
           for (const [i, p] of ctx.prompts.entries()) await ctx.answer(p.id, `a${i}`);

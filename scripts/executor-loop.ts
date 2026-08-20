@@ -38,6 +38,7 @@ import {
   type SendEmailFn,
 } from "../crm/src/executor.js";
 import { stubPlaceCall, livekitPlaceCall } from "../crm/src/call-transport.js";
+import { parsePhoneAllowlist } from "../crm/src/call-guard.js";
 import type { OutreachWindow } from "../crm/src/gates.js";
 import { createEmbedder } from "../crm/src/kb/embedder.js";
 import { knowledgeLookup } from "../crm/src/kb/lookup.js";
@@ -112,6 +113,16 @@ async function main(): Promise<void> {
     throw new Error("SWITCHBOARD_EMAIL_ALLOWLIST is empty — every recipient would be refused");
   }
 
+  // 🚨 THE PHONE ALLOWLIST — the call twin of the email allowlist above, parsed at the
+  // CLI edge (`call-guard.ts` doctrine): a malformed entry is a STARTUP FAILURE here,
+  // never a silently-unmatchable entry at dial time. Unset/empty parses to the frozen
+  // empty list, which `executeCall` refuses EVERY call against (fail-closed) — the stub
+  // transport still boots so email-only rehearsals keep working, and the banner says so
+  // loudly. The LIVE transport refuses an empty list at CONSTRUCTION below (a dialer
+  // that may dial nobody is a composition-time misconfiguration, the L1 doctrine),
+  // which is this daemon's boot-refusal for the live case — the same shape as email's.
+  const phoneAllowlist = parsePhoneAllowlist(process.env.SWITCHBOARD_PHONE_ALLOWLIST);
+
   // 🚨 THE SENDER IS CHOSEN HERE, AND THE DEFAULT IS THE ONE THAT CANNOT REACH ANYONE.
   // Real SMTP requires SMTP_HOST, SMTP_USER, SMTP_PASS and SMTP_FROM to ALL be present;
   // anything less and the stub stands. That direction matters: a half-configured relay must
@@ -167,6 +178,11 @@ async function main(): Promise<void> {
         sipTrunkId: lkTrunk as string,
         agentName: lkAgentName as string,
         modelApiKey: lkModelKey as string,
+        // The SECOND allowlist check lives in the transport, immediately before the dial
+        // (smtpSender's I5 doctrine, applied to calls). Empty ⇒ the factory throws HERE,
+        // at composition time: a live dialer that may dial nobody stops the daemon
+        // loudly instead of refusing approved cards one by one forever.
+        phoneAllowlist,
       })
     : stubPlaceCall;
 
@@ -373,6 +389,10 @@ async function main(): Promise<void> {
               spine: CALL_SPINE,
               window,
               intervals,
+              // 🚨 The FIRST allowlist check: `executeCall` refuses an unlisted number
+              // BEFORE `beginExecution`, so the refusal burns nothing and logs at `log`
+              // like every other refusal. Injected, never read from env inside crm/src.
+              phoneAllowlist,
               ...(lookupKnowledge === undefined ? {} : { lookupKnowledge }),
             },
             row.id,
@@ -422,6 +442,11 @@ async function main(): Promise<void> {
           `${process.env.POSTMARK_MESSAGE_STREAM ?? "(default outbound)"}, allowlist=` +
           `[${allowlist.join(", ")}]. MAIL CAN LEAVE THE BUILDING.`
         : `(STUB sender — nothing leaves the building)`) +
+      (phoneAllowlist.length === 0
+        ? ` Phone allowlist EMPTY — EVERY approved call is refused before it starts` +
+          ` (fail-closed; set SWITCHBOARD_PHONE_ALLOWLIST to rehearse or place calls).`
+        : ` Phone allowlist=[${phoneAllowlist.join(", ")}] — only these numbers can be` +
+          ` dialled, checked in the executor and again at the transport.`) +
       (callLive
         ? ` Call transport LIVE via LiveKit ${lkUrl} trunk=${lkTrunk} agent=${lkAgentName}` +
           ` (the voice-agent worker must be running under that name). CALLS CAN LEAVE` +
