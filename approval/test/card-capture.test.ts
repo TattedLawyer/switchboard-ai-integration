@@ -420,9 +420,9 @@ describe("C3: the contact is created from HER confirmed fields, not the extracte
     provideCardExtractor(app, async () => ({
       name: "Carla Cruz",
       company: "Cruz Brokerage",
-      email: "misread@extractor.example",
+      email: "misread@example.com",
       phones: [],
-      raw: "Carla Cruz — Cruz Brokerage — misread@extractor.example",
+      raw: "Carla Cruz — Cruz Brokerage — misread@example.com",
     }));
     const cardsPage = await fetch(`${base}/cards`, { headers: { cookie } });
     const csrf = csrfFrom(await cardsPage.text());
@@ -438,19 +438,19 @@ describe("C3: the contact is created from HER confirmed fields, not the extracte
     // exactly as a browser would carry it.
     const fields = parseForm(await res.text(), "/cards/create");
     expect(fields.email, "the form must pre-fill what was extracted").toBe(
-      "misread@extractor.example",
+      "misread@example.com",
     );
-    fields.email = "carla.cruz@client.example"; // HER correction
+    fields.email = "carla.cruz@example.com"; // HER correction
     const created = await formPost("/cards/create", fields, cookie);
     expect(created.status).toBe(303);
     await created.text();
 
     const row = await admin.query(`select email_address from crm.contacts`);
     expect(row.rowCount).toBe(1);
-    expect(row.rows[0].email_address).toBe("carla.cruz@client.example");
+    expect(row.rows[0].email_address).toBe("carla.cruz@example.com");
     // The extractor's misread must not survive ANYWHERE on the stored row.
     const leaked = await admin.query(
-      `select count(*)::int as n from crm.contacts c where c::text like '%misread@extractor.example%'`,
+      `select count(*)::int as n from crm.contacts c where c::text like '%misread@example.com%'`,
     );
     expect(leaked.rows[0].n).toBe(0);
   });
@@ -479,7 +479,7 @@ describe("C6: an extractor that throws does not lose her work", () => {
     expect(html).toContain("vendor exploded: HTTP 500 from OCR endpoint");
     const fields = parseForm(html, "/cards/create");
     fields.name = "Typed By Hand";
-    fields.email = "hand@client.example";
+    fields.email = "hand@example.com";
     const created = await formPost("/cards/create", fields, cookie);
     expect(created.status).toBe(303);
     await created.text();
@@ -667,7 +667,7 @@ describe("C2: after a full extract→create cycle, the image exists nowhere", ()
     provideCardExtractor(app, async () => ({
       name: "Gina Tan",
       company: "Tan Estates",
-      email: "gina@client.example",
+      email: "gina@example.com",
       phones: ["0917 555 0000"],
       raw: "Gina Tan — Tan Estates",
     }));
