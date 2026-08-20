@@ -250,6 +250,30 @@ function parseForm(html: string, action: string): Record<string, string> {
   return fields;
 }
 
+/** The TWO upload affordances on /cards, told apart by the one attribute that separates
+ *  them: the camera form's file input carries `capture='environment'`; the saved-photo
+ *  form's file input has NO capture attribute at all (MDN documents `capture` as a hint a
+ *  browser may ignore — the page makes the choice explicit instead). Returns that form's
+ *  own action and CSRF token, so a test walks whichever door a browser would. */
+function uploadForm(
+  html: string,
+  kind: "camera" | "saved-photo",
+): { action: string; csrf: string } {
+  const forms = html.matchAll(
+    /<form method='post' action='([^']+)' enctype='multipart\/form-data'>([\s\S]*?)<\/form>/g,
+  );
+  for (const m of forms) {
+    const fileInput = /<input[^>]*type='file'[^>]*>/.exec(m[2])?.[0];
+    if (fileInput === undefined) continue;
+    if ((kind === "camera") === /\scapture=/.test(fileInput)) {
+      const csrf = /name='_csrf' value='([^']+)'/.exec(m[2]);
+      if (!csrf) throw new Error(`the ${kind} upload form carries no _csrf field`);
+      return { action: m[1], csrf: csrf[1] };
+    }
+  }
+  throw new Error(`no ${kind} upload form on the page: ${html.slice(0, 300)}`);
+}
+
 // ── C1: every route is behind the session; every POST is behind CSRF ─────────────────────
 
 describe("C1: all card routes require a session, all POSTs require CSRF", () => {
@@ -658,79 +682,85 @@ function sentinelNeedles(sentinel: string): string[] {
 }
 
 describe("C2: after a full extract→create cycle, the image exists nowhere", () => {
-  it("no table holds the image bytes in any encoding, and no fs write API was touched", async () => {
-    const cookie = await signIn();
-    const sentinel = `CARDSENTINEL${Math.random().toString(36).slice(2).toUpperCase()}`;
-    const image = sentinelImage(sentinel);
-    // An extractor that RETURNS fields (so the full confirm→create path runs) while the
-    // image carries the sentinel — the realistic shape of a real vendor call.
-    provideCardExtractor(app, async () => ({
-      name: "Gina Tan",
-      company: "Tan Estates",
-      email: "gina@example.com",
-      phones: ["0917 555 0000"],
-      raw: "Gina Tan — Tan Estates",
-    }));
+  // U4: the property is pinned PER AFFORDANCE — the camera path and the saved-photo path
+  // each run the WHOLE cycle under the fs spies and the whole-database sentinel scan, so
+  // a mutation that persists the photo on either path fails this pin.
+  it.each(["camera", "saved-photo"] as const)(
+    "via the %s affordance: no table holds the image bytes in any encoding, and no fs write API was touched",
+    async (kind) => {
+      const cookie = await signIn();
+      const sentinel = `CARDSENTINEL${Math.random().toString(36).slice(2).toUpperCase()}`;
+      const image = sentinelImage(sentinel);
+      // An extractor that RETURNS fields (so the full confirm→create path runs) while the
+      // image carries the sentinel — the realistic shape of a real vendor call.
+      provideCardExtractor(app, async () => ({
+        name: "Gina Tan",
+        company: "Tan Estates",
+        email: "gina@example.com",
+        phones: ["0917 555 0000"],
+        raw: "Gina Tan — Tan Estates",
+      }));
 
-    const cardsPage = await fetch(`${base}/cards`, { headers: { cookie } });
-    const csrf = csrfFrom(await cardsPage.text());
+      const cardsPage = await fetch(`${base}/cards`, { headers: { cookie } });
+      const form = uploadForm(await cardsPage.text(), kind);
 
-    // Every write-capable fs API watched across the WHOLE cycle. The spies wrap the real
-    // implementations (nothing is stubbed out), so any legitimate write would both happen
-    // AND be counted — the assertion below is that there were none at all.
-    const spies = [
-      vi.spyOn(fs, "writeFile"),
-      vi.spyOn(fs, "writeFileSync"),
-      vi.spyOn(fs, "appendFile"),
-      vi.spyOn(fs, "appendFileSync"),
-      vi.spyOn(fs, "createWriteStream"),
-      vi.spyOn(fs, "open"),
-      vi.spyOn(fs, "openSync"),
-      vi.spyOn(fs.promises, "writeFile"),
-      vi.spyOn(fs.promises, "appendFile"),
-      vi.spyOn(fs.promises, "open"),
-    ];
+      // Every write-capable fs API watched across the WHOLE cycle. The spies wrap the real
+      // implementations (nothing is stubbed out), so any legitimate write would both happen
+      // AND be counted — the assertion below is that there were none at all.
+      const spies = [
+        vi.spyOn(fs, "writeFile"),
+        vi.spyOn(fs, "writeFileSync"),
+        vi.spyOn(fs, "appendFile"),
+        vi.spyOn(fs, "appendFileSync"),
+        vi.spyOn(fs, "createWriteStream"),
+        vi.spyOn(fs, "open"),
+        vi.spyOn(fs, "openSync"),
+        vi.spyOn(fs.promises, "writeFile"),
+        vi.spyOn(fs.promises, "appendFile"),
+        vi.spyOn(fs.promises, "open"),
+      ];
 
-    const ext = await multipartPost(
-      "/cards/extract",
-      { _csrf: csrf },
-      { field: "photo", filename: "card.png", contentType: "image/png", bytes: image },
-      cookie,
-    );
-    expect(ext.status).toBe(200);
-    const fields = parseForm(await ext.text(), "/cards/create");
-    const created = await formPost("/cards/create", fields, cookie);
-    expect(created.status).toBe(303);
-    await created.text();
+      const ext = await multipartPost(
+        form.action,
+        { _csrf: form.csrf },
+        { field: "photo", filename: "card.png", contentType: "image/png", bytes: image },
+        cookie,
+      );
+      expect(ext.status).toBe(200);
+      const fields = parseForm(await ext.text(), "/cards/create");
+      const created = await formPost("/cards/create", fields, cookie);
+      expect(created.status).toBe(303);
+      await created.text();
 
-    const writes = spies.reduce((n, s) => n + s.mock.calls.length, 0);
-    expect(writes, "no file write of ANY kind may happen during the capture cycle").toBe(0);
+      const writes = spies.reduce((n, s) => n + s.mock.calls.length, 0);
+      expect(writes, "no file write of ANY kind may happen during the capture cycle").toBe(0);
 
-    // The database side: EVERY base table in the ephemeral database, every row cast to
-    // text, hunted for the sentinel in every encoding. A mutation that stashes the image
-    // in a payload column, a session row, or a new table is caught by construction.
-    const tables = await admin.query<{ s: string; t: string }>(
-      `select n.nspname as s, c.relname as t
-         from pg_class c join pg_namespace n on n.oid = c.relnamespace
-        where c.relkind = 'r' and n.nspname not in ('pg_catalog', 'information_schema')`,
-    );
-    expect(tables.rowCount, "the scan must actually see the schema").toBeGreaterThan(10);
-    for (const { s, t } of tables.rows) {
-      for (const needle of sentinelNeedles(sentinel)) {
-        const q = await admin.query(
-          `select count(*)::int as n from "${s}"."${t}" x where x::text ilike '%' || $1 || '%'`,
-          [needle],
-        );
-        expect(
-          q.rows[0].n,
-          `image bytes (needle ${needle.slice(0, 16)}…) found in ${s}.${t}`,
-        ).toBe(0);
+      // The database side: EVERY base table in the ephemeral database, every row cast to
+      // text, hunted for the sentinel in every encoding. A mutation that stashes the image
+      // in a payload column, a session row, or a new table is caught by construction.
+      const tables = await admin.query<{ s: string; t: string }>(
+        `select n.nspname as s, c.relname as t
+           from pg_class c join pg_namespace n on n.oid = c.relnamespace
+          where c.relkind = 'r' and n.nspname not in ('pg_catalog', 'information_schema')`,
+      );
+      expect(tables.rowCount, "the scan must actually see the schema").toBeGreaterThan(10);
+      for (const { s, t } of tables.rows) {
+        for (const needle of sentinelNeedles(sentinel)) {
+          const q = await admin.query(
+            `select count(*)::int as n from "${s}"."${t}" x where x::text ilike '%' || $1 || '%'`,
+            [needle],
+          );
+          expect(
+            q.rows[0].n,
+            `image bytes (needle ${needle.slice(0, 16)}…) found in ${s}.${t}`,
+          ).toBe(0);
+        }
       }
-    }
-    // And the cycle actually completed — this scan ran against a REAL capture.
-    const row = await admin.query(`select display_name from crm.contacts`);
-    expect(row.rows[0].display_name).toBe("Gina Tan");
-  });
+      // And the cycle actually completed — this scan ran against a REAL capture.
+      const row = await admin.query(`select display_name from crm.contacts`);
+      expect(row.rows[0].display_name).toBe("Gina Tan");
+    },
+  );
 });
 
 // ── The vendor seam's construction contract ──────────────────────────────────────────────
@@ -746,5 +776,145 @@ describe("the extraction seam refuses to half-exist", () => {
     await expect(fn({ bytes: new Uint8Array(0), mimeType: "image/png" })).rejects.toThrow(
       /not implemented/,
     );
+  });
+});
+
+// ── U1/U2/U3/U5: the saved-photo affordance — explicit, same pipeline, same defences ─────
+//
+// MDN documents `capture` as a HINT (developer.mozilla.org, read 2026-08-20): a browser
+// MAY still offer the gallery behind a capture-carrying input. The owner's use case — a
+// card photographed at lunch, uploaded that evening — must not depend on that, so the
+// choice is EXPLICIT on the page: one input that opens the camera, one that opens the
+// picker. ONE pipeline behind both: the tests below derive each form's action from the
+// page itself, so a mutation that gives the saved path its own route goes red here.
+
+describe("U1: /cards offers BOTH a take-a-photo-now and a choose-a-saved-photo input", () => {
+  it("renders one file input WITH capture='environment' and one WITHOUT any capture attribute", async () => {
+    const cookie = await signIn();
+    const res = await fetch(`${base}/cards`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const fileInputs = [...html.matchAll(/<input[^>]*type='file'[^>]*>/g)].map((m) => m[0]);
+    const camera = fileInputs.filter((i) => i.includes("capture='environment'"));
+    const saved = fileInputs.filter((i) => !/\scapture=/.test(i));
+    expect(camera, "the take-a-photo-now input must keep capture='environment'").toHaveLength(1);
+    expect(saved, "a saved-photo input must exist WITHOUT a capture attribute").toHaveLength(1);
+    for (const i of fileInputs) {
+      expect(i, "both inputs are image uploads under the one field name").toContain(
+        "name='photo'",
+      );
+      expect(i).toContain("accept='image/*'");
+    }
+  });
+});
+
+describe("U2: the saved-photo path is the SAME flow end to end", () => {
+  it("an upload through the no-capture form reaches the extraction seam, renders the confirmation form, and creates the contact", async () => {
+    const cookie = await signIn();
+    provideCardExtractor(app, async () => ({
+      name: "Lena Uy",
+      company: "Uy Holdings",
+      email: "lena.uy@example.com",
+      phones: [],
+      raw: "Lena Uy — Uy Holdings",
+    }));
+    const cardsPage = await fetch(`${base}/cards`, { headers: { cookie } });
+    const form = uploadForm(await cardsPage.text(), "saved-photo");
+    const ext = await multipartPost(
+      form.action,
+      { _csrf: form.csrf },
+      {
+        field: "photo",
+        filename: "lunch-card.jpg",
+        contentType: "image/jpeg",
+        bytes: sentinelImage("u2-saved-later"),
+      },
+      cookie,
+    );
+    expect(ext.status, "the saved-photo form must land on the working extract flow").toBe(200);
+    const fields = parseForm(await ext.text(), "/cards/create");
+    expect(fields.name, "the extraction seam ran for the saved-photo upload").toBe("Lena Uy");
+    expect(fields.email).toBe("lena.uy@example.com");
+    const created = await formPost("/cards/create", fields, cookie);
+    expect(created.status).toBe(303);
+    await created.text();
+    const row = await admin.query(`select display_name, email_address from crm.contacts`);
+    expect(row.rowCount).toBe(1);
+    expect(row.rows[0].display_name).toBe("Lena Uy");
+    expect(row.rows[0].email_address).toBe("lena.uy@example.com");
+  });
+});
+
+describe("U3: both affordances land on the SAME limits", () => {
+  it("an oversize photo and a non-image are refused identically whichever form was used", async () => {
+    const cookie = await signIn();
+    const html = await (await fetch(`${base}/cards`, { headers: { cookie } })).text();
+    const outcomes: Record<string, { over: number; overHtml: string; pdf: number; pdfHtml: string }> =
+      {};
+    for (const kind of ["camera", "saved-photo"] as const) {
+      const form = uploadForm(html, kind);
+      const over = await multipartPost(
+        form.action,
+        { _csrf: form.csrf },
+        {
+          field: "photo",
+          filename: "huge.png",
+          contentType: "image/png",
+          bytes: Buffer.alloc(12 * 1024 * 1024, 0x41), // 12 MB > the 10 MB photo limit
+        },
+        cookie,
+      );
+      const pdf = await multipartPost(
+        form.action,
+        { _csrf: form.csrf },
+        {
+          field: "photo",
+          filename: "card.pdf",
+          contentType: "application/pdf",
+          bytes: sentinelImage(`u3-${kind}`),
+        },
+        cookie,
+      );
+      outcomes[kind] = {
+        over: over.status,
+        overHtml: await over.text(),
+        pdf: pdf.status,
+        pdfHtml: await pdf.text(),
+      };
+    }
+    for (const kind of ["camera", "saved-photo"] as const) {
+      expect(outcomes[kind].over, `${kind}: oversize refusal`).toBe(413);
+      expect(outcomes[kind].overHtml).toContain("10 MB");
+      expect(outcomes[kind].pdf, `${kind}: non-image refusal`).toBe(415);
+      expect(outcomes[kind].pdfHtml).toContain("not an image");
+    }
+    const rows = await admin.query("select count(*)::int as n from crm.contacts");
+    expect(rows.rows[0].n, "neither refused upload may create anything").toBe(0);
+  });
+});
+
+describe("U5: both affordances stay behind auth and CSRF", () => {
+  it("the page holding both inputs bounces the signed-out to /login", async () => {
+    const res = await fetch(`${base}/cards`, { redirect: "manual" });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/login");
+  });
+
+  it("both forms carry the session's CSRF field, and a saved-photo post without it is 403", async () => {
+    const cookie = await signIn();
+    const html = await (await fetch(`${base}/cards`, { headers: { cookie } })).text();
+    for (const kind of ["camera", "saved-photo"] as const) {
+      expect(uploadForm(html, kind).csrf, `the ${kind} form must carry _csrf`).toBeTruthy();
+    }
+    const form = uploadForm(html, "saved-photo");
+    const res = await multipartPost(
+      form.action,
+      {}, // no _csrf field at all
+      { field: "photo", filename: "c.png", contentType: "image/png", bytes: sentinelImage("u5") },
+      cookie,
+    );
+    expect(res.status).toBe(403);
+    const rows = await admin.query("select count(*)::int as n from crm.contacts");
+    expect(rows.rows[0].n).toBe(0);
   });
 });

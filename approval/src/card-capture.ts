@@ -250,9 +250,18 @@ export function registerCardCaptureRoutes(
           kit.page(
             "Capture a card",
             "<h1>Capture a business card</h1>" +
-              "<p>Photograph the card. You will see everything that was read and can " +
-              "correct it BEFORE anything is saved — nothing is stored until you confirm. " +
-              "The photo itself is never kept.</p>" +
+              "<p>Photograph the card, or upload a photo you took earlier. You will see " +
+              "everything that was read and can correct it BEFORE anything is saved — " +
+              "nothing is stored until you confirm. The photo itself is never kept.</p>" +
+              // TWO forms, ONE pipeline. MDN documents `capture` as a HINT — some
+              // browsers open the camera directly and silently hide the gallery, which
+              // would erase half the use case (a card photographed at lunch, uploaded
+              // that evening). So the saved-photo path gets its own EXPLICIT input with
+              // NO capture attribute. Both forms post to the SAME /cards/extract — same
+              // size limit, same mime check, same seam, same never-persisted property.
+              // On a desktop, where capture is ignored, both buttons open the same file
+              // chooser; the headings say why the page offers two.
+              "<h2>Take a photo now</h2>" +
               "<form method='post' action='/cards/extract' enctype='multipart/form-data'>" +
               kit.csrfField(req) +
               // `capture='environment'` opens the rear camera directly on a phone;
@@ -260,6 +269,13 @@ export function registerCardCaptureRoutes(
               // does not trust — the POST re-checks type and size.
               "<label>Card photo<br>" +
               "<input type='file' name='photo' accept='image/*' capture='environment' required>" +
+              "</label> <button>Read the card</button></form>" +
+              "<h2>Choose a saved photo</h2>" +
+              "<p>Already photographed the card? Pick it from your gallery or files.</p>" +
+              "<form method='post' action='/cards/extract' enctype='multipart/form-data'>" +
+              kit.csrfField(req) +
+              "<label>Saved photo<br>" +
+              "<input type='file' name='photo' accept='image/*' required>" +
               "</label> <button>Read the card</button></form>" +
               "<p>No photo, or no camera? <a href='/cards/manual'>Type the details instead</a>.</p>",
           ),
