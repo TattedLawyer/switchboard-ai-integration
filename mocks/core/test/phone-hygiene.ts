@@ -79,7 +79,13 @@ export const PH_FIXTURE_ALLOWLIST: ReadonlySet<string> = new Set([
   "+639179998888", // proposer-sheet + sheet-adopt fixtures (crm) — attested synthetic, 2026-08-18
   "+639179999999", // approval place-call-payload + crm executor/lifecycle/no-silence/proposer — attested synthetic, 2026-08-18
   "+639181234567", // sheet-columns fixtures (crm) — attested synthetic, 2026-08-18
-  "+639185551234", // sheet-columns source + sheet-adopt/sheet-link tests (crm) — attested synthetic, 2026-08-18
+  "+639185551234",
+  // Added 2026-08-19 with the call-allowlist work (8d7b798). All three are DELIBERATE
+  // negative-test values and are synthetic by construction — they exist precisely because
+  // they are NOT permitted:
+  "+639171112223", // call-guard: the neighbour of a listed number, proving no prefix match
+  "+639171234568", // call-guard: second neighbour, same property at the transport layer
+  "+639998887777", // call-guard/CLI: the number that must be REFUSED — attested synthetic // sheet-columns source + sheet-adopt/sheet-link tests (crm) — attested synthetic, 2026-08-18
 ]);
 
 // Size cap. Stated honestly: this bounds VOLUME, not VERACITY — a wrong number under

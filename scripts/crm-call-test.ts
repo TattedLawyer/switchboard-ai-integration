@@ -96,7 +96,7 @@ async function main(): Promise<void> {
     );
     console.log(
       `  · the proposal is 'approved' (decision by ${seeded.approverUserId}, ` +
-        `call-test-operator@switchboard.invalid) and expires ${seeded.expiresAt.toISOString()}`,
+        `call-test-operator@example.com) and expires ${seeded.expiresAt.toISOString()}`,
     );
     console.log(``);
     console.log(`WHAT TO WATCH`);

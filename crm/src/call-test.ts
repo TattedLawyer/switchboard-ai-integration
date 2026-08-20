@@ -88,7 +88,7 @@ export interface CallTestSeeded {
 
 /** The identity the auto-approval is recorded under. A visible, greppable marker: every
  *  decision this tool makes names it, so "who approved that?" has an honest answer. */
-export const CALL_TEST_APPROVER_EMAIL = "call-test-operator@switchboard.invalid";
+export const CALL_TEST_APPROVER_EMAIL = "call-test-operator@example.com";
 
 const OPEN_ALL_DAY = { start: "00:00", end: "23:59" };
 
