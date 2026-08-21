@@ -48,7 +48,12 @@
 import { AgentDispatchClient, RoomServiceClient, SipClient } from "livekit-server-sdk";
 import type { CallContext, KnowledgeLookupOutcome, PlaceCall } from "./executor.js";
 import type { ConversationOutcome, TransportSignal } from "./disposition.js";
-import { encodeCallJobMetadata, parseAgentCallReport } from "./call-bridge.js";
+import {
+  CALLEE_PARTICIPANT_IDENTITY,
+  RINGING_TIMEOUT_S,
+  encodeCallJobMetadata,
+  parseAgentCallReport,
+} from "./call-bridge.js";
 import { checkCallable, E164_EXACT } from "./call-guard.js";
 
 /**
@@ -219,8 +224,9 @@ export interface LiveKitCallClient {
  *  `executing` and T13's reconcile lists it (contract rule 2). */
 export class LiveKitCallFailed extends Error {}
 
-/** Ringing budget, seconds. LiveKit documents an 80s cap on `ringingTimeout`. */
-const RINGING_TIMEOUT_S = 60;
+// Ringing budget: `RINGING_TIMEOUT_S` moved to call-bridge.ts — the worker's AMD budget
+// and answered-wait bound are derived from the SAME number (see the constant's comment
+// there), which makes it exactly the kind of cross-process agreement the bridge holds.
 /** Hard ceiling on one intake call, seconds. A questionnaire that needs more than 15
  *  minutes is a wedged conversation, not a long one. */
 const MAX_CALL_DURATION_S = 15 * 60;
@@ -295,7 +301,9 @@ export function realLiveKitCallClient(cfg: LiveKitCallConfig): LiveKitCallClient
     },
     dialSipParticipant: async (roomName, phoneE164) => {
       const info = await sip.createSipParticipant(cfg.sipTrunkId, phoneE164, roomName, {
-        participantIdentity: "phone-callee",
+        // The SHARED constant (call-bridge.ts): the worker binds its session and AMD to
+        // this same identity — dial side and bind side can never drift apart.
+        participantIdentity: CALLEE_PARTICIPANT_IDENTITY,
         // Resolve on ANSWER, not on request-accepted: the resolution itself is the 200.
         waitUntilAnswered: true,
         ringingTimeout: RINGING_TIMEOUT_S,

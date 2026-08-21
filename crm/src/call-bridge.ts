@@ -23,6 +23,33 @@
 import { z } from "zod";
 import type { ConversationOutcome } from "./disposition.js";
 
+// ═══ THE CALLEE'S IDENTITY — one constant, both processes ═══════════════════════════════
+
+/**
+ * The participant identity the transport dials the callee under
+ * (`createSipParticipant`) AND the identity the worker binds its session and AMD to.
+ * It lives HERE — on the bridge — because it is exactly the kind of cross-process
+ * agreement this file exists for: on the 2026-08-21 live call the worker never bound to
+ * any participant, the callee's track stayed `subscribed:false`, and AMD classified 20
+ * seconds of dead air while a human was talking. A shared constant makes that drift a
+ * compile-time impossibility instead of a live-call discovery.
+ */
+export const CALLEE_PARTICIPANT_IDENTITY = "phone-callee";
+
+/**
+ * Ringing budget, seconds — LiveKit documents an 80s cap on `ringingTimeout`. It lives
+ * HERE, not in the transport, for the same reason as the identity above: TWO processes
+ * budget against the same ring. The transport passes it to `createSipParticipant`
+ * (`ringingTimeout`, call-transport.ts), and the worker derives BOTH its answered-wait
+ * bound (`CALL_ANSWER_WAIT_MS`) and AMD's detection backstop
+ * (`AMD_DETECTION_TIMEOUT_MS`) from it in voice-agent-session.ts — because the installed
+ * `voice.AMD` (1.6.4, dist/voice/amd.js) arms its detection timer at execute() and again
+ * at track-subscribe, BEFORE its own `sip.callStatus === 'active'` wait, so any AMD
+ * budget must be sized against the whole ring. One number, or a longer ring quietly
+ * starves the worker's timers again.
+ */
+export const RINGING_TIMEOUT_S = 60;
+
 // ═══ THE AMD VOCABULARY BOUNDARY ════════════════════════════════════════════════════════
 
 /** LiveKit `voice.AMD`'s category vocabulary (Node agents SDK). Typed openly on purpose:

@@ -19,6 +19,20 @@
 //     the metadata channel the transport is polling.
 // V7: a mid-call death propagates — no report is fabricated (transport rule 2 end-to-end),
 //     and the answers already persisted STAND.
+// V8: answers are bound by TURN-START time, never by arrival order — the Google plugin
+//     emits the final transcript only after the model's reply finishes generating
+//     ("seconds after the user spoke", realtime_api.js verbatim), so a straggler
+//     consumed FIFO would be persisted under the FOLLOWING question's id. A transcript
+//     whose turn began before the current question was asked belongs to the question
+//     that was open then: filed there if it is still unanswered, DROPPED otherwise —
+//     never misfiled.
+// V9: a transcript with no usable turn time is accepted for the OPEN question — the
+//     documented conservative fallback (upstream `turnStartedAt` is optional; a provider
+//     that omits it degrades to arrival order, exactly the pre-fix behaviour, never
+//     worse — dropping would kill every intake on such a provider).
+// V10: a turn that began before ANY question was asked (AMD-window speech, the reply to
+//     the opening line) is dropped — this subsumes and widens the worker's old
+//     drop-stale point, which cleared only what AMD consumed.
 import { describe, it, expect } from "vitest";
 import type { CallJobMetadata } from "../src/call-bridge.js";
 import {
@@ -279,5 +293,184 @@ describe("V7: a mid-call death is honest — answers stand, no report is fabrica
     // report and throws, leaving the proposal visibly `executing` for reconcile.
     expect(ops).toContain("persist:q1:around 8 million");
     expect(ops.filter((o) => o.startsWith("report:"))).toEqual([]);
+  });
+});
+
+// ═══ V8–V10: TURN-START BINDING (the late-transcript fix) ═══════════════════════════════
+
+/** Like fakeDeps, but the seam carries TIMED transcripts and the loop's clock is OURS:
+ *  each script entry runs when the loop asks for the next transcript and may advance the
+ *  clock (simulating waited wall time). say() advances the clock 1s per utterance, so
+ *  each question's asked-at is distinct and a test can place a turn precisely before or
+ *  after it. */
+function timedFakeDeps(
+  script: Array<
+    (clk: { t: number }) => { transcript: string; turnStartedAt?: number } | string | null
+  >,
+) {
+  const clk = { t: 0 };
+  const ops: string[] = [];
+  let i = 0;
+  const deps: IntakeDeps = {
+    session: {
+      say: async (text) => {
+        ops.push(`say:${text}`);
+        clk.t += 1_000;
+      },
+      nextFinalTranscript: async () => {
+        const step = script[i++];
+        return step ? step(clk) : null;
+      },
+    },
+    persistAnswer: async (questionId, value) => {
+      ops.push(`persist:${questionId}:${value}`);
+    },
+    reached: async (ordinal) => {
+      ops.push(`reached:${ordinal}`);
+    },
+    publishReport: async (report) => {
+      ops.push(`report:${report.amdResult}:${String(report.conversation)}`);
+    },
+    hangUp: async () => {
+      ops.push("hangUp");
+    },
+    now: () => clk.t,
+  };
+  return { deps, ops, clk };
+}
+
+describe("V8: a late transcript is bound by turn-start time — never filed against the NEXT question", () => {
+  // THE CANONICAL CASE. Timeline (clock in ms, say() costs 1s):
+  //   t=0     opening spoken (ends t=1000)
+  //   t=1000  q1 asked (ends t=2000); the caller STARTS answering at t=3000
+  //   the transcript has not arrived yet (the plugin holds finals until its reply
+  //   finishes generating) -> q1's watchdog expires
+  //   t=17000 q2 asked (ends t=18000)
+  //   t=18500 q1's straggler finally arrives, turnStartedAt=3000 — BEFORE q2 was asked
+  // FIFO would persist it under q2 (silent data corruption). Turn-start binding files it
+  // under q1.
+  // mutation: accept every transcript for the current question (drop the askedAt
+  //           comparison — the pre-fix FIFO) -> red. RUN ✅ 2026-08-21 (grep-confirmed):
+  //           `Tests  3 failed | 12 passed (15)` — this test, the stale-duplicate
+  //           test, and the V10 opening-line test.
+  it("q1's straggler arriving during q2's wait persists against q1 — and NEVER against q2", async () => {
+    const { deps, ops } = timedFakeDeps([
+      (clk) => {
+        clk.t += ANSWER_WATCHDOG_MS; // q1: nothing arrives inside the watchdog
+        return null;
+      },
+      (clk) => {
+        clk.t += 500; // q2's wait: the straggler lands…
+        return { transcript: "around 8 million", turnStartedAt: 3_000 }; // …from q1's turn
+      },
+      (clk) => {
+        clk.t += ANSWER_WATCHDOG_MS; // then q2 itself gets silence
+        return null;
+      },
+    ]);
+
+    const report = await runIntakeCall(JOB, "human", deps);
+
+    expect(ops.filter((o) => o.startsWith("persist:"))).toEqual([
+      "persist:q1:around 8 million",
+    ]);
+    expect(ops).not.toContain("persist:q2:around 8 million");
+    expect(report.answersPersisted).toBe(1);
+    expect(report.reachedOrdinal).toBe(1);
+    // q2 was asked and got silence — not every question answered, so the honest claim:
+    expect(report.conversation).toBe("identity_not_asked_cut_off");
+  });
+
+  it("in-order answers with turn times still flow exactly as before", async () => {
+    const { deps, ops } = timedFakeDeps([
+      (clk) => ({ transcript: "around 8 million", turnStartedAt: clk.t }), // t=2000 ≥ asked(1000)
+      (clk) => ({ transcript: "before Christmas", turnStartedAt: clk.t }),
+    ]);
+
+    const report = await runIntakeCall(JOB, "human", deps);
+
+    expect(ops).toEqual([
+      "say:Hi, may I speak with Ana Reyes?",
+      "say:What budget range are you working with?",
+      "persist:q1:around 8 million",
+      "reached:1",
+      "say:When are you hoping to move?",
+      "persist:q2:before Christmas",
+      "reached:2",
+      "report:human:identity_not_asked_complete",
+      "hangUp",
+    ]);
+    expect(report.answersPersisted).toBe(2);
+    expect(report.reachedOrdinal).toBe(2);
+  });
+
+  // mutation: file a stale transcript against its earlier question even when that
+  //           question already has an answer -> red. RUN ✅ 2026-08-21 (grep-confirmed):
+  //           `Tests  1 failed | 14 passed (15)`.
+  it("a stale duplicate whose question is already answered is DROPPED — never misfiled anywhere", async () => {
+    const { deps, ops } = timedFakeDeps([
+      (clk) => ({ transcript: "around 8 million", turnStartedAt: clk.t }), // q1 answered
+      (clk) => {
+        clk.t += 200; // q2's wait: an echo from q1's window (asked t=1000, q2 asked t=2000)
+        return { transcript: "eight million I said", turnStartedAt: 1_500 };
+      },
+      (clk) => ({ transcript: "before Christmas", turnStartedAt: clk.t }), // q2's real answer
+    ]);
+
+    const report = await runIntakeCall(JOB, "human", deps);
+
+    expect(ops.filter((o) => o.startsWith("persist:"))).toEqual([
+      "persist:q1:around 8 million",
+      "persist:q2:before Christmas",
+    ]);
+    expect(report.answersPersisted).toBe(2);
+    expect(report.conversation).toBe("identity_not_asked_complete");
+  });
+});
+
+describe("V9: a transcript with no usable turn time goes to the OPEN question — the documented fallback", () => {
+  it("an untimed object and a bare-string transcript are both accepted for the question being waited on", async () => {
+    const { deps, ops } = timedFakeDeps([
+      () => ({ transcript: "around 8 million" }), // provider omitted turnStartedAt
+      () => "before Christmas", // legacy bare-string seam shape
+    ]);
+
+    const report = await runIntakeCall(JOB, "human", deps);
+
+    expect(ops.filter((o) => o.startsWith("persist:"))).toEqual([
+      "persist:q1:around 8 million",
+      "persist:q2:before Christmas",
+    ]);
+    expect(report.conversation).toBe("identity_not_asked_complete");
+  });
+});
+
+describe("V10: a turn that began before ANY question is dropped — the drop-stale point, subsumed and widened", () => {
+  // The worker used to clear its queue once, after the AMD verdict — which missed the
+  // eager "yes, speaking" reply to the OPENING line (its final lands during q1's wait
+  // and FIFO filed it under q1; the worker header called this out as an open tuning
+  // hazard). Binding by turn-start closes it: the opening is not a question, so a turn
+  // from before q1 was asked binds to nothing.
+  // mutation: bind pre-question turns to question 1 -> red.
+  it("the reply to the opening line is not an answer to question 1", async () => {
+    const { deps, ops } = timedFakeDeps([
+      (clk) => {
+        clk.t += 100; // q1's wait: the opening-line reply lands (turn began t=400 < q1 asked t=1000)
+        return { transcript: "yes, speaking", turnStartedAt: 400 };
+      },
+      (clk) => ({ transcript: "around 8 million", turnStartedAt: clk.t }), // q1's real answer
+      (clk) => ({ transcript: "before Christmas", turnStartedAt: clk.t }),
+    ]);
+
+    const report = await runIntakeCall(JOB, "human", deps);
+
+    expect(ops.filter((o) => o.startsWith("persist:"))).toEqual([
+      "persist:q1:around 8 million",
+      "persist:q2:before Christmas",
+    ]);
+    expect(ops.join("|")).not.toContain("yes, speaking");
+    expect(report.answersPersisted).toBe(2);
+    expect(report.reachedOrdinal).toBe(2);
+    expect(report.conversation).toBe("identity_not_asked_complete");
   });
 });

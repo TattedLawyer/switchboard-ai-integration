@@ -28,9 +28,14 @@
 //         deferred register: NO mid-call knowledge lookups on the live path — the model
 //         has no tool with which to ask. `scriptedPlaceCall` keeps the knowledge seam
 //         exercised until the upstream fix.
-//   #2108 400-after-barge-in loops and the agent goes silent -> every scripted utterance
-//         is `allowInterruptions: false` (in `say` below) and the per-turn WATCHDOG in
-//         `voice-agent-session.ts` bounds any silent wedge to one advance-or-end window.
+//   #2108 400-after-barge-in loops and the agent goes silent -> barge-in CANNOT be
+//         blocked on this stack (the library forces `allowInterruptions: true` for
+//         `generateReply` under a server-turn-detection realtime model — and the owner
+//         wants natural conversation, not an IVR that talks over people), so the wedge
+//         is BOUNDED instead of prevented: the SPEAK watchdog releases a stuck
+//         utterance and the per-turn ANSWER watchdog in `voice-agent-session.ts`
+//         advances or ends the call. Silent death is impossible; a bounded pause is the
+//         worst case.
 //   #1248 outbound-SIP sample-rate mismatch kills agent→callee audio, correlated with a
 //         second audio track -> exactly ONE audio track: no BackgroundAudioPlayer, no
 //         filler audio, nothing here publishes but the session's own output.
@@ -44,23 +49,43 @@
 // `!model.includes('3.1')` (verified in @livekit/agents-plugin-google@1.6.4,
 // dist/realtime/realtime_api.cjs: `const mutableSession = !model.includes("3.1")`).
 //
-// FIRST-LIVE-CALL TUNING (needs real audio + credentials, cannot be decided from here):
-// Q/A alignment for eager speakers — a callee who answers DURING a question, or whose
-// "yes, speaking" after the opening line lands while question 1 is playing, can have an
-// utterance attributed to the wrong question. The transcript queue below keeps everything
-// final; the drop-stale point (before the opening line) discards only what AMD consumed.
-// Tune on the first real calls; the session seam is where any policy change goes.
+// Q/A ALIGNMENT: answers are bound by TURN-START time, not arrival order. The queue
+// below carries `conversation_item_added` user items because that event PRESERVES when
+// the caller's turn began (`item.createdAt` — agent_activity.js builds the user message
+// with `createdAt: turnStartedAt`, and the plugin hands over the generation's creation
+// timestamp, realtime_api.js:935); `user_input_transcribed` DROPS it. The binding rules
+// — a straggler files against the question that was open when its turn began, or is
+// dropped; never against the question currently waiting — live in
+// `voice-agent-session.ts`'s intake loop, where the pins can see them. This closed the
+// old eager-speaker hazard ("yes, speaking" landing as question 1's answer) and the
+// late-straggler misfile; residual tuning on real calls goes in the session seam.
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { RoomServiceClient } from "livekit-server-sdk";
-import { type JobContext, WorkerOptions, cli, defineAgent, voice } from "@livekit/agents";
+import {
+  type JobContext,
+  WorkerOptions,
+  cli,
+  defineAgent,
+  voice,
+  waitForParticipant,
+  waitForParticipantAttribute,
+} from "@livekit/agents";
 import * as google from "@livekit/agents-plugin-google";
 import {
+  CALLEE_PARTICIPANT_IDENTITY,
   encodeAgentCallReport,
   parseCallJobMetadata,
 } from "../crm/src/call-bridge.js";
 import {
+  INTAKE_INSTRUCTIONS,
+  SIP_CALL_STATUS_ACTIVE,
+  SIP_CALL_STATUS_ATTRIBUTE,
+  awaitCallAnswered,
+  calleeAmdOptions,
+  realtimeScriptedSpeech,
   runIntakeCall,
+  startSessionBoundToCallee,
   type ScriptedVoiceSession,
 } from "../crm/src/voice-agent-session.js";
 import { recordAnswer } from "../crm/src/answers.js";
@@ -105,44 +130,115 @@ export default defineAgent({
         preemptiveGeneration: false,
       });
 
-      // AMD FIRST — constructed and started before the SIP participant can exist (the
-      // transport dispatches this agent BEFORE dialling, and AMD's own SIP gate waits for
-      // call-active so ringback never burns the budget). `interruptOnMachine: false`: the
-      // script never speaks before the verdict, so there is nothing to interrupt, and the
-      // hangup is OURS (report first, then deleteRoom), never the library's.
-      const amd = new voice.AMD(session, { interruptOnMachine: false });
-      const amdVerdict = amd.execute();
+      // AMD — constructed before the SIP participant can exist (the transport
+      // dispatches this agent BEFORE dialling). 🚨 AMD's own SIP gate does NOT protect
+      // the detection budget: in the installed 1.6.4 (dist/voice/amd.js) execute() arms
+      // startDetectionTimer() immediately (line 245) and gateListening() RE-ARMS it at
+      // track-subscribe (line 441) — both BEFORE its `sip.callStatus === 'active'`
+      // wait; only the no-speech timer is answer-gated. So execute() below is gated on
+      // the ANSWER by this worker itself (`awaitCallAnswered`), and `calleeAmdOptions()`
+      // now pins THREE decisions: `interruptOnMachine: false` (the script never speaks
+      // before the verdict, and the hangup is OURS — report first, then deleteRoom,
+      // never the library's), `participantIdentity` — AMD restricted to the SAME
+      // participant the transport dials (2026-08-21 live defect 1: with no binding, AMD
+      // classified 20s of dead air while a human was talking) — and the raised
+      // `detectionTimeoutMs` backstop (upstream fix is livekit/agents-js #2226, merged
+      // after 1.6.4; both halves live in voice-agent-session.ts).
+      const amd = new voice.AMD(session, calleeAmdOptions());
+      // 🚨 execute() MOVED BELOW session.start(): AMD.execute() calls
+      // session.pauseReplyAuthorization(), which throws "AgentSession is not running"
+      // unless `session.activity` exists — and only start() creates it. Verified in
+      // @livekit/agents/src/voice/amd.ts:397 and agent_session.ts:1211. Undocumented;
+      // found by a real call that connected and died before speaking.
 
-      // FINAL transcripts only, queued in arrival order. The intake consumes one per
-      // question; `voice-agent-session.ts` owns the watchdog and every decision.
-      const finals: string[] = [];
+      // FINAL transcripts only, queued in arrival order WITH their turn-start time.
+      // `conversation_item_added` (not `user_input_transcribed`, which drops the turn
+      // time): agent_activity.js builds the user ChatMessage with
+      // `createdAt: turnStartedAt` — the plugin's generation-creation timestamp
+      // (realtime_api.js:935), stamped when the server took the turn, i.e. when the
+      // caller SPOKE, seconds before the final transcript is emitted. The intake loop
+      // in `voice-agent-session.ts` binds each transcript to the question that was open
+      // at that moment; this queue just carries the facts.
+      const finals: Array<{ transcript: string; turnStartedAt?: number }> = [];
       let wake: (() => void) | null = null;
-      session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
-        if (ev.isFinal && ev.transcript.trim() !== "") {
-          finals.push(ev.transcript);
+      session.on(voice.AgentSessionEventTypes.ConversationItemAdded, (ev) => {
+        if (ev.item.type !== "message" || ev.item.role !== "user") return;
+        const text = ev.item.textContent;
+        if (text !== undefined && text.trim() !== "") {
+          finals.push({ transcript: text, turnStartedAt: ev.item.createdAt });
           wake?.();
         }
       });
 
-      await session.start({
-        // ZERO TOOLS (#2249) — an empty Agent: no tools defined, no toolChoice sent.
-        agent: new voice.Agent({
-          instructions:
-            "You are placing a scripted intake call. Speak only the exact scripted " +
-            "utterances you are given, one at a time. Never improvise, never add " +
-            "questions, never claim to act on anything.",
-        }),
-        room: ctx.room,
-        // #1248 guard: the session's own output is the ONLY audio track this process
-        // publishes — no background audio, no filler, nothing else is started.
+      // The speech observer for `realtimeScriptedSpeech` (the silent-utterance guard —
+      // the decision lives in voice-agent-session.ts; this is only the event feed):
+      // `agent_state_changed -> 'speaking'` is emitted from onFirstFrame, the first
+      // real audio frame reaching the room — the one signal a generation that died
+      // before producing sound can never emit.
+      let audioLeftSinceArm = false;
+      session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
+        if (ev.newState === "speaking") audioLeftSinceArm = true;
       });
 
+      // BOUND TO THE CALLEE (2026-08-21 live defect 1): `startSessionBoundToCallee`
+      // passes `inputOptions.participantIdentity` — RoomIO's public linking contract —
+      // so the session waits for, links, and SUBSCRIBES exactly the SIP participant the
+      // transport dialled. Without it the caller's track stayed `subscribed:false` and
+      // the agent heard nothing.
+      // #1248 guard (unchanged): the session's own output is the ONLY audio track this
+      // process publishes — no background audio, no filler, nothing else is started.
+      await startSessionBoundToCallee(
+        session,
+        // ZERO TOOLS (#2249) — an empty Agent: no tools defined, no toolChoice sent.
+        // INTAKE_INSTRUCTIONS (owner decision, see voice-agent-session.ts): substance is
+        // approved, PHRASING is the model's — the old "speak only the exact scripted
+        // utterances" prompt is retired with `say()` itself.
+        new voice.Agent({ instructions: INTAKE_INSTRUCTIONS }),
+        ctx.room,
+      );
+
+      // THE ANSWER GATE (half (a), decisions in voice-agent-session.ts): AMD starts
+      // only once the callee's `sip.callStatus` reads 'active' — never on ringback.
+      // Participant first: `waitForParticipantAttribute` THROWS if the identity is not
+      // in the room yet, and the transport dials the SIP leg AFTER dispatching us.
+      // `awaitCallAnswered` bounds the whole wait and throws on a never-answered call —
+      // no AMD verdict, no script, no report (honesty rules; the transport's own dial
+      // has already failed by then).
+      await awaitCallAnswered(async (signal) => {
+        await waitForParticipant({
+          room: ctx.room,
+          identity: CALLEE_PARTICIPANT_IDENTITY,
+          signal,
+        });
+        await waitForParticipantAttribute({
+          room: ctx.room,
+          identity: CALLEE_PARTICIPANT_IDENTITY,
+          attribute: SIP_CALL_STATUS_ATTRIBUTE,
+          value: SIP_CALL_STATUS_ACTIVE,
+          signal,
+        });
+      });
+
+      // AMD starts HERE — the session is running (pauseReplyAuthorization succeeds) and
+      // the call is ANSWERED (the detection budget times real speech, not ringback).
+      const amdVerdict = amd.execute();
+
       const seam: ScriptedVoiceSession = {
-        say: async (text) => {
-          // #2108 guard: non-interruptible; #2059 guard: awaited to playout, one at a time.
-          const handle = session.say(text, { allowInterruptions: false });
-          await handle.waitForPlayout();
-        },
+        // 2026-08-21 live defect 2: `session.say()` is a TTS path and threw "trying to
+        // generate speech from text without a TTS model" — this stack is NATIVE AUDIO.
+        // `realtimeScriptedSpeech` speaks via `session.generateReply({ instructions })`
+        // (the supported route on a realtime model), awaits playout (#2059: one at a
+        // time), and bounds a wedged generation with the SPEAK watchdog (#2108). The
+        // barge-in decision and its reasoning live with the adapter in
+        // voice-agent-session.ts.
+        say: realtimeScriptedSpeech(session, {
+          observer: {
+            arm: () => {
+              audioLeftSinceArm = false;
+            },
+            spoke: () => audioLeftSinceArm,
+          },
+        }),
         nextFinalTranscript: async (timeoutMs) => {
           const deadline = Date.now() + timeoutMs;
           for (;;) {
@@ -165,9 +261,12 @@ export default defineAgent({
       // The verdict settles before anyone is spoken to (the module speaks nothing until
       // it has the category — a voicemail box gets a report and a hangup, no script).
       const verdict = await amdVerdict;
-      // Whatever the callee said DURING classification ("Hello?") was AMD's input, not an
-      // answer to a question nobody asked yet. Drop it so question 1 cannot inherit it.
-      finals.length = 0;
+      // NO drop-stale point any more (`finals.length = 0` used to live here): every
+      // queued item now carries its turn-start time, and the intake loop DROPS any turn
+      // that began before question 1 was asked — which covers what AMD consumed
+      // ("Hello?") AND the reply to the opening line ("yes, speaking"), a case the old
+      // one-shot clear could never reach. The policy lives with the other binding rules
+      // in voice-agent-session.ts, where the pins can see it.
 
       const report = await runIntakeCall(job, verdict.category, {
         session: seam,
