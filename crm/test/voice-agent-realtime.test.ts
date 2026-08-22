@@ -490,6 +490,39 @@ describe("V7: an utterance that produced NO AUDIO throws — silence is never fa
   });
 });
 
+describe("V0: the agent never invents an identity", () => {
+  // 2026-08-21, PROVEN ON A LIVE CALL: the model answered a carrier screening greeting
+  // with "Hi, this is Jordan. I'm making a quick call for my real estate broker" —
+  // a FABRICATED human name, spoken ~8s BEFORE the approved opening line. That turn was
+  // a SERVER-INITIATED reply (onInputSpeechStarted), not one we handed over, so nothing
+  // in the per-turn path can reach it: only the STANDING instruction governs it.
+  //
+  // Root cause: the standing prompt named a ROLE ("on behalf of a real-estate broker")
+  // and left the IDENTITY slot empty, so the model filled it. Naming the ABSENCE closes
+  // it. (Google's own Live API guidance puts persona first for exactly this reason.)
+  //
+  // mutation: delete the "do not give yourself" sentence -> red.
+  it("the standing instruction forbids self-naming — the slot is named, not left empty", () => {
+    expect(INTAKE_INSTRUCTIONS).toMatch(/do not give yourself a personal name/i);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/assistant calling on behalf of/i);
+  });
+
+  it("the three prohibitions that make the call HERS survive alongside it", () => {
+    // The loosening that licensed natural phrasing kept exactly these three. They are
+    // the compliance spine; a persona sentence must not displace them.
+    expect(INTAKE_INSTRUCTIONS).toMatch(/[Nn]ever invent questions/);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/never change what a handed question is asking/);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/never claim to have taken/);
+  });
+
+  it("stays short — leak frequency rises with prompt length (livekit/agents#5662)", () => {
+    // A hard ceiling, not a style note: the standing instruction is sent as
+    // `setup.systemInstruction` on EVERY call, and long system prompts are the reported
+    // condition for Gemini 2.5 over SIP reciting them to the caller.
+    expect(INTAKE_INSTRUCTIONS.length).toBeLessThan(1_200);
+  });
+});
+
 describe("V8: AMD's detection budget cannot burn during ringback", () => {
   // The defect (installed 1.6.4, dist/voice/amd.js): execute() arms startDetectionTimer()
   // immediately (line 245) and gateListening() RE-ARMS it at track-subscribe (line 441)

@@ -124,6 +124,25 @@ export default defineAgent({
         llm: new google.beta.realtime.RealtimeModel({
           model: VOICE_MODEL,
           apiKey: required("CALL_MODEL_API_KEY"),
+          // 🚨 DUPLICATED, NOT MOVED — the same constant is ALSO passed to `new
+          // voice.Agent` below, and that is load-bearing, not sloppy.
+          //
+          // WHY IT IS HERE: only the constructor option becomes a real
+          // `setup.systemInstruction` on the FIRST connect (plugin
+          // realtime_api.ts:1505-1512). Passing instructions ONLY via the Agent means
+          // the activity start pushes them through `updateInstructions`, which calls
+          // `markRestartNeeded()` when no session is live yet (realtime_api.ts:678-693
+          // -> :583-588) — a connect/close/reconnect visible in the 2026-08-21 live log
+          // as `sessionShouldClose: true` at 17:18:38.021, 0.479s of pointless churn
+          // before a single word is spoken.
+          //
+          // WHY IT MUST ALSO STAY ON THE AGENT: activity start pushes the AGENT's
+          // instructions unconditionally, and `updateInstructions` early-returns ONLY
+          // when the incoming string EQUALS `options.instructions` (:678-681). Move it
+          // off the Agent and the mismatch both restores the reconnect AND OVERWRITES
+          // this system instruction on the restarted session. Same constant in both
+          // places makes the check a no-op. Found by cold review before it shipped.
+          instructions: INTAKE_INSTRUCTIONS,
         }),
         // #2059 guard: never preemptive. Explicit, not defaulted, so a library that
         // flips the default cannot flip us.
