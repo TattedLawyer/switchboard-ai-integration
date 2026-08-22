@@ -417,7 +417,9 @@ describe("L6: the non-auto-closing outcomes shut the session down EXPLICITLY", (
 });
 
 describe("L7: the approved number is dialled EXACTLY ONCE", () => {
-  // mutation: remove the `if (dialed) throw` guard -> red. RUN ✅ 2026-08-19
+  // mutation: remove the `if (dialedTouches.has(...)) throw` guard -> red. RUN ✅ 2026-08-19
+  //   (recorded when the flag was a factory-scoped boolean; the guard moved to a
+  //   per-touch Set on 2026-08-22, see the third test below — re-run recorded there)
   //   Observed: `Tests  2 failed | 25 passed (27)`
   //     AssertionError: promise resolved "{ transport: { …(2) }, …(1) }" instead of
   //     rejecting (and the 486 path resolved too — a second, unapproved dial happened)
@@ -431,6 +433,54 @@ describe("L7: the approved number is dialled EXACTLY ONCE", () => {
 
     expect(ops.filter((o) => o.startsWith("dial:")).length).toBe(1);
     expect(ops.filter((o) => o.startsWith("dispatch:")).length).toBe(1);
+  });
+
+  // 🚨 THE REGRESSION THIS SUITE DID NOT HAVE. Every test above reuses ONE ctx, so the
+  // same touchId recurs and a FACTORY-scoped boolean looks identical to a CALL-scoped
+  // one. Nothing pinned the difference — which is how 2023 green tests coexisted with a
+  // daemon that could dial exactly ONE person, ever (`executor-loop.ts:173-186` builds
+  // the factory once per process). Worse than a refusal: the throw lands AFTER
+  // `beginExecution` and `beginTouch` (`executor.ts:288,297`), and 015 gives `executing`
+  // no exit but `finishExecution` and no reaper by design — so every call after the
+  // first WEDGED its proposal and orphaned a touch for a human to clear.
+  //
+  // mutation: restore the factory-scoped `let dialed = false` -> red here, green above.
+  //   RUN ✅ 2026-08-22 (grep-confirmed applied, then grep-confirmed restored):
+  //   `Tests  1 failed | 28 passed (29)` — exactly this test, which is the point:
+  //   the two same-ctx pins above stayed green under the bug for three days.
+  it("two DIFFERENT approved calls through ONE factory both dial — the guard is per call, not per process", async () => {
+    const { client, ops } = fakeClient();
+    const placeCall = livekitPlaceCall(CFG, client);
+
+    const first = recordingContext();
+    const second = recordingContext();
+    // A different touch is a different APPROVED CALL: `beginTouch` is a plain INSERT of a
+    // fresh uuid (`touch.ts:87-104`, `016:192`), and a re-proposal is a NEW ROW, never a
+    // resurrection (015's transition set has no `executing -> approved`). So two touchIds
+    // can only mean two separately-approved calls, and both are entitled to dial.
+    second.ctx.touchId = "00000000-0000-0000-0000-0000000000e5";
+
+    await placeCall(first.ctx);
+    await placeCall(second.ctx);
+
+    expect(ops.filter((o) => o.startsWith("dial:")).length).toBe(2);
+    expect(ops.filter((o) => o.startsWith("dispatch:")).length).toBe(2);
+  });
+
+  it("the per-call guard still refuses the SAME touch through a DIFFERENT factory? NO — it is per process by design", async () => {
+    // Documents the honest boundary: the Set lives in one process. Two daemons dialling
+    // the same proposal is prevented by `executions_one_start` (015:518-520) at
+    // `beginExecution`, NOT here. Rule 4 is the seam's own guarantee for the caller that
+    // bypasses the executor; it was never a distributed lock.
+    const a = fakeClient();
+    const b = fakeClient();
+    const { ctx } = recordingContext();
+
+    await livekitPlaceCall(CFG, a.client)(ctx);
+    await livekitPlaceCall(CFG, b.client)(ctx);
+
+    expect(a.ops.filter((o) => o.startsWith("dial:")).length).toBe(1);
+    expect(b.ops.filter((o) => o.startsWith("dial:")).length).toBe(1);
   });
 
   it("a failed dial does not license a retry either — no fallback, no vendor-side redial", async () => {

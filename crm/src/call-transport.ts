@@ -401,15 +401,40 @@ export function livekitPlaceCall(
   validateConfig(cfg);
   const lk = client ?? realLiveKitCallClient(cfg);
 
-  let dialed = false;
+  // 🚨 PER CALL, NOT PER FACTORY. This was `let dialed = false` — one boolean shared by
+  // every call the factory ever placed — while the contract above and the throw below
+  // both say "this CALL was already placed". `executor-loop.ts:173-186` builds the
+  // factory ONCE per daemon process, so the daemon could dial exactly one person, EVER.
+  // And it failed loudly in the wrong place: the throw lands AFTER `beginExecution` and
+  // `beginTouch` (`executor.ts:288,297`), 015 gives `executing` no exit but
+  // `finishExecution` and no reaper by design — so every approved call after the first
+  // WEDGED its proposal and orphaned a touch for a human to clear.
+  //
+  // `touchId` is the per-ATTEMPT identity, which is exactly the scope rule 4 wants:
+  // `beginTouch` is a plain INSERT of a fresh uuid (`touch.ts:87-104`, `016:192`), and a
+  // re-proposal is a NEW ROW — 015's transition set deliberately has no
+  // `executing -> approved`, "that is the retry loop that double-sends". So two touchIds
+  // can only mean two separately-approved calls, and the SAME touchId can only mean a
+  // re-invocation of one placed call, which is the thing to refuse.
+  //
+  // Unbounded on purpose: ~150 bytes per placed call, calls are human-approved (tens a
+  // day), so <1MB over months of uptime. An LRU would EVICT a touchId and silently
+  // re-admit a redial — a bound that weakens the invariant it is meant to protect.
+  const dialedTouches = new Set<string>();
   return async (ctx: CallContext) => {
-    if (dialed) {
+    if (dialedTouches.has(ctx.touchId)) {
       throw new Error(
         "livekitPlaceCall: this call was already placed — rule 4, dial exactly once; " +
           "no fallback number, no vendor-side retry",
       );
     }
-    dialed = true;
+    // Recorded BEFORE the allowlist check and the dial, unchanged: a refusal or a failed
+    // dial burns this touch's slot too. That is the designed semantics, not an oversight
+    // — the executor never re-selects a proposal (`selectApprovedActions` filters
+    // `state='approved'`), a SIP-status failure completes normally and schedules a FUTURE
+    // new proposal, and a throw leaves the proposal for `findStuckExecutions` and a
+    // human. Every legitimate retry is therefore a new proposal with a new touchId.
+    dialedTouches.add(ctx.touchId);
 
     // 🚨 THE SECOND ALLOWLIST CHECK — before ANY vendor operation, so a refusal leaks no
     // dispatched agent job and leaves nothing to clean up. Through the executor path this
