@@ -63,6 +63,42 @@ export const ANSWER_WATCHDOG_MS = 15_000;
 /** Two questions in a row into silence means nobody is there. Stop asking a dead line. */
 export const MAX_CONSECUTIVE_SILENCES = 2;
 
+/** How many times one question may be RE-asked after a delivery that did not put it in
+ *  the caller's ear (`delivered: false` below), before the loop counts ONE silence and
+ *  advances. Two re-asks + the original hand-off = three chances; more than that into a
+ *  caller who keeps derailing the turn is the IVR-hostage experience the owner refuses
+ *  to ship, and the silence accounting (MAX_CONSECUTIVE_SILENCES) still bounds the call
+ *  behind it. */
+export const MAX_QUESTION_REASKS = 2;
+
+/**
+ * What `say` actually accomplished — the 2026-08-22 leak call's fix (touch `0fcf2180-…`).
+ * `say` used to resolve `void`, and the loop stamped `askedAt[i]` with the CLOCK READING
+ * AT THE SAY CALL; but the model frequently does not voice the handed question then — it
+ * finishes an interrupted sentence, acknowledges the caller, drains its own backlog —
+ * and voices our question seconds later or NEVER. Every caller turn necessarily starts
+ * after the say call, so every utterance bound to whatever question the loop thought was
+ * open: the persisted rows had "how has your day been going?" answered with "Uh" and the
+ * owner's own complaint stored as a lead's must-haves. `say` therefore now reports
+ * DELIVERY, and the binding table is built from when the question actually reached the
+ * caller's ear:
+ *   · `delivered: true`  — audio left the room and playout completed uninterrupted.
+ *     `voicedAt` is WHEN it began, from the LIBRARY's clock, not ours (see
+ *     `realtimeScriptedSpeech`).
+ *   · `delivered: false, partial: true` — audio left but the utterance was cut off
+ *     mid-question. `voicedAt` still exists: the caller heard it begin, so a turn that
+ *     starts after it MAY be answering it.
+ *   · `delivered: false, partial: false` — no audio at all, but caller-speech evidence
+ *     arrived in the grace window (the barge-in path): the question was never voiced,
+ *     so NOTHING may ever bind to it until a re-ask actually lands.
+ * The honest-death contract is UNCHANGED: no audio AND no caller evidence, a watchdog
+ * expiry with no audio, or a stashed `exception()` still THROW out of `say`.
+ */
+export type SpeechDelivery =
+  | { delivered: true; voicedAt: number }
+  | { delivered: false; partial: true; voicedAt: number }
+  | { delivered: false; partial: false };
+
 /** One FINAL caller transcript plus WHEN the caller's turn began. `turnStartedAt` is
  *  epoch ms from `ChatMessage.createdAt`: the installed agent_activity.js (1.6.4,
  *  onUserInputTranscribed, ~1005–1014) builds the user message with
@@ -81,20 +117,31 @@ export interface TimedTranscript {
 /** What this module needs from the live media session — implemented by the worker's
  *  plumbing over `AgentSession`, faked in tests. */
 export interface ScriptedVoiceSession {
-  /** Speak one utterance's SUBSTANCE and resolve when it has been said — awaited, one at
-   *  a time, never preemptive (#2059). The live implementation is
-   *  `realtimeScriptedSpeech` below: `generateReply` on the native-audio session (the
-   *  model owns phrasing, this loop owns everything decidable), bounded by the speak
-   *  watchdog. Interruptible by the caller — barge-in is natural conversation, and the
-   *  library forces it anyway on a server-turn-detection realtime model. */
-  say(text: string): Promise<void>;
+  /** Speak one utterance's SUBSTANCE and resolve when the attempt has SETTLED — awaited,
+   *  one at a time, never preemptive (#2059). Resolves with what the attempt actually
+   *  ACCOMPLISHED (`SpeechDelivery` above): "resolved" used to mean "asked", and the
+   *  2026-08-22 leak call proved that lie corrupts data — the loop opened a question's
+   *  answer window at the say CALL while the model voiced it seconds later or never, so
+   *  callers' words were persisted under questions they had not heard. The live
+   *  implementation is `realtimeScriptedSpeech` below: `generateReply` on the
+   *  native-audio session (the model owns phrasing, this loop owns everything
+   *  decidable), bounded by the speak watchdog, with the voiced-at time read from the
+   *  LIBRARY's committed assistant item. Interruptible by the caller — barge-in is
+   *  natural conversation, and the library forces it anyway on a server-turn-detection
+   *  realtime model. Still THROWS on the honest-death paths: no audio and no caller
+   *  evidence, watchdog expiry with no audio, or a stashed `exception()`. */
+  say(text: string): Promise<SpeechDelivery>;
   /** The next FINAL user transcript, or null if none arrives within `timeoutMs` — the
-   *  per-turn watchdog. The live worker queues `conversation_item_added` user items,
-   *  which PRESERVE the turn-start time as `item.createdAt` — NOT
-   *  `user_input_transcribed`, which drops `turnStartedAt` on the floor (events.d.ts:
-   *  the transcribed event carries no turn time at all). A bare string is a transcript
-   *  with NO usable turn time; it binds to the question currently being waited on (the
-   *  conservative fallback — see the binding loop). */
+   *  per-turn watchdog. `timeoutMs` of 0 is a pure QUEUE READ: return a turn that has
+   *  already arrived or null, never wait — the intake loop drains with 0 after a
+   *  failed delivery, where blocking a watchdog's worth on a question that is not in
+   *  the caller's ear would stall the re-ask. (The worker's deadline loop gives this
+   *  for free: remaining ≤ 0 returns null after one queue check.) The live worker
+   *  queues `conversation_item_added` user items, which PRESERVE the turn-start time
+   *  as `item.createdAt` — NOT `user_input_transcribed`, which drops `turnStartedAt`
+   *  on the floor (events.d.ts: the transcribed event carries no turn time at all). A
+   *  bare string is a transcript with NO usable turn time; it binds to the question
+   *  currently being waited on (the conservative fallback — see the binding rule). */
   nextFinalTranscript(timeoutMs: number): Promise<TimedTranscript | string | null>;
 }
 
@@ -150,7 +197,41 @@ export async function runIntakeCall(
 
   // Human, or possibly one (`unknown` runs the script — hanging up on a possible human is
   // worse than asking; the RAW amd verdict still rides the report unlaundered).
-  await deps.session.say(job.openingLine); // verbatim — she approved those words (rule 4)
+  //
+  // 🚨 EVERYTHING BELOW RUNS UNDER A HANGUP GUARD (2026-08-22, learned from a live call).
+  // A mid-call throw used to skip BOTH `publishReport` and `hangUp`, and the worker's
+  // cleanup closes only its database pool — so nothing released the line. The owner sat
+  // listening to silence until he gave up. The transport cannot rescue him: it polls for
+  // a report for sixteen minutes and cannot distinguish a call in progress from a dead
+  // worker still occupying the room.
+  //
+  // The honest-death contract is UNCHANGED and still enforced by the `catch` below: no
+  // report is published, nothing is fabricated, the original error propagates, and the
+  // proposal stays visibly `executing` for a human. The transport's own rule 2 always
+  // had the right shape — "cleanup, THEN a typed throw" — and this is the missing half.
+  try {
+    return await runApprovedScript(job, amdResult, deps);
+  } catch (err) {
+    // Best-effort courtesy, never a mask: a hangup that fails must not replace the
+    // failure worth debugging.
+    await deps.hangUp().catch(() => {});
+    throw err;
+  }
+}
+
+/** The approved script itself. Split out only so the hangup guard above can wrap every
+ *  path through it without re-indenting the loop that all the pins point at. */
+async function runApprovedScript(
+  job: CallJobMetadata,
+  amdResult: AgentCallReport["amdResult"],
+  deps: IntakeDeps,
+): Promise<AgentCallReport> {
+  // The opening's substance is hers verbatim (rule 4). Its delivery outcome is NOT
+  // acted on: the opening is not a question — nothing may ever bind to it — and a
+  // caller who barged in over it is demonstrably present, which the first question's
+  // own delivery handling absorbs. Re-greeting a person who just interrupted the
+  // greeting is the IVR feel the owner refuses to ship.
+  await deps.session.say(job.openingLine);
 
   const now = deps.now ?? (() => Date.now());
 
@@ -159,11 +240,17 @@ export async function runIntakeCall(
   let consecutiveSilences = 0;
   let askedAll = false;
 
-  // WHEN each question was ASKED — the clock reading taken as its utterance BEGINS,
-  // because barge-in is allowed: a caller who starts answering while the question is
-  // still being spoken is answering THIS question, not the previous one. Together with
-  // `answered` this is the binding table for late transcripts.
-  const askedAt: number[] = [];
+  // WHEN each question was VOICED — `SpeechDelivery.voicedAt`, the library's clock
+  // reading as the question's audio BEGAN reaching the caller, NOT the clock at the say
+  // call. The 2026-08-22 leak call (touch `0fcf2180-…`) is why the distinction is
+  // load-bearing: the model frequently voices the handed question seconds after the
+  // hand-off (or never), and every caller turn starts after the say CALL — stamped at
+  // the call, "how has your day been going?" was persisted as answered with "Uh" and
+  // the owner's complaint became a lead's must-haves. `undefined` = never voiced: such
+  // an ordinal can receive NOTHING. Barge-in still binds forward: a caller who starts
+  // answering while the question is being spoken began their turn AFTER voicedAt.
+  // Together with `answered` this is the binding table for every caller turn.
+  const askedAt: Array<number | undefined> = job.prompts.map(() => undefined);
   const answered: boolean[] = job.prompts.map(() => false);
 
   // Committed NOW, not at hang-up and never in a shutdown hook (#2157). `reached` stays
@@ -179,62 +266,131 @@ export async function runIntakeCall(
     }
   };
 
-  for (const [i, prompt] of job.prompts.entries()) {
-    askedAt[i] = now();
-    await deps.session.say(prompt.promptText); // one at a time, awaited
-
-    // THE BINDING LOOP — the late-transcript fix. The Google plugin emits a final
-    // transcript only after the model's reply finishes generating — "seconds after the
-    // user spoke" (realtime_api.js:929–935, verbatim) — so the FIFO the seam delivers
-    // can hand this turn a straggler that answers an EARLIER question; consumed blindly
-    // (the old shape) it was persisted under the FOLLOWING question's id: silent data
-    // corruption. Every transcript is therefore bound by its TURN-START time against
-    // the asked-at table:
-    //   · no turn time            -> the open question. The conservative fallback:
-    //     without a timestamp staleness cannot be proven, and dropping would kill every
-    //     intake on a provider that omits `turnStartedAt` — this degrades to exactly
-    //     the pre-fix arrival-order behaviour, never worse.
-    //   · began at/after this ask -> the open question.
-    //   · began before this ask   -> the question that was OPEN when the turn began:
-    //     filed there iff that question is still unanswered, otherwise DROPPED. Never
-    //     misfiled. A turn from before ANY question (AMD-window speech, the reply to
-    //     the opening line) binds to nothing and is dropped — which subsumes and widens
-    //     the worker's old one-shot drop-stale point (that cleared only what AMD
-    //     consumed, and missed the eager "yes, speaking" reply the worker header used
-    //     to flag as an open first-live-call hazard).
-    const waitStarted = now();
-    let budget = ANSWER_WATCHDOG_MS;
-    let gotAnswer = false;
-    while (budget > 0) {
-      const raw = await deps.session.nextFinalTranscript(budget);
-      if (raw === null) break; // the watchdog's silence signal
-      const timed: TimedTranscript = typeof raw === "string" ? { transcript: raw } : raw;
-      if (timed.transcript.trim() === "") break; // whitespace is silence, not an answer
-      if (timed.turnStartedAt === undefined || timed.turnStartedAt >= askedAt[i]!) {
-        await commit(i, timed.transcript);
-        gotAnswer = true;
+  // THE BINDING RULE — one decision for every caller turn, shared by the answer window
+  // and the not-delivered drain below. The Google plugin emits a final transcript only
+  // after the model's reply finishes generating — "seconds after the user spoke"
+  // (realtime_api.js:929–935, verbatim) — so the FIFO the seam delivers can hand this
+  // turn a straggler that answers an EARLIER question; consumed blindly it was
+  // persisted under the FOLLOWING question's id (the original silent corruption), and
+  // bound against SAY-CALL times it still misfiled everything the model had not voiced
+  // yet (the 2026-08-22 leak call). Every transcript is therefore bound by its
+  // TURN-START time against the VOICED-at table:
+  //   · no turn time               -> the open question IFF it has a voiced time. The
+  //     conservative fallback: without a timestamp staleness cannot be proven, and
+  //     dropping would kill every intake on a provider that omits `turnStartedAt` —
+  //     this degrades to exactly the pre-fix arrival-order behaviour, never worse. But
+  //     a NEVER-VOICED question takes nothing even here: there is no question in the
+  //     caller's ear for this to be answering.
+  //   · began at/after the voicing -> the open question (barge-in included: a caller
+  //     answering over the question's own audio began after voicedAt).
+  //   · began before the voicing   -> the question that was AUDIBLE when the turn
+  //     began: the latest VOICED one at or before the turn start, filed there iff
+  //     still unanswered, otherwise DROPPED. Never misfiled. A turn from before any
+  //     voiced question (AMD-window speech, the reply to the opening line, filler
+  //     spoken at the model's own chatter — the leak call's "Uh") binds to nothing.
+  const bindTurn = async (
+    timed: TimedTranscript,
+    i: number,
+  ): Promise<"answered" | "filed" | "dropped"> => {
+    const voicedI = askedAt[i];
+    if (timed.turnStartedAt === undefined) {
+      if (voicedI === undefined || answered[i]) return "dropped";
+      await commit(i, timed.transcript);
+      return "answered";
+    }
+    if (voicedI !== undefined && timed.turnStartedAt >= voicedI && !answered[i]) {
+      await commit(i, timed.transcript);
+      return "answered";
+    }
+    let openThen = -1;
+    for (let k = i - 1; k >= 0; k -= 1) {
+      const voicedK = askedAt[k];
+      if (voicedK !== undefined && voicedK <= timed.turnStartedAt) {
+        openThen = k;
         break;
       }
-      // A straggler: its turn began before this question was asked. Find the question
-      // that was open then — the LATEST one asked at or before the turn began.
-      let openThen = -1;
-      for (let k = i - 1; k >= 0; k -= 1) {
-        if (askedAt[k]! <= timed.turnStartedAt) {
-          openThen = k;
+    }
+    if (openThen >= 0 && !answered[openThen]) {
+      await commit(openThen, timed.transcript);
+      return "filed";
+    }
+    return "dropped"; // pre-voicing speech, or an echo of a question already answered
+  };
+
+  for (const [i, prompt] of job.prompts.entries()) {
+    let gotAnswer = false;
+    let windowOpen = false;
+
+    // THE ASK LOOP — the leak call's other half. `say` now reports DELIVERY, and only
+    // a full delivery opens this question's answer window. A not-delivered attempt
+    // (cancelled before its first frame, or cut off mid-question) is RE-ASKED, bounded
+    // by MAX_QUESTION_REASKS; between attempts, any caller turn already queued is
+    // drained through `bindTurn` against VOICED times — it may answer an earlier
+    // question (the leak call's "My day's been going pretty good", which the old loop
+    // filed under "what kind of property?"), answer a PARTIALLY voiced attempt of this
+    // one, or drop. It can never bind to a never-voiced ordinal.
+    for (let attempt = 0; ; attempt += 1) {
+      const delivery = await deps.session.say(prompt.promptText); // one at a time, awaited
+      if (delivery.delivered || delivery.partial) {
+        // The EARLIEST voicing wins. A re-ask is the same question: a caller turn that
+        // began after the first (possibly cut-off) voicing is answering it, and
+        // stamping the later re-ask's time instead would shove that turn backwards
+        // onto an earlier question — a fresh misfile in the fix itself.
+        const prior = askedAt[i];
+        if (prior === undefined || delivery.voicedAt < prior) askedAt[i] = delivery.voicedAt;
+      }
+      if (delivery.delivered) {
+        windowOpen = true;
+        break;
+      }
+      // Not in the caller's ear. Drain what already arrived (timeout 0: queued turns
+      // only — the seam's watchdog contract makes 0 a pure queue read), then re-ask.
+      for (;;) {
+        const raw = await deps.session.nextFinalTranscript(0);
+        if (raw === null) break;
+        const timed: TimedTranscript = typeof raw === "string" ? { transcript: raw } : raw;
+        if (timed.transcript.trim() === "") continue; // not an answer; keep draining
+        const bound = await bindTurn(timed, i);
+        if (bound !== "dropped") consecutiveSilences = 0; // someone is talking to us
+        if (bound === "answered") {
+          // The partial voicing was answered mid-drain — re-asking a question the
+          // caller has already answered is the IVR-hostage loop. Later queue entries
+          // belong to later windows.
+          gotAnswer = true;
           break;
         }
       }
-      if (openThen >= 0 && !answered[openThen]) {
-        await commit(openThen, timed.transcript);
-        consecutiveSilences = 0; // someone is demonstrably talking to us
+      if (gotAnswer) break;
+      if (attempt >= MAX_QUESTION_REASKS) break; // exhausted: ONE silence, below
+    }
+
+    // THE ANSWER WINDOW — only over a question that is actually in the caller's ear.
+    if (windowOpen && !gotAnswer) {
+      const waitStarted = now();
+      let budget = ANSWER_WATCHDOG_MS;
+      while (budget > 0) {
+        const raw = await deps.session.nextFinalTranscript(budget);
+        if (raw === null) break; // the watchdog's silence signal
+        const timed: TimedTranscript = typeof raw === "string" ? { transcript: raw } : raw;
+        if (timed.transcript.trim() === "") break; // whitespace is silence, not an answer
+        const bound = await bindTurn(timed, i);
+        if (bound === "answered") {
+          gotAnswer = true;
+          break;
+        }
+        if (bound === "filed") {
+          consecutiveSilences = 0; // someone is demonstrably talking to us
+        }
+        budget = ANSWER_WATCHDOG_MS - (now() - waitStarted); // the deadline never resets
       }
-      // else: dropped — pre-question speech, or an echo of a question already answered.
-      budget = ANSWER_WATCHDOG_MS - (now() - waitStarted); // the deadline never resets
     }
     if (gotAnswer) {
       consecutiveSilences = 0;
     } else {
-      // The watchdog: silence advances the script instead of hanging it.
+      // The watchdog, and the re-ask bound: a silent window OR an ordinal whose every
+      // ask attempt failed to deliver counts as exactly ONE silence — the script
+      // advances instead of hanging, and MAX_CONSECUTIVE_SILENCES still ends a call
+      // where nothing lands twice in a row.
       consecutiveSilences += 1;
       if (consecutiveSilences >= MAX_CONSECUTIVE_SILENCES && i < job.prompts.length - 1) {
         break; // a dead line is not interrogated further
@@ -321,6 +477,29 @@ export interface RealtimeReplyHandle {
    *  a not-yet-done handle (speech_handle.d.ts doc), so the adapter reads it only after
    *  playout resolved. */
   exception?(): unknown;
+  /** `SpeechHandle.chatItems` (public getter, speech_handle.ts:243 in the installed
+   *  1.6.4 src) — the items THIS speech committed to the chat context. On the realtime
+   *  path the assistant `ChatMessage` is committed with playback-synchronized content,
+   *  an `interrupted` flag when playout was cut short, and — the fact the leak-call fix
+   *  is built on — `createdAt = startedSpeakingAt`, the wall-clock moment the FIRST real
+   *  audio frame of this speech reached the room (agent_activity.ts:3716–3719 sets it in
+   *  onFirstFrame; :3944–3968 builds the message and calls `_itemAdded`). A speech that
+   *  never framed forwards no text and commits NO assistant item (`if (!forwardedText)
+   *  continue;`, :3949). Optional and structural: the crm workspace never imports
+   *  `@livekit/agents`; the worker passes the real handle, fakes may omit it. */
+  chatItems?: ReadonlyArray<CommittedSpeechItem>;
+}
+
+/** The structural sliver of the library's `ChatItem` union this module reads. Every
+ *  field optional: `FunctionCall` items carry no `role`, and only assistant MESSAGES
+ *  speak for when our utterance was voiced. */
+export interface CommittedSpeechItem {
+  type?: string;
+  role?: string;
+  interrupted?: boolean;
+  /** Epoch ms. On the realtime path this is `startedSpeakingAt` — see
+   *  `RealtimeReplyHandle.chatItems`. */
+  createdAt?: number;
 }
 
 /**
@@ -339,7 +518,27 @@ export interface SpeechDeliveryObserver {
   arm(): void;
   /** Has any audio reached the room since `arm()`? */
   spoke(): boolean;
+  /** OPTIONAL, and the discriminator that keeps a barge-in from killing a live call:
+   *  has the CALLER been heard since `arm()`? A caller who speaks is demonstrably
+   *  present — the opposite of the dead line the silent-utterance guard exists to catch.
+   *  Absent on fakes and on any feed that cannot report it, in which case the guard
+   *  behaves exactly as it did before (throws). */
+  callerSpokeSinceArm?(): boolean;
+  /** OPTIONAL: WHEN (epoch ms) the first audio frame since `arm()` was observed — the
+   *  worker feeds it from the same `agent_state_changed -> 'speaking'` event that sets
+   *  `spoke()` (the event's own `createdAt`, stamped at emit). This is the FALLBACK
+   *  voiced-at only: the primary source is the committed assistant item's
+   *  `createdAt = startedSpeakingAt` on the handle (see `RealtimeReplyHandle.chatItems`),
+   *  which is the library's own first-frame clock rather than an observer of it. */
+  firstFrameAt?(): number | undefined;
 }
+
+/** How long to wait for caller evidence after a turn produced no audio, before calling
+ *  it a silent failure. NOT tunable comfort: on the 2026-08-22 live call the interrupt
+ *  arrived 23ms before the throw and the transcript of the barged-in speech did not
+ *  exist yet, so a SYNCHRONOUS check cannot see it. Short enough that a genuinely dead
+ *  line still fails fast; long enough for one caller utterance to be reported. */
+export const BARGE_IN_GRACE_MS = 1_500;
 
 /** The default for callers with no audio-state feed (the V1–V6 unit fakes): trusts
  *  playout, so the silent-failure guarantee below simply does not engage. The WORKER
@@ -401,16 +600,26 @@ export const SPEAK_WATCHDOG_MS = 30_000;
 
 /**
  * The live implementation of `ScriptedVoiceSession.say`: one approved utterance in, one
- * `generateReply` turn out. Per turn: arm the observer, generate, race playout against
- * the speak watchdog, then decide —
- *   · playout resolved AND audio left        -> normal return;
- *   · watchdog expired BUT audio left        -> normal return: the agent spoke and is
- *     merely slow (a long courteous turn must not kill the call); a truly dead call is
- *     still bounded by the answer watchdog and MAX_CONSECUTIVE_SILENCES;
+ * `generateReply` turn out, one DELIVERY OUTCOME back (the 2026-08-22 leak-call fix —
+ * resolving void let the loop believe "handed over = voiced", and the persisted rows of
+ * touch `0fcf2180-…` show what that filed). Per turn: arm the observer, generate, race
+ * playout against the speak watchdog, then decide —
+ *   · playout resolved AND audio left        -> `delivered: true` (or `partial: true`
+ *     when the committed assistant item says the utterance was cut off), with
+ *     `voicedAt` read from the LIBRARY: the assistant `ChatMessage`'s
+ *     `createdAt = startedSpeakingAt` via the public `SpeechHandle.chatItems` — never
+ *     this process's clock at the say call;
+ *   · watchdog expired BUT audio left        -> same delivered outcome: the agent spoke
+ *     and is merely slow (a long courteous turn must not kill the call); a truly dead
+ *     call is still bounded by the answer watchdog and MAX_CONSECUTIVE_SILENCES;
  *   · `exception()` returned a stashed error -> THROW it (the one path that populates
  *     the stash);
- *   · NO audio left, however the race ended  -> THROW, naming the utterance and which
- *     condition fired.
+ *   · NO audio left + caller evidence        -> `delivered: false, partial: false`: the
+ *     barge-in path — the question was never voiced, and the loop must not open its
+ *     answer window (returning void here is what let the old loop bind the barged-in
+ *     speech to a question nobody heard);
+ *   · NO audio left, no evidence             -> THROW, naming the utterance and which
+ *     condition fired (the honest death, unchanged).
  *
  * WHY THE OBSERVER — the real mechanism, precisely: `SpeechHandle._markDone(error)`
  * stashes the error and RESOLVES `doneFut`; it never rejects (speech_handle.js:299–305,
@@ -428,10 +637,11 @@ export const SPEAK_WATCHDOG_MS = 30_000;
  */
 export function realtimeScriptedSpeech(
   session: RealtimeReplySession,
-  opts?: { observer?: SpeechDeliveryObserver; watchdogMs?: number },
-): (utterance: string) => Promise<void> {
+  opts?: { observer?: SpeechDeliveryObserver; watchdogMs?: number; graceMs?: number },
+): (utterance: string) => Promise<SpeechDelivery> {
   const observer = opts?.observer ?? TRUST_PLAYOUT_OBSERVER;
   const watchdogMs = opts?.watchdogMs ?? SPEAK_WATCHDOG_MS;
+  const graceMs = opts?.graceMs ?? BARGE_IN_GRACE_MS;
   return async (utterance) => {
     // BEFORE generateReply: no window in which this turn's audio could land unobserved.
     observer.arm();
@@ -462,6 +672,36 @@ export function realtimeScriptedSpeech(
       }
     }
     if (!observer.spoke()) {
+      // 🚨 BEFORE CALLING THIS A DEATH: was the caller TALKING OVER US?
+      //
+      // 2026-08-22, on a live call with the owner: he interrupted, the scripted turn was
+      // cancelled before its first audio frame, and this guard threw and hung up on him
+      // mid-sentence. The obvious discriminator — `SpeechHandle.interrupted` — DOES NOT
+      // WORK here, and research caught that before it shipped: the plugin emits
+      // `input_speech_started` (what sets `interrupted`) only when no generateReply is
+      // pending (`realtime_api.ts:1290-1296`, `:1730-1731`, both gated on
+      // `!this.pendingGenerationFut`). The server's `interrupted:true` landed while our
+      // future was still pending, so the handle completed UN-interrupted, unerrored, and
+      // silent — byte-identical to a real death.
+      //
+      // The only evidence that separates them is the CALLER'S OWN VOICE, and it arrives
+      // late: 23ms after the interrupt there was no transcript yet. Hence a grace window
+      // rather than a synchronous check. A caller who speaks is present, which is the
+      // exact opposite of the failure this guard exists to report.
+      const callerEvidence = observer.callerSpokeSinceArm?.bind(observer);
+      if (callerEvidence !== undefined) {
+        // Barge-in: the caller is present and the question was NEVER voiced. Since the
+        // leak-call fix this is REPORTED, not swallowed — a void return here is what
+        // let the loop open an answer window on a question nobody heard, and bind the
+        // barged-in speech to it.
+        const bargedIn: SpeechDelivery = { delivered: false, partial: false };
+        const deadline = Date.now() + graceMs;
+        while (Date.now() < deadline) {
+          if (callerEvidence()) return bargedIn; // the intake loop drains their turn
+          await new Promise<void>((r) => setTimeout(r, 25));
+        }
+        if (callerEvidence()) return bargedIn;
+      }
       throw new Error(
         outcome === "playout"
           ? `utterance ${JSON.stringify(utterance)} silently failed: playout resolved ` +
@@ -471,6 +711,26 @@ export function realtimeScriptedSpeech(
             `watchdog (${watchdogMs}ms) expired and no audio ever reached the room`,
       );
     }
+    // AUDIO LEFT. WHEN it began comes from the LIBRARY, not this process's clock at the
+    // say call — the say-call stamp is the exact lie the leak call persisted. The
+    // realtime path commits the assistant ChatMessage with
+    // `createdAt = startedSpeakingAt` (the first real audio frame — verified in the
+    // installed 1.6.4 src, agent_activity.ts:3716–3719 and :3956–3968) and an
+    // `interrupted` flag when playout was cut short; a speech that never framed commits
+    // no assistant item at all. Fallbacks, in honesty order: the observer's OWN
+    // first-frame observation time (`firstFrameAt`, fed from the same event the library
+    // emits at onFirstFrame) when no assistant item carries a time; and — reachable
+    // only through fakes and the TRUST_PLAYOUT observer, never on the wired live path —
+    // the clock at resolution, which is no worse than the pre-fix stamp.
+    const assistantItems = (handle.chatItems ?? []).filter(
+      (item) => (item.type === undefined || item.type === "message") && item.role === "assistant",
+    );
+    const voicedAt =
+      assistantItems[0]?.createdAt ?? observer.firstFrameAt?.() ?? Date.now();
+    const cutOff = assistantItems.some((item) => item.interrupted === true);
+    return cutOff
+      ? { delivered: false, partial: true, voicedAt }
+      : { delivered: true, voicedAt };
   };
 }
 

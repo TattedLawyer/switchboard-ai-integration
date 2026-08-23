@@ -33,13 +33,27 @@
 // V10: a turn that began before ANY question was asked (AMD-window speech, the reply to
 //     the opening line) is dropped — this subsumes and widens the worker's old
 //     drop-stale point, which cleared only what AMD consumed.
+// V11: `say` reports DELIVERY, and the binding table is built from when each question
+//     was actually VOICED — not from when the loop handed it over. The 2026-08-22 leak
+//     call (touch `0fcf2180-…`) proved the model frequently does NOT voice the handed
+//     question at the say call — it finishes an interrupted sentence, acknowledges the
+//     caller, drains its own backlog — while every caller turn necessarily starts after
+//     the say CALL, so every utterance bound to whatever question the loop thought was
+//     open: "how has your day been going?" was persisted as answered with "Uh", and the
+//     owner's own complaint was stored as a lead's must-haves. The pins: a not-delivered
+//     question is re-asked (bounded) and NOTHING ever binds to a never-voiced ordinal; a
+//     turn that began between the hand-off and the voicing binds backward or drops; a
+//     partial (cut-off) voicing may still be answered by a turn that began after it.
 import { describe, it, expect } from "vitest";
 import type { CallJobMetadata } from "../src/call-bridge.js";
 import {
   runIntakeCall,
   ANSWER_WATCHDOG_MS,
   MAX_CONSECUTIVE_SILENCES,
+  MAX_QUESTION_REASKS,
   type IntakeDeps,
+  type SpeechDelivery,
+  type TimedTranscript,
 } from "../src/voice-agent-session.js";
 
 const JOB: CallJobMetadata = {
@@ -64,10 +78,18 @@ function fakeDeps(transcripts: Array<string | null | (() => never)>): {
   const ops: string[] = [];
   const watchdogsSeen: number[] = [];
   let i = 0;
+  // 🚨 The fake's voiced-at DIFFERS from the say-call clock on purpose (V11's vacuity
+  // guard): a fake that reports "voiced exactly when handed over" would keep every pin
+  // green even if the loop went back to stamping the say-call time — the exact defect
+  // the delivery outcome exists to kill. These transcripts carry no turn times, so the
+  // VALUE is inert here; the DIFFERENCE is the point.
+  let voicedClock = 0;
   const deps: IntakeDeps = {
     session: {
       say: async (text) => {
         ops.push(`say:${text}`);
+        voicedClock += 1_000;
+        return { delivered: true, voicedAt: voicedClock + 250 };
       },
       nextFinalTranscript: async (timeoutMs) => {
         watchdogsSeen.push(timeoutMs);
@@ -300,9 +322,11 @@ describe("V7: a mid-call death is honest — answers stand, no report is fabrica
 
 /** Like fakeDeps, but the seam carries TIMED transcripts and the loop's clock is OURS:
  *  each script entry runs when the loop asks for the next transcript and may advance the
- *  clock (simulating waited wall time). say() advances the clock 1s per utterance, so
- *  each question's asked-at is distinct and a test can place a turn precisely before or
- *  after it. */
+ *  clock (simulating waited wall time). say() advances the clock 1s per utterance and
+ *  reports the audio as having BEGUN 250ms after the hand-off — never AT it (the V11
+ *  vacuity guard: a fake whose voiced-at equals the say-call time would vouch for the
+ *  pre-fix stamping) — so each question's voiced-at is distinct and a test can place a
+ *  turn precisely before or after it. */
 function timedFakeDeps(
   script: Array<
     (clk: { t: number }) => { transcript: string; turnStartedAt?: number } | string | null
@@ -315,7 +339,9 @@ function timedFakeDeps(
     session: {
       say: async (text) => {
         ops.push(`say:${text}`);
+        const voicedAt = clk.t + 250; // audio began AFTER the hand-off, never at it
         clk.t += 1_000;
+        return { delivered: true, voicedAt };
       },
       nextFinalTranscript: async () => {
         const step = script[i++];
@@ -383,7 +409,7 @@ describe("V8: a late transcript is bound by turn-start time — never filed agai
 
   it("in-order answers with turn times still flow exactly as before", async () => {
     const { deps, ops } = timedFakeDeps([
-      (clk) => ({ transcript: "around 8 million", turnStartedAt: clk.t }), // t=2000 ≥ asked(1000)
+      (clk) => ({ transcript: "around 8 million", turnStartedAt: clk.t }), // t=2000 ≥ voiced(1250)
       (clk) => ({ transcript: "before Christmas", turnStartedAt: clk.t }),
     ]);
 
@@ -411,7 +437,7 @@ describe("V8: a late transcript is bound by turn-start time — never filed agai
     const { deps, ops } = timedFakeDeps([
       (clk) => ({ transcript: "around 8 million", turnStartedAt: clk.t }), // q1 answered
       (clk) => {
-        clk.t += 200; // q2's wait: an echo from q1's window (asked t=1000, q2 asked t=2000)
+        clk.t += 200; // q2's wait: an echo from q1's window (q1 voiced 1250, q2 voiced 2250)
         return { transcript: "eight million I said", turnStartedAt: 1_500 };
       },
       (clk) => ({ transcript: "before Christmas", turnStartedAt: clk.t }), // q2's real answer
@@ -455,7 +481,7 @@ describe("V10: a turn that began before ANY question is dropped — the drop-sta
   it("the reply to the opening line is not an answer to question 1", async () => {
     const { deps, ops } = timedFakeDeps([
       (clk) => {
-        clk.t += 100; // q1's wait: the opening-line reply lands (turn began t=400 < q1 asked t=1000)
+        clk.t += 100; // q1's wait: the opening-line reply lands (turn began t=400 < q1 voiced t=1250)
         return { transcript: "yes, speaking", turnStartedAt: 400 };
       },
       (clk) => ({ transcript: "around 8 million", turnStartedAt: clk.t }), // q1's real answer
@@ -472,5 +498,364 @@ describe("V10: a turn that began before ANY question is dropped — the drop-sta
     expect(report.answersPersisted).toBe(2);
     expect(report.reachedOrdinal).toBe(2);
     expect(report.conversation).toBe("identity_not_asked_complete");
+  });
+});
+
+// ═══ V11: DELIVERY-OUTCOME BINDING (the 2026-08-22 leak-call fix) ═══════════════════════
+//
+// The proven defect, from the persisted rows of touch `0fcf2180-…`: `askedAt[i]` was
+// stamped BEFORE `say`, but the model frequently voices the handed question seconds
+// later or never — so "how has your day been going?" was answered with "Uh", and the
+// owner's complaint ("I'm not giving the answer to questions…") was stored as a lead's
+// must-haves. `say` now reports DELIVERY (`SpeechDelivery`), the binding table holds
+// VOICED times, a not-delivered question is re-asked (bounded by MAX_QUESTION_REASKS),
+// and a never-voiced ordinal can never receive an answer.
+
+/** The V11 seam: say outcomes are scripted per call (and may queue caller turns, the way
+ *  a barge-in leaves a final transcript behind), and nextFinalTranscript distinguishes a
+ *  DRAIN (timeout 0: only what is already queued) from an answer WINDOW (timeout > 0:
+ *  queued turns first, then the window script) — the same contract the worker's queue
+ *  implements over `conversation_item_added`. */
+function deliveryFakeDeps(opts: {
+  says: Array<(clk: { t: number }, queue: TimedTranscript[]) => SpeechDelivery>;
+  windows: Array<(clk: { t: number }) => TimedTranscript | string | null>;
+}) {
+  const clk = { t: 0 };
+  const queue: TimedTranscript[] = [];
+  const ops: string[] = [];
+  let s = 0;
+  let w = 0;
+  const deps: IntakeDeps = {
+    session: {
+      say: async (text) => {
+        ops.push(`say:${text}`);
+        const step = opts.says[s++];
+        if (!step) throw new Error(`unscripted say #${s}: ${text}`);
+        const out = step(clk, queue);
+        clk.t += 1_000;
+        return out;
+      },
+      nextFinalTranscript: async (timeoutMs) => {
+        const queued = queue.shift();
+        if (queued !== undefined) return queued;
+        if (timeoutMs <= 0) return null; // a DRAIN sees only what already arrived
+        const step = opts.windows[w++];
+        return step ? step(clk) : null;
+      },
+    },
+    persistAnswer: async (questionId, value) => {
+      ops.push(`persist:${questionId}:${value}`);
+    },
+    reached: async (ordinal) => {
+      ops.push(`reached:${ordinal}`);
+    },
+    publishReport: async (report) => {
+      ops.push(`report:${report.amdResult}:${String(report.conversation)}`);
+    },
+    hangUp: async () => {
+      ops.push("hangUp");
+    },
+    now: () => clk.t,
+  };
+  return { deps, ops };
+}
+
+/** The normal outcome: audio began 250ms after the hand-off — never AT it. */
+const voiced = (clk: { t: number }): SpeechDelivery => ({
+  delivered: true,
+  voicedAt: clk.t + 250,
+});
+/** The silent-return barge-in outcome: no audio at all, caller evidence in the grace
+ *  window — the question was never voiced. */
+const notDelivered = (): SpeechDelivery => ({ delivered: false, partial: false });
+
+const says = (ops: string[], text: string) => ops.filter((o) => o === `say:${text}`);
+
+describe("V11: a not-delivered question is re-asked, and its ordinal receives NOTHING", () => {
+  // mutation: stamp askedAt from the say-call clock (the pre-fix shape) -> the queued
+  //           turn lands on q2, the never-voiced ordinal.
+  it("a caller turn queued behind a failed delivery binds to the prior VOICED question — never to the ordinal that was never voiced", async () => {
+    const { deps, ops } = deliveryFakeDeps({
+      says: [
+        voiced, // opening
+        voiced, // q1 — voiced 1250, then silence (its answer arrives late, below)
+        (clk, queue) => {
+          // q2's turn NEVER frames: the caller was already talking (turn began t=5000,
+          // well after q1 was voiced) — exactly the shape that filed "My day's been
+          // gone pretty good" under "what kind of property?" on the leak call.
+          queue.push({ transcript: "we're pre-approved up to 9 million", turnStartedAt: 5_000 });
+          return notDelivered();
+        },
+        voiced, // q2's re-ask lands normally
+      ],
+      windows: [
+        () => null, // q1's window: watchdog silence (the answer is still generating)
+        (clk) => ({ transcript: "before Christmas", turnStartedAt: clk.t }),
+      ],
+    });
+
+    const report = await runIntakeCall(JOB, "human", deps);
+
+    // The straggler files against q1 — the question that was VOICED and unanswered when
+    // the turn began — and q2 gets only its own post-re-ask answer.
+    expect(ops.filter((o) => o.startsWith("persist:"))).toEqual([
+      "persist:q1:we're pre-approved up to 9 million",
+      "persist:q2:before Christmas",
+    ]);
+    expect(ops).not.toContain("persist:q2:we're pre-approved up to 9 million");
+    expect(says(ops, "When are you hoping to move?")).toHaveLength(2); // asked, re-asked
+    expect(report.answersPersisted).toBe(2);
+    expect(report.conversation).toBe("identity_not_asked_complete");
+  });
+
+  it("a queued turn from before ANY voiced question is dropped on the drain — never held for the re-ask", async () => {
+    const { deps, ops } = deliveryFakeDeps({
+      says: [
+        voiced, // opening
+        (clk, queue) => {
+          // q1 never frames; the queued turn began at t=300 — before anything was voiced
+          queue.push({ transcript: "hello? hello?", turnStartedAt: 300 });
+          return notDelivered();
+        },
+        voiced, // q1's re-ask
+        voiced, // q2
+      ],
+      windows: [
+        (clk) => ({ transcript: "around 8 million", turnStartedAt: clk.t }),
+        (clk) => ({ transcript: "before Christmas", turnStartedAt: clk.t }),
+      ],
+    });
+
+    const report = await runIntakeCall(JOB, "human", deps);
+
+    expect(ops.join("|")).not.toContain("hello? hello?");
+    expect(ops.filter((o) => o.startsWith("persist:"))).toEqual([
+      "persist:q1:around 8 million",
+      "persist:q2:before Christmas",
+    ]);
+    expect(says(ops, "What budget range are you working with?")).toHaveLength(2);
+    expect(report.conversation).toBe("identity_not_asked_complete");
+  });
+});
+
+describe("V11: a turn that began between the hand-off and the voicing does NOT bind to the open question", () => {
+  // THE "Uh" CASE, verbatim from the leak call: the loop handed q1 over at t=1000, the
+  // model spent 250ms acknowledging before the question's audio began (t=1250), and the
+  // caller's filler ("Uh") started at t=1100 — a reply to the MODEL'S chatter, not to a
+  // question nobody had heard yet. Stamped at the say call it binds to q1; stamped at
+  // the voicing it binds to nothing.
+  // mutation: askedAt[i] from the say-call clock -> "Uh" persists under q1.
+  it('"Uh" (turn began before the question was voiced) is dropped; the real answer binds', async () => {
+    const { deps, ops } = deliveryFakeDeps({
+      says: [voiced, voiced, voiced], // opening, q1 (voiced 1250), q2
+      windows: [
+        () => ({ transcript: "Uh", turnStartedAt: 1_100 }), // hand-off 1000 < 1100 < voiced 1250
+        (clk) => ({ transcript: "around 8 million", turnStartedAt: clk.t }), // ≥ 1250
+        (clk) => ({ transcript: "before Christmas", turnStartedAt: clk.t }),
+      ],
+    });
+
+    const report = await runIntakeCall(JOB, "human", deps);
+
+    expect(ops.join("|")).not.toContain("Uh");
+    expect(ops.filter((o) => o.startsWith("persist:"))).toEqual([
+      "persist:q1:around 8 million",
+      "persist:q2:before Christmas",
+    ]);
+    expect(report.conversation).toBe("identity_not_asked_complete");
+  });
+});
+
+describe("V11: re-asks are bounded — exhaustion is ONE silence, and the report stays honest", () => {
+  // mutation: re-ask forever -> this test hangs (the unscripted-say throw catches it);
+  // mutation: count each failed delivery as its own silence -> q2 is never asked.
+  it("three failed deliveries on q1 = the ask + MAX_QUESTION_REASKS, ONE silence, q2 still asked, report cut_off", async () => {
+    const { deps, ops } = deliveryFakeDeps({
+      says: [
+        voiced, // opening
+        notDelivered, // q1 hand-off never voiced…
+        notDelivered, // …re-ask 1…
+        notDelivered, // …re-ask 2 — exhausted
+        voiced, // q2 proceeds: exhaustion counted ONE silence, not two
+      ],
+      windows: [(clk) => ({ transcript: "before Christmas", turnStartedAt: clk.t })],
+    });
+
+    const report = await runIntakeCall(JOB, "human", deps);
+
+    expect(MAX_QUESTION_REASKS).toBe(2);
+    expect(says(ops, "What budget range are you working with?")).toHaveLength(
+      1 + MAX_QUESTION_REASKS,
+    );
+    // ONE silence for the whole exhausted ordinal — a second would have ended the call
+    // (MAX_CONSECUTIVE_SILENCES = 2) before q2 was ever asked.
+    expect(says(ops, "When are you hoping to move?")).toHaveLength(1);
+    expect(ops.filter((o) => o.startsWith("persist:"))).toEqual([
+      "persist:q2:before Christmas",
+    ]);
+    // q1 was never voiced and never answered: the claim is cut_off, never a fabricated
+    // complete — and the call ended by OUR bookkeeping, not a hang.
+    expect(report.conversation).toBe("identity_not_asked_cut_off");
+    expect(report.answersPersisted).toBe(1);
+    expect(report.reachedOrdinal).toBe(2);
+  });
+});
+
+describe("V11: a PARTIAL voicing (cut off mid-question) keeps its voiced time", () => {
+  // mutation: treat partial as never-voiced -> the post-voicing answer is dropped and
+  //           q1 is pointlessly re-asked; mutation: askedAt from the say call -> the
+  //           mid-generation noise persists under q1.
+  it("a turn that began AFTER the partial voicing answers it — one that began before drops — no re-ask needed", async () => {
+    const { deps, ops } = deliveryFakeDeps({
+      says: [
+        voiced, // opening
+        (clk, queue) => {
+          // q1's audio began (t=1250) but was cut off; the caller had started filler at
+          // t=1100 (before the voicing — binds to nothing) and then answered at t=1600
+          // (after it — an answer to the question they heard begin).
+          queue.push({ transcript: "sorry, go ahead", turnStartedAt: 1_100 });
+          queue.push({ transcript: "around 8 million", turnStartedAt: 1_600 });
+          return { delivered: false, partial: true, voicedAt: clk.t + 250 };
+        },
+        voiced, // q2
+      ],
+      windows: [(clk) => ({ transcript: "before Christmas", turnStartedAt: clk.t })],
+    });
+
+    const report = await runIntakeCall(JOB, "human", deps);
+
+    expect(ops.join("|")).not.toContain("sorry, go ahead");
+    expect(ops.filter((o) => o.startsWith("persist:"))).toEqual([
+      "persist:q1:around 8 million",
+      "persist:q2:before Christmas",
+    ]);
+    // The caller already answered the cut-off question — re-asking it would be the IVR
+    // loop the owner refuses to ship.
+    expect(says(ops, "What budget range are you working with?")).toHaveLength(1);
+    expect(report.conversation).toBe("identity_not_asked_complete");
+  });
+
+  it("a partial with no answer after its voicing IS re-asked — and the earliest voiced time keeps binding", async () => {
+    const { deps, ops } = deliveryFakeDeps({
+      says: [
+        voiced, // opening
+        (clk, queue) => {
+          // cut off with only PRE-voicing speech on the queue (the opening-line reply)
+          queue.push({ transcript: "yes, speaking", turnStartedAt: 400 });
+          return { delivered: false, partial: true, voicedAt: clk.t + 250 };
+        },
+        voiced, // the re-ask delivers
+        voiced, // q2
+      ],
+      windows: [
+        // The answer's turn began at the current clock — after the FIRST (partial)
+        // voicing, which is the time that must keep binding.
+        (clk) => ({ transcript: "around 8 million", turnStartedAt: clk.t }),
+        (clk) => ({ transcript: "before Christmas", turnStartedAt: clk.t }),
+      ],
+    });
+
+    const report = await runIntakeCall(JOB, "human", deps);
+
+    expect(ops.join("|")).not.toContain("yes, speaking");
+    expect(says(ops, "What budget range are you working with?")).toHaveLength(2);
+    expect(ops.filter((o) => o.startsWith("persist:"))).toEqual([
+      "persist:q1:around 8 million",
+      "persist:q2:before Christmas",
+    ]);
+    expect(report.conversation).toBe("identity_not_asked_complete");
+  });
+});
+
+describe("V11: the leak call, replayed — zero commits against never-voiced ordinals", () => {
+  // The timeline of touch `0fcf2180-…`, reconstructed from its persisted rows: the model
+  // voiced q1 late (after draining its own backlog), never voiced q2 on the hand-off
+  // (it was busy being acknowledged), and never voiced q3/q4 at all while the caller
+  // kept talking — filler, a late real answer, noise, and finally the owner's complaint.
+  // The OLD loop persisted: q1="Uh", q2=the answer to q1, q3=noise, q4=the complaint.
+  // mutation (THE proving one): revert `askedAt[i] = <voiced time>` to the say-call
+  //          clock -> "Uh" binds to q1 again and this test goes red.
+  const REPLAY_JOB: CallJobMetadata = {
+    ...JOB,
+    prompts: [
+      { id: "qday", questionKey: "rapport", promptText: "How has your day been going?" },
+      { id: "qprop", questionKey: "property", promptText: "What kind of property are you looking for?" },
+      { id: "qbud", questionKey: "budget", promptText: "What budget range are you working with?" },
+      { id: "qmust", questionKey: "musts", promptText: "Any must-haves?" },
+    ],
+  };
+
+  it("every caller turn lands on the question that was VOICED when it began — or nowhere", async () => {
+    const { deps, ops } = deliveryFakeDeps({
+      says: [
+        voiced, // opening
+        // qday handed over at t=1000; the model acknowledged first and the question's
+        // audio only began at t=3500 — delivered, but LATE.
+        (clk) => ({ delivered: true, voicedAt: clk.t + 2_500 }),
+        (clk, queue) => {
+          // qprop never frames: the caller was mid-answer to qday (turn began t=4000,
+          // after qday's late voicing) — the turn the old loop filed under qprop.
+          queue.push({
+            transcript: "My day's been going pretty good. How about yours?",
+            turnStartedAt: 4_000,
+          });
+          return notDelivered();
+        },
+        voiced, // qprop's re-ask delivers
+        (clk, queue) => {
+          // qbud never frames, three times over, while cross-talk noise arrives —
+          // its turn began after qprop was voiced AND answered, so it belongs nowhere.
+          queue.push({ transcript: "我一定要", turnStartedAt: clk.t });
+          return notDelivered();
+        },
+        notDelivered, // qbud re-ask 1
+        notDelivered, // qbud re-ask 2 — exhausted, one silence
+        (clk, queue) => {
+          // qmust never frames either; the owner's complaint arrives — the row the old
+          // loop persisted as a lead's must-haves.
+          queue.push({
+            transcript: "I'm not giving the answer to questions, I'm asking why you're calling.",
+            turnStartedAt: clk.t,
+          });
+          return notDelivered();
+        },
+        notDelivered, // qmust re-ask 1
+        notDelivered, // qmust re-ask 2 — exhausted, second silence, end of script
+      ],
+      windows: [
+        // qday's answer window: the caller's filler began at t=1200 — BEFORE qday's
+        // late voicing at 3500 — a reply to the model's chatter, not to the question.
+        () => ({ transcript: "Uh", turnStartedAt: 1_200 }),
+        () => null, // then watchdog silence (qday's real answer is still generating)
+        // qprop's post-re-ask window: a real answer, begun after the re-ask's voicing
+        (clk) => ({ transcript: "a two-bedroom condo in Makati", turnStartedAt: clk.t }),
+      ],
+    });
+
+    const report = await runIntakeCall(REPLAY_JOB, "human", deps);
+
+    // The two rows that are TRUE — the late answer re-bound to the question it answers,
+    // and the re-asked question's own answer — and NOTHING else. In particular: zero
+    // commits against qbud and qmust, the ordinals whose audio never existed.
+    expect(ops.filter((o) => o.startsWith("persist:"))).toEqual([
+      "persist:qday:My day's been going pretty good. How about yours?",
+      "persist:qprop:a two-bedroom condo in Makati",
+    ]);
+    expect(ops.join("|")).not.toContain("persist:qday:Uh");
+    expect(ops.filter((o) => o.startsWith("persist:qbud"))).toEqual([]);
+    expect(ops.filter((o) => o.startsWith("persist:qmust"))).toEqual([]);
+    expect(ops.join("|")).not.toContain("我一定要");
+    expect(ops.join("|")).not.toContain("not giving the answer");
+
+    // And the report is the honest one: 2 of 4 answered, cut_off — never the
+    // normal-shaped `complete` the earlier call (touch `8b40d0d1-…`) faked while being
+    // off-by-one throughout.
+    expect(report).toEqual({
+      v: 1,
+      amdResult: "human",
+      conversation: "identity_not_asked_cut_off",
+      answersPersisted: 2,
+      reachedOrdinal: 2,
+    });
   });
 });

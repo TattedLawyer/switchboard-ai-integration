@@ -58,7 +58,13 @@
 // dropped; never against the question currently waiting — live in
 // `voice-agent-session.ts`'s intake loop, where the pins can see them. This closed the
 // old eager-speaker hazard ("yes, speaking" landing as question 1's answer) and the
-// late-straggler misfile; residual tuning on real calls goes in the session seam.
+// late-straggler misfile. The 2026-08-22 leak call (touch `0fcf2180-…`) then proved the
+// OTHER side of the comparison was still a lie: asked-at was stamped when the loop
+// handed the question over, but the model often voices it seconds later or never — so
+// `say` now reports DELIVERY and the loop binds against when each question actually
+// REACHED THE CALLER'S EAR (`SpeechHandle.chatItems` -> assistant `createdAt =
+// startedSpeakingAt`); a never-voiced question is re-asked, bounded, and can receive
+// no answer at all. Decisions in voice-agent-session.ts; this file only feeds events.
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { RoomServiceClient } from "livekit-server-sdk";
@@ -193,10 +199,41 @@ export default defineAgent({
       // the decision lives in voice-agent-session.ts; this is only the event feed):
       // `agent_state_changed -> 'speaking'` is emitted from onFirstFrame, the first
       // real audio frame reaching the room — the one signal a generation that died
-      // before producing sound can never emit.
+      // before producing sound can never emit. Since the 2026-08-22 leak-call fix the
+      // feed also records WHEN: `firstFrameAtSinceArm` is the FALLBACK voiced-at the
+      // adapter uses when the committed assistant item carries no time — the primary
+      // source is `SpeechHandle.chatItems` (createdAt = startedSpeakingAt), which the
+      // adapter reads off the real handle itself. `ev.createdAt` is stamped at emit
+      // (events.ts:86, `Date.now()` — `_updateAgentState` does not forward the frame's
+      // own startTime into the event, agent_session.ts:1717), which is synchronous with
+      // onFirstFrame: an observation of the voicing, not the library's clock for it.
       let audioLeftSinceArm = false;
+      let firstFrameAtSinceArm: number | undefined;
       session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
-        if (ev.newState === "speaking") audioLeftSinceArm = true;
+        if (ev.newState === "speaking") {
+          audioLeftSinceArm = true;
+          if (firstFrameAtSinceArm === undefined) firstFrameAtSinceArm = ev.createdAt;
+        }
+      });
+
+      // THE OTHER HALF OF THE SAME GUARD (2026-08-22): evidence the CALLER spoke since
+      // the turn was armed. A turn that produced no audio is a death ONLY if the caller
+      // was also silent; if they were talking over us it is a barge-in, and throwing
+      // hangs up on a present, engaged human — which is exactly what happened to the
+      // owner mid-sentence. Fed from the same user-item stream the answer loop uses, so
+      // it sees a caller turn as soon as the plugin reports one. The DECISION (grace
+      // window, what counts) lives in voice-agent-session.ts; this is only the feed.
+      let callerSpokeSinceArm = false;
+      // 🚨 THE INTERIM STREAM, NOT `ConversationItemAdded`. The user-item event above
+      // fires only on the FINAL transcript, which the plugin withholds until the model's
+      // reply has finished generating — seconds after the caller actually spoke, and far
+      // too late to save a turn that is about to be called a death. `UserInputTranscribed`
+      // streams FRAGMENTS as they arrive (`realtime_api.ts:1701-1716`), which is the
+      // earliest evidence this stack can give that a human is talking. It keeps flowing
+      // even in the window where the plugin suppresses `input_speech_started` — the very
+      // window that killed the 2026-08-22 call — which is what makes it the right feed.
+      session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
+        if (ev.transcript.trim() !== "") callerSpokeSinceArm = true;
       });
 
       // BOUND TO THE CALLEE (2026-08-21 live defect 1): `startSessionBoundToCallee`
@@ -254,8 +291,12 @@ export default defineAgent({
           observer: {
             arm: () => {
               audioLeftSinceArm = false;
+              firstFrameAtSinceArm = undefined;
+              callerSpokeSinceArm = false;
             },
             spoke: () => audioLeftSinceArm,
+            callerSpokeSinceArm: () => callerSpokeSinceArm,
+            firstFrameAt: () => firstFrameAtSinceArm,
           },
         }),
         nextFinalTranscript: async (timeoutMs) => {

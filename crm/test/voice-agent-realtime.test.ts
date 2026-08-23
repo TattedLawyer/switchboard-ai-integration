@@ -39,6 +39,12 @@
 //       `awaitCallAnswered`, which throws rather than hang a never-answered job), and
 //       `calleeAmdOptions()` raises `detectionTimeoutMs` as the backstop for a gate
 //       that races or a carrier that feeds early media.
+//   V9 (2026-08-23, the leak-call fix — touch `0fcf2180-…`): `say` reports DELIVERY.
+//       The voiced-at time comes from the LIBRARY — the assistant `ChatMessage` the
+//       realtime path commits with `createdAt = startedSpeakingAt` and an `interrupted`
+//       flag (installed 1.6.4 src, agent_activity.ts:3956–3968, reached via the public
+//       `SpeechHandle.chatItems`, speech_handle.ts:243) — never from our clock at the
+//       say call, which is exactly the stamp that filed "Uh" as a persisted answer.
 import { describe, it, expect, vi } from "vitest";
 import { CALLEE_PARTICIPANT_IDENTITY, mapAmdCategory } from "../src/call-bridge.js";
 import * as bridge from "../src/call-bridge.js";
@@ -174,7 +180,11 @@ describe("V1: the session is bound to the callee before anything is heard", () =
 describe("V2: the loop speaks via generateReply — never say — and awaits completion", () => {
   // mutation: implement realtimeScriptedSpeech over session.say(text) -> red (the
   //           tripwire throws defect 2's exact error).
-  it("one utterance = one generateReply carrying the approved words verbatim; say is never touched", async () => {
+  // NOTE (2026-08-23, the delivery fix): the invariant is one SAY CALL = one
+  // generateReply. A re-asked question is legitimately TWO generateReply turns — but
+  // that is the LOOP calling say twice (voice-agent-session.test.ts V11), never this
+  // adapter fanning out.
+  it("one say call = one generateReply carrying the approved words verbatim; say is never touched", async () => {
     const { session, instructions, sayCalls } = fakeRealtimeSession();
     const speak = realtimeScriptedSpeech(session);
 
@@ -310,8 +320,39 @@ describe("V6: per-turn persistence — a death after 2 of 3 answers leaves those
       "persist:q2:before Christmas",
     ]);
     expect(ops.filter((o) => o.startsWith("report:"))).toEqual([]);
-    expect(ops).not.toContain("hangUp"); // the hangup path is the transport's reconcile,
-    // never a fabricated normal ending
+    // 🔴 THIS PIN WAS INVERTED ON 2026-08-22, AND A REAL PERSON PAID FOR IT.
+    // It used to assert `not.toContain("hangUp")`, reasoning that "the hangup path is
+    // the transport's reconcile, never a fabricated normal ending". That conflated two
+    // different things: publishing a REPORT (which would fabricate an outcome, and is
+    // still forbidden — see the assertion above) and HANGING UP THE PHONE (which is
+    // simple courtesy to whoever is holding it).
+    // On the live call the owner was left listening to silence until he gave up,
+    // because nothing hung up after the throw. The transport polls for a report for
+    // SIXTEEN MINUTES and cannot tell "call in progress" from "worker corpse in the
+    // room" — it only noticed when he hung up himself.
+    // The transport's own rule 2 already had the right shape: "cleanup, THEN a typed
+    // throw". Cleanup-then-throw IS the honest death; the worker was the one party not
+    // honouring it. No report, no invented disposition, proposal still visibly stuck for
+    // a human — and the line released.
+    // mutation: drop the hangUp from runIntakeCall's failure path -> red.
+    expect(ops.filter((o) => o === "hangUp")).toEqual(["hangUp"]);
+  });
+
+  it("a hangUp that itself fails never masks the original error", async () => {
+    // The failure being reported is the one worth keeping. A courtesy hangup that
+    // throws on the way out must not become the error a human debugs.
+    const { session } = fakeRealtimeSession();
+    const { deps, ops } = realtimeDeps(session, [
+      () => {
+        throw new Error("the call dropped on question one");
+      },
+    ]);
+    deps.hangUp = async () => {
+      throw new Error("deleteRoom exploded");
+    };
+
+    await expect(runIntakeCall(JOB3, "human", deps)).rejects.toThrow(/dropped on question one/);
+    expect(ops.filter((o) => o.startsWith("report:"))).toEqual([]);
   });
 });
 
@@ -368,8 +409,15 @@ describe("V7: an utterance that produced NO AUDIO throws — silence is never fa
       },
     });
 
-    await expect(speak("What budget range are you working with?")).resolves.toBeUndefined();
-    await expect(speak("When are you hoping to move?")).resolves.toBeUndefined();
+    // Since the 2026-08-22 leak-call fix, say resolves to a DELIVERY outcome — asserting
+    // `toBeUndefined()` here would pin the old void contract that let the loop stamp
+    // asked-at from its own clock.
+    await expect(speak("What budget range are you working with?")).resolves.toMatchObject({
+      delivered: true,
+    });
+    await expect(speak("When are you hoping to move?")).resolves.toMatchObject({
+      delivered: true,
+    });
     expect(instructions).toHaveLength(2);
     expect(arms).toBe(2); // once per utterance, never fewer
   });
@@ -396,10 +444,10 @@ describe("V7: an utterance that produced NO AUDIO throws — silence is never fa
         },
       });
 
-      let outcome: "resolved" | "rejected" | null = null;
+      let outcome: unknown = null;
       const p = speak("Which areas are you considering?").then(
-        () => {
-          outcome = "resolved";
+        (delivery) => {
+          outcome = delivery;
         },
         () => {
           outcome = "rejected";
@@ -407,7 +455,9 @@ describe("V7: an utterance that produced NO AUDIO throws — silence is never fa
       );
       await vi.advanceTimersByTimeAsync(SPEAK_WATCHDOG_MS);
       await p;
-      expect(outcome).toBe("resolved");
+      // Slow, not dead — and since the delivery fix, REPORTED as delivered (audio left;
+      // no committed item on this fake, so the voiced-at falls back — see V9).
+      expect(outcome).toMatchObject({ delivered: true });
     } finally {
       vi.useRealTimers();
     }
@@ -484,9 +534,13 @@ describe("V7: an utterance that produced NO AUDIO throws — silence is never fa
 
     await expect(runIntakeCall(JOB3, "human", deps)).rejects.toThrow(/no audio|never sp|silently/i);
 
-    // Nothing was fabricated: no report, no hangup, no answers — the transport times out
-    // on the missing report and the proposal stays visibly `executing` for reconcile.
-    expect(ops).toEqual([]);
+    // Nothing is FABRICATED — no report, no answers — and the proposal stays visibly
+    // `executing` for reconcile. But the line IS released: leaving a real person holding
+    // a silent phone is not honesty, it is just rudeness with good paperwork. (This
+    // assertion read `toEqual([])` until 2026-08-22, when a live call proved the cost.)
+    expect(ops.filter((o) => o.startsWith("report:"))).toEqual([]);
+    expect(ops.filter((o) => o.startsWith("persist:"))).toEqual([]);
+    expect(ops).toEqual(["hangUp"]);
   });
 });
 
@@ -520,6 +574,85 @@ describe("V0: the agent never invents an identity", () => {
     // `setup.systemInstruction` on EVERY call, and long system prompts are the reported
     // condition for Gemini 2.5 over SIP reciting them to the caller.
     expect(INTAKE_INSTRUCTIONS.length).toBeLessThan(1_200);
+  });
+});
+
+describe("V7b: a caller who BARGES IN is not a silent failure", () => {
+  // 🔴 2026-08-22, KILLED A LIVE CALL WITH THE OWNER ON THE LINE. He said "Uh, can I ask
+  // you—", the agent yielded ("Sure, go ahead."), and when he spoke again the next
+  // scripted turn was cancelled BEFORE its first audio frame. No audio ever reached the
+  // room, so the silent-utterance guard threw and the call died mid-sentence.
+  //
+  // 🚨 THE OBVIOUS FIX DOES NOT WORK, AND RESEARCH CAUGHT IT BEFORE IT SHIPPED: checking
+  // `SpeechHandle.interrupted` would NOT have fired here. The plugin emits
+  // `input_speech_started` (which is what sets `interrupted`) ONLY when no generateReply
+  // is pending — `realtime_api.ts:1290-1296` and `:1730-1731` both gate on
+  // `!this.pendingGenerationFut`. On the live call the server's `interrupted:true`
+  // arrived 1.0s AFTER our generateReply was issued and while that future was still
+  // pending, so the interrupt never propagated: the handle completed UN-interrupted,
+  // with no stashed error and zero audio. Indistinguishable, at that instant, from a
+  // genuine silent death.
+  //
+  // So the discriminator cannot be the handle — it must be EVIDENCE THAT THE CALLER
+  // SPOKE. That evidence arrives late (the transcript of the barged-in speech did not
+  // exist yet 23ms after the interrupt), which is why a GRACE WINDOW is required rather
+  // than a synchronous check.
+  //
+  // The honesty property is preserved exactly where it matters: no audio AND no caller
+  // evidence still throws, still publishes no report.
+  const utterance = "Have you been working with anyone else on the search?";
+
+  function handleFake() {
+    return { waitForPlayout: async () => {} };
+  }
+
+  it("no audio + caller spoke during the grace window -> NOT a failure, the turn yields", async () => {
+    let armed = false;
+    let callerSpoke = false;
+    const say = vas.realtimeScriptedSpeech(
+      { generateReply: () => handleFake() },
+      {
+        observer: {
+          arm: () => { armed = true; callerSpoke = false; },
+          spoke: () => false, // the agent never got a frame out
+          callerSpokeSinceArm: () => callerSpoke,
+        },
+        graceMs: 40,
+      },
+    );
+    // the caller's transcript lands mid-grace, exactly as on the live call
+    setTimeout(() => { callerSpoke = true; }, 10);
+    // Since the delivery fix this path REPORTS what happened instead of returning void:
+    // no audio ever framed, so the loop must not open this question's answer window —
+    // `delivered: false, partial: false` is the "never voiced" signal the binding table
+    // needs (voice-agent-session.test.ts V11).
+    await expect(say(utterance)).resolves.toEqual({ delivered: false, partial: false });
+    expect(armed).toBe(true);
+  });
+
+  // mutation: return `true` unconditionally from the grace check -> this test goes red.
+  it("no audio + NO caller evidence still THROWS — the honesty property is intact", async () => {
+    const say = vas.realtimeScriptedSpeech(
+      { generateReply: () => handleFake() },
+      {
+        observer: {
+          arm: () => {},
+          spoke: () => false,
+          callerSpokeSinceArm: () => false,
+        },
+        graceMs: 20,
+      },
+    );
+    await expect(say(utterance)).rejects.toThrow(/silently failed/i);
+  });
+
+  it("an observer with no caller-evidence signal behaves exactly as before — throws", async () => {
+    // Back-compat: the grace window is only consulted when the feed exists.
+    const say = vas.realtimeScriptedSpeech(
+      { generateReply: () => handleFake() },
+      { observer: { arm: () => {}, spoke: () => false }, graceMs: 20 },
+    );
+    await expect(say(utterance)).rejects.toThrow(/silently failed/i);
   });
 });
 
@@ -617,5 +750,79 @@ describe("V8: AMD's detection budget cannot burn during ringback", () => {
         throw new Error("Participant phone-callee disconnected while waiting for sip.callStatus");
       }, 5_000),
     ).rejects.toThrow(/disconnected/);
+  });
+});
+
+
+describe("V9: say reports DELIVERY — the voiced-at time is the library's, never ours", () => {
+  // The leak call's mechanism (touch `0fcf2180-…`): the loop stamped asked-at when it
+  // CALLED say, but the model voiced the question later or never — so every caller turn
+  // (all of which begin after the say call) bound to whatever question the loop thought
+  // was open. The truthful timestamp exists inside the library: the realtime path
+  // commits an assistant ChatMessage with `createdAt = startedSpeakingAt` (the first
+  // real audio frame) and an `interrupted` flag when playout was cut short, reachable
+  // via the public `SpeechHandle.chatItems` — and a speech that never framed commits NO
+  // assistant item at all (installed 1.6.4 src, agent_activity.ts:3944–3968: the commit
+  // is skipped without forwarded text).
+
+  // mutation: stamp voicedAt from Date.now() instead of the chat item -> red (the pin's
+  //           createdAt is a fixed epoch our clock can never produce).
+  it("a completed turn reports delivered with the committed assistant item's createdAt", async () => {
+    const session = {
+      generateReply: () => ({
+        waitForPlayout: () => Promise.resolve(),
+        chatItems: [
+          // the handle also carries non-assistant items; only the assistant MESSAGE
+          // speaks for when OUR utterance was voiced
+          { type: "function_call", createdAt: 1 },
+          { type: "message", role: "user", createdAt: 2, interrupted: false },
+          { type: "message", role: "assistant", createdAt: 111_222, interrupted: false },
+        ],
+      }),
+    };
+    const say = vas.realtimeScriptedSpeech(session, {
+      observer: { arm: () => {}, spoke: () => true },
+    });
+
+    await expect(say("What budget range are you working with?")).resolves.toEqual({
+      delivered: true,
+      voicedAt: 111_222,
+    });
+  });
+
+  // mutation: report a cut-off utterance as delivered -> red (the loop would open the
+  //           answer window on a question the caller only half-heard, and never re-ask).
+  it("an assistant item flagged interrupted reports partial — voiced, but cut off", async () => {
+    const session = {
+      generateReply: () => ({
+        waitForPlayout: () => Promise.resolve(),
+        chatItems: [{ type: "message", role: "assistant", createdAt: 333_444, interrupted: true }],
+      }),
+    };
+    const say = vas.realtimeScriptedSpeech(session, {
+      observer: { arm: () => {}, spoke: () => true },
+    });
+
+    await expect(say("Any must-haves?")).resolves.toEqual({
+      delivered: false,
+      partial: true,
+      voicedAt: 333_444,
+    });
+  });
+
+  it("no assistant item but audio DID leave -> the observer's first-frame time is the fallback", async () => {
+    // The documented fallback: `createdAt` is typed optional on the structural seam, and
+    // a feed that cannot surface chat items still knows when the room first heard audio.
+    const session = {
+      generateReply: () => ({ waitForPlayout: () => Promise.resolve() }),
+    };
+    const say = vas.realtimeScriptedSpeech(session, {
+      observer: { arm: () => {}, spoke: () => true, firstFrameAt: () => 555_666 },
+    });
+
+    await expect(say("When are you hoping to move?")).resolves.toEqual({
+      delivered: true,
+      voicedAt: 555_666,
+    });
   });
 });
