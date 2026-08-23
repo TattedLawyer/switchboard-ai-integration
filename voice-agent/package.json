@@ -5,9 +5,12 @@
   "description": "The LiveKit agent worker — the conversation half of the call vendor (T16). DELIBERATELY NOT IN THE ROOT WORKSPACES: @livekit/agents drags an ONNX/media/LLM stack that must never enter the crm workspace or the root install (the dependency trade recorded in crm/src/call-transport.ts). Run `npm install` HERE, only on the machine that runs the worker. Never a dependency of anything.",
   "scripts": {
     "dev": "tsx worker.ts dev",
-    "start": "tsx worker.ts start"
+    "start": "tsx worker.ts start",
+    "dev:direct": "tsx worker-direct.ts dev",
+    "start:direct": "tsx worker-direct.ts start"
   },
   "dependencies": {
+    "@google/genai": "2.18.0",
     "@livekit/agents": "1.6.4",
     "@livekit/agents-plugin-google": "1.6.4",
     "@livekit/rtc-node": "^0.13.33",
