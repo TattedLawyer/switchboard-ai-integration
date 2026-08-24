@@ -121,4 +121,18 @@ describe("worker-direct.ts text pins — the untypecheckable composition root", 
     expect(codeLinesWith("createAudioTrack(").length).toBe(1);
     expect(codeLinesWith(".publishTrack(").length).toBe(1);
   });
+
+  it("WD9: 3.1 telephony VAD tuning is passed to the builder AND model-gated — the measured fix for the 9.8s commit hang (probe-asr run-teltuned31.log: 9.8s -> 1.8s), gated so 2.5 (commits in 2-4s today, the known-good fallback) keeps its default turn detection. Call-site regexes per WD3: comments cite these names too", () => {
+    // The gate expression at the call site: a SPREAD-gated input keyed on the model id
+    // (the same `.includes("3.1")` the call-cost rate-card selection uses), never an
+    // unconditional field — deleting the ternary or inlining the block ungated reds here.
+    expect(codeLinesWith(/\.\.\.\(VOICE_MODEL\.includes\("3\.1"\)\s*\?\s*\{ automaticActivityDetection:/).length).toBe(1);
+    // The measured values, verbatim, on code lines (the typed const the gate passes).
+    expect(codeLinesWith(/endOfSpeechSensitivity: "END_SENSITIVITY_HIGH"/).length).toBe(1);
+    expect(codeLinesWith(/silenceDurationMs: 500/).length).toBe(1);
+    // CODE-line negative (not full-text: the hazard comment must be free to name it):
+    // `disabled` under automaticActivityDetection is an INSTANT 1007 socket kill
+    // (probe31 log-e-activity.log) — no code line may carry the word at all.
+    expect(codeLinesWith(/disabled/).length).toBe(0);
+  });
 });

@@ -97,6 +97,7 @@ import {
   TrackSource,
 } from "@livekit/rtc-node";
 import {
+  EndSensitivity,
   GoogleGenAI,
   Modality,
   type LiveServerMessage,
@@ -121,6 +122,7 @@ import {
 import { recordAnswer } from "../crm/src/answers.js";
 import {
   buildDirectConnectConfig,
+  type DirectAutomaticActivityDetection,
   type DirectInboundEvent,
 } from "../crm/src/voice-direct-events.js";
 import { TurnAssembler } from "../crm/src/voice-direct-turns.js";
@@ -138,7 +140,29 @@ import {
 /** Pinned — the same constant worker.ts pins. NOT a 3.1 model (a model-role turn on
  *  3.1 is a session-killing 1007; and nothing here sends one anyway — the wire grammar
  *  types the role as the literal "user"). */
-const VOICE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025";
+const VOICE_MODEL = process.env.VOICE_MODEL ?? "gemini-2.5-flash-native-audio-preview-12-2025";
+
+/** Telephony VAD tuning, 3.1 ONLY — the measured fix for the telephony commit hang.
+ *
+ *  MEASURED (probe-asr, band-limited 8kHz-shaped speech at −12dB over a −45dBFS noise
+ *  floor, deterministic 2/2 runs): 3.1's default detector took ~9.8s to commit a caller
+ *  turn vs ~1.8s on clean 16kHz audio. On a live call that starved the intake loop —
+ *  the ~15s answer watchdog fired while the commit was still pending, its next-question
+ *  directive absorbed the uncommitted answer, and the call died after 2 answers. With
+ *  these two fields the same stimulus commits in ~1.8s (run-teltuned31.log), and 3.1
+ *  ACCEPTS the block (no 1007).
+ *
+ *  🚨 `automaticActivityDetection` with the SDK's `disabled` field is an INSTANT 1007
+ *  socket kill on 3.1 (probe31 log-e-activity.log) — the mirror type has no slot for
+ *  it, so writing it here is a compile error, not a review catch.
+ *
+ *  WHY 2.5 IS EXCLUDED: 2.5 commits in 2-4s on the same telephony leg today and is the
+ *  known-good fallback — its turn detection is deliberately untouched (the gate below
+ *  keys on the model id exactly like the call-cost rate-card selection). */
+const TELEPHONY_VAD_3_1: DirectAutomaticActivityDetection = {
+  endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
+  silenceDurationMs: 500,
+};
 
 /** Gemini Live's audio contract, AgenticYap-verified and spike-proven: PCM16 mono,
  *  16 kHz up, 24 kHz down. The FFI resamples natively on both legs (AudioStream takes a
@@ -543,13 +567,18 @@ export default defineAgent({
       // speech-config language field (the type has no slot for it —
       // voice-direct-events.ts). ONE copy of INTAKE_INSTRUCTIONS (see the tombstone in
       // the header). No voice name: same default voice the plugin path used. No tools.
-      const connectConfig = buildDirectConnectConfig({ systemInstruction: INTAKE_INSTRUCTIONS });
+      const connectConfig = buildDirectConnectConfig({
+        systemInstruction: INTAKE_INSTRUCTIONS,
+        // 3.1 ONLY — the telephony commit-hang fix (measurements and the 1007 hazard
+        // on the TELEPHONY_VAD_3_1 const above). 2.5's turn detection is untouched.
+        ...(VOICE_MODEL.includes("3.1") ? { automaticActivityDetection: TELEPHONY_VAD_3_1 } : {}),
+      });
       // `tools` is stripped structurally, not cast: it is undefined here by
       // construction (no tools this step), and the mirror's tool grammar deliberately
       // uses the SDK enums' string VALUES rather than the nominal enums (the
       // containment rule) — the later wiring step owns that translation, at this
       // boundary, when a declaration actually exists to translate.
-      const { tools: _unwiredTools, ...connectRest } = connectConfig;
+      const { tools: _unwiredTools, realtimeInputConfig, ...connectRest } = connectConfig;
       const ai = new GoogleGenAI({ apiKey: modelApiKey });
       let socketOpened!: () => void;
       const socketOpenP = new Promise<void>((resolve) => (socketOpened = resolve));
@@ -561,6 +590,22 @@ export default defineAgent({
           // same string at runtime; only the enum's nominal type differs. The spread
           // keeps the builder the single author of every other field.
           responseModalities: [Modality.AUDIO],
+          // Same re-expression for the VAD sensitivity when the builder emitted the
+          // block (3.1 only — see TELEPHONY_VAD_3_1): the mirror's sole legal value is
+          // "END_SENSITIVITY_HIGH", so this translation is total. When the builder
+          // omitted the block, NOTHING is spread — 2.5's default turn detection stays
+          // byte-identical to today.
+          ...(realtimeInputConfig !== undefined
+            ? {
+                realtimeInputConfig: {
+                  automaticActivityDetection: {
+                    endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_HIGH,
+                    silenceDurationMs:
+                      realtimeInputConfig.automaticActivityDetection.silenceDurationMs,
+                  },
+                },
+              }
+            : {}),
         },
         callbacks: {
           onopen: () => {

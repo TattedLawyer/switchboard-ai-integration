@@ -106,4 +106,43 @@ describe("buildDirectConnectConfig — the proof call's winning config, language
     const cfg = buildDirectConnectConfig({ systemInstruction: "prompt" });
     expect("speechConfig" in cfg && cfg.speechConfig !== undefined).toBe(false);
   });
+
+  it("E6: emits the telephony-tuned VAD block EXACTLY as measured, when the input asks", () => {
+    // The measured fix for the 9.8s telephony commit hang on 3.1 (probe-asr
+    // run-teltuned31.log: 9.8s -> 1.8s on identical stimulus): endOfSpeechSensitivity
+    // HIGH + silenceDurationMs 500, and NOTHING else — `disabled` in this block is an
+    // INSTANT 1007 socket kill (probe31 log-e-activity.log), so the deep-key scan pins
+    // its absence at runtime too (the type makes it a compile error). VACUOUS IF the
+    // block were asserted merely truthy: a shape drift (wrong field name, enum key
+    // instead of enum VALUE) still connects and silently changes turn detection —
+    // exact deep equality is the pin.
+    const cfg = buildDirectConnectConfig({
+      systemInstruction: "prompt",
+      automaticActivityDetection: {
+        endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
+        silenceDurationMs: 500,
+      },
+    });
+    expect(cfg.realtimeInputConfig).toEqual({
+      automaticActivityDetection: {
+        endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
+        silenceDurationMs: 500,
+      },
+    });
+    expect(keysDeep(cfg)).not.toContain("disabled");
+  });
+
+  it("E7: absent VAD input ⇒ the config is DEEP-EQUAL to today's — the fail-safe pin", () => {
+    // 2.5 commits in 2-4s today and is the known-good fallback; its turn detection
+    // must not change. VACUOUS IF only `realtimeInputConfig` were asserted undefined
+    // on a field-by-field basis: whole-object equality is what reds if someone makes
+    // the block unconditional OR grows the default config any other way.
+    const cfg = buildDirectConnectConfig({ systemInstruction: "prompt" });
+    expect(cfg).toEqual({
+      responseModalities: ["AUDIO"],
+      systemInstruction: "prompt",
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
+    });
+  });
 });

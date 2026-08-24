@@ -147,11 +147,43 @@ export interface DirectSpeechConfig {
   voiceConfig: { prebuiltVoiceConfig: { voiceName: string } };
 }
 
+/**
+ * 🚨 THE SIXTH MEMBER OF THE 1007 FAMILY: `automaticActivityDetection.disabled` is an
+ * INSTANT 1007 socket kill on 3.1 (probe31 log-e-activity.log) — this type has NO field
+ * that could carry it, the same enforcement as the languageCode ban above (and pinned
+ * key-exact at the bottom of this file, where widening the key set is a red typecheck).
+ *
+ * WHY THE BLOCK EXISTS AT ALL: on `gemini-3.1-flash-live-preview` over a telephony leg
+ * (band-limited 8kHz-shaped speech at −12dB over a −45dBFS noise floor) the default
+ * detector took ~9.8s to commit a caller turn vs ~1.8s on clean 16kHz audio —
+ * deterministic, 2/2 runs — which starved the intake loop past its answer watchdog and
+ * killed a live call after 2 answers. `endOfSpeechSensitivity` + `silenceDurationMs`
+ * are ACCEPTED by 3.1 (no 1007) and cut the hang to ~1.8s on identical stimulus
+ * (probe-asr run-teltuned31.log vs the untuned run-tel* baselines).
+ *
+ * The sensitivity is the literal enum VALUE string — the same mirroring discipline as
+ * "OBJECT"/"STRING" above (genai.d.ts EndSensitivity: "END_SENSITIVITY_HIGH") — and it
+ * is pinned to HIGH because HIGH is the only measured-good value; a wider union here
+ * would let an unmeasured detune ship without a red build.
+ */
+export interface DirectAutomaticActivityDetection {
+  endOfSpeechSensitivity: "END_SENSITIVITY_HIGH";
+  silenceDurationMs: number;
+}
+
+/** The wire block that carries it (genai.d.ts RealtimeInputConfig). Exactly one field:
+ *  `activityHandling`/`turnCoverage` are unmeasured and therefore unrepresentable. */
+export interface DirectRealtimeInputConfig {
+  automaticActivityDetection: DirectAutomaticActivityDetection;
+}
+
 /** The connect config the worker hands to `ai.live.connect`. Exactly the winning
  *  call's shape (PROOF-spike.ts:102-124): audio out, the system prompt, BOTH-side
  *  transcription (the raw replacement for the plugin's transcription events AND the
  *  delivery record), and the tool declarations. NO contextWindowCompression: on a
- *  bounded intake call it buys nothing, and mis-sized it is 1007 member number three. */
+ *  bounded intake call it buys nothing, and mis-sized it is 1007 member number three.
+ *  `realtimeInputConfig` rides only when the input asks (the 3.1 telephony tuning —
+ *  see DirectAutomaticActivityDetection). */
 export interface DirectConnectConfig {
   responseModalities: ["AUDIO"];
   systemInstruction: string;
@@ -159,6 +191,7 @@ export interface DirectConnectConfig {
   outputAudioTranscription: Record<string, never>;
   speechConfig?: DirectSpeechConfig;
   tools?: DirectToolDeclaration[];
+  realtimeInputConfig?: DirectRealtimeInputConfig;
 }
 
 export interface DirectConnectConfigInput {
@@ -168,6 +201,10 @@ export interface DirectConnectConfigInput {
    *  with the killer field. */
   voiceName?: string;
   tools?: DirectToolDeclaration[];
+  /** Telephony VAD tuning. OPTIONAL, and when absent `realtimeInputConfig` is OMITTED
+   *  entirely (byte-identical config to the pre-tuning shape) — 2.5 commits in 2-4s
+   *  today and its default turn detection must not change. */
+  automaticActivityDetection?: DirectAutomaticActivityDetection;
 }
 
 /** Build the connect config. A projection, not a merge: only the three inputs above can
@@ -185,6 +222,11 @@ export function buildDirectConnectConfig(input: DirectConnectConfigInput): Direc
     };
   }
   if (input.tools !== undefined) config.tools = input.tools;
+  if (input.automaticActivityDetection !== undefined) {
+    config.realtimeInputConfig = {
+      automaticActivityDetection: input.automaticActivityDetection,
+    };
+  }
   return config;
 }
 
@@ -205,3 +247,22 @@ void _roleIsLiteralUser;
  *  (or anything else) breaks this line at typecheck. */
 const _speechConfigCannotCarryLanguageCode: Equals<keyof DirectSpeechConfig, "voiceConfig"> = true;
 void _speechConfigCannotCarryLanguageCode;
+
+/** The VAD block carries EXACTLY the two measured-good fields — adding `disabled`
+ *  (an INSTANT 1007 socket kill on 3.1, probe31 log-e-activity.log) or any other key
+ *  breaks this line at typecheck. Verified genuine: with `disabled?: boolean` added to
+ *  the interface, `keyof` widens, Equals goes false, and this assignment is a red
+ *  build — the same class of guard as the role:"user" literal above. */
+const _vadCannotCarryDisabled: Equals<
+  keyof DirectAutomaticActivityDetection,
+  "endOfSpeechSensitivity" | "silenceDurationMs"
+> = true;
+void _vadCannotCarryDisabled;
+
+/** And the sensitivity is EXACTLY the measured literal — widening it to `string` (or
+ *  a union with an unmeasured value) breaks this line at typecheck. */
+const _endSensitivityIsPinnedLiteral: Equals<
+  DirectAutomaticActivityDetection["endOfSpeechSensitivity"],
+  "END_SENSITIVITY_HIGH"
+> = true;
+void _endSensitivityIsPinnedLiteral;
