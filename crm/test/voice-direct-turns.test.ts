@@ -181,3 +181,27 @@ describe("TurnAssembler — turns open at first evidence, finalize on turn bound
     expect(a.isTurnOpen()).toBe(false); // the carry died with the call, not after it
   });
 });
+
+describe("TurnAssembler — the open turn's stamp is visible for the loop's age-bounded extension", () => {
+  it("TA9: openTurnStartedAt() exposes the open turn's stamp — including a carried one — and goes undefined at finalize", () => {
+    // The age discriminator the answer-window invariant needs: F4a's carry can hold
+    // isTurnOpen() true FOREVER, so the loop age-bounds its window extension against
+    // the turn's START — which this getter is the only surface for. VACUOUS IF only
+    // the open state were read (return this.now() would pass): the CARRIED stamp must
+    // survive an empty finalize (the old stamp, not a restamp), and the closed states
+    // must read undefined.
+    const clock = makeClock(40_000);
+    const a = new TurnAssembler(clock.now);
+    expect(a.openTurnStartedAt()).toBeUndefined();
+    a.onInterrupted();
+    clock.set(41_000);
+    expect(a.openTurnStartedAt()).toBe(40_000); // the interrupt stamp, not now()
+    expect(a.onTurnComplete()).toBeNull(); // F4a: empty finalize carries…
+    clock.set(55_000);
+    expect(a.openTurnStartedAt()).toBe(40_000); // …the ORIGINAL stamp, however stale
+    a.onInputTranscription(" finally");
+    clock.set(56_000);
+    expect(a.onTurnComplete()).toEqual({ transcript: "finally", turnStartedAt: 40_000 });
+    expect(a.openTurnStartedAt()).toBeUndefined();
+  });
+});

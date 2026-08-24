@@ -36,6 +36,7 @@
 // later says: the socket is gone either way; only the error message differs.
 import {
   BARGE_IN_GRACE_MS,
+  MODEL_TURN_FINALIZE_MARGIN_MS,
   SPEAK_WATCHDOG_MS,
   speakTurnInstruction,
   type SpeechDelivery,
@@ -47,6 +48,19 @@ import { directiveTurn, type DirectiveTurn } from "./voice-direct-events.js";
  *  passes a closure over `session.sendClientContent`, tests pass an array-push. */
 export interface DirectSpeechHost {
   sendDirective(turn: DirectiveTurn): void;
+}
+
+/** THE MODEL-TURN GATE (2026-08-23 diagnosis): a `sendClientContent` landing while the
+ *  server's playout estimate is still running makes 3.1 emit `interrupted` 47–134ms
+ *  later with NO caller audio involved (probe E7/E11, n=12) — the live call's 3/3
+ *  interrupts were the loop's own next-question directives, and the worker then
+ *  clearQueue()d ~60% of the model's in-flight reply as "caller barge-in". So a say
+ *  may not SEND while a model turn is in flight: it PARKS, releases at the wire's
+ *  `turnComplete`, and is bounded by this deadline (the tracker caps it absolutely —
+ *  voice-model-turn.ts). Structural on purpose: the worker passes the tracker's
+ *  `sendWaitDeadline`, tests pass a mutable stub. Undefined = nothing in flight. */
+export interface ModelTurnGate {
+  sendWaitDeadline(): number | undefined;
 }
 
 export interface DirectSpeechChannelOptions {
@@ -63,6 +77,10 @@ export interface DirectSpeechChannelOptions {
    *  verbatim, model owns delivery) already pinned by the realtime suite. Injectable so
    *  Step 1 can tune wording without touching the delivery mechanics pinned here. */
   instruction?: (utterance: string) => string;
+  /** The model-turn gate (see `ModelTurnGate`). Absent = every say sends immediately —
+   *  the pre-gate behaviour, kept for fakes that model no server pacing. The WORKER
+   *  always injects the tracker; that wiring is the plumbing half of this fix. */
+  turnGate?: ModelTurnGate;
 }
 
 /** The per-say bookkeeping. One of these exists exactly while a say is in flight. */
@@ -70,11 +88,20 @@ interface PendingSay {
   resolve: (d: SpeechDelivery) => void;
   reject: (e: Error) => void;
   utterance: string;
+  /** False while the say is PARKED behind the model-turn gate: the directive is not on
+   *  the wire yet, so no event may settle this say and no frame may stamp it — frames
+   *  arriving now belong to the IN-FLIGHT model turn (the e10a401-family
+   *  misattribution the live log caught at +119.37s: the deferral's frames stamped a
+   *  say armed mid-flight, polluting askedAt for a question nobody heard begin). */
+  sent: boolean;
   firstFrameAt: number | undefined;
   callerEvidence: boolean;
   /** Set when a terminal event said "no audio is coming" and the grace clock started —
    *  from then on, caller evidence settles barge-in immediately. */
   awaitingEvidence: boolean;
+  /** The park's bound: fires at the gate's deadline so a server that withholds
+   *  `turnComplete` past its own estimate cannot wedge the say forever. */
+  sendWaitTimer: ReturnType<typeof setTimeout> | undefined;
   watchdogTimer: ReturnType<typeof setTimeout> | undefined;
   graceTimer: ReturnType<typeof setTimeout> | undefined;
   /** What started the grace wait, for the honest-death message. */
@@ -87,6 +114,7 @@ export class DirectSpeechChannel {
   private readonly watchdogMs: number;
   private readonly graceMs: number;
   private readonly instruction: (utterance: string) => string;
+  private readonly turnGate: ModelTurnGate | undefined;
   private pending: PendingSay | undefined;
   /** The latch. Once set, no directive ever leaves this channel again. */
   private dead: { message: string } | undefined;
@@ -97,6 +125,7 @@ export class DirectSpeechChannel {
     this.watchdogMs = opts?.watchdogMs ?? SPEAK_WATCHDOG_MS;
     this.graceMs = opts?.graceMs ?? BARGE_IN_GRACE_MS;
     this.instruction = opts?.instruction ?? speakTurnInstruction;
+    this.turnGate = opts?.turnGate;
   }
 
   /**
@@ -124,42 +153,126 @@ export class DirectSpeechChannel {
       );
     }
     return new Promise<SpeechDelivery>((resolve, reject) => {
-      // Arm BEFORE the send: no window in which this turn's audio could land unobserved
-      // (the same ordering realtimeScriptedSpeech pins at its observer.arm()).
       const pending: PendingSay = {
         resolve,
         reject,
         utterance,
+        sent: false,
         firstFrameAt: undefined,
         callerEvidence: false,
         awaitingEvidence: false,
+        sendWaitTimer: undefined,
         watchdogTimer: undefined,
         graceTimer: undefined,
         deathReason: "",
       };
       this.pending = pending;
-      this.host.sendDirective(directiveTurn(this.instruction(utterance)));
-      pending.watchdogTimer = setTimeout(() => this.onWatchdog(), this.watchdogMs);
+      this.trySend(pending);
     });
+  }
+
+  /** Send the parked directive if the model-turn gate allows it, else (re-)park.
+   *
+   *  ARM AT THE SEND — the redesign the model-turn gate forces. The old rule was "arm
+   *  BEFORE the send", written when arm and send were one synchronous block: its point
+   *  was that no gap could exist in which OUR turn's audio landed unobserved. That
+   *  property survives — arm (`sent = true`) and the send still happen in ONE
+   *  synchronous tick with no await between them, so our turn's first frame is still
+   *  observed from the first possible instant. What changed is the WAIT now sitting
+   *  between say() and the send: frames arriving in that window belong to the
+   *  IN-FLIGHT model turn, and arming before the wait would stamp them as this say's
+   *  `firstFrameAt` — recreating exactly the misattribution this fix exists to kill
+   *  (the live +119.37s pollution; DS13 pins it). Audio that arrived before the
+   *  directive hit the wire must never produce a `voicedAt` — the e10a401 rule,
+   *  carried to the send. */
+  private trySend(p: PendingSay): void {
+    if (this.pending !== p || p.sent) return;
+    const deadline = this.parkBound();
+    const t = this.now();
+    if (deadline !== undefined && deadline > t) {
+      // PARK: a model turn is in flight and a directive now would make the server
+      // interrupt its own reply (the gate's header). `onTurnComplete` releases the
+      // park early; this timer is the BOUND — at the (tracker-capped) deadline the
+      // directive departs regardless, because progress beats politeness once the
+      // server has run past its own estimate. A re-check that finds the deadline
+      // moved (the turn accumulated more audio) re-parks; the tracker's absolute cap
+      // guarantees the re-parking terminates.
+      if (p.sendWaitTimer !== undefined) clearTimeout(p.sendWaitTimer);
+      p.sendWaitTimer = setTimeout(() => {
+        p.sendWaitTimer = undefined;
+        this.trySendAtBound(p);
+      }, deadline - t);
+      return;
+    }
+    this.armAndSend(p);
+  }
+
+  /** The park's bound: the gate's deadline PLUS the finalize margin. The estimate held
+   *  to ±4ms on the dry socket, so a bound that fires AT the estimate can still send a
+   *  few ms before the real `turnComplete` — and the deletion-check run of the
+   *  server-model suite showed exactly that race ending in the aborted turn's
+   *  turnComplete landing on the fresh say and the honest-death throw killing the
+   *  call. The margin (shared with the loop's extension — voice-agent-session.ts)
+   *  waits past the measured jitter; the bound stays absolute. */
+  private parkBound(): number | undefined {
+    const deadline = this.turnGate?.sendWaitDeadline();
+    return deadline === undefined ? undefined : deadline + MODEL_TURN_FINALIZE_MARGIN_MS;
+  }
+
+  /** The park's timer path: at the bound, send even if the gate still claims a turn is
+   *  in flight — unless the deadline has legitimately MOVED forward (more audio
+   *  accumulated), in which case re-park toward the new bound. */
+  private trySendAtBound(p: PendingSay): void {
+    if (this.pending !== p || p.sent) return;
+    const deadline = this.parkBound();
+    const t = this.now();
+    if (deadline !== undefined && deadline > t) {
+      p.sendWaitTimer = setTimeout(() => {
+        p.sendWaitTimer = undefined;
+        this.trySendAtBound(p);
+      }, deadline - t);
+      return;
+    }
+    this.armAndSend(p);
+  }
+
+  /** Arm and send in ONE synchronous tick — see `trySend`'s header. */
+  private armAndSend(p: PendingSay): void {
+    if (p.sendWaitTimer !== undefined) {
+      clearTimeout(p.sendWaitTimer);
+      p.sendWaitTimer = undefined;
+    }
+    p.sent = true;
+    this.host.sendDirective(directiveTurn(this.instruction(p.utterance)));
+    p.watchdogTimer = setTimeout(() => this.onWatchdog(), this.watchdogMs);
   }
 
   // ─── the event feeds (called by the worker's socket translation) ───────────────────
 
-  /** Model audio reached the output path. The FIRST since arm is `voicedAt` — later
-   *  frames never move the stamp. */
+  /** Model audio reached the output path. The FIRST since the SEND is `voicedAt` —
+   *  later frames never move the stamp, and a frame before the directive hit the wire
+   *  never produces one at all (it belongs to the in-flight model turn — the e10a401
+   *  rule carried to the send; see `trySend`). */
   onAudioFrame(): void {
     const p = this.pending;
-    if (p !== undefined && p.firstFrameAt === undefined) p.firstFrameAt = this.now();
+    if (p !== undefined && p.sent && p.firstFrameAt === undefined) p.firstFrameAt = this.now();
   }
 
   /** The caller barged in. With frames: the utterance was cut off mid-question —
    *  `partial`, the caller heard it begin. Without frames: the question was NEVER
    *  voiced and the caller is demonstrably present — the barge-in report the loop's
-   *  drain path consumes. Either way an interrupt IS caller evidence. */
+   *  drain path consumes. Either way an interrupt IS caller evidence.
+   *
+   *  While the say is still PARKED, nothing settles: our directive is not on the wire,
+   *  so this interrupt is about the IN-FLIGHT model turn, not about us — settling
+   *  would report a barge-in on a question that was never even sent. The evidence
+   *  still counts (a caller who spoke is present), and the park continues to the
+   *  finalize that follows an interrupt within milliseconds on the measured wire. */
   onInterrupted(): void {
     const p = this.pending;
     if (p === undefined) return;
     p.callerEvidence = true;
+    if (!p.sent) return;
     if (p.firstFrameAt !== undefined) {
       this.settle(p, { delivered: false, partial: true, voicedAt: p.firstFrameAt });
     } else {
@@ -167,12 +280,19 @@ export class DirectSpeechChannel {
     }
   }
 
-  /** The turn closed. With frames and no interrupt on the way: DELIVERED. Without
+  /** The turn closed. For a PARKED say this is the release: the in-flight model turn
+   *  finalized, so the directive may depart now (`trySend` re-consults the gate — the
+   *  worker feeds the tracker BEFORE this channel, so the gate is already clear).
+   *  For a SENT say: with frames and no interrupt on the way, DELIVERED. Without
    *  frames: a generation that never made sound — grace for caller evidence, then the
    *  honest death (never delivered:true on silence; that is the fabricated report). */
   onTurnComplete(): void {
     const p = this.pending;
     if (p === undefined) return;
+    if (!p.sent) {
+      this.trySend(p);
+      return;
+    }
     if (p.firstFrameAt !== undefined) {
       this.settle(p, { delivered: true, voicedAt: p.firstFrameAt });
     } else {
@@ -273,6 +393,7 @@ export class DirectSpeechChannel {
   }
 
   private clear(p: PendingSay): void {
+    if (p.sendWaitTimer !== undefined) clearTimeout(p.sendWaitTimer);
     if (p.watchdogTimer !== undefined) clearTimeout(p.watchdogTimer);
     if (p.graceTimer !== undefined) clearTimeout(p.graceTimer);
     if (this.pending === p) this.pending = undefined;

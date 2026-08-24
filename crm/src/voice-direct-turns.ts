@@ -60,6 +60,16 @@ export class TurnAssembler {
     return this.turnStartedAt !== undefined;
   }
 
+  /** The open turn's stamp, or undefined when none is open. The AGE discriminator the
+   *  answer-window invariant needs: an F4a carry can hold `isTurnOpen()` true for the
+   *  rest of the call, so the intake loop bounds its window extension by how long ago
+   *  the turn STARTED — and this stamp (the carried one included, unrestamped) is the
+   *  only surface that age can be computed from (voice-agent-session.ts, the unified
+   *  expiry invariant). */
+  openTurnStartedAt(): number | undefined {
+    return this.turnStartedAt;
+  }
+
   /** One `inputTranscription` fragment off the wire, verbatim. Opens the turn if none
    *  is open; the FIRST evidence wins the stamp — later fragments never restamp. */
   onInputTranscription(text: string): void {

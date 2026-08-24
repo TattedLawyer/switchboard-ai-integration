@@ -126,6 +126,7 @@ import {
   type DirectInboundEvent,
 } from "../crm/src/voice-direct-events.js";
 import { TurnAssembler } from "../crm/src/voice-direct-turns.js";
+import { ModelTurnTracker } from "../crm/src/voice-model-turn.js";
 import { DirectSpeechChannel } from "../crm/src/voice-direct-speech.js";
 import { PreVerdictGate } from "../crm/src/voice-direct-gates.js";
 import { SerialQueue, ownedPcm16FromBase64 } from "../crm/src/voice-direct-pcm.js";
@@ -414,6 +415,13 @@ export default defineAgent({
       // and the speech channel's voicedAt must be readings of the SAME clock, because
       // runIntakeCall's binding table compares them (voice-direct-speech.ts header).
       const assembler = new TurnAssembler(() => Date.now());
+      // The in-flight MODEL-turn accountant (voice-model-turn.ts): per-turn audio
+      // arithmetic feeding the send gate, the intake loop's unified expiry
+      // invariant, and the interrupt-classification log lines — REPORTING ONLY
+      // this phase (its header): nothing it returns changes flush or settle
+      // behaviour. Same Date.now as the assembler and the speech channel: one
+      // clock, compared only against itself.
+      const modelTurns = new ModelTurnTracker(() => Date.now());
 
       const finals: TimedTranscript[] = [];
       let wake: (() => void) | null = null;
@@ -440,8 +448,19 @@ export default defineAgent({
                 "the model speak before AMD settles (voice-direct-gates.ts)",
             );
           }
+          modelTurns.onDirectiveSent();
+          // Wall stamp only — the delta to any following `interrupted` is the
+          // msSinceDirective field on that event's own log line.
+          log("send-directive");
           void gemini.sendClientContent(turn);
         },
+      },
+      {
+        // The model-turn gate (voice-direct-speech.ts): a say PARKS while a model
+        // turn is in flight, released at the wire's finalize, bounded by the
+        // tracker's estimate + absolute cap. The worker injects the tracker — this
+        // wiring is the plumbing half of the 2026-08-23 self-interrupt fix.
+        turnGate: { sendWaitDeadline: () => modelTurns.sendWaitDeadline() },
       });
 
       // ─── AMD: the installed detector against the stand-in host ────────────────────
@@ -480,6 +499,11 @@ export default defineAgent({
             }
             try {
               const int16 = ownedPcm16FromBase64(ev.base64Pcm16);
+              // Per-turn accounting (the once-per-call firstFrameOutAt above is the
+              // defect the tracker replaces): frame duration is sample arithmetic.
+              if (modelTurns.onAudioFrame((int16.length * 1000) / GEMINI_OUT_RATE)) {
+                log("model-turn-open");
+              }
               const frame = new AudioFrame(int16, GEMINI_OUT_RATE, 1, int16.length);
               void outQueue.enqueue(() => source.captureFrame(frame));
             } catch (err) {
@@ -496,6 +520,7 @@ export default defineAgent({
             // process stdout.
             assembler.onInputTranscription(ev.text);
             speech.onCallerFragment();
+            modelTurns.onCallerFragment(); // disqualifies the self-inflicted label
             log("transcript-in", { chars: ev.text.length });
             break;
           case "outputTranscription":
@@ -503,24 +528,63 @@ export default defineAgent({
             // proves on a live call that only approved substance was voiced.
             log("transcript-out", ev.text);
             break;
-          case "interrupted":
+          case "interrupted": {
             // The ENTIRE barge-in handler on the raw path (vs plugin #2108's 400-loop):
             // drop unplayed frames; the state machines take the event as evidence.
+            const queuedDurationAtClear = source.queuedDuration; // read BEFORE the clear
             source.clearQueue();
             assembler.onInterrupted();
+            // REPORTING ONLY (voice-model-turn.ts header): the reading feeds the log
+            // line and nothing else — no flush policy, no settle change, this phase.
+            const reading = modelTurns.onInterrupted();
             speech.onInterrupted();
-            log("interrupted");
+            log("interrupted", {
+              classification: reading.classification,
+              msSinceDirective: reading.msSinceDirective,
+              heardFraction:
+                reading.heardFraction === undefined
+                  ? undefined
+                  : Number(reading.heardFraction.toFixed(3)),
+              abortedTurn:
+                reading.abortedTurn === undefined
+                  ? undefined
+                  : {
+                      firstAudioAt: reading.abortedTurn.firstAudioAt,
+                      audioMs: Math.round(reading.abortedTurn.audioMs),
+                      audioParts: reading.abortedTurn.audioParts,
+                    },
+              queuedDurationAtClear,
+            });
             break;
+          }
           case "generationComplete":
-            log("generation-complete"); // the dead window's left edge; nothing decides on it
+            modelTurns.onGenerationComplete(); // the lag's left edge, stamped
+            log("generation-complete"); // nothing decides on it
             break;
           case "turnComplete": {
             // Assembler BEFORE speech: a caller turn accumulated during this say must
             // be queued before the intake loop wakes to read it.
             const turn = assembler.onTurnComplete();
             if (turn !== null) pushFinal(turn);
+            // Tracker BEFORE the speech channel (voice-direct-speech.ts
+            // onTurnComplete header): a directive parked behind this turn is
+            // released here and must find the gate already clear.
+            const modelTurn = modelTurns.onTurnComplete();
             speech.onTurnComplete();
-            log("turn-complete", { queuedCallerTurn: turn !== null });
+            // generationToTurnCompleteLagMs is the number that validates (or
+            // refutes) turnComplete ≈ firstAudio + audioMs on the live telephony
+            // leg — currently an n=2 dry-socket estimate.
+            log("turn-complete", {
+              queuedCallerTurn: turn !== null,
+              ...(modelTurn === undefined
+                ? {}
+                : {
+                    firstAudioAt: modelTurn.firstAudioAt,
+                    audioMs: Math.round(modelTurn.audioMs),
+                    audioParts: modelTurn.audioParts,
+                    generationToTurnCompleteLagMs: modelTurn.generationToTurnCompleteLagMs,
+                  }),
+            });
             break;
           }
           case "toolCalls":
@@ -814,6 +878,12 @@ export default defineAgent({
             wake = null;
           }
         },
+        // The unified expiry invariant's eyes (voice-agent-session.ts): the loop may
+        // only take the expiry decision after the in-flight turn finalizes, bounded —
+        // the model turn via the tracker's capped estimate, the caller turn via the
+        // assembler's open-turn stamp (age-bounded there).
+        modelTurnDeadline: () => modelTurns.sendWaitDeadline(),
+        callerTurnStartedAt: () => assembler.openTurnStartedAt(),
       };
 
       const report = await runIntakeCall(job, verdict.category, {
@@ -837,6 +907,16 @@ export default defineAgent({
         hangUp: async () => {
           await rooms.deleteRoom(roomName);
         },
+        // The loop's window stamps (open / extended / expiry), straight to the log —
+        // levels, counts and timestamps ONLY, never content. Expiry additionally
+        // records the assembler's own isTurnOpen() beside the seam's view of it.
+        instrument: (event, detail) =>
+          log(
+            event,
+            event === "answer-window-expiry"
+              ? { ...detail, isTurnOpen: assembler.isTurnOpen() }
+              : detail,
+          ),
       });
 
       // COST, from the wire's own numbers rather than an estimate. Both readings are

@@ -156,4 +156,55 @@ describe("worker-direct.ts text pins — the untypecheckable composition root", 
     // every frame (the number that let us say '~8,700 frames in 88s' at all).
     expect(codeLinesWith(/framesIn \+= 1/).length).toBe(1);
   });
+
+  it("WD11: the model-turn tracker is constructed, fed every wire event it accounts, and injected BOTH as the speech channel's turn gate and as the loop's modelTurnDeadline seam — with the per-turn / per-interrupt instrumentation lines the live gate needs (levels, counts and timestamps ONLY). Call-site regexes per WD3: the comments cite every one of these names", () => {
+    // Import AND construction — a tracker imported but never built accounts nothing.
+    expect(codeLinesWith(/import \{ ModelTurnTracker \}/).length).toBe(1);
+    expect(codeLinesWith(/new ModelTurnTracker\(/).length).toBe(1);
+    // Every feed the tracker's arithmetic depends on, at its call-site:
+    expect(codeLinesWith(/modelTurns\.onDirectiveSent\(\)/).length).toBe(1);
+    expect(codeLinesWith(/modelTurns\.onAudioFrame\(/).length).toBe(1);
+    expect(codeLinesWith(/modelTurns\.onCallerFragment\(\)/).length).toBe(1);
+    expect(codeLinesWith(/modelTurns\.onGenerationComplete\(\)/).length).toBe(1);
+    expect(codeLinesWith(/modelTurns\.onTurnComplete\(\)/).length).toBe(1);
+    expect(codeLinesWith(/modelTurns\.onInterrupted\(\)/).length).toBe(1);
+    // The deadline is consulted from exactly TWO seats: the speech channel's turnGate
+    // (a say parks behind an in-flight turn) and the intake loop's modelTurnDeadline
+    // seam (expiry waits, bounded) — one wiring missing and half the fix is inert.
+    expect(codeLinesWith(/modelTurns\.sendWaitDeadline\(\)/).length).toBe(2);
+    expect(codeLinesWith(/turnGate: \{ sendWaitDeadline:/).length).toBe(1);
+    expect(codeLinesWith(/modelTurnDeadline: \(\) =>/).length).toBe(1);
+    // The caller-turn half of the unified invariant, off the assembler's own stamps.
+    expect(codeLinesWith(/callerTurnStartedAt: \(\) => assembler\.openTurnStartedAt\(\)/).length).toBe(1);
+    // The instrumentation lines themselves: the directive's wall stamp (its delta to
+    // any interrupted is that event's msSinceDirective), the per-turn open line, and
+    // queuedDuration read BEFORE clearQueue (read after, the number is always 0).
+    expect(codeLinesWith(/log\("send-directive"\)/).length).toBe(1);
+    expect(codeLinesWith(/log\("model-turn-open"\)/).length).toBe(1);
+    expect(codeLinesWith(/queuedDurationAtClear = source\.queuedDuration/).length).toBe(1);
+    expect(codeLinesWith(/queuedDurationAtClear,/).length).toBe(1);
+    // The estimate-validation number reaches the turn-complete line: this is what
+    // turns 'turnComplete ≈ firstAudio + audioMs' from an n=2 dry-socket reading into
+    // a measured property of the live telephony leg.
+    expect(codeLinesWith(/generationToTurnCompleteLagMs: modelTurn\.generationToTurnCompleteLagMs/).length).toBe(1);
+    // The loop's window stamps flow to the log, and expiry carries the assembler's
+    // own isTurnOpen() beside the seam's view of the same fact.
+    expect(codeLinesWith(/instrument: \(event, detail\)/).length).toBe(1);
+    expect(codeLinesWith(/isTurnOpen: assembler\.isTurnOpen\(\)/).length).toBe(1);
+  });
+
+  it("WD11b: interrupt classification is LOGGING-ONLY this phase — the reading reaches exactly one seat (the interrupted log line) and no code line branches on it. The review proved that changing how an interrupted settles the pending say, without turn attribution, re-creates the 2026-08-22 leak-call corruption or throws the honest death; the negative here runs against code lines so a comment cannot trip it and a branch cannot hide in one", () => {
+    // The reading is taken once…
+    expect(codeLinesWith(/modelTurns\.onInterrupted\(\)/).length).toBe(1);
+    // …consumed only inside the log object (classification appears on exactly one
+    // code line, the log field)…
+    expect(codeLinesWith(/reading\.classification/).length).toBe(1);
+    expect(codeLinesWith(/classification: reading\.classification/).length).toBe(1);
+    // …and NOTHING branches on it: no if/switch/ternary-condition over the reading or
+    // its fields anywhere in the file's code.
+    expect(codeLinesWith(/if \(.*reading\./).length).toBe(0);
+    expect(codeLinesWith(/switch \(.*reading/).length).toBe(0);
+    expect(codeLinesWith(/reading\.classification ===/).length).toBe(0);
+    expect(codeLinesWith(/"self_inflicted"/).length).toBe(0);
+  });
 });

@@ -63,6 +63,45 @@ export const ANSWER_WATCHDOG_MS = 15_000;
 /** Two questions in a row into silence means nobody is there. Stop asking a dead line. */
 export const MAX_CONSECUTIVE_SILENCES = 2;
 
+// ─── THE UNIFIED EXPIRY INVARIANT (2026-08-23 diagnosis; adversarial review 3b) ────────
+// The answer-window expiry decision may only be taken after the in-flight model turn
+// finalizes, bounded by (playout estimate + absolute cap); and a bound expiry must NOT
+// count as caller silence if a turn was open.
+//
+// Why: on the live call the caller's answer committed 10.7s into the 15s window, but
+// 3.1 withholds `turnComplete` until its playout estimate ends (probe E11) — so the
+// committed answer was INVISIBLE to the loop, the window expired, silence was counted
+// against a caller who had answered, and the loop's next-question directive interrupted
+// the model's own 15.5s reply mid-playout (3/3 live interrupts, Δ47–51ms after expiry).
+// `TurnAssembler.isTurnOpen()` was designed for the caller-side half of this (F4b) and
+// consulted nowhere. The three constants below are the invariant's bounds; the two
+// OPTIONAL seam methods on `ScriptedVoiceSession` are its eyes — a session without them
+// (the V1–V11 fakes, the realtime adapter) takes the pre-fix behaviour verbatim.
+
+/** The absolute cap on how far past its watchdog one answer window may be extended,
+ *  totalled across every grant. Sized above the tracker's own 20s turn cap
+ *  (voice-model-turn.ts) so a turn opening late in the window can still finalize
+ *  inside the extension, while a server that never finalizes cannot hold a window
+ *  open past ~45s (watchdog + cap). */
+export const ANSWER_EXTENSION_CAP_MS = 30_000;
+
+/** The caller-turn extension's AGE bound, measured from the open turn's START. Needed
+ *  because `TurnAssembler.finalize` deliberately does not reset an interrupt-opened
+ *  empty turn (the F4a carry, pinned in voice-direct-turns.test.ts) — one interrupt
+ *  can hold `isTurnOpen()` true for the rest of the call, and an un-aged extension
+ *  would then extend every remaining window for a silent caller. 10s is >3x the
+ *  measured F4b batch latency (~3s from speech start to the end-of-utterance batch)
+ *  and still bounds a stuck carry to one window's worth of patience. */
+export const CALLER_TURN_EXTENSION_MAX_AGE_MS = 10_000;
+
+/** Margin past the model turn's estimated finalize that the extension waits: the
+ *  measured `turnComplete ≈ firstAudio + audioMs` held to ±4ms on a DRY socket (n=2)
+ *  but is unvalidated on the live telephony leg, and an extension that ends 4ms before
+ *  the finalize forfeits the answer it waited for. Erring early is SAFE (the expiry
+ *  then declines to count silence and the answer still lands via the drain backfill);
+ *  the margin just makes the capture path the common one. */
+export const MODEL_TURN_FINALIZE_MARGIN_MS = 250;
+
 /** How many times one question may be RE-asked after a delivery that did not put it in
  *  the caller's ear (`delivered: false` below), before the loop counts ONE silence and
  *  advances. Two re-asks + the original hand-off = three chances; more than that into a
@@ -143,6 +182,20 @@ export interface ScriptedVoiceSession {
    *  bare string is a transcript with NO usable turn time; it binds to the question
    *  currently being waited on (the conservative fallback — see the binding rule). */
   nextFinalTranscript(timeoutMs: number): Promise<TimedTranscript | string | null>;
+  /** OPTIONAL — the unified expiry invariant's model-side eye: the absolute clock time
+   *  (same clock as `deps.now`) by which any in-flight MODEL turn is expected to
+   *  finalize — `ModelTurnTracker.sendWaitDeadline()` on the direct socket: the
+   *  playout estimate (firstAudio + audioMs), absolutely capped. Undefined = no model
+   *  turn in flight. A session without this method takes the pre-fix expiry behaviour
+   *  verbatim. May legitimately read in the past (server running late) — the loop
+   *  treats it as a wait bound, never a promise. */
+  modelTurnDeadline?(): number | undefined;
+  /** OPTIONAL — the caller-side eye: WHEN the currently-open caller turn began
+   *  (`TurnAssembler.openTurnStartedAt()`), undefined when none is open. The loop
+   *  age-bounds everything it derives from this, because an F4a interrupt carry can
+   *  hold the surface open for the rest of the call (see
+   *  CALLER_TURN_EXTENSION_MAX_AGE_MS). */
+  callerTurnStartedAt?(): number | undefined;
 }
 
 export interface IntakeDeps {
@@ -164,6 +217,13 @@ export interface IntakeDeps {
    *  merely convenient: `ChatMessage.createdAt` is stamped by the plugin in the same
    *  process off the same wall clock, so the two sides of the comparison agree. */
   now?(): number;
+  /** OPTIONAL instrumentation tap — the review's mandate: without it the live gate on
+   *  this fix is "vibes". The loop reports answer-window lifecycle events
+   *  (open/extended/expiry) with LEVELS, COUNTS AND TIMESTAMPS ONLY — caller content
+   *  must never pass through here (a caller's words belong in crm.answers under the
+   *  broker's grants, never in process stdout). The worker wires this to its log line;
+   *  absent, the loop says nothing. */
+  instrument?(event: string, detail: Record<string, unknown>): void;
 }
 
 /**
@@ -365,12 +425,62 @@ async function runApprovedScript(
     }
 
     // THE ANSWER WINDOW — only over a question that is actually in the caller's ear.
+    //
+    // Expiry runs under THE UNIFIED INVARIANT (see the constants block): when the
+    // budget runs out but a turn is demonstrably in flight — the MODEL's (its
+    // finalize is what makes a committed caller answer visible at all on the direct
+    // socket) or a recently-opened CALLER turn (F4b's late batch) — the window is
+    // EXTENDED, bounded by the turn's own deadline (+margin) or the caller turn's age
+    // bound, all totalled under ANSWER_EXTENSION_CAP_MS. A session without the seam's
+    // optional eyes never extends: `extensionGrant` returns 0 and this loop is the
+    // pre-fix loop verbatim.
+    let openTurnAtExpiry = false;
     if (windowOpen && !gotAnswer) {
       const waitStarted = now();
+      const openTurnEvidence = (t: number): boolean => {
+        if (deps.session.modelTurnDeadline?.() !== undefined) return true;
+        const cs = deps.session.callerTurnStartedAt?.();
+        return cs !== undefined && t - cs <= CALLER_TURN_EXTENSION_MAX_AGE_MS;
+      };
+      const extensionGrant = (t: number, alreadyExtended: number): number => {
+        const room = ANSWER_EXTENSION_CAP_MS - alreadyExtended;
+        if (room <= 0) return 0;
+        const md = deps.session.modelTurnDeadline?.();
+        if (md !== undefined && md + MODEL_TURN_FINALIZE_MARGIN_MS > t) {
+          return Math.min(md + MODEL_TURN_FINALIZE_MARGIN_MS - t, room);
+        }
+        const cs = deps.session.callerTurnStartedAt?.();
+        if (cs !== undefined && cs + CALLER_TURN_EXTENSION_MAX_AGE_MS > t) {
+          return Math.min(cs + CALLER_TURN_EXTENSION_MAX_AGE_MS - t, room);
+        }
+        return 0;
+      };
+      deps.instrument?.("answer-window-open", { ordinal: i + 1, at: waitStarted });
+      let extended = 0;
       let budget = ANSWER_WATCHDOG_MS;
       while (budget > 0) {
         const raw = await deps.session.nextFinalTranscript(budget);
-        if (raw === null) break; // the watchdog's silence signal
+        if (raw === null) {
+          // The watchdog's silence signal — now the EXPIRY DECISION POINT, which the
+          // invariant forbids taking while a turn is in flight.
+          const t = now();
+          const grant = extensionGrant(t, extended);
+          if (grant <= 0) {
+            openTurnAtExpiry = openTurnEvidence(t);
+            break;
+          }
+          extended += grant;
+          budget = grant;
+          deps.instrument?.("answer-window-extended", {
+            ordinal: i + 1,
+            at: t,
+            grantMs: grant,
+            extendedTotalMs: extended,
+            modelTurnInFlight: deps.session.modelTurnDeadline?.() !== undefined,
+            callerTurnOpen: deps.session.callerTurnStartedAt?.() !== undefined,
+          });
+          continue;
+        }
         const timed: TimedTranscript = typeof raw === "string" ? { transcript: raw } : raw;
         if (timed.transcript.trim() === "") break; // whitespace is silence, not an answer
         const bound = await bindTurn(timed, i);
@@ -381,11 +491,29 @@ async function runApprovedScript(
         if (bound === "filed") {
           consecutiveSilences = 0; // someone is demonstrably talking to us
         }
-        budget = ANSWER_WATCHDOG_MS - (now() - waitStarted); // the deadline never resets
+        // The deadline never resets — extensions extend it, nothing rewinds it.
+        budget = ANSWER_WATCHDOG_MS + extended - (now() - waitStarted);
+      }
+      if (!gotAnswer) {
+        deps.instrument?.("answer-window-expiry", {
+          ordinal: i + 1,
+          at: now(),
+          extendedTotalMs: extended,
+          modelTurnInFlight: deps.session.modelTurnDeadline?.() !== undefined,
+          callerTurnOpen: deps.session.callerTurnStartedAt?.() !== undefined,
+          countedSilence: !openTurnAtExpiry,
+        });
       }
     }
     if (gotAnswer) {
       consecutiveSilences = 0;
+    } else if (openTurnAtExpiry) {
+      // The invariant's second clause: a bound expiry with a turn still open is NOT
+      // caller silence — the caller may be mid-answer behind a finalize that never
+      // came (the live call counted two of these against a caller who answered both
+      // times, one short of the dead-line hangup). Not RESET either: an open model
+      // turn is not proof a person is there — the count simply does not move on
+      // evidence this ambiguous, and the extension cap already bounded the wait.
     } else {
       // The watchdog, and the re-ask bound: a silent window OR an ordinal whose every
       // ask attempt failed to deliver counts as exactly ONE silence — the script
