@@ -129,6 +129,7 @@ import { TurnAssembler } from "../crm/src/voice-direct-turns.js";
 import { DirectSpeechChannel } from "../crm/src/voice-direct-speech.js";
 import { PreVerdictGate } from "../crm/src/voice-direct-gates.js";
 import { SerialQueue, ownedPcm16FromBase64 } from "../crm/src/voice-direct-pcm.js";
+import { AudioEnergyMeter } from "../crm/src/voice-audio-energy.js";
 import {
   accumulateUsage,
   priceCall,
@@ -671,6 +672,30 @@ export default defineAgent({
       });
       log("callee-track-subscribed");
 
+      // ─── the energy meter — an INSTRUMENT on the inbound leg, never a gate ────────
+      // Three post-mortems stalled on the same undecidable: was the caller SPEAKING?
+      // The log carries `transcript-in` (what the MODEL returned), nothing about the
+      // audio itself — and the live echo hypothesis (our own playout re-entering the
+      // mic leg, phantom `interrupted`s on the dry socket) is detectable ONLY by
+      // correlating inbound energy with whether OUR audio was playing, because this
+      // process never sees the caller's speaker. `source.queuedDuration > 0` is that
+      // playout flag: unplayed audio remains queued on the ONE published track, so our
+      // voice is (about to be) on the line. Levels, counts and timestamps ONLY —
+      // caller words belong in crm.answers under the broker's grants, never stdout.
+      // The threshold is PROVISIONAL and env-tunable: the meter's first job is to
+      // MEASURE this telephony leg so a real threshold can be chosen from data
+      // (calibration section, crm/src/voice-audio-energy.ts). Observation only — a
+      // barge-in gate is a separate, unapproved decision, and nothing the meter
+      // returns feeds back into the pump.
+      const energy = new AudioEnergyMeter({
+        sampleRate: GEMINI_IN_RATE,
+        ...(process.env.VOICE_ENERGY_SPEECH_RMS !== undefined &&
+        process.env.VOICE_ENERGY_SPEECH_RMS !== ""
+          ? { speechRmsThreshold: Number(process.env.VOICE_ENERGY_SPEECH_RMS) }
+          : {}),
+      });
+      let energyMeterErrors = 0;
+
       let framesIn = 0;
       const inputPump = (async () => {
         const stream = new AudioStream(calleeTrack, {
@@ -691,6 +716,32 @@ export default defineAgent({
             });
           }
           framesIn += 1;
+          // The meter observes EVERY inbound frame — pre-verdict audio included (case
+          // 3, "did they actually answer", needs energy from the very first frame the
+          // gate is still dropping) — and it must OUTLIVE its own bugs: a meter throw
+          // may never kill the pump, or the instrument affects the audio it measures.
+          // First failure logs, the rest count into the summary line.
+          try {
+            for (const w of energy.onFrame(value.data, source.queuedDuration > 0)) {
+              // Cadence: every speech-like window (the events under investigation),
+              // plus every 10th window (a 3s heartbeat that keeps quiet stretches —
+              // and the noise floor — visible without flooding an all-quiet call).
+              if (w.speechLike || w.index % 10 === 0) {
+                log("energy", {
+                  w: w.index,
+                  ms: w.endMs,
+                  rms: Number(w.rms.toFixed(4)),
+                  peak: Number(w.peak.toFixed(4)),
+                  speech: w.speechLike,
+                  run: w.speechRun,
+                  playout: Number(w.playoutFraction.toFixed(2)),
+                });
+              }
+            }
+          } catch (err) {
+            energyMeterErrors += 1;
+            if (energyMeterErrors === 1) log("energy-meter-err", String(err));
+          }
         }
         log("audio-in-ended", { frames: framesIn, droppedPreVerdict: gate.droppedFrameCount() });
       })();
@@ -811,6 +862,11 @@ export default defineAgent({
         usdIfCumulative: Number(priced.cumulative.totalUsd.toFixed(6)),
         unpriced: priced.unpricedModalities,
       });
+
+      // The instrument's verdict on the line, beside the call's outcome: enough to
+      // answer "was the caller speaking" (speech vs quiet windows, runs) and "did
+      // inbound energy track OUR playout" (the echo buckets) from the log alone.
+      log("energy-summary", { ...energy.summary(), meterErrors: energyMeterErrors });
 
       log("call-done", {
         touch: job.touchId,

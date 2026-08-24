@@ -135,4 +135,25 @@ describe("worker-direct.ts text pins — the untypecheckable composition root", 
     // (probe31 log-e-activity.log) — no code line may carry the word at all.
     expect(codeLinesWith(/disabled/).length).toBe(0);
   });
+
+  it("WD10: every inbound caller frame is fed to the energy meter WITH the playout flag, and the call logs an energy summary — the instrument that makes 'was the caller speaking' and the echo hypothesis decidable from a log. Call-site regexes per WD3; the meter observes only (a barge-in gate is a separate, unapproved decision)", () => {
+    // The import AND the construction — a meter imported but never built measures
+    // nothing.
+    expect(codeLinesWith(/import \{ AudioEnergyMeter \}/).length).toBe(1);
+    expect(codeLinesWith(/new AudioEnergyMeter\(/).length).toBe(1);
+    // The feed call-site, verbatim: the frame's samples AND the playout flag from the
+    // one published AudioSource's queue (queuedDuration > 0 = unplayed audio remains =
+    // our voice is on the line). Without the flag the echo correlation — the whole
+    // reason the meter exists — is unmeasurable, so the flag is pinned INSIDE the
+    // call-site regex, not as a separate contains.
+    expect(
+      codeLinesWith(/energy\.onFrame\(value\.data, source\.queuedDuration > 0\)/).length,
+    ).toBe(1);
+    // The periodic line and the end-of-call summary both reach the log.
+    expect(codeLinesWith(/log\("energy",/).length).toBe(1);
+    expect(codeLinesWith(/"energy-summary"/).length).toBe(1);
+    // And the meter did not displace the existing accounting: framesIn still counts
+    // every frame (the number that let us say '~8,700 frames in 88s' at all).
+    expect(codeLinesWith(/framesIn \+= 1/).length).toBe(1);
+  });
 });
