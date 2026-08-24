@@ -127,6 +127,13 @@ import { TurnAssembler } from "../crm/src/voice-direct-turns.js";
 import { DirectSpeechChannel } from "../crm/src/voice-direct-speech.js";
 import { PreVerdictGate } from "../crm/src/voice-direct-gates.js";
 import { SerialQueue, ownedPcm16FromBase64 } from "../crm/src/voice-direct-pcm.js";
+import {
+  accumulateUsage,
+  priceCall,
+  RATE_CARD_2_5_NATIVE_AUDIO,
+  RATE_CARD_3_1_FLASH_LIVE,
+  type UsageSample,
+} from "../crm/src/voice-usage-cost.js";
 
 /** Pinned — the same constant worker.ts pins. NOT a 3.1 model (a model-role turn on
  *  3.1 is a session-killing 1007; and nothing here sends one anyway — the wire grammar
@@ -308,9 +315,28 @@ function translateServerMessage(msg: LiveServerMessage): DirectInboundEvent[] {
       promptTokens: msg.usageMetadata.promptTokenCount,
       responseTokens: msg.usageMetadata.responseTokenCount,
       totalTokens: msg.usageMetadata.totalTokenCount,
+      thoughtsTokens: msg.usageMetadata.thoughtsTokenCount,
+      promptByModality: modalitySplit(msg.usageMetadata.promptTokensDetails),
+      responseByModality: modalitySplit(msg.usageMetadata.responseTokensDetails),
     });
   }
   return events;
+}
+
+/** Flatten the wire's `ModalityTokenCount[]` into `{ AUDIO: n, TEXT: n }`. Live prices
+ *  audio and text ~6x apart, so discarding this split makes a call unpriceable — the
+ *  reason this exists at all (see crm/src/voice-usage-cost.ts). */
+function modalitySplit(
+  details: { modality?: string; tokenCount?: number }[] | undefined,
+): Record<string, number> | undefined {
+  if (details === undefined || details.length === 0) return undefined;
+  const out: Record<string, number> = {};
+  for (const d of details) {
+    // An unnamed modality is still billed; bucket it loudly rather than dropping it.
+    const key = d.modality ?? "MODALITY_UNSPECIFIED";
+    out[key] = (out[key] ?? 0) + (d.tokenCount ?? 0);
+  }
+  return out;
 }
 
 export default defineAgent({
@@ -370,6 +396,10 @@ export default defineAgent({
         finals.push(turn);
         wake?.();
       };
+
+      // Every usageMetadata report this call produces, kept WITH its modality split so
+      // the end-of-call cost line is arithmetic on the wire's numbers, not an estimate.
+      const usageSamples: UsageSample[] = [];
 
       const speech = new DirectSpeechChannel({
         sendDirective: (turn) => {
@@ -479,7 +509,24 @@ export default defineAgent({
             log("go-away"); // the server's imminent-disconnect warning
             break;
           case "usage":
-            log("usage", { total: ev.totalTokens });
+            // The MODALITY SPLIT is the whole point: a bare total cannot be priced (Live
+            // bills audio ~6x text). Collected for the end-of-call cost line below.
+            usageSamples.push({
+              promptTokens: ev.promptTokens ?? 0,
+              responseTokens: ev.responseTokens ?? 0,
+              totalTokens: ev.totalTokens ?? 0,
+              thoughtsTokens: ev.thoughtsTokens ?? 0,
+              promptByModality: ev.promptByModality ?? {},
+              responseByModality: ev.responseByModality ?? {},
+            });
+            log("usage", {
+              total: ev.totalTokens,
+              prompt: ev.promptTokens,
+              response: ev.responseTokens,
+              thoughts: ev.thoughtsTokens,
+              promptBy: ev.promptByModality,
+              responseBy: ev.responseByModality,
+            });
             break;
           case "closed":
             speech.onClosed(ev.code, ev.reason); // latches the channel; a pending say rejects
@@ -694,6 +741,30 @@ export default defineAgent({
         hangUp: async () => {
           await rooms.deleteRoom(roomName);
         },
+      });
+
+      // COST, from the wire's own numbers rather than an estimate. Both readings are
+      // printed because the Live docs never say whether a usageMetadata report restates a
+      // running session total or prices one turn — the two differ ~10x, and one call with
+      // this line settles it by observation (crm/src/voice-usage-cost.ts).
+      const usageTotals = accumulateUsage(usageSamples);
+      const priced = priceCall(
+        usageTotals,
+        VOICE_MODEL.includes("3.1") ? RATE_CARD_3_1_FLASH_LIVE : RATE_CARD_2_5_NATIVE_AUDIO,
+      );
+      log("call-cost", {
+        model: priced.model,
+        pricingAsOf: priced.pricingAsOf,
+        reports: usageTotals.sampleCount,
+        monotonic: usageTotals.monotonic,
+        perTurnTokens: usageTotals.perTurn.totalTokens,
+        cumulativeTokens: usageTotals.cumulative.totalTokens,
+        promptBy: usageTotals.perTurn.promptByModality,
+        responseBy: usageTotals.perTurn.responseByModality,
+        thoughts: usageTotals.perTurn.thoughtsTokens,
+        usdIfPerTurn: Number(priced.perTurn.totalUsd.toFixed(6)),
+        usdIfCumulative: Number(priced.cumulative.totalUsd.toFixed(6)),
+        unpriced: priced.unpricedModalities,
       });
 
       log("call-done", {

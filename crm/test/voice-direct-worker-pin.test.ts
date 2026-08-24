@@ -75,6 +75,24 @@ describe("worker-direct.ts text pins — the untypecheckable composition root", 
     expect(codeLinesWith(/new SerialQueue\(/).length).toBeGreaterThan(0);
   });
 
+  it("WD3b: usage is captured WITH its modality split and priced at the end of the call — a bare totalTokenCount is unpriceable (Live bills audio ~6x text), which is why the first three weeks of call logs could not answer 'what did that call cost'. Call-site regexes so deleting the arithmetic cannot pass on the import alone", () => {
+    // The split reaches the event: without these two, cost is a guess forever.
+    expect(codeLinesWith(/promptByModality: modalitySplit\(/).length).toBe(1);
+    expect(codeLinesWith(/responseByModality: modalitySplit\(/).length).toBe(1);
+    // Thinking bills at the OUTPUT rate — omitting it under-reports every call.
+    expect(codeLinesWith(/thoughtsTokens: /).length).toBeGreaterThan(0);
+    // And the call actually prices itself, from the wire's numbers.
+    expect(codeLinesWith(/accumulateUsage\(usageSamples\)/).length).toBe(1);
+    expect(codeLinesWith(/priceCall\(/).length).toBe(1);
+    expect(codeLinesWith(/"call-cost"/).length).toBe(1);
+  });
+
+  it("WD3c: BOTH readings of the usage series are reported — the Live docs never say whether a usageMetadata report restates a running session total or prices one turn, and the two differ ~10x on the same call. Reporting one number would silently pick an answer we do not have", () => {
+    expect(codeLinesWith(/usdIfPerTurn:/).length).toBe(1);
+    expect(codeLinesWith(/usdIfCumulative:/).length).toBe(1);
+    expect(codeLinesWith(/monotonic:/).length).toBe(1);
+  });
+
   it("WD4: PreVerdictGate is constructed AND seen deciding on the hot path — pre-verdict the model receives nothing (strictly stronger than the plugin's pauseReplyAuthorization, voice-direct-gates.ts)", () => {
     expect(codeLinesWith(/new PreVerdictGate\(\)/).length).toBe(1);
     expect(codeLinesWith(/gate\.offerCallerFrame\(/).length).toBeGreaterThan(0);

@@ -187,7 +187,7 @@ reporting a clean run.
   login and approval page are real too: magic-link sign-in (one-time links,
   hashed at rest), database-backed sessions, CSRF defence, and every decision
   row naming the signed-in approver's user id.
-- **CI:** the `ci` workflow runs on every push — typecheck, all 2092 tests, the
+- **CI:** the `ci` workflow runs on every push — typecheck, all 2190 tests, the
   dbt build — 101 dbt build steps (15 models, 3 seeds, 83 data tests) — the agent
   action-safety eval, and the identity oracle, against a real Postgres service
   container
@@ -202,7 +202,7 @@ reporting a clean run.
   on a slow machine, and a leftover mock server inherited across steps sharing a
   process table. Each is narrated with its run ID in the
   [known-issues ledger](KNOWN-ISSUES.md#process-honesty).
-- 2092 automated tests, green in CI and locally — including a seeded
+- 2190 automated tests, green in CI and locally — including a seeded
   property-based suite (fast-check) that generatively attacks the ingest
   boundary, dedup, HMAC, batch-failure isolation, and ledger crash-safety under
   arbitrary torn writes. That count is not maintained by hand: CI runs
@@ -231,7 +231,7 @@ reporting a clean run.
 | Seeded duplicates collapse | dbt build (`assert_*` + oracle) | 22 staged companies → 20 canonical entities; merged-away ids absent from the mart, their deals re-pointed |
 | Identity tiers match the plan | `scripts/verify-identity.ts` | 30 external entities: 19 tier-1, 5 tier-2, 6 manual-review — exact set equality per source, including both planned near-misses |
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
-| Suite | `npm test` + dbt | 2092 tests green across twelve workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
+| Suite | `npm test` + dbt | 2190 tests green across twelve workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
 
 ## What's coming (built in phases, in public)
 
@@ -450,14 +450,19 @@ capture (numbers + provenance + channel)
 **The product is step 2.** Everything else feeds or consumes it.
 
 🚨 **WHAT SHIPS TODAY (Wave 1) vs WHAT DOES NOT.** Wave 1 is capture → memory → proposal →
-call → **answers stored** → clock reset. The **voice vendor is faked in tests** (real
-LiveKit + Twilio SIP + Gemini Live is Wave 2, T16), and **there is no summarisation and no
-transcript email built** — T17 (summary) and T18 (transcript email) are Wave 2 and unbuilt.
-The `crm.touches` columns and CHECK for a summary and a `transcript_delivery` status exist in
-migration 016, but **no code writes them yet**: a call today leaves
-`transcript_delivery = 'pending'` because that is the value written at call start and nothing
-moves it. Do not read the artifacts table below as operating today — it is the **designed**
-end state, and the two rows marked *(Wave 2)* are not built.
+call → **answers stored** → clock reset, and the call leg is REAL (T16 — built):
+`livekitPlaceCall` (`crm/src/call-transport.ts`) dispatches an agent worker into a per-call
+LiveKit room, dials the callee exactly once through a provisioned outbound SIP trunk
+(Zadarma), and a Gemini Live realtime model holds the conversation, with every answer
+persisted to `crm.answers` mid-call, per turn. Live calls have been placed and answered.
+The **voice vendor is still faked in tests** (`scriptedPlaceCall` — no test opens a
+socket), and the executor daemon composes the stub unless the complete LiveKit/model env
+is present. **There is no summarisation and no transcript email built** — T17 (summary)
+and T18 (transcript email) are Wave 2 and unbuilt. The `crm.touches` columns and CHECK for
+a summary and a `transcript_delivery` status exist in migration 016, but **no code writes
+them yet**: a call today leaves `transcript_delivery = 'pending'` because that is the value
+written at call start and nothing moves it. In the artifacts table below, the answers row
+operates today; the two rows marked *(Wave 2)* are designed, not built.
 
 **EMAIL IS WIRED END TO END.** For a contact whose channel is `email` or `both`, the
 proposer builds and POSTs a real `send_email` card; she approves it in `/queue`; and
@@ -468,10 +473,27 @@ she approved is no longer the recipient her sheet names, the card is blocked rat
 sent, and if the sheet cannot be trusted (a halted adoption breaker, an open divergence
 block) the send WAITS instead of guessing.
 
-🚨 **CALLS ARE NOT WIRED.** `place_call` cards are proposed, rendered and approvable, and
-`executeCall` orchestrates the whole call lifecycle — but `PlaceCall` has no production
-implementation: no telephony vendor exists in any `package.json`, and the factory throws at
-construction rather than pretending. Do not enroll call contacts expecting a call.
+🚨 **CALLS ARE WIRED — NOT DEPLOYED, AND NOT DONE.** `place_call` cards are proposed,
+rendered and approvable; `executeCall` orchestrates the call lifecycle; and `PlaceCall` has
+a production implementation: `livekitPlaceCall` (`crm/src/call-transport.ts`, on
+`livekit-server-sdk`) validates its injected config at construction — an empty phone
+allowlist refuses to build — dispatches the agent worker before the dial so AMD hears the
+first audio, dials the approved number exactly once per touch, and returns the worker's raw
+SIP/AMD signals for `disposition.ts` alone to interpret. Two workers exist under
+`voice-agent/` (deliberately not a workspace): `worker.ts`, the `@livekit/agents` plugin
+path, and `worker-direct.ts`, its successor, which owns a raw Gemini Live socket and
+registers under a separate agent name — cutover is pointing `LIVEKIT_AGENT_NAME` at it,
+and `worker.ts` is the rollback. What still stands between "wired" and "done": only
+numbers on `SWITCHBOARD_PHONE_ALLOWLIST` can ring, checked in the executor and again at
+the transport; **nothing is deployed** — the approval service, proposer, executor daemon
+and voice worker all run by hand from a developer machine, and the only containers in this
+repo are the dev Postgres and a dbt tools image; **neither worker can consult the
+knowledge base mid-call** (the plugin path ships zero tools to dodge agents-js #2249, and
+the direct worker does not declare tools yet), so a caller's substantive questions cannot
+be answered from her knowledge — the authoring surface (`/knowledge`) writes entries the
+live call cannot yet reach; and **no consent record or opt-out mechanism exists** for
+callees. Enroll call contacts expecting an intake questionnaire with answers stored — not
+a finished product.
 
 ### What it will store, and what it does not (design)
 

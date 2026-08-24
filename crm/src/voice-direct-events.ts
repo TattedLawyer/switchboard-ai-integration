@@ -118,7 +118,18 @@ export type DirectInboundEvent =
   | { type: "turnComplete" }
   | { type: "toolCalls"; calls: DirectToolCall[] }
   | { type: "goAway"; timeLeftMs?: number }
-  | { type: "usage"; promptTokens?: number; responseTokens?: number; totalTokens?: number }
+  // Usage carries the MODALITY SPLIT, not just a total: Live bills audio and text ~6x
+  // apart, so a bare total cannot be priced (see voice-usage-cost.ts). `thoughtsTokens`
+  // rides along because the pricing page bills thinking at the OUTPUT rate.
+  | {
+      type: "usage";
+      promptTokens?: number;
+      responseTokens?: number;
+      totalTokens?: number;
+      thoughtsTokens?: number;
+      promptByModality?: Record<string, number>;
+      responseByModality?: Record<string, number>;
+    }
   | { type: "closed"; code: number; reason: string }
   | { type: "error"; message: string };
 
