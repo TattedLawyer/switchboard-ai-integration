@@ -5,6 +5,7 @@ import type { Server } from "node:http";
 import type pg from "pg";
 import express from "express";
 import { freshTestDb } from "./helpers/testdb.js";
+import { cliEnv } from "./helpers/child-env.js";
 import { createHubcrmApp, type HubcrmApp } from "../../mocks/hubcrm/src/index.js";
 import {
   HubHydrateConnector,
@@ -57,7 +58,7 @@ function runCli(args: string[]): Promise<{ code: number; out: string }> {
     execFile(
       process.execPath,
       ["--import", "tsx", "src/cli/hydrate-rearm.ts", ...args],
-      { cwd: INGEST_DIR, timeout: 30_000, env: { ...process.env, DATABASE_URL: dbUrl, ALLOW_DEV_SECRETS: "1" } },
+      { cwd: INGEST_DIR, timeout: 30_000, env: cliEnv({ DATABASE_URL: dbUrl, ALLOW_DEV_SECRETS: "1" }) },
       (err, stdout, stderr) => {
         if (err && typeof err.code !== "number") return reject(err);
         resolve({ code: err ? (err.code as number) : 0, out: `${stdout}\n${stderr}` });

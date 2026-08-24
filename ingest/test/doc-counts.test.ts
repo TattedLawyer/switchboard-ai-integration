@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { cliEnv } from "./helpers/child-env.js";
 import {
   README_TEST_COUNT_CLAIMS,
   deriveRegisterCounts,
@@ -337,6 +338,9 @@ const runGate = (args: string[]): { code: number; out: string } => {
   const r = spawnSync("npx", ["tsx", "scripts/verify-doc-counts.ts", ...args], {
     cwd: fileURLToPath(new URL("../../", import.meta.url)),
     encoding: "utf8",
+    // No env option meant FULL parent-env inheritance — the same leak class the
+    // spread-of-process.env spawn sites had. The gate script reads no env; hermetic by default.
+    env: cliEnv(),
   });
   return { code: r.status ?? -1, out: `${r.stdout}${r.stderr}` };
 };

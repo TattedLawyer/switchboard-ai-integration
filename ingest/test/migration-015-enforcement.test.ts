@@ -41,6 +41,7 @@ import { rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { freshTestDb } from "./helpers/testdb.js";
+import { cliEnv } from "./helpers/child-env.js";
 
 const execFileAsync = promisify(execFile);
 const CLI = fileURLToPath(new URL("../src/cli/approval-user-add.ts", import.meta.url));
@@ -487,7 +488,10 @@ describe("A2/C-1: a proposal is BORN UNDECIDED — the creation edge", () => {
           "-c",
           `\\copy approval.proposals (tenant_id,idempotency_key,action_type,payload,rationale,payload_hash,expires_at,state) from '${file}'`,
         ],
-        { encoding: "utf8" },
+        // Hermetic like every other spawn here: psql gets no ambient PG* vars from the
+        // developer's shell — the connection is entirely the URL in argv (HOME stays,
+        // so ~/.pgpass-style auth still works where a machine relies on it).
+        { encoding: "utf8", env: cliEnv() },
       ).catch((e: { stderr?: string; stdout?: string }) => ({
         stdout: e.stdout ?? "",
         stderr: e.stderr ?? String(e),
@@ -709,7 +713,7 @@ describe("A2/T3: who may mint an approver", () => {
     const { stdout } = await execFileAsync(
       process.execPath,
       ["--import", "tsx", CLI, "--email", email],
-      { env: { ...process.env, DATABASE_URL: url }, cwd: INGEST_DIR },
+      { env: cliEnv({ DATABASE_URL: url }), cwd: INGEST_DIR },
     );
     expect(stdout).toContain(email);
     const r = await admin.query(`select id, disabled_at from approval.users where email = $1`, [
@@ -722,14 +726,14 @@ describe("A2/T3: who may mint an approver", () => {
   it("...and refuses anonymously, and refuses a duplicate loudly", async () => {
     await expect(
       execFileAsync(process.execPath, ["--import", "tsx", CLI], {
-        env: { ...process.env, DATABASE_URL: url },
+        env: cliEnv({ DATABASE_URL: url }),
         cwd: INGEST_DIR,
       }),
     ).rejects.toThrow(/--email/);
     const email = `dupe-${Math.random().toString(36).slice(2)}@example.com`;
     const run = (): Promise<{ stdout: string }> =>
       execFileAsync(process.execPath, ["--import", "tsx", CLI, "--email", email], {
-        env: { ...process.env, DATABASE_URL: url },
+        env: cliEnv({ DATABASE_URL: url }),
         cwd: INGEST_DIR,
       });
     await run();

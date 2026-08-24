@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
+import { cliEnv } from "./helpers/child-env.js";
 import { reconcile } from "../src/reconcile.js";
 
 const INGEST_DIR = fileURLToPath(new URL("..", import.meta.url));
@@ -184,14 +185,13 @@ describe("I7 — the backfill CLI's failure path quotes THIS tenant's cursor", (
         {
           cwd: INGEST_DIR,
           timeout: 60_000,
-          env: {
-            ...process.env,
+          env: cliEnv({
             DATABASE_URL: dbUrl,
             ALLOW_DEV_SECRETS: "1",
             SWITCHBOARD_TENANT_ID: TENANT_X,
             INGEST_SOURCES: "support",
             SUPPORT_BASE_URL: "http://127.0.0.1:1",
-          },
+          }),
         },
         (err, stdout, stderr) => {
           if (err && typeof err.code !== "number") return reject(err);

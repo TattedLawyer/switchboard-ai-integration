@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { freshTestDb, type TestDbResult } from "./helpers/testdb.js";
+import { cliEnv } from "./helpers/child-env.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 // The fixture provisions five in-process servers, runs 30 interleaved hydration pumps
@@ -42,7 +43,7 @@ function runCiFixture(dbUrl: string): Promise<{ code: number; stdout: string; st
       {
         cwd: ROOT,
         timeout: FIXTURE_TIMEOUT,
-        env: { ...process.env, DATABASE_URL: dbUrl, ALLOW_DEV_SECRETS: "1" },
+        env: cliEnv({ DATABASE_URL: dbUrl, ALLOW_DEV_SECRETS: "1" }),
       },
       (err, stdout, stderr) => {
         if (err && typeof err.code !== "number") return reject(err);

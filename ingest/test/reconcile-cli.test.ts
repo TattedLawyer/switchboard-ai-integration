@@ -5,6 +5,7 @@ import type { Server } from "node:http";
 import type pg from "pg";
 import { COL, createSheetsApp, type SheetsApp } from "../../mocks/sheets/src/index.js";
 import { freshTestDb } from "./helpers/testdb.js";
+import { cliEnv } from "./helpers/child-env.js";
 import { SheetSnapshotConnector } from "../src/connectors/sheet-snapshot.js";
 import { DEFAULT_TENANT_ID } from "../src/ingest-event.js";
 import { listenLoopback } from "@switchboard/mock-core";
@@ -57,13 +58,12 @@ function runReconcileCli(baseUrl: string): Promise<{ code: number; stdout: strin
       {
         cwd: INGEST_DIR,
         timeout: 25_000,
-        env: {
-          ...process.env,
+        env: cliEnv({
           DATABASE_URL: dbUrl,
           INGEST_SOURCES: "sheets",
           SHEETS_BASE_URL: baseUrl,
           ALLOW_DEV_SECRETS: "1",
-        },
+        }),
       },
       (err, stdout, stderr) => {
         if (err && typeof err.code !== "number") return reject(err); // spawn failure, not exit code
@@ -123,15 +123,15 @@ describe("reconcile CLI × sheets (cold review I1/M6)", () => {
 describe("A8 on the real CLI — an enabled ledger-feed source with no ledger path", () => {
   function runLedgerFeedReconcile(extraEnv: Record<string, string>): Promise<{ code: number; out: string }> {
     return new Promise((resolve, reject) => {
-      const env: Record<string, string | undefined> = {
-        ...process.env,
+      // cliEnv is an ALLOWLIST, so LEDGER_PATH_CRM is absent by construction unless
+      // extraEnv provides it — the typo'd/missed-export deployment, guaranteed without
+      // the delete-then-reapply dance the process.env spread used to force.
+      const env = cliEnv({
         DATABASE_URL: dbUrl,
         INGEST_SOURCES: "crm",
         ALLOW_DEV_SECRETS: "1",
         ...extraEnv,
-      };
-      delete env.LEDGER_PATH_CRM; // the typo'd/missed-export deployment, guaranteed
-      for (const [k, v] of Object.entries(extraEnv)) env[k] = v;
+      });
       execFile(
         process.execPath,
         ["--import", "tsx", "src/cli/reconcile.ts"],

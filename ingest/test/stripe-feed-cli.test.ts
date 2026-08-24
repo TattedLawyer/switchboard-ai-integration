@@ -6,6 +6,7 @@ import express from "express";
 import type pg from "pg";
 import { createStripeFeedApp, type StripeFeedApp } from "../../mocks/stripefeed/src/index.js";
 import { freshTestDb } from "./helpers/testdb.js";
+import { cliEnv } from "./helpers/child-env.js";
 import { listenReady } from "./helpers/listen-ready.js";
 import { expectGapDisclosure, expectParadigmIntegrityLine } from "./helpers/operator-surface.js";
 import { StripeFeedConnector, type StripeFeedReconcileReport } from "../src/connectors/stripe-feed.js";
@@ -63,13 +64,12 @@ function runCli(
       {
         cwd: INGEST_DIR,
         timeout: 25_000,
-        env: {
-          ...process.env,
+        env: cliEnv({
           DATABASE_URL: dbUrl,
           INGEST_SOURCES: "stripefeed",
           STRIPEFEED_BASE_URL: baseUrl,
           ALLOW_DEV_SECRETS: "1",
-        },
+        }),
       },
       (err, stdout, stderr) => {
         if (err && typeof err.code !== "number") return reject(err);

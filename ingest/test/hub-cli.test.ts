@@ -5,6 +5,7 @@ import type { Server } from "node:http";
 import express from "express";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
+import { cliEnv } from "./helpers/child-env.js";
 import { expectParadigmIntegrityLine } from "./helpers/operator-surface.js";
 import { createIngestApp } from "../src/server.js";
 import { createHubcrmApp, type HubcrmApp } from "../../mocks/hubcrm/src/index.js";
@@ -52,13 +53,12 @@ function runCli(script: "src/cli/backfill.ts" | "src/cli/reconcile.ts", baseUrl:
       {
         cwd: INGEST_DIR,
         timeout: 30_000,
-        env: {
-          ...process.env,
+        env: cliEnv({
           DATABASE_URL: dbUrl,
           INGEST_SOURCES: "hubcrm",
           HUBCRM_BASE_URL: baseUrl,
           ALLOW_DEV_SECRETS: "1",
-        },
+        }),
       },
       (err, stdout, stderr) => {
         if (err && typeof err.code !== "number") return reject(err);
@@ -211,14 +211,13 @@ describe("the pump's zero cycle and the cursorless paradigm's incident line", ()
         {
           cwd: INGEST_DIR,
           timeout: 30_000,
-          env: {
-            ...process.env,
+          env: cliEnv({
             DATABASE_URL: dbUrl,
             INGEST_SOURCES: "sheets",
             // Nothing listening: the connector fails and the incident line prints.
             SHEETS_BASE_URL: "http://127.0.0.1:1",
             ALLOW_DEV_SECRETS: "1",
-          },
+          }),
         },
         (err, stdout, stderr) => {
           if (err && typeof err.code !== "number") return reject(err);

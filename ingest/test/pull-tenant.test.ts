@@ -30,6 +30,7 @@ import type { Server } from "node:http";
 import type express from "express";
 import type pg from "pg";
 import { freshTestDb } from "./helpers/testdb.js";
+import { cliEnv } from "./helpers/child-env.js";
 import { createIngestApp } from "../src/server.js";
 import { createHubcrmApp } from "../../mocks/hubcrm/src/index.js";
 import { createBillingApp } from "../../mocks/billing/src/server.js";
@@ -75,7 +76,7 @@ function runBackfill(env: Record<string, string>): Promise<{ code: number; out: 
       {
         cwd: INGEST_DIR,
         timeout: 60_000,
-        env: { ...process.env, DATABASE_URL: dbUrl, ALLOW_DEV_SECRETS: "1", ...env },
+        env: cliEnv({ DATABASE_URL: dbUrl, ALLOW_DEV_SECRETS: "1", ...env }),
       },
       (err, stdout, stderr) => {
         if (err && typeof err.code !== "number") return reject(err);
@@ -206,7 +207,7 @@ describe("a configured deployment can still run its own reconcile", () => {
         {
           cwd: INGEST_DIR,
           timeout: 60_000,
-          env: { ...process.env, DATABASE_URL: dbUrl, ALLOW_DEV_SECRETS: "1", ...env, __args: undefined } as NodeJS.ProcessEnv,
+          env: cliEnv({ DATABASE_URL: dbUrl, ALLOW_DEV_SECRETS: "1", ...env, __args: undefined }),
         },
         (err, stdout, stderr) => {
           if (err && typeof err.code !== "number") return reject(err);

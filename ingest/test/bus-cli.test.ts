@@ -5,6 +5,7 @@ import type { Server } from "node:http";
 import type pg from "pg";
 import { createCasebusApp, type CasebusApp } from "../../mocks/casebus/src/index.js";
 import { freshTestDb } from "./helpers/testdb.js";
+import { cliEnv } from "./helpers/child-env.js";
 import {
   captureDetectingRun,
   expectGapDisclosure,
@@ -68,14 +69,13 @@ function runCli(
       {
         cwd: INGEST_DIR,
         timeout: 30_000,
-        env: {
-          ...process.env,
+        env: cliEnv({
           DATABASE_URL: dbUrl,
           INGEST_SOURCES: "casebus",
           CASEBUS_BASE_URL: baseUrl,
           ALLOW_DEV_SECRETS: "1",
           ...extraEnv,
-        },
+        }),
       },
       (err, stdout, stderr) => {
         if (err && typeof err.code !== "number") return reject(err);
