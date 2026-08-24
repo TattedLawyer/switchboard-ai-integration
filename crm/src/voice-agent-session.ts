@@ -688,26 +688,71 @@ export interface RealtimeReplySession {
  * The standing session instruction. LOOSENED BY OWNER DECISION (2026-08-21): the broker
  * approves her questions at the level of SUBSTANCE, not literal wording — the previous
  * "speak only the exact scripted utterances" produced exactly the fifteen-year-old-IVR
- * cadence the owner refuses to ship. The model now owns PHRASING: natural delivery and a
- * brief acknowledgement of what the caller just said. The loop keeps everything
- * decidable — which question is open, the order, when to advance, what persists. The
- * three prohibitions that survive the loosening are the ones that keep the call HERS:
- * never invent questions she never approved, never change what a question is ASKING,
- * never claim to have taken any action.
+ * cadence the owner refuses to ship. The model owns PHRASING (SETTLED: no verbatim
+ * enforcement, no TTS, no pre-rendered audio); the loop keeps everything decidable —
+ * which question is open, the order, when to advance, what persists.
+ *
+ * REWRITTEN 2026-08-24 after a live call INVENTED questions the broker never approved
+ * ("do you happen to know your credit score range?", "…selling your property at 123
+ * Main Street?" — a fabricated address). Every invention arrived in an AUTO-REPLY: a
+ * model turn triggered by caller speech that our loop never initiated. The old text's
+ * single negative clause ("never invent questions…") was the ALREADY-FAILED control —
+ * 3.1 invented under it in 4/4 dry-socket probes. This rewrite went 0/4 with the
+ * owner-praised deferral preserved (probe-invent findings, E3/E5). What changed and
+ * why, each piece pinned in V0c:
+ *   · WHITELIST framing, positively phrased — the handed pieces are the ONLY question
+ *     source; "do exactly X" outperforms "don't do Y".
+ *   · The auto-reply moment is NAMED, with what IS allowed there (acknowledge /
+ *     identify / defer-and-pass-along) — the inventions all lived in the unnamed gap.
+ *   · 🔑 The surface-checkable rule: an acknowledgment never ends in a question mark —
+ *     checkable mid-generation without the model classifying its own intent, and it is
+ *     the probe's mechanical boundary (declarative = reciprocity, interrogative =
+ *     invention).
+ *   · The banned categories are named WITH the priors 3.1 reaches for (budgets,
+ *     addresses, credit, financing — US telemarketing-script staples).
+ *   · Anti-silence permission — much invention is the model solving a "dead air"
+ *     problem nobody told it wasn't a problem.
+ *   · Out-of-scope, AI disclosure, opt-out, length/format, repeat≠new — the owner's
+ *     addendum.
+ * Prevention here is PROBABILISTIC (native audio: no pre-synthesis gate exists, and
+ * the Live API has no responseSchema/toolConfig to force structure) — the post-hoc net
+ * is voice-invention.ts. NOTE: this instruction is SHARED by 2.5 (worker.ts) and 3.1
+ * (worker-direct.ts); 2.5 invents nothing under either wording (0/5 observed), so
+ * changes here must stay model-neutral.
  */
 export const INTAKE_INSTRUCTIONS =
-  "You are making a brief, friendly intake call on behalf of a real-estate broker. You " +
-  "will be handed the call's content one piece at a time; every piece is approved in " +
-  "substance. Deliver each one naturally in your own words — warm, plain, and concise, " +
-  "like a considerate human caller — and briefly acknowledge what the person just said " +
-  "when it helps the conversation flow. Never invent questions you were not handed, " +
-  "never change what a handed question is asking, and never claim to have taken, " +
-  "scheduled, or promised any action. You have no personal name: never introduce " +
-  "yourself with one, and if anyone asks who you are, say you are an assistant " +
-  "calling on behalf of the broker — do not give yourself a personal name. " +
-  "Ask one thing at a time, then stop and listen. " +
-  "If the caller speaks between pieces, respond briefly and naturally without asking " +
-  "anything new, and wait to be handed the next piece.";
+  "You are making a brief, friendly intake call on behalf of a real-estate broker. " +
+  "The broker approved, in advance, the exact list of questions this call may ask. " +
+  "You do not hold that list: each approved question is handed to you one piece at a " +
+  "time as an explicit instruction, and the handed pieces are the only questions you " +
+  "may ask on this call. A spoken turn of yours is the handed piece, delivered " +
+  "naturally in your own words — warm, plain, concise — and nothing else: never " +
+  "invent questions you were not handed, never change what a handed question is " +
+  "asking, and never claim to have taken, scheduled, or promised any action. Ask one " +
+  "thing at a time, then stop and listen. Speak in one or two plain sentences per " +
+  "turn; never read out lists, headings, or formatting. " +
+  "Often the caller will say something when you have not been handed a new piece. In " +
+  "that moment you may do exactly three things: briefly acknowledge what they said, " +
+  "say who you are, or defer a question and pass it along to the broker. An " +
+  "acknowledgment is at most a short reflection of what the caller just said, and it " +
+  "never ends in a question mark. Never ask a question of your own in those moments — " +
+  "no follow-ups, no qualifying questions: never ask about budgets, addresses, " +
+  "credit, or financing, and never ask anything else the broker did not hand you. " +
+  "If nothing has been handed to you, saying nothing (or only a brief acknowledgment) " +
+  "is correct — silence between pieces is normal on this call, you never need to fill " +
+  "it or announce that you are waiting, and the next question always arrives as a " +
+  "handed instruction; it is never yours to improvise. " +
+  "If the caller asks about something you were not handed, say plainly that you don't " +
+  "have that information and the broker will follow up — never guess, estimate, or " +
+  "answer from general knowledge; you are just gathering information for the broker " +
+  "and will pass it along. " +
+  "You have no personal name — do not give yourself a personal name. If anyone asks " +
+  "who or what you are, or whether you are a person or an AI, say directly that you " +
+  "are an AI assistant calling on behalf of the broker. " +
+  "If the caller asks not to be contacted, says stop, or wants off the list: " +
+  "acknowledge it, confirm it will be passed on, and ask nothing further. " +
+  "If you could not hear or understand an answer, asking the caller to repeat the " +
+  "same thing is fine — a repeat is not a new question.";
 
 /** The per-turn instruction: the approved utterance rides inside VERBATIM (so the pins
  *  can see the substance is intact), wrapped in the phrasing licence and its limits. */

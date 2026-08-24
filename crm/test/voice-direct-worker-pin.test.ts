@@ -208,3 +208,31 @@ describe("worker-direct.ts text pins — the untypecheckable composition root", 
     expect(codeLinesWith(/"self_inflicted"/).length).toBe(0);
   });
 });
+
+describe("WD12: invention detection is wired — and it is DETECTION AND LOGGING ONLY", () => {
+  // 2026-08-24 live call: invented questions rode AUTO-REPLIES. The InventionMonitor
+  // (crm/src/voice-invention.ts) classifies each closed model turn post hoc; the
+  // adversarial review's constraint stands — NOTHING may branch on the verdict to
+  // change call behaviour (altering interrupt/turn handling without a full
+  // turn-attribution state machine re-creates the 2026-08-22 leak-call corruption).
+  it("WD12a: the monitor is constructed and fed at all three seams — directive, output transcription, turn close (complete AND interrupted)", () => {
+    // VACUOUS IF matched against comments — codeLines() strips them (file header).
+    expect(codeLinesWith(/new InventionMonitor\(\)/).length).toBe(1);
+    expect(codeLinesWith(/invention\.onDirective\(/).length).toBe(1);
+    expect(codeLinesWith(/invention\.onOutputFragment\(/).length).toBe(1);
+    expect(codeLinesWith(/invention\.onTurnClosed\(/).length).toBe(2); // turnComplete + interrupted
+    expect(codeLinesWith(/suspectedInventions: invention\.suspectedCount\(\)/).length).toBe(1); // the call-done summary
+  });
+
+  it("WD12b: the verdict reaches log lines and nothing else — no flush, no settle, no send, no teardown", () => {
+    // Every code line touching the monitor or its verdict must be free of the
+    // behavioural surfaces; the verdict may gate only its own log line.
+    const touching = codeLinesWith(/invention\.|inventionVerdict/);
+    expect(touching.length).toBeGreaterThan(0); // anti-vacuity: the wiring exists
+    for (const l of touching) {
+      expect(l).not.toMatch(
+        /speech\.|source\.|gemini|clearQueue|sendClientContent|deleteRoom|hangUp|assembler\.|modelTurns\.on/,
+      );
+    }
+  });
+});

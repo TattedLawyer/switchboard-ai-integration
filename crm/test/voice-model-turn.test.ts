@@ -159,3 +159,58 @@ describe("ModelTurnTracker — per-turn playout accounting, capped deadlines, in
     expect(t.onTurnComplete()?.generationToTurnCompleteLagMs).toBeUndefined();
   });
 });
+
+describe("MT8: directive attribution — was this turn OURS or the model's own? (the invention-detection seam)", () => {
+  // 2026-08-24 live call (touch 2f7ecfae): every invented question arrived in an
+  // AUTO-REPLY — a model turn with NO directive since the previous turn closed. The
+  // tracker already holds both clocks (lastDirectiveSentAt, the turn's firstAudioAt);
+  // these pins make the attribution a per-turn fact on the summary so the detector
+  // (voice-invention.ts) never re-derives it from a second seam.
+  it("MT8a: a turn whose first audio follows OUR directive reports directivePreceded: true", () => {
+    // VACUOUS IF directivePreceded were hardcoded true — MT8b red-teams the inverse.
+    const clock = makeClock(1_000);
+    const t = new ModelTurnTracker(clock.now);
+    t.onDirectiveSent();
+    clock.set(1_500);
+    t.onAudioFrame(800);
+    clock.set(2_300);
+    expect(t.onTurnComplete()).toMatchObject({ directivePreceded: true });
+  });
+
+  it("MT8b: an AUTO-REPLY — a turn opening with no directive since the last turn closed — reports directivePreceded: false", () => {
+    // THE LIVE-CALL SHAPE: directive → scripted turn → caller speaks → auto-reply.
+    // VACUOUS IF the tracker only checked `lastDirectiveSentAt !== undefined` (the
+    // once-per-call reading): the directive HERE was sent, consumed by turn 1, and
+    // must not solicit turn 2.
+    const clock = makeClock(1_000);
+    const t = new ModelTurnTracker(clock.now);
+    t.onDirectiveSent(); // +43.6s on the live call
+    clock.set(1_500);
+    t.onAudioFrame(800); // the scripted turn it solicited
+    clock.set(2_300);
+    expect(t.onTurnComplete()).toMatchObject({ directivePreceded: true });
+    clock.set(3_000);
+    t.onCallerFragment(); // caller speaks; the server generates on its own
+    clock.set(3_400);
+    t.onAudioFrame(600); // the auto-reply — the invention channel
+    clock.set(4_000);
+    expect(t.onTurnComplete()).toMatchObject({ directivePreceded: false });
+  });
+
+  it("MT8c: an interrupted auto-reply carries the same attribution on its aborted summary", () => {
+    // The 87.0s credit turn's sibling: an aborted invention must still be attributable,
+    // or the detector goes blind exactly when the loop cut the turn short.
+    const clock = makeClock(1_000);
+    const t = new ModelTurnTracker(clock.now);
+    t.onDirectiveSent();
+    clock.set(1_500);
+    t.onAudioFrame(800);
+    clock.set(2_300);
+    t.onTurnComplete();
+    clock.set(5_000);
+    t.onAudioFrame(400); // auto-reply opens
+    clock.set(5_100);
+    const reading = t.onInterrupted();
+    expect(reading.abortedTurn).toMatchObject({ directivePreceded: false });
+  });
+});

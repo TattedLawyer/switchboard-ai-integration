@@ -569,11 +569,16 @@ describe("V0: the agent never invents an identity", () => {
     expect(INTAKE_INSTRUCTIONS).toMatch(/never claim to have taken/);
   });
 
-  it("stays short — leak frequency rises with prompt length (livekit/agents#5662)", () => {
-    // A hard ceiling, not a style note: the standing instruction is sent as
-    // `setup.systemInstruction` on EVERY call, and long system prompts are the reported
-    // condition for Gemini 2.5 over SIP reciting them to the caller.
-    expect(INTAKE_INSTRUCTIONS.length).toBeLessThan(1_200);
+  it("stays bounded — leak frequency rises with prompt length (livekit/agents#5662)", () => {
+    // PIN DELIBERATELY RAISED 2026-08-24, from 1_200 to 3_000: the invention incident
+    // (live call, touch 2f7ecfae — unapproved credit-score and fabricated-address
+    // questions) forced the tight rewrite, whose whitelist framing + named auto-reply
+    // moment + banned categories measured 0/4 invention vs 4/4 under the short text
+    // (probe-invent findings E3/E5). The #5662 leak was reported on the PLUGIN path
+    // (2.5 over SIP); the direct-socket path carries ONE copy of the instruction and
+    // survived its own leak call (2026-08-23). The ceiling stays as a tripwire against
+    // unbounded growth, not as the old 1_200 which the safety content now exceeds.
+    expect(INTAKE_INSTRUCTIONS.length).toBeLessThan(3_000);
   });
 });
 
@@ -824,5 +829,76 @@ describe("V9: say reports DELIVERY — the voiced-at time is the library's, neve
       delivered: true,
       voicedAt: 555_666,
     });
+  });
+});
+
+describe("V0c: the 2026-08-24 invention incident — the standing instruction whitelists, names the auto-reply moment, and bans the priors", () => {
+  // 🔴 PROVEN ON A LIVE CALL (touch 2f7ecfae): 3.1 asked the owner "do you happen to
+  // know your credit score range?" and "are you still thinking of selling your property
+  // at 123 Main Street?" — questions `crm.questions` does not contain, voiced in
+  // AUTO-REPLIES (model turns our loop never initiated). The old instruction's single
+  // negative clause ("never invent questions") was the ALREADY-FAILED control: 3.1
+  // invented in 4/4 dry-socket runs under it. The tight rewrite below went 0/4 with the
+  // owner's deferral preserved (probe-invent findings, E3/E5). These pins hold the
+  // load-bearing sentences; phrasing around them stays the model's (SETTLED: substance
+  // not verbatim).
+  it("whitelist framing, positively phrased: handed pieces are the ONLY questions", () => {
+    // mutation: reword to the old "never invent" negative alone -> red.
+    expect(INTAKE_INSTRUCTIONS).toMatch(/only questions you may ask/i);
+  });
+
+  it("the auto-reply moment is NAMED, with what the model may do there", () => {
+    // The inventions all lived in the unnamed gap — caller speaks, nothing handed. The
+    // instruction must name that moment and enumerate what is allowed in it.
+    expect(INTAKE_INSTRUCTIONS).toMatch(/not been handed a new piece/i);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/acknowledge/i);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/pass (it|their question) along/i);
+  });
+
+  it("🔑 the surface-checkable rule: an acknowledgment never ends in a question mark", () => {
+    // Stronger than "never invent questions" because the model can check it
+    // mid-generation without classifying its own intent — declarative = reciprocity,
+    // interrogative = invention (the probe's mechanical boundary, Q4).
+    expect(INTAKE_INSTRUCTIONS).toMatch(/never ends in a question mark/i);
+  });
+
+  it("the banned categories are NAMED with examples — the priors 3.1 reaches for", () => {
+    // credit, "123 Main Street", budget, buy-or-rent, consent-to-record: all US
+    // telemarketing-script staples the model pattern-completes. Naming them beats the
+    // generic prohibition that already failed.
+    expect(INTAKE_INSTRUCTIONS).toMatch(/budget/i);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/address/i);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/credit/i);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/financing/i);
+  });
+
+  it("anti-silence permission: nothing handed means silence is CORRECT, not a problem to solve", () => {
+    // Much invention is the model solving a problem we never told it wasn't a problem.
+    expect(INTAKE_INSTRUCTIONS).toMatch(/silence between pieces is normal/i);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/saying nothing/i);
+  });
+
+  it("out-of-scope policy: don't have it, broker follows up, never guess", () => {
+    expect(INTAKE_INSTRUCTIONS).toMatch(/broker will follow up/i);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/never guess/i);
+  });
+
+  it("AI disclosure: asked person-or-AI, it says AI assistant, directly", () => {
+    expect(INTAKE_INSTRUCTIONS).toMatch(/AI assistant/);
+  });
+
+  it("opt-out: stop means acknowledge, confirm pass-on, and ask nothing further", () => {
+    expect(INTAKE_INSTRUCTIONS).toMatch(/not to be contacted/i);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/nothing further/i);
+  });
+
+  it("length/format: one or two spoken sentences, never read out lists or formatting", () => {
+    expect(INTAKE_INSTRUCTIONS).toMatch(/one or two/i);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/lists/i);
+  });
+
+  it("repeat ≠ new question: re-asking the SAME thing is allowed", () => {
+    expect(INTAKE_INSTRUCTIONS).toMatch(/repeat/i);
+    expect(INTAKE_INSTRUCTIONS).toMatch(/not a new question/i);
   });
 });

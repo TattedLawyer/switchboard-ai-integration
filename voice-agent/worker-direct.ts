@@ -127,6 +127,7 @@ import {
 } from "../crm/src/voice-direct-events.js";
 import { TurnAssembler } from "../crm/src/voice-direct-turns.js";
 import { ModelTurnTracker } from "../crm/src/voice-model-turn.js";
+import { InventionMonitor } from "../crm/src/voice-invention.js";
 import { DirectSpeechChannel } from "../crm/src/voice-direct-speech.js";
 import { PreVerdictGate } from "../crm/src/voice-direct-gates.js";
 import { SerialQueue, ownedPcm16FromBase64 } from "../crm/src/voice-direct-pcm.js";
@@ -422,6 +423,15 @@ export default defineAgent({
       // behaviour. Same Date.now as the assembler and the speech channel: one
       // clock, compared only against itself.
       const modelTurns = new ModelTurnTracker(() => Date.now());
+      // The invention net (voice-invention.ts): joins each model turn's output
+      // transcription, classifies it against the tracker's directive attribution and
+      // the open approved question, and counts SUSPECTED INVENTIONS for the call-done
+      // line. 2026-08-24 live call: unapproved credit-score and fabricated-address
+      // questions rode AUTO-REPLIES. 🚨 DETECTION AND LOGGING ONLY (pinned, WD12):
+      // nothing branches on a verdict to change call behaviour — the adversarial
+      // review proved that altering interrupt/turn handling without a full
+      // turn-attribution state machine re-creates the 2026-08-22 leak-call corruption.
+      const invention = new InventionMonitor();
 
       const finals: TimedTranscript[] = [];
       let wake: (() => void) | null = null;
@@ -449,6 +459,7 @@ export default defineAgent({
             );
           }
           modelTurns.onDirectiveSent();
+          invention.onDirective(turn.turns[0]?.parts[0]?.text ?? "");
           // Wall stamp only — the delta to any following `interrupted` is the
           // msSinceDirective field on that event's own log line.
           log("send-directive");
@@ -525,7 +536,9 @@ export default defineAgent({
             break;
           case "outputTranscription":
             // The AGENT's words — the delivery record. Logged in full: this is what
-            // proves on a live call that only approved substance was voiced.
+            // proves on a live call that only approved substance was voiced. The
+            // invention net accumulates the same fragments per turn.
+            invention.onOutputFragment(ev.text);
             log("transcript-out", ev.text);
             break;
           case "interrupted": {
@@ -538,6 +551,15 @@ export default defineAgent({
             // line and nothing else — no flush policy, no settle change, this phase.
             const reading = modelTurns.onInterrupted();
             speech.onInterrupted();
+            const inventionVerdict = invention.onTurnClosed(
+              reading.abortedTurn?.directivePreceded ?? false,
+            );
+            if (inventionVerdict?.flagged === true) {
+              log("SUSPECTED-INVENTION", {
+                trigger: "interrupted",
+                interrogatives: inventionVerdict.interrogatives,
+              });
+            }
             log("interrupted", {
               classification: reading.classification,
               msSinceDirective: reading.msSinceDirective,
@@ -571,6 +593,15 @@ export default defineAgent({
             // released here and must find the gate already clear.
             const modelTurn = modelTurns.onTurnComplete();
             speech.onTurnComplete();
+            const inventionVerdict = invention.onTurnClosed(
+              modelTurn?.directivePreceded ?? false,
+            );
+            if (inventionVerdict?.flagged === true) {
+              log("SUSPECTED-INVENTION", {
+                trigger: "turn-complete",
+                interrogatives: inventionVerdict.interrogatives,
+              });
+            }
             // generationToTurnCompleteLagMs is the number that validates (or
             // refutes) turnComplete ≈ firstAudio + audioMs on the live telephony
             // leg — currently an n=2 dry-socket estimate.
@@ -582,6 +613,7 @@ export default defineAgent({
                     firstAudioAt: modelTurn.firstAudioAt,
                     audioMs: Math.round(modelTurn.audioMs),
                     audioParts: modelTurn.audioParts,
+                    directivePreceded: modelTurn.directivePreceded,
                     generationToTurnCompleteLagMs: modelTurn.generationToTurnCompleteLagMs,
                   }),
             });
@@ -956,6 +988,7 @@ export default defineAgent({
         reached: report.reachedOrdinal,
         captureErrors: outQueue.errorCount(),
         framesIn,
+        suspectedInventions: invention.suspectedCount(),
       });
     } finally {
       // Connection hygiene only — NO persistence lives here (#2157: this block may

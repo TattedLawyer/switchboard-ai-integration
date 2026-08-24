@@ -72,6 +72,13 @@ export interface ModelTurnSummary {
   /** turnComplete minus generationComplete, when the latter was observed — the number
    *  that confirms or refutes `turnComplete ≈ firstAudio + audioMs` on a real call. */
   generationToTurnCompleteLagMs?: number;
+  /** Was this turn OURS — did a directive land between the previous turn's close and
+   *  this turn's first audio? FALSE is the auto-reply channel: the model generating on
+   *  its own off caller speech, which is where every invented question on the
+   *  2026-08-24 live call lived (probe-invent findings). Stamped at turn OPEN, so an
+   *  interrupted turn carries it on its aborted summary too. Feeds the invention
+   *  detector (voice-invention.ts) — DETECTION AND LOGGING ONLY. */
+  directivePreceded: boolean;
 }
 
 /** What an `interrupted` looked like from here — REPORTING ONLY this phase. */
@@ -91,6 +98,7 @@ interface InFlightTurn {
   audioMs: number;
   audioParts: number;
   generationCompleteAt: number | undefined;
+  directivePreceded: boolean;
 }
 
 export class ModelTurnTracker {
@@ -99,6 +107,12 @@ export class ModelTurnTracker {
   private turn: InFlightTurn | undefined;
   private lastDirectiveSentAt: number | undefined;
   private lastCallerEvidenceAt: number | undefined;
+  /** When the previous turn closed (turnComplete OR interrupted) — the left edge of
+   *  the attribution test: a directive solicits the NEXT turn only if it was sent at
+   *  or after this stamp. Without it, `lastDirectiveSentAt !== undefined` would be a
+   *  once-per-call reading and every auto-reply after the first directive would count
+   *  as ours (MT8b's vacuity condition). */
+  private lastTurnClosedAt: number | undefined;
 
   constructor(now: () => number, opts?: { capMs?: number }) {
     this.now = now;
@@ -126,6 +140,12 @@ export class ModelTurnTracker {
         audioMs: durationMs,
         audioParts: 1,
         generationCompleteAt: undefined,
+        // Stamped at OPEN, not at close: an interrupted turn (the loop cutting an
+        // auto-reply short) must still be attributable on its aborted summary.
+        directivePreceded:
+          this.lastDirectiveSentAt !== undefined &&
+          (this.lastTurnClosedAt === undefined ||
+            this.lastDirectiveSentAt >= this.lastTurnClosedAt),
       };
       return true;
     }
@@ -147,10 +167,12 @@ export class ModelTurnTracker {
     const t = this.turn;
     if (t === undefined) return undefined;
     this.turn = undefined;
+    this.lastTurnClosedAt = this.now();
     return {
       firstAudioAt: t.firstAudioAt,
       audioMs: t.audioMs,
       audioParts: t.audioParts,
+      directivePreceded: t.directivePreceded,
       ...(t.generationCompleteAt !== undefined
         ? { generationToTurnCompleteLagMs: this.now() - t.generationCompleteAt }
         : {}),
