@@ -196,6 +196,18 @@ export interface ScriptedVoiceSession {
    *  hold the surface open for the rest of the call (see
    *  CALLER_TURN_EXTENSION_MAX_AGE_MS). */
   callerTurnStartedAt?(): number | undefined;
+  /** OPTIONAL — the energy eye (Fix A, 2026-08-24, the fix-25 hangup): a MONOTONIC
+   *  count of caller-evidence windows from `CallerEnergyEvidence.evidenceWindows()`
+   *  — windows of sustained CLEAR speech-level energy on the inbound leg (rms >= the
+   *  evidence bar, not during our own playout, consecutive — the rule lives in
+   *  voice-caller-energy.ts). The loop SNAPSHOTS this at answer-window open and
+   *  re-reads it at the expiry decision: movement means the caller audibly spoke
+   *  inside THIS window even though no transcript ever arrived (on the live call
+   *  Gemini returned zero transcript-in while the meter measured the owner at rms
+   *  0.0511–0.0905), so the expiry must not be counted as caller silence. SECONDARY
+   *  evidence only: it never fabricates an answer, never advances the script's
+   *  bindings, and a session without this eye takes the pre-fix behaviour verbatim. */
+  callerEnergyEvidenceWindows?(): number;
 }
 
 export interface IntakeDeps {
@@ -435,8 +447,17 @@ async function runApprovedScript(
     // optional eyes never extends: `extensionGrant` returns 0 and this loop is the
     // pre-fix loop verbatim.
     let openTurnAtExpiry = false;
+    let energyHeardAtExpiry = false;
     if (windowOpen && !gotAnswer) {
       const waitStarted = now();
+      // The energy eye's per-window snapshot (Fix A): evidence is judged INSIDE this
+      // window only — movement of the monotonic counter between open and expiry. A
+      // caller who spoke during an EARLIER window must not silence-proof this one
+      // (E7's third-window pin), and a session without the eye reads 0 > 0 = false —
+      // the pre-fix behaviour verbatim.
+      const energyAtOpen = deps.session.callerEnergyEvidenceWindows?.() ?? 0;
+      const energyHeard = (): boolean =>
+        (deps.session.callerEnergyEvidenceWindows?.() ?? 0) > energyAtOpen;
       const openTurnEvidence = (t: number): boolean => {
         if (deps.session.modelTurnDeadline?.() !== undefined) return true;
         const cs = deps.session.callerTurnStartedAt?.();
@@ -495,25 +516,41 @@ async function runApprovedScript(
         budget = ANSWER_WATCHDOG_MS + extended - (now() - waitStarted);
       }
       if (!gotAnswer) {
+        // Fix A: the energy verdict is taken HERE, once, at the same decision point
+        // that stamps the expiry line — the counter is monotonic, so this read sees
+        // everything the window heard. NO extension path rides on energy (a design
+        // choice, recorded): the caller's speech is already fully heard by the model
+        // side; what energy proves is only that the silence VERDICT would be false.
+        energyHeardAtExpiry = energyHeard();
         deps.instrument?.("answer-window-expiry", {
           ordinal: i + 1,
           at: now(),
           extendedTotalMs: extended,
           modelTurnInFlight: deps.session.modelTurnDeadline?.() !== undefined,
           callerTurnOpen: deps.session.callerTurnStartedAt?.() !== undefined,
-          countedSilence: !openTurnAtExpiry,
+          energyEvidence: energyHeardAtExpiry,
+          countedSilence: !openTurnAtExpiry && !energyHeardAtExpiry,
         });
       }
     }
     if (gotAnswer) {
       consecutiveSilences = 0;
-    } else if (openTurnAtExpiry) {
+    } else if (openTurnAtExpiry || energyHeardAtExpiry) {
       // The invariant's second clause: a bound expiry with a turn still open is NOT
       // caller silence — the caller may be mid-answer behind a finalize that never
       // came (the live call counted two of these against a caller who answered both
       // times, one short of the dead-line hangup). Not RESET either: an open model
       // turn is not proof a person is there — the count simply does not move on
       // evidence this ambiguous, and the extension cap already bounded the wait.
+      //
+      // Fix A widens this clause to the energy eye: a window in which the meter
+      // heard SUSTAINED CLEAR caller speech (fix-25: the owner talking at rms
+      // 0.0511–0.0905 with zero transcript-in) is not caller silence either —
+      // `countedSilence` is not set and MAX_CONSECUTIVE_SILENCES does not advance.
+      // Same conservative posture: no RESET (energy is secondary evidence, not an
+      // answer), and the honest-death property narrows exactly as reviewed (F4): a
+      // broken call with no caller evidence of ANY kind still counts its silences,
+      // publishes nothing, and wedges for reconcile.
     } else {
       // The watchdog, and the re-ask bound: a silent window OR an ordinal whose every
       // ask attempt failed to deliver counts as exactly ONE silence — the script

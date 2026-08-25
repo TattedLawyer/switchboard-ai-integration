@@ -29,7 +29,9 @@
 // sustained-run counters exist because a barge-in gate would NEED them — measuring
 // them now is how a later gate gets designed from data instead of guesses — but that
 // gate is a separate, unapproved decision and no flag or threshold in this file feeds
-// back into the pump.
+// back into the pump. (Fix A, 2026-08-24: the closed windows this module emits ARE
+// now consumed as SECONDARY caller evidence — the decision lives in
+// voice-caller-energy.ts, with its own separately-tunable threshold, never here.)
 //
 // ── THE CALIBRATION PROBLEM, honestly ────────────────────────────────────────────────
 // Our inbound leg is 8kHz-codec telephony (PCMU/PCMA through the SIP bridge) upsampled

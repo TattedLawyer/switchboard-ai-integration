@@ -431,3 +431,36 @@ describe("directScriptedSpeech — the stale-pair ignore and audio-cancels-death
     expect(ignored).toEqual([]); // nothing was ignored: the guard fired, honestly
   });
 });
+
+describe("directScriptedSpeech — caller ENERGY as secondary evidence (Fix A, fix-25)", () => {
+  it("DS19: no frames + sustained clear caller energy within the grace window — barge-in report, not death", async () => {
+    // The fix-25 defect at the channel: the owner was TALKING (meter: rms 0.0511 /
+    // 0.0905 / 0.0516, clear) and Gemini returned ZERO transcript-in — so
+    // onCallerFragment never fired and every no-audio path could only die or wait.
+    // Energy must satisfy the SAME evidence test the fragment does. VACUOUS IF the
+    // energy were fed before turnComplete (that is DS20's pre-seen path): feeding it
+    // while the grace clock runs is what proves the awaiting-evidence path consults
+    // it.
+    const { clock, channel } = harness({ graceMs: 5_000 });
+    const p = channel.say("Which areas are you considering?");
+    clock.set(1_743); // past the stale-pair window: a GENUINE zero-audio turn
+    channel.onTurnComplete(); // no audio: the death clock starts…
+    channel.onCallerEnergy(); // …and the caller's measured voice stops it
+    await expect(p).resolves.toEqual({ delivered: false, partial: false });
+  });
+
+  it("DS20: energy evidence can ONLY produce delivered:false — pre-seen energy + a zero-audio turn settles barge-in, never delivered", async () => {
+    // The review's hard constraint: delivered:true requires MODEL frames; a dead
+    // output path with a chatty caller must never be reported as delivered. Same
+    // terminal event as DS2 (which dies) — with energy already seen it reports the
+    // barge-in shape, and toEqual pins that no delivered:true and no fabricated
+    // voicedAt ride along. VACUOUS IF a frame were fed (DS1's delivered path would
+    // mask the pin), or if the assertion allowed extra fields.
+    const { clock, channel } = harness({ graceMs: 30 });
+    const p = channel.say("When are you hoping to move?");
+    channel.onCallerEnergy(); // the meter heard the caller before the turn settled
+    clock.set(1_743); // past the stale-pair window: a GENUINE zero-audio turn
+    channel.onTurnComplete();
+    await expect(p).resolves.toEqual({ delivered: false, partial: false });
+  });
+});

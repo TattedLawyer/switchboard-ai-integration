@@ -132,6 +132,7 @@ import { DirectSpeechChannel } from "../crm/src/voice-direct-speech.js";
 import { PreVerdictGate } from "../crm/src/voice-direct-gates.js";
 import { SerialQueue, ownedPcm16FromBase64 } from "../crm/src/voice-direct-pcm.js";
 import { AudioEnergyMeter } from "../crm/src/voice-audio-energy.js";
+import { CallerEnergyEvidence } from "../crm/src/voice-caller-energy.js";
 import {
   accumulateUsage,
   priceCall,
@@ -792,14 +793,35 @@ export default defineAgent({
       // caller words belong in crm.answers under the broker's grants, never stdout.
       // The threshold is PROVISIONAL and env-tunable: the meter's first job is to
       // MEASURE this telephony leg so a real threshold can be chosen from data
-      // (calibration section, crm/src/voice-audio-energy.ts). Observation only — a
-      // barge-in gate is a separate, unapproved decision, and nothing the meter
-      // returns feeds back into the pump.
+      // (calibration section, crm/src/voice-audio-energy.ts). The meter itself still
+      // decides nothing, and no frame is ever dropped or rerouted on energy — but as
+      // of Fix A (2026-08-24, the fix-25 hangup) its closed windows feed the
+      // CallerEnergyEvidence tracker below, whose verdicts are SECONDARY caller
+      // evidence: they can keep an answer window from being counted as silence and
+      // settle a no-audio say as barge-in (delivered:false only — never delivered,
+      // never an answer). A barge-in gate on the AUDIO remains a separate, unapproved
+      // decision.
       const energy = new AudioEnergyMeter({
         sampleRate: GEMINI_IN_RATE,
         ...(process.env.VOICE_ENERGY_SPEECH_RMS !== undefined &&
         process.env.VOICE_ENERGY_SPEECH_RMS !== ""
           ? { speechRmsThreshold: Number(process.env.VOICE_ENERGY_SPEECH_RMS) }
+          : {}),
+      });
+      // Fix A: the evidence decision over the meter's windows (rms >= 0.02, clear of
+      // our own playout, 2 consecutive — crm/src/voice-caller-energy.ts, where the
+      // live calibration is recorded). Env-tunable at THIS edge because the numbers
+      // are high-confidence on this trunk and only moderate across carriers; the crm
+      // module never reads process.env (same shape as VOICE_ENERGY_SPEECH_RMS and
+      // VOICE_STALE_TC_WINDOW_MS above).
+      const callerEnergy = new CallerEnergyEvidence({
+        ...(process.env.VOICE_ENERGY_EVIDENCE_RMS !== undefined &&
+        process.env.VOICE_ENERGY_EVIDENCE_RMS !== ""
+          ? { rmsThreshold: Number(process.env.VOICE_ENERGY_EVIDENCE_RMS) }
+          : {}),
+        ...(process.env.VOICE_ENERGY_EVIDENCE_WINDOWS !== undefined &&
+        process.env.VOICE_ENERGY_EVIDENCE_WINDOWS !== ""
+          ? { consecutiveWindows: Number(process.env.VOICE_ENERGY_EVIDENCE_WINDOWS) }
           : {}),
       });
       let energyMeterErrors = 0;
@@ -843,6 +865,20 @@ export default defineAgent({
                   speech: w.speechLike,
                   run: w.speechRun,
                   playout: Number(w.playoutFraction.toFixed(2)),
+                });
+              }
+              // Fix A: the evidence tracker consumes every closed window. A firing
+              // window is the caller AUDIBLY SPEAKING clear of our playout — fed to
+              // the speech channel as barge-in-grade evidence (delivered:false paths
+              // only) and visible to the intake loop through the seam's energy eye.
+              // Levels and counts only, and inside the same never-kill-the-pump try.
+              if (callerEnergy.onWindow(w)) {
+                speech.onCallerEnergy();
+                log("energy-evidence", {
+                  w: w.index,
+                  ms: w.endMs,
+                  rms: Number(w.rms.toFixed(4)),
+                  evidenceWindows: callerEnergy.evidenceWindows(),
                 });
               }
             }
@@ -928,6 +964,11 @@ export default defineAgent({
         // assembler's open-turn stamp (age-bounded there).
         modelTurnDeadline: () => modelTurns.sendWaitDeadline(),
         callerTurnStartedAt: () => assembler.openTurnStartedAt(),
+        // Fix A's energy eye: the loop snapshots this monotonic count at answer-window
+        // open and re-reads it at expiry — movement means the caller audibly spoke
+        // inside the window (fix-25: rms 0.0511–0.0905 with ZERO transcript-in), so
+        // the expiry is not counted as caller silence.
+        callerEnergyEvidenceWindows: () => callerEnergy.evidenceWindows(),
       };
 
       const report = await runIntakeCall(job, verdict.category, {

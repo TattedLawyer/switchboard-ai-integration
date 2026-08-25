@@ -388,6 +388,25 @@ export class DirectSpeechChannel {
     }
   }
 
+  /** Sustained CLEAR caller energy fired (Fix A, 2026-08-24): the worker's evidence
+   *  tracker (voice-caller-energy.ts — rms >= the evidence bar, not during our own
+   *  playout, consecutive windows) heard the caller SPEAKING. On the fix-25 call the
+   *  owner talked at rms 0.0511–0.0905 while Gemini returned ZERO transcript-in, so
+   *  `onCallerFragment` never fired and the no-audio paths could only die — energy is
+   *  the SAME evidence through a channel the model cannot silently drop. Identical
+   *  contract to the fragment, deliberately: only consulted on the no-frames paths,
+   *  and it can only ever produce `delivered:false` — `delivered:true` requires MODEL
+   *  frames (the review's hard constraint: a dead output path with a chatty caller is
+   *  a barge-in-shaped failure, never a delivery). */
+  onCallerEnergy(): void {
+    const p = this.pending;
+    if (p === undefined) return;
+    p.callerEvidence = true;
+    if (p.awaitingEvidence && p.firstFrameAt === undefined) {
+      this.settle(p, { delivered: false, partial: false });
+    }
+  }
+
   /** The socket closed. Latches the channel (see the header) and rejects any pending
    *  say — even a clean 1000: nothing can arrive any more. */
   onClosed(code: number, reason: string): void {
