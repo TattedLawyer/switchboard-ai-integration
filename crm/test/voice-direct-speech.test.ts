@@ -64,8 +64,9 @@ describe("directScriptedSpeech — arm, one DirectiveTurn, race events against t
     // generation that never made sound — reporting it delivered is the fabricated
     // report the contract bans. VACUOUS IF caller evidence were fed (that is DS5's
     // barge-in path): silence on BOTH sides is what makes this a death.
-    const { channel } = harness({ graceMs: 30 });
+    const { clock, channel } = harness({ graceMs: 30 });
     const p = channel.say("When are you hoping to move?");
+    clock.set(1_743); // past the stale-pair window: a GENUINE zero-audio turn (DS16/DS18 pin the stale case)
     channel.onTurnComplete(); // no frames ever
     await expect(p).rejects.toThrow(/no audio/i);
   });
@@ -102,8 +103,9 @@ describe("directScriptedSpeech — arm, one DirectiveTurn, race events against t
     // than a synchronous check. VACUOUS IF the fragment were fed before turnComplete:
     // the grace path (evidence arriving while the death timer runs) would never
     // execute, and deleting the grace wait entirely would still pass.
-    const { channel } = harness({ graceMs: 5_000 });
+    const { clock, channel } = harness({ graceMs: 5_000 });
     const p = channel.say("What is your timeline?");
+    clock.set(1_743); // past the stale-pair window: a GENUINE zero-audio turn, not the aborted pair's trailing TC
     channel.onTurnComplete(); // no audio: the death clock starts…
     channel.onCallerFragment(); // …and the caller's own voice stops it
     await expect(p).resolves.toEqual({ delivered: false, partial: false });
@@ -296,5 +298,136 @@ describe("directScriptedSpeech — the model-turn gate and arm-at-send", () => {
     await expect(p).rejects.toThrow(/1007/);
     expect(sent).toHaveLength(0); // still nothing on the wire
     await expect(channel.say("Again?")).rejects.toThrow(/socket/i);
+  });
+});
+
+// ─── DS16–DS18: the stale-pair ignore (B1) and audio-cancels-death (B2) — the two
+// defects that killed three live calls ("maybe the worst call yet") ─────────────────
+//
+// The measured mechanism: Gemini pairs every `interrupted` with a trailing bare
+// `turnComplete` ~1ms later — the ABORTED turn's finalize, not anyone's fresh turn
+// (both live stale TCs lacked the per-turn summary fields: the tracker had already
+// closed the turn inside onInterrupted). When the loop's re-ask directive departs in
+// the same tick as the interrupt (ab-25: interrupted +28859 → send-directive +28859 →
+// bare turn-complete +28860; w-p1: +97062 → +97063 → +97063), the channel read the
+// aborted turn's trailing TC as "the re-ask completed with zero audio", started the
+// grace clock, and threw the honest death — on calls whose aborted turns had 2440ms
+// and 1680ms of audio, and (w-p1) with the re-ask's OWN audio flowing before the
+// grace even expired. Two fixes, pinned separately:
+//   · B1: a no-frames turnComplete arriving inside the stale window after OUR OWN
+//     send is the aborted turn's trailing finalize — ignored, and LOGGED with its
+//     delta (review finding F3: the window's basis is thin — stale deltas 1ms live
+//     n=2, 1–5ms dry; fastest GENUINE first audio 743ms — so every ignore must
+//     produce validation data).
+//   · B2: the grace-expiry callback consults `firstFrameAt` — audio that reached the
+//     output path while the grace clock ran CANCELS the death (the live error "no
+//     audio ever reached the output path" was factually false on w-p1).
+function staleHarness(opts?: {
+  watchdogMs?: number;
+  graceMs?: number;
+  clockStart?: number;
+  staleTurnCompleteWindowMs?: number;
+}) {
+  const sent: DirectiveTurn[] = [];
+  const ignored: Array<Record<string, unknown>> = [];
+  const clock = makeClock(opts?.clockStart ?? 1_000);
+  const channel = new DirectSpeechChannel(
+    { sendDirective: (t) => void sent.push(t) },
+    {
+      now: clock.now,
+      watchdogMs: opts?.watchdogMs ?? 5_000,
+      graceMs: opts?.graceMs ?? 30,
+      ...(opts?.staleTurnCompleteWindowMs !== undefined
+        ? { staleTurnCompleteWindowMs: opts.staleTurnCompleteWindowMs }
+        : {}),
+      onStaleTurnCompleteIgnored: (info: unknown) =>
+        void ignored.push(info as Record<string, unknown>),
+    },
+  );
+  return { sent, ignored, clock, channel };
+}
+
+describe("directScriptedSpeech — the stale-pair ignore and audio-cancels-death", () => {
+  it("DS16: ab-25 replay — the aborted turn's trailing bare turnComplete 1ms after our re-ask's send is IGNORED and logged; the genuine response still delivers", async () => {
+    // The first live kill sequence, verbatim deltas. VACUOUS IF the grace window were
+    // not allowed to pass in REAL time before the genuine turn is fed — a fast
+    // synchronous settle would mask the death path entirely (the old code only threw
+    // when the grace timer actually fired); and VACUOUS IF the `ignored` log were
+    // unasserted — an ignore that produces no validation data fails review finding
+    // F3, which is half the fix.
+    const { sent, ignored, clock, channel } = staleHarness({ graceMs: 30, clockStart: 28_000 });
+    // The say the caller talked over (live: `interrupted` at +28859)…
+    const p1 = channel.say("What budget range are you working with?");
+    clock.set(28_859);
+    channel.onInterrupted();
+    await expect(p1).resolves.toEqual({ delivered: false, partial: false });
+    // …the loop re-asks in the same tick (live: send-directive at +28859)…
+    const p2 = channel.say("What budget range are you working with?");
+    expect(sent).toHaveLength(2);
+    // …and the ABORTED turn's trailing turnComplete lands 1ms later, bare (live
+    // +28860, queuedCallerTurn:false, NO per-turn summary fields — the tracker had
+    // already closed the turn at the interrupt). The old code read it as "the
+    // re-ask completed with zero audio" and started the death clock.
+    clock.set(28_860);
+    channel.onTurnComplete();
+    // Let the grace window pass in REAL time: survival must be the fix, not a lucky
+    // fast settle.
+    await new Promise((r) => setTimeout(r, 90));
+    // Every ignored TC is logged with its delta-since-send and the pending-say state
+    // — the data that validates (or moves) the window from live calls.
+    expect(ignored).toEqual([
+      {
+        msSinceSend: 1,
+        utterance: "What budget range are you working with?",
+        awaitingEvidence: false,
+        callerEvidence: false,
+      },
+    ]);
+    // The genuine re-ask response: fastest measured first audio was 743ms post-send.
+    clock.set(29_602);
+    channel.onAudioFrame();
+    clock.set(31_299);
+    channel.onTurnComplete();
+    await expect(p2).resolves.toEqual({ delivered: true, voicedAt: 29_602 });
+  });
+
+  it("DS17: w-p1 replay — audio reaching the output path while the grace clock runs CANCELS the death and settles delivered with the first-frame stamp", async () => {
+    // B1 is DISABLED here (window 0) to reproduce the live sequence EXACTLY as the
+    // grace path saw it — and to prove B2 survives the kill ALONE, even where the
+    // window misjudges a stale TC as genuine. Live w-p1: send +97063 → stale TC
+    // +97063 → model-turn-open +97806 (full transcript-out, generation-complete
+    // +98282) → grace expiry ~98563 threw "no audio ever reached the output path"
+    // with the agent's own audio on the line. VACUOUS IF the frame were fed BEFORE
+    // the turnComplete — that is DS1's ordinary delivered path and the grace
+    // callback would never run; the frame must land while the death clock is
+    // already running.
+    const { clock, channel } = staleHarness({
+      graceMs: 40,
+      clockStart: 97_063,
+      staleTurnCompleteWindowMs: 0,
+    });
+    const p = channel.say("When are you hoping to move?");
+    clock.set(97_064);
+    channel.onTurnComplete(); // taken at face value: zero audio, the death clock starts
+    clock.set(97_806);
+    channel.onAudioFrame(); // the re-ask's audio flows BEFORE the grace expires
+    // The grace timer fires in real time; its expiry must consult firstFrameAt.
+    await expect(p).resolves.toEqual({ delivered: true, voicedAt: 97_806 });
+  });
+
+  it("DS18: a GENUINE zero-audio turnComplete — beyond the stale window, no frames, no caller evidence — still reaches the honest death", async () => {
+    // The guard's real purpose survives B1/B2: a generation that truly made no sound
+    // is still a death, never delivered:true. The clock advances 743ms — the fastest
+    // GENUINE response time ever measured, comfortably beyond the stale window — so
+    // this TC cannot be mistaken for the aborted turn's trailing finalize. VACUOUS
+    // IF the clock were NOT advanced past the window (that is DS16's ignored case —
+    // the death here would then prove nothing about the window's boundary), or if
+    // caller evidence were fed (that is DS5's barge-in path).
+    const { ignored, clock, channel } = staleHarness({ graceMs: 30, clockStart: 1_000 });
+    const p = channel.say("Hello?");
+    clock.set(1_743);
+    channel.onTurnComplete();
+    await expect(p).rejects.toThrow(/no audio/i);
+    expect(ignored).toEqual([]); // nothing was ignored: the guard fired, honestly
   });
 });

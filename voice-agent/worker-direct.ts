@@ -472,6 +472,18 @@ export default defineAgent({
         // tracker's estimate + absolute cap. The worker injects the tracker — this
         // wiring is the plumbing half of the 2026-08-23 self-interrupt fix.
         turnGate: { sendWaitDeadline: () => modelTurns.sendWaitDeadline() },
+        // The stale-pair window (B1 — voice-direct-speech.ts
+        // STALE_TURN_COMPLETE_WINDOW_MS): env-tunable at THIS edge because the
+        // window's measured basis is thin (review F3) — the channel itself never
+        // reads process.env. Same shape as VOICE_ENERGY_SPEECH_RMS below.
+        ...(process.env.VOICE_STALE_TC_WINDOW_MS !== undefined &&
+        process.env.VOICE_STALE_TC_WINDOW_MS !== ""
+          ? { staleTurnCompleteWindowMs: Number(process.env.VOICE_STALE_TC_WINDOW_MS) }
+          : {}),
+        // F3's other half: EVERY ignored stale turnComplete becomes a log line with
+        // its delta-since-send and pending-say state — the data that validates (or
+        // moves) the window from live calls.
+        onStaleTurnCompleteIgnored: (info) => log("stale-turn-complete-ignored", info),
       });
 
       // ─── AMD: the installed detector against the stand-in host ────────────────────

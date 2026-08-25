@@ -43,6 +43,43 @@ import {
 } from "./voice-agent-session.js";
 import { directiveTurn, type DirectiveTurn } from "./voice-direct-events.js";
 
+/** THE STALE-PAIR WINDOW (B1, 2026-08-24 — the fix for three live kills): Gemini pairs
+ *  every `interrupted` with the ABORTED turn's trailing bare `turnComplete` ~1ms later.
+ *  When the loop's re-ask directive departs in the same tick as the interrupt (live
+ *  ab-25: interrupted +28859 → send-directive +28859 → bare turn-complete +28860; live
+ *  w-p1: +97062 → +97063 → +97063 — both stale TCs LACKED the per-turn summary fields,
+ *  because the tracker had already closed the turn inside `onInterrupted`), this
+ *  channel used to read that trailing TC as "the fresh say completed with zero audio"
+ *  and throw the honest death on a line that was fine. So: a NO-FRAMES `turnComplete`
+ *  arriving strictly less than this many ms after OUR OWN send is the aborted turn's
+ *  finalize, not ours — ignored, and LOGGED (see `onStaleTurnCompleteIgnored`).
+ *
+ *  Measured basis, stated because it is THIN (review finding F3): stale deltas 1ms
+ *  (live, n=2) and 1–5ms (dry socket); the fastest GENUINE first audio ever measured
+ *  arrived 743ms post-send, and every other genuine response was ≥743ms (767 / 812 /
+ *  841 / 2888 / 3394ms). The nearest genuine ZERO-AUDIO observation is n=1 with
+ *  unpreserved raw output — hence the window is env-tunable at the worker edge
+ *  (VOICE_STALE_TC_WINDOW_MS → `staleTurnCompleteWindowMs`) and EVERY ignored TC is
+ *  logged with its delta so live data validates or moves it.
+ *
+ *  ACCEPTED WORST CASE, stated plainly: a falsely-ignored GENUINE zero-audio TC does
+ *  not kill the call and does not fabricate a delivery — the say simply keeps waiting
+ *  under SPEAK_WATCHDOG_MS (30s) and then settles honestly through the watchdog path.
+ *  But that is up to 30 seconds of dead air in the caller's ear before the channel
+ *  admits the turn made no sound. */
+export const STALE_TURN_COMPLETE_WINDOW_MS = 300;
+
+/** What the channel reports for every turnComplete it ignores as the stale pair's
+ *  trailing finalize — the F3 telemetry that turns the thin measured basis above into
+ *  live validation data. The worker logs one line per ignore. */
+export interface StaleTurnCompleteIgnored {
+  /** Delta from OUR send to this turnComplete — stale pairs measured 1ms live. */
+  msSinceSend: number;
+  utterance: string;
+  awaitingEvidence: boolean;
+  callerEvidence: boolean;
+}
+
 /** What this channel needs from the worker's socket plumbing: the ability to put ONE
  *  DirectiveTurn on the wire. Structural on purpose (the containment rule) — the worker
  *  passes a closure over `session.sendClientContent`, tests pass an array-push. */
@@ -81,6 +118,14 @@ export interface DirectSpeechChannelOptions {
    *  the pre-gate behaviour, kept for fakes that model no server pacing. The WORKER
    *  always injects the tracker; that wiring is the plumbing half of this fix. */
   turnGate?: ModelTurnGate;
+  /** The stale-pair window (see `STALE_TURN_COMPLETE_WINDOW_MS`, the default). The
+   *  worker injects the env override here — this module never reads `process.env`
+   *  (the file-header doctrine). 0 disables the ignore entirely. */
+  staleTurnCompleteWindowMs?: number;
+  /** REVIEW-MANDATED (F3): called for EVERY turnComplete ignored as stale, with the
+   *  delta-since-send and the pending-say state. The worker wires this to its log —
+   *  the window's validation data comes from these lines. */
+  onStaleTurnCompleteIgnored?: (info: StaleTurnCompleteIgnored) => void;
 }
 
 /** The per-say bookkeeping. One of these exists exactly while a say is in flight. */
@@ -94,6 +139,9 @@ interface PendingSay {
    *  misattribution the live log caught at +119.37s: the deferral's frames stamped a
    *  say armed mid-flight, polluting askedAt for a question nobody heard begin). */
   sent: boolean;
+  /** The clock at the send (stamped in `armAndSend`, same synchronous tick as the
+   *  directive hitting the wire) — the reference point for the stale-pair window. */
+  sentAt: number | undefined;
   firstFrameAt: number | undefined;
   callerEvidence: boolean;
   /** Set when a terminal event said "no audio is coming" and the grace clock started —
@@ -115,6 +163,8 @@ export class DirectSpeechChannel {
   private readonly graceMs: number;
   private readonly instruction: (utterance: string) => string;
   private readonly turnGate: ModelTurnGate | undefined;
+  private readonly staleTurnCompleteWindowMs: number;
+  private readonly onStaleTurnCompleteIgnored: ((info: StaleTurnCompleteIgnored) => void) | undefined;
   private pending: PendingSay | undefined;
   /** The latch. Once set, no directive ever leaves this channel again. */
   private dead: { message: string } | undefined;
@@ -126,6 +176,9 @@ export class DirectSpeechChannel {
     this.graceMs = opts?.graceMs ?? BARGE_IN_GRACE_MS;
     this.instruction = opts?.instruction ?? speakTurnInstruction;
     this.turnGate = opts?.turnGate;
+    this.staleTurnCompleteWindowMs =
+      opts?.staleTurnCompleteWindowMs ?? STALE_TURN_COMPLETE_WINDOW_MS;
+    this.onStaleTurnCompleteIgnored = opts?.onStaleTurnCompleteIgnored;
   }
 
   /**
@@ -158,6 +211,7 @@ export class DirectSpeechChannel {
         reject,
         utterance,
         sent: false,
+        sentAt: undefined,
         firstFrameAt: undefined,
         callerEvidence: false,
         awaitingEvidence: false,
@@ -243,6 +297,7 @@ export class DirectSpeechChannel {
       p.sendWaitTimer = undefined;
     }
     p.sent = true;
+    p.sentAt = this.now();
     this.host.sendDirective(directiveTurn(this.instruction(p.utterance)));
     p.watchdogTimer = setTimeout(() => this.onWatchdog(), this.watchdogMs);
   }
@@ -296,6 +351,24 @@ export class DirectSpeechChannel {
     if (p.firstFrameAt !== undefined) {
       this.settle(p, { delivered: true, voicedAt: p.firstFrameAt });
     } else {
+      // B1 — the stale-pair ignore (see STALE_TURN_COMPLETE_WINDOW_MS): a no-frames
+      // turnComplete this soon after OUR OWN send is the ABORTED turn's trailing
+      // finalize riding behind an `interrupted`, not this say's completion — the
+      // misread that killed three live calls. Ignored here IN THE CHANNEL (the
+      // worker must keep feeding the assembler and the tracker every turnComplete),
+      // and reported on every ignore (F3). Worst case accepted and stated at the
+      // constant: a falsely-ignored genuine zero-audio TC waits under
+      // SPEAK_WATCHDOG_MS (30s) and then settles honestly — up to 30s of dead air.
+      const msSinceSend = p.sentAt === undefined ? undefined : this.now() - p.sentAt;
+      if (msSinceSend !== undefined && msSinceSend < this.staleTurnCompleteWindowMs) {
+        this.onStaleTurnCompleteIgnored?.({
+          msSinceSend,
+          utterance: p.utterance,
+          awaitingEvidence: p.awaitingEvidence,
+          callerEvidence: p.callerEvidence,
+        });
+        return;
+      }
       this.awaitEvidenceOrDie(
         p,
         `utterance ${JSON.stringify(p.utterance)} silently failed: the turn completed ` +
@@ -362,7 +435,24 @@ export class DirectSpeechChannel {
     if (p.graceTimer === undefined) {
       p.graceTimer = setTimeout(() => {
         if (this.pending !== p) return;
-        if (p.callerEvidence) {
+        // B2 (2026-08-24): audio that reached the output path while the grace clock
+        // ran CANCELS the death — on live w-p1 the re-ask's audio flowed at +97806,
+        // fully inside the grace window, and the old expiry threw "no audio ever
+        // reached the output path" with the agent's own audio on the line. Frames
+        // first, matching onTurnComplete and onWatchdog: the existing delivered
+        // semantics, no new SpeechDelivery state (runApprovedScript branches on
+        // `delivered || partial` with no exhaustive switch — a new variant would
+        // silently route into the re-ask path).
+        //
+        // KNOWN AND ACCEPTED LIMITATION (F7): `onAudioFrame` stamps ANY post-send
+        // frame, so the audio cancelling this death can be the model's AUTO-REPLY
+        // rather than the re-ask's own voicing. That is the pre-existing
+        // delivery-attribution shape of this channel (substance-not-verbatim is
+        // settled); wiring the tracker's `directivePreceded` into settle is a
+        // SEPARATE, later decision — not taken here.
+        if (p.firstFrameAt !== undefined) {
+          this.settle(p, { delivered: true, voicedAt: p.firstFrameAt });
+        } else if (p.callerEvidence) {
           this.settle(p, { delivered: false, partial: false });
         } else {
           this.fail(p, new Error(`${p.deathReason} (no caller evidence within ${this.graceMs}ms)`));
