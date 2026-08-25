@@ -145,4 +145,43 @@ describe("buildDirectConnectConfig — the proof call's winning config, language
       outputAudioTranscription: {},
     });
   });
+
+  it("E8: emits thinkingConfig EXACTLY as asked — the thinking-off dead-air fix for 2.5 native audio", () => {
+    // Dynamic thinking is ON by default on gemini-2.5-flash-native-audio-preview-12-2025
+    // and spends ~40-90 thought tokens per turn on per-turn instruction-compliance
+    // planning — ~0.8-0.9s of dead air per model turn, ~1.7s per Q&A (probe-thinking
+    // findings, 15 runs). `thinkingBudget: 0` is the SDK's documented DISABLED value.
+    // VACUOUS IF asserted merely truthy: a misspelled field ("thinking_budget", an enum
+    // key instead of a number) still connects and silently leaves thinking ON — exact
+    // deep equality pins the wire spelling (genai.d.ts ThinkingConfig, dist:13155-13164).
+    const cfg = buildDirectConnectConfig({
+      systemInstruction: "prompt",
+      thinkingConfig: { thinkingBudget: 0 },
+    });
+    expect(cfg.thinkingConfig).toEqual({ thinkingBudget: 0 });
+    // NEITHER thinkingLevel NOR includeThoughts ships: there is no useful middle
+    // setting (budget 512 keeps full thinking-step latency; MINIMAL behaves identically
+    // to off) — the deep-key scan pins their absence at runtime, the keyof pin in src
+    // makes them a compile error.
+    expect(keysDeep(cfg)).not.toContain("thinkingLevel");
+    expect(keysDeep(cfg)).not.toContain("includeThoughts");
+  });
+
+  it("E9: absent thinking input ⇒ NO thinkingConfig key, even with every OTHER input present — the fail-safe pin", () => {
+    // Must red if the emit ever becomes unconditional. E7 pins the bare default shape;
+    // this one is built with voiceName AND the VAD block present so an implementation
+    // that keys thinking off any other input (or always emits it) cannot pass — 3.1 and
+    // any future model must keep their default thinking untouched until measured.
+    // VACUOUS IF built bare (that shape is already E7's) or asserted with toBeFalsy
+    // (`undefined`-valued key vs absent key is the point, same doctrine as E5).
+    const cfg = buildDirectConnectConfig({
+      systemInstruction: "prompt",
+      voiceName: "Puck",
+      automaticActivityDetection: {
+        endOfSpeechSensitivity: "END_SENSITIVITY_HIGH",
+        silenceDurationMs: 500,
+      },
+    });
+    expect("thinkingConfig" in cfg).toBe(false);
+  });
 });

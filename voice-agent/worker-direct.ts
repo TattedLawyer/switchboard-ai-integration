@@ -168,6 +168,48 @@ const TELEPHONY_VAD_3_1: DirectAutomaticActivityDetection = {
   silenceDurationMs: 500,
 };
 
+/** Thinking OFF for 2.5 native audio — the measured dead-air fix (probe-thinking,
+ *  15 runs, findings.md 2026-08).
+ *
+ *  MEASURED: dynamic thinking is ON by default on
+ *  gemini-2.5-flash-native-audio-preview-12-2025 and spends ~40-90 thought tokens per
+ *  turn; all 33 captured thought summaries were per-turn instruction-compliance
+ *  planning ("which rule applies, then how to execute it") — no factual reasoning.
+ *  Cost: ~0.8-0.9s of dead air per model turn (~1.7s per Q&A) — the one remaining
+ *  complaint on the best call (10/10 answers, $0.0488). With thinkingBudget: 0:
+ *  0 invented questions across 6 off-family runs, and the graceful deferral, the AI
+ *  disclosure, the acknowledgment-never-ends-in-"?" rule and the 1-2 sentence limit
+ *  ALL survived. Token cost of thinking is irrelevant (~4.4% of the call) — latency is
+ *  the whole reason.
+ *
+ *  🚨 TWO OBSERVED REGRESSIONS — real costs of thinking off, watch for them on live
+ *  calls:
+ *    1. GARBLED CALLER SPEECH GETS MISCLASSIFIED. With thinking off, unintelligible
+ *       audio was read as an out-of-scope QUESTION 2/5 off-family runs (0/5 with
+ *       thinking on) — the agent deferred and ABANDONED the open question instead of
+ *       asking the caller to repeat. This is OUR live risk specifically: the telephony
+ *       leg garbles constantly ("Makati" → `mka` in crm.answers; "BGC" → "DC" on an
+ *       earlier call), and the probes used clean synthetic audio — the phone leg will
+ *       produce MORE of exactly the input that triggers this.
+ *    2. AUDIBLE FRAGMENTS AT CALLER PAUSES. With thinking on, its dead time absorbs a
+ *       VAD misfire silently; with it off the model can voice a fragment before being
+ *       interrupted ("Pretty good,") — audible talk-over, the signature the owner
+ *       explicitly disliked on 3.1.
+ *
+ *  NO USEFUL MIDDLE SETTING: thinkingBudget: 512 keeps full thinking-step latency, and
+ *  thinkingLevel MINIMAL behaves identically to off. It is binary — so the revert path
+ *  is the env override below (VOICE_THINKING_BUDGET=-1 restores the model default,
+ *  AUTOMATIC dynamic thinking, live without a rebuild), never a smaller budget.
+ *
+ *  Parsed HERE at the worker's edge — the crm module never reads process.env (same
+ *  doctrine as VOICE_STALE_TC_WINDOW_MS and the energy thresholds). Gated on the model
+ *  id at the call site exactly like TELEPHONY_VAD_3_1 and the rate-card selection:
+ *  only the model these numbers were measured on gets its thinking touched. */
+const THINKING_BUDGET_2_5 =
+  process.env.VOICE_THINKING_BUDGET !== undefined && process.env.VOICE_THINKING_BUDGET !== ""
+    ? Number(process.env.VOICE_THINKING_BUDGET)
+    : 0;
+
 /** Gemini Live's audio contract, AgenticYap-verified and spike-proven: PCM16 mono,
  *  16 kHz up, 24 kHz down. The FFI resamples natively on both legs (AudioStream takes a
  *  target rate; AudioSource(24000) hands the 24k->Opus48k step to rtc-node), so no JS
@@ -682,6 +724,10 @@ export default defineAgent({
         // 3.1 ONLY — the telephony commit-hang fix (measurements and the 1007 hazard
         // on the TELEPHONY_VAD_3_1 const above). 2.5's turn detection is untouched.
         ...(VOICE_MODEL.includes("3.1") ? { automaticActivityDetection: TELEPHONY_VAD_3_1 } : {}),
+        // 2.5 ONLY — thinking off, the measured dead-air fix (numbers and BOTH observed
+        // regressions on the THINKING_BUDGET_2_5 const above). Any other model keeps
+        // its default thinking until measured.
+        ...(VOICE_MODEL.includes("2.5") ? { thinkingConfig: { thinkingBudget: THINKING_BUDGET_2_5 } } : {}),
       });
       // `tools` is stripped structurally, not cast: it is undefined here by
       // construction (no tools this step), and the mirror's tool grammar deliberately

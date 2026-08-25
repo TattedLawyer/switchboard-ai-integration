@@ -235,4 +235,33 @@ describe("WD12: invention detection is wired — and it is DETECTION AND LOGGING
       );
     }
   });
+
+});
+
+describe("WD13: thinking OFF for 2.5 native audio — model-gated, env-overridable at the edge", () => {
+  it("WD13: the builder receives thinkingConfig through the 2.5 model gate, the budget is parsed from VOICE_THINKING_BUDGET at the worker's edge, and no unshipped thinking field is on a code line", () => {
+    // The gate expression at the call site, same shape as WD9's VAD gate: a
+    // SPREAD-gated input keyed on the model id (the same `.includes(...)` the VAD
+    // tuning and the call-cost rate-card selection use) — deleting the ternary or
+    // inlining the block ungated reds this line. VACUOUS IF matched against full text
+    // (the comments name every one of these symbols) — codeLines() only, per the
+    // file header, and the payload rides INSIDE the gate regex so a gate kept while
+    // the payload moves out of it cannot pass.
+    expect(
+      codeLinesWith(
+        /\.\.\.\(VOICE_MODEL\.includes\("2\.5"\)\s*\?\s*\{ thinkingConfig: \{ thinkingBudget: THINKING_BUDGET_2_5 \} \}/,
+      ).length,
+    ).toBe(1);
+    // The env override is parsed at the worker's edge (the crm module never reads
+    // process.env — same doctrine as VOICE_STALE_TC_WINDOW_MS and the energy
+    // thresholds): the live revert path. VOICE_THINKING_BUDGET=-1 restores the model
+    // default (dynamic thinking) without a rebuild; there is NO useful middle value
+    // (see the const's comment), so the override IS the whole revert story.
+    expect(codeLinesWith(/Number\(process\.env\.VOICE_THINKING_BUDGET\)/).length).toBe(1);
+    expect(codeLinesWith(/process\.env\.VOICE_THINKING_BUDGET/).length).toBeGreaterThan(1);
+    // CODE-line negatives (the comments must stay free to name them): thinkingLevel
+    // and includeThoughts are measured-useless here and are NOT shipped.
+    expect(codeLinesWith(/thinkingLevel/).length).toBe(0);
+    expect(codeLinesWith(/includeThoughts/).length).toBe(0);
+  });
 });

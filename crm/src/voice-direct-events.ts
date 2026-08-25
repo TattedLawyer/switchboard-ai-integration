@@ -177,6 +177,19 @@ export interface DirectRealtimeInputConfig {
   automaticActivityDetection: DirectAutomaticActivityDetection;
 }
 
+/**
+ * Thinking control, mirrored plain (genai.d.ts ThinkingConfig, dist:13155-13164:
+ * `thinkingBudget?: number` — "0 is DISABLED. -1 is AUTOMATIC"). Exactly ONE field on
+ * purpose: the installed declarations also carry `thinkingLevel` and `includeThoughts`,
+ * and NEITHER ships — probe-thinking measured no useful middle setting (budget 512
+ * keeps full thinking-step latency; thinkingLevel MINIMAL behaves identically to off),
+ * and thought summaries in the response are a diagnostic we do not consume. The keyof
+ * pin at the bottom of this file makes adding either a red typecheck.
+ */
+export interface DirectThinkingConfig {
+  thinkingBudget: number;
+}
+
 /** The connect config the worker hands to `ai.live.connect`. Exactly the winning
  *  call's shape (PROOF-spike.ts:102-124): audio out, the system prompt, BOTH-side
  *  transcription (the raw replacement for the plugin's transcription events AND the
@@ -192,6 +205,7 @@ export interface DirectConnectConfig {
   speechConfig?: DirectSpeechConfig;
   tools?: DirectToolDeclaration[];
   realtimeInputConfig?: DirectRealtimeInputConfig;
+  thinkingConfig?: DirectThinkingConfig;
 }
 
 export interface DirectConnectConfigInput {
@@ -205,6 +219,11 @@ export interface DirectConnectConfigInput {
    *  entirely (byte-identical config to the pre-tuning shape) — 2.5 commits in 2-4s
    *  today and its default turn detection must not change. */
   automaticActivityDetection?: DirectAutomaticActivityDetection;
+  /** Thinking control (the 2.5 dead-air fix — measurements at the worker's constant).
+   *  OPTIONAL, and when absent `thinkingConfig` is OMITTED entirely — every model not
+   *  asked for keeps its default thinking, and the config stays byte-identical to
+   *  today's (E9 pins this against ALL other inputs being present). */
+  thinkingConfig?: DirectThinkingConfig;
 }
 
 /** Build the connect config. A projection, not a merge: only the three inputs above can
@@ -226,6 +245,9 @@ export function buildDirectConnectConfig(input: DirectConnectConfigInput): Direc
     config.realtimeInputConfig = {
       automaticActivityDetection: input.automaticActivityDetection,
     };
+  }
+  if (input.thinkingConfig !== undefined) {
+    config.thinkingConfig = { thinkingBudget: input.thinkingConfig.thinkingBudget };
   }
   return config;
 }
@@ -266,3 +288,10 @@ const _endSensitivityIsPinnedLiteral: Equals<
   "END_SENSITIVITY_HIGH"
 > = true;
 void _endSensitivityIsPinnedLiteral;
+
+/** The thinking block carries EXACTLY `thinkingBudget` — adding `thinkingLevel` or
+ *  `includeThoughts` (both present in the installed declarations, both measured
+ *  useless here: 512 keeps full thinking-step latency, MINIMAL ≡ off) breaks this
+ *  line at typecheck, the same guard class as the VAD key pin above. */
+const _thinkingCarriesOnlyBudget: Equals<keyof DirectThinkingConfig, "thinkingBudget"> = true;
+void _thinkingCarriesOnlyBudget;
