@@ -26,8 +26,8 @@ directing an agent fleet under an evidence-gated process — is described in
    exactly one read-only tool (anything else is rejected by the protocol layer,
    and a test pins that), and the assistant's database connection runs as a
    **read-only Postgres role** — a write is refused by the database itself, also
-   pinned by tests. The approval-gated action and richer behavioral safety
-   testing are being built in Phase 3.
+   pinned by tests. Approval-gated action is built and running — see
+   [autonomous outreach](#what-was-built-on-top-of-this-autonomous-outreach).
 
 Anyone can verify the claims: one command (`./scripts/demo.sh`) runs the entire
 system and produces the report. No accounts, no API keys, nothing to sign up for.
@@ -38,6 +38,17 @@ both the data generators (DEMO-prefixed ids/names, example.com emails only) and
 a scan of every tracked file in the repo for real-looking emails or PII-shaped
 records. Real client work can't be published, so this project shows the same
 engineering on data you can inspect freely.
+
+## Contents
+
+| | |
+|---|---|
+| [The problem, in plain English](#the-problem-in-plain-english) | Why systems that don't talk cost you deals |
+| [One pipeline, many businesses](#the-horizontal-thesis-one-pipeline-many-businesses) | Four integration paradigms, not a hundred bespoke connectors |
+| [What's built and working today](#whats-built-and-working-today-phases-02b) | Run it yourself: `./scripts/demo.sh` |
+| [Autonomous outreach](#what-was-built-on-top-of-this-autonomous-outreach) | The commercial layer, and the evidence it works |
+| [How this was built](#how-this-was-built) | One engineer directing an agent fleet, under an evidence gate |
+| [For engineers](#for-engineers) | Architecture, stack, and where the specs live |
 
 ## The horizontal thesis: one pipeline, many businesses
 
@@ -190,12 +201,88 @@ reporting a clean run.
 | Unified mart is conservative | dbt + oracle | `customer_360` = 26 rows (20 canonical + 6 incomplete-flagged); 8 companies joined across all three systems |
 | Suite | `npm test` + dbt | 1041 tests green across nine workspaces (incl. 6 seeded fast-check properties); 101 dbt build steps (15 models, 3 seeds, 83 data tests) — `PASS=100 WARN=1 ERROR=0`, the one warn deliberate and mechanically pinned (see below) |
 
-## What's coming (built in phases, in public)
+## What was built on top of this: autonomous outreach
 
-- **Phase 3 — Agent depth:** one carefully-bounded write action behind human
-  approval with a full audit trail, plus an evaluation suite for report quality.
-- **Phase 4 — Operations:** monitoring dashboards, alerting, a live deployment,
-  and a demo video.
+The pipeline above solves half the problem — getting data out of systems that
+don't talk. The other half is doing something with it.
+
+**Proven on a live call, end to end:** the system dialled, ran a ten-question
+intake by phone, transcribed the recording, wrote the summary, and delivered it —
+on a call that failed mid-way and still produced a complete record. The engine
+adds three more workspaces on top of the nine here, taking the suite to 2,416
+tests, and went through four independent adversarial design reviews before a line
+of it was written.
+
+A broker spends a week meeting people and comes home with a stack of business
+cards. The details end up in four places that don't speak to each other: the
+cards themselves, her phone's contacts, a spreadsheet, her calendar. Two weeks
+later she has called none of them, and half the cards are somewhere in a bag.
+
+So this pipeline now carries an outreach engine. It reaches out to contacts on
+its own cadence, runs the intake conversation by phone, writes down what was
+said, and drafts the proposal. Every outbound action — every call, every email —
+is proposed by the system, approved by a human, and only then executed.
+
+That is the horizontal thesis again, one layer up. The paradigms above cover how
+a system tells you something changed; the outreach engine covers what a business
+does next, and the answer is the same shape for a broker, a clinic, or a law
+firm: reach the person, ask the questions, write down the answers, send the
+document.
+
+**This part is not public.** It is built for a live client engagement, the loop is
+proven end to end on real calls, and the implementation is a commercial product
+rather than a portfolio piece. What follows is what it does and how it was
+proven.
+
+### The engineering, in brief
+
+- **Propose → approve → execute.** No autonomous action reaches a real person
+  without a human decision in between. The approval record is the audit trail.
+- **Boundaries enforced by the database, not by prompts.** What each component
+  may write is a Postgres privilege. A component that tries to exceed its remit
+  gets a permission error, not a polite refusal — the same doctrine as the
+  read-only role above, applied throughout.
+- **Append-only records.** Answers and transcripts are INSERT and SELECT only.
+  Nothing can rewrite what a caller said.
+- **The system states what it doesn't know.** A record names the questions that
+  went unanswered rather than filling the gap.
+
+### A defect worth describing
+
+The voice model's live transcription dropped and corrupted answers without
+raising an error. On one measured call it delivered no transcript for four of ten
+questions, while an independent audio-energy meter recorded 2.4 to 4.0 seconds of
+continuous speech in each of those windows. The summary that reached the client
+said the caller "did not answer" questions he had answered aloud. On another call
+it rendered "30 to 40 million pesos" as "40 million facebooks."
+
+You can spot a missing answer. You cannot spot a wrong one that reads well, which
+is why the second failure matters more than the first.
+
+The diagnosis took instrumenting the answer window and reading the vendor's own
+issue tracker: it is a known, unfixed defect in streaming transcription, not a
+bug in the calling code. The fix was to stop trusting the live stream for the
+record — the call is transcribed afterwards, in one batch pass over the audio,
+and that transcript becomes the authoritative account. Batch transcription
+doesn't hit the defect, and it can be given context the live stream cannot
+accept, which is what recovers place names an 8kHz phone line mangles.
+
+### How it was verified before it was built
+
+Four independent adversarial reviews, on two different models, read the design
+against the code before a line was written. Between them they found: a migration
+missing a column-level grant that would have made the feature write nothing at
+all; an idempotency key that would have made it dead code on every call it
+existed for; a synchronisation step that didn't synchronise; and a retry loop
+with no consumer. Each would have cost a live call to discover.
+
+Every test was checked against a broken build before it was trusted: remove the
+guard, watch the test go red, put the guard back. A test that passes whether or
+not the code works tells you nothing.
+
+## What's coming
+
+- **Operations:** monitoring dashboards, alerting, a live deployment.
 
 ## How this was built
 
@@ -279,8 +366,8 @@ single `raw.raw_events` (`(tenant_id, source, event_id)` unique) → dbt: 9 stag
 recursive canonical walk → 3-tier `identity_resolution` with provenance →
 `manual_review` incremental) → `customer_360` mart → MCP server (official TS SDK,
 `READ_TOOLS` allowlist + rejection-text eval) → report worker (scripted MCP client
-calls + LLM narrative — true agentic tool selection lands in Phase 3;
-deterministic template fallback when `ANTHROPIC_API_KEY` is unset).
+calls + LLM narrative — deterministic template fallback when `ANTHROPIC_API_KEY`
+is unset).
 
 **Read the engineering trail** — the process is part of the artifact:
 
